@@ -1,0 +1,729 @@
+"""Serving adapters: the recipe's flags, the runtime patch, the gate's list, the gate's rules.
+
+specs/DREAMFERENCE_RAGON_ADAPTERS.md §16 (Gate, Recipe). No docker, no engine: the image's file
+comes from a replaced `docker` call, and the engine behind the gate is a stand-in on a scratch port.
+"""
+
+import asyncio
+import hashlib
+import json
+import os
+import pathlib
+import threading
+import time
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import ClassVar
+
+import pytest
+from test_model_gate import stop_gate
+
+from dreamference.hardware.adapter_installer import AdapterInstaller
+from dreamference.hardware.adapter_store import AdapterStore
+from dreamference.hardware.adapter_verifier import AdapterVerifier
+from dreamference.hardware.model_downloader import ModelDownloader
+from dreamference.hardware.model_matrix_registry import (
+    DEFAULT_MODEL_ALIAS,
+    ENGINE_SGLANG,
+    QWEN38_LORA_RECIPE,
+    ModelMatrixRegistry,
+)
+from dreamference.vllm_server.adapter_serving import AdapterServing
+from dreamference.vllm_server.model_gate import ModelGate
+from dreamference.vllm_server.model_gate_adapters import (
+    KEY_FILE,
+    LIST_FILE,
+    REFUSED_PATHS,
+    ModelGateAdapters,
+)
+from dreamference.vllm_server.model_gate_service import (
+    BODY_LIMIT,
+    READ_ONLY_PATHS,
+    ModelGateService,
+)
+from dreamference.vllm_server.sglang_runtime_patcher import SGLangRuntimePatcher
+from dreamference.vllm_server.vllm_server_manager import VLLMServerManager
+
+BASE = "RadixArk/Qwen3.8-27B-NVFP4"
+# Adapters are served by SGLang alone for now (ragon-serve is the default engine since 0.9.0).
+SGLANG = ENGINE_SGLANG
+MINIMA = "qwen3.8-27b-minima-nvfp4-dflash2"
+COMMIT = "2" * 40
+
+
+def install(name="rust", base_revision=None, files=None):
+    """An installed adapter whose files exist in the test's hub cache."""
+    snapshot = f"models--dreamference--ragon-{name}/snapshots/{COMMIT}"
+    folder = ModelDownloader.get_hf_cache_dir() / snapshot
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "adapter_model.safetensors").write_bytes(b"x" * (3 << 20))
+    digest = "sha256:" + hashlib.sha256(b"x" * (3 << 20)).hexdigest()
+    entry = {
+        "name": name,
+        "version": "1.0.0",
+        "display_name": name.title(),
+        "description": "d",
+        "trust": "dreamference",
+        "repo": f"dreamference/ragon-{name}",
+        "commit": COMMIT,
+        "snapshot": snapshot,
+        "manifest_sha256": "sha256:" + "0" * 64,
+        "base_repo": BASE,
+        "base_revision": base_revision
+        or ModelMatrixRegistry.get_launch_overrides(DEFAULT_MODEL_ALIAS)["revision"],
+        "files": files or {"adapter_model.safetensors": digest},
+    }
+    AdapterStore.put(entry)
+    return entry
+
+
+@pytest.fixture
+def verified(monkeypatch):
+    """Every installed adapter passes its check (the checks have their own tests)."""
+    AdapterServing.checked.clear()
+    monkeypatch.setattr(
+        "dreamference.hardware.adapter_installer.AdapterInstaller.verify",
+        classmethod(lambda cls, entry, base: None),
+    )
+
+
+def memory_cap(cmd):
+    return int(
+        next(a for a in cmd if a.startswith("--memory=")).removeprefix("--memory=").rstrip("g")
+    )
+
+
+def flag(cmd, name):
+    return cmd[cmd.index(name) + 1]
+
+
+# -- the recipe ----------------------------------------------------------------------------------
+
+
+def test_without_an_installed_adapter_the_launch_line_is_unchanged(verified):
+    mgr = VLLMServerManager()
+    assert "--enable-lora" not in mgr.build_launch_command(
+        model=DEFAULT_MODEL_ALIAS, engine=SGLANG, gate=True
+    )
+
+
+def test_an_installed_adapter_turns_on_the_recipes_lora_flags_behind_the_gate(
+    verified, monkeypatch
+):
+    # A GB10's memory: on a smaller host (a CI runner) the cap is clamped by the host reserve with
+    # and without the adapters, and their extra gigabyte cannot show.
+    from dreamference.hardware.hardware_telemetry import HardwareTelemetry
+
+    monkeypatch.setattr(
+        "dreamference.hardware.hardware_manager.HardwareManager.detect_gb10_hardware",
+        classmethod(
+            lambda cls: HardwareTelemetry(
+                is_gb10=True,
+                gpu_name="NVIDIA GB10",
+                driver_version="0",
+                arch="aarch64",
+                total_unified_memory_gb=128.0,
+                available_memory_gb=128.0,
+                used_memory_gb=0.0,
+                vram_gb=0.0,
+            )
+        ),
+    )
+    install()
+    mgr = VLLMServerManager()
+    plain = mgr.build_launch_command(
+        model=DEFAULT_MODEL_ALIAS, engine=SGLANG, gate=True, serve_adapters=False
+    )
+    cmd = mgr.build_launch_command(model=DEFAULT_MODEL_ALIAS, engine=SGLANG, gate=True)
+    assert flag(cmd, "--max-lora-rank") == str(QWEN38_LORA_RECIPE["max_lora_rank"]) == "16"
+    assert (flag(cmd, "--max-loras-per-batch"), flag(cmd, "--max-loaded-loras")) == ("4", "8")
+    assert "--lora-strict-loading" in cmd and "--lora-target-modules" not in cmd
+    assert flag(cmd, "--lora-paths") == (
+        f"rust=/root/.cache/huggingface/hub/models--dreamference--ragon-rust/snapshots/{COMMIT}"
+    )
+    assert flag(cmd, "--api-key") == AdapterServing.engine_key()
+    assert (AdapterServing.gate_dir() / KEY_FILE).stat().st_mode & 0o777 == 0o600
+    image = next(a for a in cmd if a.startswith("lmsysorg/sglang@sha256:"))
+    mount = cmd[cmd.index(image) - 1]
+    assert mount.endswith(
+        "/sgl-workspace/sglang/python/sglang/srt/entrypoints/openai/serving_responses.py:ro"
+    )
+    # The file with the adapters' patch, never the recipe's own alone.
+    recipe = ModelMatrixRegistry.get_launch_overrides(DEFAULT_MODEL_ALIAS, SGLANG)
+    with_lora, plain_patch = (
+        SGLangRuntimePatcher.mount_args(SGLangRuntimePatcher.for_launch(recipe, lora=lora))[1]
+        for lora in (True, False)
+    )
+    assert mount == with_lora != plain_patch
+    # The loaded adapters are host memory the container's cap counts.
+    assert memory_cap(cmd) == memory_cap(plain) + 1
+    # Behind no gate, or with a caller's API key, nothing is served: the engine's key is the gate's.
+    assert "--enable-lora" not in mgr.build_launch_command(model=DEFAULT_MODEL_ALIAS, engine=SGLANG)
+    assert "--enable-lora" not in mgr.build_launch_command(
+        model=DEFAULT_MODEL_ALIAS, engine=SGLANG, gate=True, api_key="k"
+    )
+
+
+def test_minima_never_serves_adapters(verified):
+    # Installed for Minima's own checkpoint: its recipe has no `lora` key, so nothing is chosen.
+    base = AdapterVerifier.base_for(MINIMA)
+    AdapterStore.put({**install(), "base_repo": base["repo"], "base_revision": base["revision"]})
+    assert AdapterServing.launch_adapters(MINIMA) == []
+    assert "--enable-lora" not in VLLMServerManager().build_launch_command(model=MINIMA, gate=True)
+
+
+def test_an_adapter_of_another_base_revision_or_a_model_with_no_base_is_not_served(
+    verified, monkeypatch
+):
+    install(base_revision="f" * 40)
+    assert AdapterServing.launch_adapters(DEFAULT_MODEL_ALIAS) == []
+    install()
+    assert [e["name"] for e in AdapterServing.launch_adapters(DEFAULT_MODEL_ALIAS)] == ["rust"]
+    monkeypatch.setattr(AdapterVerifier, "base_for", classmethod(lambda cls, key: None))
+    assert AdapterServing.launch_adapters(DEFAULT_MODEL_ALIAS) == []
+
+
+def test_an_adapters_check_is_remembered_until_its_files_pin_or_base_change(monkeypatch):
+    AdapterServing.checked.clear()
+    calls = []
+    monkeypatch.setattr(
+        "dreamference.hardware.adapter_installer.AdapterInstaller.verify",
+        classmethod(lambda cls, entry, base: calls.append(entry["name"])),
+    )
+    entry = install()
+    base = AdapterVerifier.base_for(DEFAULT_MODEL_ALIAS)
+    AdapterServing.problem(entry, base)
+    AdapterServing.problem(entry, base)
+    assert len(calls) == 1
+    # The same size, written later.
+    weights = AdapterInstaller.folder_of(entry) / "adapter_model.safetensors"
+    stat = weights.stat()
+    os.utime(weights, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+    AdapterServing.problem(entry, base)
+    assert len(calls) == 2
+    AdapterServing.problem({**entry, "manifest_sha256": "sha256:" + "1" * 64}, base)
+    assert len(calls) == 3
+    AdapterServing.problem(entry, {**base, "revision": "f" * 40})
+    assert len(calls) == 4
+    AdapterServing.problem(entry, base)
+    assert len(calls) == 4
+
+
+def test_the_engine_is_given_at_start_only_as_many_adapters_as_it_holds():
+    recipe = {"lora": {"max_lora_rank": 16, "max_loras_per_batch": 1, "max_loaded_loras": 1}}
+    args = AdapterServing.server_args(
+        recipe, [{"name": "cpp", "snapshot": "c"}, {"name": "rust", "snapshot": "r"}]
+    )
+    assert args[args.index("--lora-paths") + 1 : args.index("--api-key")] == [
+        "cpp=/root/.cache/huggingface/hub/c"
+    ]
+
+
+def test_the_containers_cap_grows_by_the_loaded_cache_of_the_largest_adapter(monkeypatch):
+    sizes = {"rust": 1 << 28, "cpp": 1 << 26}
+    monkeypatch.setattr(
+        AdapterServing, "size", classmethod(lambda cls, entry: sizes[entry["name"]])
+    )
+    recipe = {"container_headroom_gb": 1.5, "lora": {"max_loaded_loras": 8}}
+    adapters = [{"name": "rust"}, {"name": "cpp"}]
+    # 8 loaded x 0.25 GiB, the largest of the two.
+    assert AdapterServing.with_headroom(recipe, adapters)["container_headroom_gb"] == 3.5
+    assert recipe["container_headroom_gb"] == 1.5
+    assert AdapterServing.with_headroom(recipe, []) is recipe
+
+
+def test_an_adapter_that_fails_its_check_is_not_served(monkeypatch, capsys):
+    AdapterServing.checked.clear()
+    install()
+    monkeypatch.setattr(
+        "dreamference.hardware.adapter_installer.AdapterInstaller.verify",
+        classmethod(lambda cls, entry, base: "adapter_model.safetensors does not match"),
+    )
+    assert "--enable-lora" not in VLLMServerManager().build_launch_command(
+        model=DEFAULT_MODEL_ALIAS, engine=SGLANG, gate=True
+    )
+    assert "rust is not served" in capsys.readouterr().out
+
+
+# -- the runtime patch ---------------------------------------------------------------------------
+
+
+ORIGINAL = """        x = GenerateReqInput(
+                        require_reasoning=require_reasoning,
+                    )
+
+                    generator = self._generate_with_builtin_tools(
+"""
+
+
+def patch_for(text):
+    return {
+        "path": "/sgl/serving_responses.py",
+        "sha256": hashlib.sha256(text.encode()).hexdigest(),
+        "substitutions": [
+            [
+                "require_reasoning=require_reasoning,\n",
+                "require_reasoning=require_reasoning,\n    lora_path=None,\n",
+            ]
+        ],
+    }
+
+
+@pytest.fixture
+def image_file(monkeypatch):
+    calls = []
+
+    def docker(cls, command):
+        calls.append(command[:2])
+
+        class Done:
+            returncode = 0
+            stdout = "container-id\n"
+
+        if command[1] == "cp":
+            with pathlib.Path(command[3]).open("w", encoding="utf-8") as handle:
+                handle.write(ORIGINAL)
+        return Done()
+
+    monkeypatch.setattr(SGLangRuntimePatcher, "_docker", classmethod(docker))
+    return calls
+
+
+def test_the_runtime_patch_is_applied_to_the_images_own_file_and_mounted_read_only(image_file):
+    patch = patch_for(ORIGINAL)
+    assert SGLangRuntimePatcher.prepare("image@sha256:x", [patch]) is None
+    written = SGLangRuntimePatcher.host_dir() / SGLangRuntimePatcher.file_name(patch)
+    assert "lora_path=None" in written.read_text()
+    assert image_file == [["docker", "create"], ["docker", "cp"], ["docker", "rm"]]
+    assert SGLangRuntimePatcher.mount_args([patch]) == [
+        "-v",
+        f"{written}:/sgl/serving_responses.py:ro",
+    ]
+
+
+def test_a_file_that_is_not_the_one_the_patch_was_written_for_is_never_patched(image_file):
+    assert "not the file" in SGLangRuntimePatcher.prepare("image", [patch_for("another file")])
+    stale = dict(patch_for(ORIGINAL), substitutions=[["no such anchor", "x"]])
+    assert "no longer match" in SGLangRuntimePatcher.prepare("image", [stale])
+
+
+def test_the_recipes_patch_passes_lora_path_at_both_places_responses_builds_a_request():
+    patch = QWEN38_LORA_RECIPE["runtime_patches"][0]
+    assert patch["path"].endswith("entrypoints/openai/serving_responses.py")
+    replacements = [new for _, new in patch["substitutions"]]
+    assert "lora_path=self._resolve_lora_path(request.model, None)" in replacements[0]
+    assert "lora_path=adapted_request.lora_path" in replacements[1]
+
+
+def test_prepare_mounts_the_recipes_patch_together_with_the_adapters(verified, monkeypatch):
+    given = []
+    monkeypatch.setattr(
+        SGLangRuntimePatcher,
+        "prepare",
+        classmethod(lambda cls, image, patches: given.append(patches)),
+    )
+    install()
+    assert AdapterServing.prepare(DEFAULT_MODEL_ALIAS, "image", gated=True, engine=SGLANG) is True
+    recipe = ModelMatrixRegistry.get_launch_overrides(DEFAULT_MODEL_ALIAS, SGLANG)
+    assert given == [SGLangRuntimePatcher.for_launch(recipe, lora=True)]
+    assert given != [SGLangRuntimePatcher.for_launch(recipe, lora=False)]
+
+
+def test_prepare_writes_the_gates_list_or_removes_it(verified, monkeypatch):
+    monkeypatch.setattr(
+        SGLangRuntimePatcher, "prepare", classmethod(lambda cls, image, patches: None)
+    )
+    assert AdapterServing.prepare(DEFAULT_MODEL_ALIAS, "image", gated=True, engine=SGLANG) is True
+    assert not (AdapterServing.gate_dir() / LIST_FILE).exists()
+    assert AdapterServing.gate_mounts() == []
+    install()
+    assert AdapterServing.prepare(DEFAULT_MODEL_ALIAS, "image", gated=True, engine=SGLANG) is True
+    assert (AdapterServing.gate_dir() / LIST_FILE).stat().st_mode & 0o777 == 0o600
+    listing = json.loads((AdapterServing.gate_dir() / LIST_FILE).read_text())
+    assert listing["base"] == BASE and listing["max_loaded"] == 8
+    assert listing["adapters"]["rust"]["path"].startswith(
+        "/root/.cache/huggingface/hub/models--dreamference"
+    )
+    assert ModelGate.run_command(8000, "image")[
+        ModelGate.run_command(8000, "image").index("--entrypoint") - 1
+    ].endswith(":/root/.cache/huggingface/hub:ro")
+    AdapterServing.withdraw("rust")
+    assert json.loads((AdapterServing.gate_dir() / LIST_FILE).read_text())["adapters"] == {}
+    # Behind no gate the list a former start wrote is removed, and the gate mounts nothing.
+    assert AdapterServing.prepare(DEFAULT_MODEL_ALIAS, "image", gated=False, engine=SGLANG) is True
+    assert not (AdapterServing.gate_dir() / LIST_FILE).exists()
+    assert AdapterServing.gate_mounts() == []
+    monkeypatch.setattr(
+        SGLangRuntimePatcher, "prepare", classmethod(lambda cls, image, patches: "no file")
+    )
+    assert AdapterServing.prepare(DEFAULT_MODEL_ALIAS, "image", gated=True, engine=SGLANG) is False
+    assert not (AdapterServing.gate_dir() / LIST_FILE).exists()
+
+
+# -- the gate's rules ----------------------------------------------------------------------------
+
+
+LISTING = {
+    "base": BASE,
+    "max_loaded": 2,
+    "adapters": {
+        "rust": {
+            "path": "/x",
+            "files": {},
+            "trust": "dreamference",
+            "display_name": "Rust",
+            "version": "1.0.0",
+        }
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ({"model": BASE}, None),
+        ({"model": f"{BASE}+rust"}, "rust"),
+        ({"model": f"{BASE}+cpp"}, (404, "adapter_not_installed")),
+        ({"model": "Other/Model+rust"}, (404, "adapter_base_mismatch")),
+        ({"model": f"{BASE}:rust"}, (400, "adapter_not_allowed")),
+        ({"model": BASE, "lora_path": "/etc"}, (400, "adapter_not_allowed")),
+    ],
+)
+def test_the_gate_decides_what_a_request_names(body, expected):
+    decision = ModelGateAdapters("/nonexistent", ("127.0.0.1", 9)).check(body, LISTING)
+    if isinstance(decision, tuple):
+        decision = (decision[0], decision[1]["error"]["code"])
+    assert decision == expected
+
+
+def test_the_model_list_shows_the_installed_adapters_and_never_the_engines_bare_names():
+    engine = json.dumps(
+        {
+            "object": "list",
+            "data": [
+                {
+                    "id": BASE,
+                    "root": BASE,
+                    "max_model_len": 262144,
+                    "owned_by": "sglang",
+                    "created": 1,
+                },
+                {"id": "rust", "root": "/x", "parent": BASE, "max_model_len": None},
+            ],
+        }
+    ).encode()
+    data = ModelGateAdapters.models(engine, LISTING)["data"]
+    assert [entry["id"] for entry in data] == [BASE, f"{BASE}+rust"]
+    assert data[1] | {"ragon_adapter": None} == {
+        "id": f"{BASE}+rust",
+        "object": "model",
+        "created": 1,
+        "owned_by": "sglang",
+        "root": BASE,
+        "parent": BASE,
+        "max_model_len": 262144,
+        "ragon_adapter": None,
+    }
+    assert data[1]["ragon_adapter"] == {
+        "name": "rust",
+        "version": "1.0.0",
+        "display_name": "Rust",
+        "description": None,
+        "trust": "dreamference",
+    }
+
+
+@pytest.mark.parametrize("cut", range(1, 30))
+def test_an_id_split_across_reads_is_still_swapped(cut):
+    stream = b'data: {"model":"' + BASE.encode() + b':rust","x":1}\n\n'
+    out, carry = ModelGateAdapters.replace_stream(
+        stream[:cut], b"", f"{BASE}:rust".encode(), f"{BASE}+rust".encode()
+    )
+    more, carry = ModelGateAdapters.replace_stream(
+        stream[cut:], carry, f"{BASE}:rust".encode(), f"{BASE}+rust".encode()
+    )
+    assert out + more + carry == stream.replace(b":rust", b"+rust")
+
+
+# -- the gate, live ------------------------------------------------------------------------------
+
+
+class Engine(BaseHTTPRequestHandler):
+    """A stand-in SGLang: its model list, the load endpoints and a streamed /v1/responses."""
+
+    protocol_version = "HTTP/1.1"
+    seen: ClassVar[list] = []
+    loaded: ClassVar[list] = []
+    load_seconds: ClassVar[float] = 0.0
+    load_status: ClassVar[int] = 200
+    unload_status: ClassVar[int] = 200
+
+    def log_message(self, *args):
+        pass
+
+    def answer(self, body, content_type="application/json"):
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        Engine.seen.append(("GET", self.path, self.headers.get("Authorization")))
+        data = [{"id": BASE, "root": BASE, "max_model_len": 262144}]
+        data += [{"id": name, "parent": BASE} for name in Engine.loaded]
+        self.answer(json.dumps({"data": data}).encode())
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        Engine.seen.append(("POST", self.path, self.headers.get("Authorization"), body))
+        if self.path == "/load_lora_adapter":
+            time.sleep(Engine.load_seconds)
+            if Engine.load_status != 200:
+                self.send_response(Engine.load_status)
+                self.send_header("Content-Length", "6")
+                self.end_headers()
+                self.wfile.write(b"no gpu")
+                return
+            Engine.loaded.append(body["lora_name"])
+        elif self.path == "/unload_lora_adapter":
+            if Engine.unload_status != 200:
+                self.send_response(Engine.unload_status)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            Engine.loaded.remove(body["lora_name"])
+        self.answer(f'data: {{"model":"{body.get("model")}"}}\n\n'.encode(), "text/event-stream")
+
+
+@pytest.fixture
+def gate(tmp_path):
+    Engine.seen, Engine.loaded, Engine.load_seconds = [], [], 0.0
+    Engine.load_status = Engine.unload_status = 200
+    engine = ThreadingHTTPServer(("127.0.0.1", 0), Engine)
+    threading.Thread(target=engine.serve_forever, daemon=True).start()
+    state = tmp_path / "gate"
+    state.mkdir()
+    folders = {}
+    for name in ("rust", "cpp", "ts"):
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / "adapter_model.safetensors").write_bytes(name.encode())
+        folders[name] = {
+            "path": str(folder),
+            "trust": "dreamference",
+            "display_name": name,
+            "version": "1.0.0",
+            "files": {
+                "adapter_model.safetensors": "sha256:" + hashlib.sha256(name.encode()).hexdigest()
+            },
+        }
+    (state / LIST_FILE).write_text(json.dumps({"base": BASE, "max_loaded": 2, "adapters": folders}))
+    (state / KEY_FILE).write_text("engine-secret\n")
+    loop = asyncio.new_event_loop()
+    service = ModelGateService(
+        ("127.0.0.1", 0), ("127.0.0.1", engine.server_address[1]), str(state)
+    )
+    port = loop.run_until_complete(service.start())
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    yield {"port": port, "folders": folders, "tmp": tmp_path}
+    stop_gate(loop, thread, service)
+    engine.shutdown()
+
+
+def call(port, path, body=None, method="POST"):
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json", "Authorization": "Bearer client"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return response.read()
+
+
+def test_an_adapter_is_loaded_once_from_the_list_and_its_id_rewritten_both_ways(gate):
+    answer = call(gate["port"], "/v1/responses", {"model": f"{BASE}+rust", "input": "hi"})
+    assert answer == f'data: {{"model":"{BASE}+rust"}}\n\n'.encode()
+    loads = [entry for entry in Engine.seen if entry[1] == "/load_lora_adapter"]
+    assert [entry[3] for entry in loads] == [
+        {"lora_name": "rust", "lora_path": gate["folders"]["rust"]["path"]}
+    ]
+    forwarded = [entry for entry in Engine.seen if entry[1] == "/v1/responses"]
+    assert forwarded[-1][3]["model"] == f"{BASE}:rust"
+    assert {entry[2] for entry in Engine.seen} == {"Bearer engine-secret"}
+    call(gate["port"], "/v1/responses", {"model": f"{BASE}+rust", "input": "again"})
+    assert len([entry for entry in Engine.seen if entry[1] == "/load_lora_adapter"]) == 1
+
+
+def test_past_the_engines_limit_the_least_recently_used_adapter_is_unloaded(gate):
+    for name in ("rust", "cpp", "rust", "ts"):
+        call(gate["port"], "/v1/responses", {"model": f"{BASE}+{name}"})
+    unloads = [entry[3]["lora_name"] for entry in Engine.seen if entry[1] == "/unload_lora_adapter"]
+    assert unloads == ["cpp"] and sorted(Engine.loaded) == ["rust", "ts"]
+
+
+def test_an_adapter_whose_files_changed_is_refused_and_never_loaded(gate):
+    (gate["tmp"] / "rust" / "adapter_model.safetensors").write_bytes(b"tampered")
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        call(gate["port"], "/v1/responses", {"model": f"{BASE}+rust"})
+    assert (
+        refused.value.code == 503
+        and json.load(refused.value)["error"]["code"] == "adapter_unavailable"
+    )
+    assert not [entry for entry in Engine.seen if entry[1] == "/load_lora_adapter"]
+
+
+def test_an_adapter_the_engine_fails_to_load_is_refused_and_tried_again_next_time(gate):
+    Engine.load_status = 500
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        call(gate["port"], "/v1/responses", {"model": f"{BASE}+rust"})
+    error = json.load(refused.value)["error"]
+    assert refused.value.code == 503 and error["type"] == "service_unavailable"
+    assert "no gpu" in error["message"]
+    assert not [entry for entry in Engine.seen if entry[1] == "/v1/responses"]
+    Engine.load_status = 200
+    call(gate["port"], "/v1/responses", {"model": f"{BASE}+rust"})
+    assert len([entry for entry in Engine.seen if entry[1] == "/load_lora_adapter"]) == 2
+
+
+def test_an_adapter_the_engine_holds_that_the_list_does_not_name_is_unloaded(gate):
+    Engine.loaded = ["removed", "cpp"]
+    call(gate["port"], "/v1/responses", {"model": f"{BASE}+cpp"})
+    unloads = [entry[3]["lora_name"] for entry in Engine.seen if entry[1] == "/unload_lora_adapter"]
+    # cpp is on the list and was given at the engine's start: it is used, never loaded again.
+    assert unloads == ["removed"] and Engine.loaded == ["cpp"]
+    assert not [entry for entry in Engine.seen if entry[1] == "/load_lora_adapter"]
+
+
+def test_after_an_unload_the_engine_refused_the_gate_asks_the_engine_again(gate):
+    for name in ("rust", "cpp"):
+        call(gate["port"], "/v1/responses", {"model": f"{BASE}+{name}"})
+    Engine.unload_status = 500
+    # Two held: ts makes room by unloading rust, which the engine refuses and still holds.
+    call(gate["port"], "/v1/responses", {"model": f"{BASE}+ts"})
+    assert sorted(Engine.loaded) == ["cpp", "rust", "ts"]
+    call(gate["port"], "/v1/responses", {"model": f"{BASE}+cpp"})
+    lists = [entry for entry in Engine.seen if entry[:2] == ("GET", "/v1/models")]
+    assert len(lists) == 2
+
+
+@pytest.mark.parametrize("path", ["/v1/chat/completions", "/v1/completions", "/v1/responses"])
+def test_every_generation_endpoint_has_its_adapter_id_rewritten(gate, path):
+    answer = call(gate["port"], path, {"model": f"{BASE}+rust"})
+    assert answer == f'data: {{"model":"{BASE}+rust"}}\n\n'.encode()
+    assert [entry[3]["model"] for entry in Engine.seen if entry[1] == path] == [f"{BASE}:rust"]
+
+
+def test_with_adapters_every_body_is_read_and_without_only_a_whole_one_within_the_limit():
+    assert ModelGateService.body_is_read({"adapters": {}}, ("chunked", 0))
+    assert not ModelGateService.body_is_read(None, ("chunked", 0))
+    assert ModelGateService.body_is_read(None, ("length", BODY_LIMIT))
+    assert not ModelGateService.body_is_read(None, ("length", BODY_LIMIT + 1))
+
+
+def test_only_a_posts_body_is_read_for_an_adapter(gate):
+    call(gate["port"], "/v1/responses", {"model": f"{BASE}+rust"}, method="GET")
+    assert not [entry for entry in Engine.seen if entry[1] == "/load_lora_adapter"]
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"base": BASE, "adapters": []},
+        ["not", "a", "list"],
+    ],
+)
+def test_a_list_that_names_no_adapters_serves_none(tmp_path, record):
+    (tmp_path / LIST_FILE).write_text(json.dumps(record))
+    assert ModelGateAdapters(str(tmp_path), ("127.0.0.1", 1)).listing() is None
+
+
+@pytest.mark.parametrize("entry", [{"path": "/x"}, {"path": "/x", "files": ["a"]}, "rust"])
+def test_an_entry_that_names_no_files_is_never_loaded(entry):
+    assert ModelGateAdapters.files_problem(entry) == "its entry names no files"
+
+
+@pytest.mark.parametrize(
+    ("framing", "data"),
+    [
+        (("length", 9), b"012345678"),
+        (("chunked", 0), b"5\r\n01234\r\n4\r\n5678\r\n0\r\n\r\n"),
+    ],
+)
+def test_a_body_past_the_gates_limit_is_not_read(framing, data):
+    async def read(limit):
+        reader = asyncio.StreamReader()
+        reader.feed_data(data)
+        reader.feed_eof()
+        return await ModelGateAdapters.read_body(reader, framing, limit)
+
+    assert asyncio.run(read(9)) == b"012345678"
+    assert asyncio.run(read(8)) is None
+
+
+def test_concurrent_first_requests_for_an_adapter_wait_on_one_load(gate):
+    Engine.load_seconds = 0.5
+    answers = []
+
+    def ask():
+        answers.append(call(gate["port"], "/v1/responses", {"model": f"{BASE}+rust"}))
+
+    threads = [threading.Thread(target=ask) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+    assert answers == [f'data: {{"model":"{BASE}+rust"}}\n\n'.encode()] * 4
+    assert len([entry for entry in Engine.seen if entry[1] == "/load_lora_adapter"]) == 1
+
+
+def test_the_load_endpoints_are_never_read_only_probes():
+    assert not set(REFUSED_PATHS) & set(READ_ONLY_PATHS)
+    assert not [path for path in REFUSED_PATHS if path.startswith("/v1/models/")]
+
+
+@pytest.mark.parametrize(
+    ("networks", "status"), [(["127.0.0.0/8", "::1/128"], 403), (["192.0.2.0/24"], 503)]
+)
+def test_the_load_endpoints_are_refused_while_a_run_holds_the_gate(
+    gate, monkeypatch, networks, status
+):
+    held = {"state": "closed", "run": "night", "networks": networks}
+    monkeypatch.setattr(ModelGateService, "state", classmethod(lambda cls, *args, **kw: held))
+    for path in REFUSED_PATHS:
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            call(gate["port"], path, {"lora_name": "evil", "lora_path": "/tmp/evil"})
+        assert refused.value.code == status
+    assert not [entry for entry in Engine.seen if entry[0] == "POST"]
+
+
+@pytest.mark.parametrize(
+    "path", ["/load_lora_adapter", "/load_lora_adapter_from_tensors", "/unload_lora_adapter"]
+)
+def test_the_load_endpoints_are_refused_on_the_public_port(gate, path):
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        call(gate["port"], path, {"lora_name": "evil", "lora_path": "/tmp/evil"})
+    assert refused.value.code == 403
+    assert not [entry for entry in Engine.seen if entry[1] == path]
+
+
+def test_an_unknown_adapter_is_a_404_and_the_engine_never_sees_it(gate):
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        call(gate["port"], "/v1/responses", {"model": f"{BASE}+evil"})
+    assert (
+        refused.value.code == 404
+        and json.load(refused.value)["error"]["code"] == "adapter_not_installed"
+    )
+    assert not [entry for entry in Engine.seen if entry[0] == "POST"]
+
+
+def test_the_gates_model_list_names_the_adapters_as_base_plus_name(gate):
+    Engine.loaded = ["rust"]
+    ids = [
+        entry["id"] for entry in json.loads(call(gate["port"], "/v1/models", method="GET"))["data"]
+    ]
+    assert ids == [BASE, f"{BASE}+cpp", f"{BASE}+rust", f"{BASE}+ts"]

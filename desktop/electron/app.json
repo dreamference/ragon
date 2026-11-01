@@ -1,0 +1,17 @@
+{
+  "productName": "Ragon",
+  "identifier": "dev.dreamference.ragon",
+  "scheme": "ragon",
+  "executable": "Ragon",
+  "command": "ragon-app",
+  "packageName": "ragon",
+  "work": {
+    "label": "work",
+    "title": "Ragon",
+    "width": 1280,
+    "height": 860,
+    "minWidth": 480,
+    "minHeight": 600
+  },
+  "csp": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' app: blob: data:; connect-src 'self'; worker-src 'self' blob:; base-uri 'none'; form-action 'none'"
+}

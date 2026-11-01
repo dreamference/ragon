@@ -1,0 +1,7 @@
+# npm's install, Vite's build, Forge's package and make output, and the bundled binaries that
+# `ragon-admin desktop build` copies in from the installed `ragon` build.
+node_modules
+.vite/
+out/
+resources/
+e2e/results/

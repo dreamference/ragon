@@ -1,0 +1,178 @@
+//! `ragon-docs session`: the process that keeps the collections indexed while a session lives
+//! (spec §6, §9). The launcher starts it outside the agent's sandbox and continues.
+//!
+//! One per user: it takes `docs/session.lock` (a second one exits at once). It adds the default
+//! collections when their folders exist (§14.1), starts a change scan of every collection, then
+//! every few seconds drains the request queue and, every `docs_scan_interval_min`, scans again.
+//! Between scans the change watch ([`crate::watch`], inotify within a budget of watches) asks for
+//! a collection whose files changed, once they have been quiet for a few seconds.
+//! At most one `ragon-docs index` runs at a time; none starts while Night Shift or a benchmark
+//! holds the runner lock. It exits when its parent does; an index run in flight finishes alone.
+//! It runs only in the user's own agent home, `~/.ragon`, unless `DREAMFERENCE_RAGON_DOCS`
+//! is set on explicitly: a scratch `CODEX_HOME` beside the real `HOME` indexes nothing by itself.
+
+use std::fs::File;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use anyhow::Result;
+
+use crate::collections::DocsToml;
+use crate::config::{self, Settings};
+use crate::host::flock;
+use crate::requests::{self, Request};
+
+const TICK: Duration = Duration::from_secs(3);
+
+/// The arguments of the next `ragon-docs index`, taking what it covers out of `pending`.
+pub fn next_run(pending: &mut Vec<Request>) -> Option<Vec<String>> {
+    if pending.is_empty() {
+        return None;
+    }
+    pending.sort();
+    pending.dedup();
+    if let Some(index) = pending
+        .iter()
+        .position(|r| matches!(r, Request::Rebuild(_)))
+    {
+        let Request::Rebuild(name) = pending.remove(index) else {
+            unreachable!()
+        };
+        pending.retain(|r| *r != Request::One(name.clone()));
+        return Some(vec![
+            "index".into(),
+            "--collection".into(),
+            name,
+            "--rebuild".into(),
+        ]);
+    }
+    if pending.contains(&Request::All) {
+        pending.retain(|r| matches!(r, Request::Rebuild(_)));
+        return Some(vec!["index".into()]);
+    }
+    let Request::One(name) = pending.remove(0) else {
+        unreachable!()
+    };
+    Some(vec!["index".into(), "--collection".into(), name])
+}
+
+pub fn run(parent: Option<i32>) -> Result<()> {
+    let settings = Settings::load();
+    if !settings.enabled {
+        return Ok(());
+    }
+    // Not the user's own agent home (a test's, a check's, an audit's scratch `CODEX_HOME`): no
+    // default collections and no indexing nobody asked for (§9, config::indexes_unasked).
+    if !config::indexes_unasked() {
+        return Ok(());
+    }
+    let dir = config::docs_dir();
+    crate::store::create_private_dir(&dir)?;
+    let lock = File::create(dir.join("session.lock"))?;
+    if flock(&lock, false).is_err() {
+        return Ok(()); // another session keeps the index
+    }
+    DocsToml::update(|docs| Ok(docs.ensure_defaults(&config::user_home())))?;
+    let exe = std::env::current_exe()?;
+    let interval = settings.scan_interval();
+    let mut pending = vec![Request::All];
+    let mut last_scan = Instant::now();
+    let mut child: Option<Child> = None;
+    let mut watcher = crate::watch::Watcher::new(crate::watch::budget());
+    let mut watched_stamp = None;
+    loop {
+        if let Some(pid) = parent {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return Ok(());
+            }
+        }
+        pending.extend(requests::drain(&dir));
+        if let Some(watcher) = watcher.as_mut() {
+            // Collections added or removed since: watched afresh.
+            let stamp = std::fs::metadata(config::docs_toml())
+                .and_then(|m| m.modified())
+                .ok();
+            if watched_stamp != Some(stamp) {
+                if let Ok(docs) = DocsToml::load() {
+                    let collections: Vec<_> = docs.enabled().cloned().collect();
+                    watcher.watch(&collections, &config::user_home());
+                }
+                watched_stamp = Some(stamp);
+            }
+            pending.extend(
+                watcher
+                    .poll(&config::user_home())
+                    .into_iter()
+                    .map(Request::One),
+            );
+        }
+        if last_scan.elapsed() >= interval {
+            pending.push(Request::All);
+            last_scan = Instant::now();
+        }
+        let busy = match child.as_mut() {
+            Some(c) => c.try_wait()?.is_none(),
+            None => false,
+        };
+        if !busy && !pending.is_empty() && !crate::index::night_shift_active(&config::night_dir()) {
+            if let Some(args) = next_run(&mut pending) {
+                let log = File::create(dir.join("index.log"))?;
+                child = Some(spawn_detached(&exe, &args, log)?);
+            }
+        }
+        std::thread::sleep(TICK);
+    }
+}
+
+/// Starts `ragon-docs <args>` in a session of its own, so it outlives this one.
+pub fn spawn_detached(exe: &std::path::Path, args: &[String], log: File) -> Result<Child> {
+    use std::os::unix::process::CommandExt;
+    let child = unsafe {
+        Command::new(exe)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            })
+            .spawn()?
+    };
+    Ok(child)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requests_coalesce_into_runs() {
+        let mut pending = vec![
+            Request::One("a".into()),
+            Request::All,
+            Request::One("b".into()),
+        ];
+        assert_eq!(next_run(&mut pending), Some(vec!["index".to_string()]));
+        assert!(pending.is_empty());
+        let mut pending = vec![
+            Request::One("a".into()),
+            Request::Rebuild("a".into()),
+            Request::One("b".into()),
+        ];
+        assert_eq!(
+            next_run(&mut pending),
+            Some(vec![
+                "index".into(),
+                "--collection".into(),
+                "a".into(),
+                "--rebuild".into()
+            ])
+        );
+        assert_eq!(
+            next_run(&mut pending),
+            Some(vec!["index".into(), "--collection".into(), "b".into()])
+        );
+        assert_eq!(next_run(&mut pending), None);
+    }
+}

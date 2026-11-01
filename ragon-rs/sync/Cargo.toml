@@ -1,0 +1,33 @@
+# `ragon sync`, one set of threads on every device, served by the user's own node
+# (specs/DREAMFERENCE_RAGON_SYNC.md): the sync agent every enabled device runs, and the commands
+# that turn the hub (a module of `ragon web`, ../web/src/sync_hub.rs) and the agent on and off. A
+# crate of its own so its tests run without compiling the Codex workspace (`cargo test` in a copy of
+# this folder beside `../web` and `../airgapped`); the launcher (`../src/sync.rs`) only routes
+# `ragon sync …` here. Versions are the Codex workspace's, so building inside it adds no second copy
+# of any crate; reqwest uses rustls, as the workspace's other clients do.
+[package]
+name = "ragon-sync"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "ragon_sync"
+path = "src/lib.rs"
+
+[dependencies]
+futures = { version = "0.3", default-features = false, features = ["std"] }
+ragon-airgapped = { path = "../airgapped" }
+ragon-web-server = { path = "../web" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+# The agent as a host talks to an app-server over its Unix socket (live.rs), as `ragon web` does.
+tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["handshake"] }
+toml = "0.9.5"
+# `ragon sync exclude` edits the user's configuration in place, keeping its comments.
+toml_edit = "0.24.0"
+# Rollouts Codex compressed (`.jsonl.zst`, Phase 0: the same bytes, zstd level 3).
+zstd = "0.13"

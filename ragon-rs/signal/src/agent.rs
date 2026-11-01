@@ -1,0 +1,694 @@
+//! The agent side (specs/DREAMFERENCE_RAGON_SIGNAL.md §6, §8): `ragon web`, reached the way a
+//! paired phone reaches it, with a device cookie on loopback.
+//!
+//! - [`pair`] trades an eight-digit code from `ragon web pair` for the device cookie, once.
+//! - [`Connection`] is one WebSocket on `/ws` with the bridge envelope `ragon web ask` uses
+//!   (`{call, message}` out; `{answer, …}` and `{event: {channel, payload}}` in).
+//! - [`Translator`] turns the app-server's messages into the conversation's [`AgentEvent`]s; it is
+//!   pure, so the protocol mapping is tested without a server.
+//! - [`upload`] and [`airgap_level`] are the two plain HTTP calls.
+
+use std::collections::HashMap;
+
+use futures::SinkExt;
+use futures::StreamExt;
+use serde_json::Value;
+use serde_json::json;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::http::header;
+
+use crate::bridge::AgentEvent;
+use crate::bridge::ApprovalKind;
+
+/// `ragon web`'s device cookie name (ragon-rs/web/src/auth.rs).
+pub const DEVICE_COOKIE: &str = "ragon_device";
+/// The name the first bridge's device gets in `ragon web devices`.
+pub const DEVICE_NAME: &str = "signal-bridge";
+
+/// The device name of the bridge instance `instance` (§18.2): `signal-bridge` for `default`, as it
+/// always was, `signal-<name>` for the others. Each must differ, because `ragon web revoke` removes
+/// every device whose id or name matches.
+pub fn device_name(instance: &str) -> String {
+    if instance == crate::unit::DEFAULT_INSTANCE { DEVICE_NAME.to_string() } else { format!("signal-{instance}") }
+}
+
+/// What a request the bridge sent was for, so its response can be read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pending {
+    OpenThread,
+    StartTurn { thread: String },
+    /// The owner's follow-up steered into a turn: refused, it is asked next (§19.4).
+    Steer { thread: String, text: String },
+    Other,
+}
+
+/// Something to do after reading one message.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Translated {
+    Event(AgentEvent),
+    /// A response to send at once: a server request the bridge never serves.
+    Respond(Value),
+}
+
+/// Reads the app-server's messages for the conversation.
+#[derive(Default)]
+pub struct Translator {
+    pending: HashMap<String, Pending>,
+    /// The last error notification per thread, used if its turn ends failed without one.
+    errors: HashMap<String, String>,
+}
+
+fn thread_of(params: &Value) -> Option<String> {
+    params.get("threadId").and_then(Value::as_str).map(str::to_string)
+}
+
+impl Translator {
+    pub fn expect(&mut self, id: &Value, what: Pending) {
+        self.pending.insert(id.to_string(), what);
+    }
+
+    pub fn read(&mut self, message: &Value) -> Vec<Translated> {
+        let method = message.get("method").and_then(Value::as_str);
+        let id = message.get("id");
+        let params = message.get("params").cloned().unwrap_or(Value::Null);
+        match (method, id) {
+            // A response to one of the bridge's requests.
+            (None, Some(id)) => {
+                let Some(what) = self.pending.remove(&id.to_string()) else { return Vec::new() };
+                let error = message.get("error").filter(|e| !e.is_null()).map(|e| e.get("message").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| e.to_string()));
+                match (what, error) {
+                    (Pending::OpenThread, None) => match message.pointer("/result/thread/id").and_then(Value::as_str) {
+                        Some(thread) => vec![Translated::Event(AgentEvent::ThreadReady { thread: thread.to_string() })],
+                        None => vec![Translated::Event(AgentEvent::ThreadFailed { error: "the server named no thread".to_string() })],
+                    },
+                    (Pending::OpenThread, Some(error)) => vec![Translated::Event(AgentEvent::ThreadFailed { error })],
+                    (Pending::StartTurn { thread }, Some(error)) => vec![Translated::Event(AgentEvent::TurnCompleted { thread, error: Some(error) })],
+                    (Pending::Steer { thread, text }, Some(_)) => vec![Translated::Event(AgentEvent::SteerFailed { thread, text })],
+                    _ => Vec::new(),
+                }
+            }
+            // A server request: approvals are the owner's to answer; anything else is declined here.
+            (Some(method), Some(id)) => {
+                let kind = match method {
+                    "item/commandExecution/requestApproval" => Some(ApprovalKind::Command),
+                    "item/fileChange/requestApproval" => Some(ApprovalKind::FileChange),
+                    "item/permissions/requestApproval" => Some(ApprovalKind::Permissions),
+                    _ => None,
+                };
+                match kind {
+                    Some(kind) => vec![Translated::Event(AgentEvent::Approval {
+                        id: id.clone(),
+                        thread: thread_of(&params).unwrap_or_default(),
+                        kind,
+                        command: params.get("command").and_then(Value::as_str).map(str::to_string),
+                        cwd: params.get("cwd").and_then(Value::as_str).map(str::to_string),
+                        reason: params.get("reason").and_then(Value::as_str).map(str::to_string),
+                    })],
+                    None => vec![Translated::Respond(json!({
+                        "id": id,
+                        "error": { "code": -32601, "message": format!("{method} is not answered from Signal") }
+                    }))],
+                }
+            }
+            (Some(method), None) => {
+                let Some(thread) = thread_of(&params) else { return Vec::new() };
+                match method {
+                    "turn/started" => params
+                        .pointer("/turn/id")
+                        .and_then(Value::as_str)
+                        .map(|turn| vec![Translated::Event(AgentEvent::TurnStarted { thread, turn: turn.to_string() })])
+                        .unwrap_or_default(),
+                    "item/agentMessage/delta" => {
+                        let text = params.get("delta").and_then(Value::as_str).unwrap_or_default();
+                        if text.is_empty() { Vec::new() } else { vec![Translated::Event(AgentEvent::Delta { thread, text: text.to_string() })] }
+                    }
+                    "item/started" => {
+                        let mut events: Vec<Translated> = activity(&params).map(|text| Translated::Event(AgentEvent::Activity { thread: thread.clone(), text })).into_iter().collect();
+                        if let Some(kind) = params.pointer("/item/type").and_then(Value::as_str)
+                            && crate::limits::is_tool(kind)
+                        {
+                            let item = params.pointer("/item/id").and_then(Value::as_str).unwrap_or_default().to_string();
+                            let command = (kind == "commandExecution").then(|| params.pointer("/item/command").and_then(Value::as_str).unwrap_or("a command").to_string());
+                            events.push(Translated::Event(AgentEvent::ToolStarted { thread, item, command }));
+                        }
+                        events
+                    }
+                    "item/completed" => {
+                        let item = params.pointer("/item/id").and_then(Value::as_str).unwrap_or_default().to_string();
+                        vec![Translated::Event(AgentEvent::ToolCompleted { thread, item })]
+                    }
+                    "error" => {
+                        if params.get("willRetry") != Some(&Value::Bool(true)) {
+                            let text = params.pointer("/error/message").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| params.to_string());
+                            self.errors.insert(thread, text);
+                        }
+                        Vec::new()
+                    }
+                    "turn/completed" => {
+                        let status = params.pointer("/turn/status").and_then(Value::as_str).unwrap_or("completed");
+                        let stashed = self.errors.remove(&thread);
+                        let error = match status {
+                            "failed" => Some(params.pointer("/turn/error/message").and_then(Value::as_str).map(str::to_string).or(stashed).unwrap_or_else(|| "the turn failed".to_string())),
+                            "interrupted" => Some("interrupted".to_string()),
+                            _ => None,
+                        };
+                        vec![Translated::Event(AgentEvent::TurnCompleted { thread, error })]
+                    }
+                    _ => Vec::new(),
+                }
+            }
+            (None, None) => Vec::new(),
+        }
+    }
+}
+
+/// What a started item says the agent is doing, for `/status` and progress notes.
+fn activity(params: &Value) -> Option<String> {
+    let item = params.get("item")?;
+    match item.get("type").and_then(Value::as_str)? {
+        "commandExecution" => {
+            let command = item.get("command").and_then(Value::as_str).unwrap_or("a command");
+            // The phone prompt's two web commands say what they do; anything else is shown.
+            let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || c == '\'' || c == '"').collect();
+            if words.iter().any(|word| word.ends_with("ragon-search")) {
+                return Some("searching the web".to_string());
+            }
+            if words.iter().any(|word| word.ends_with("ragon-fetch")) {
+                return Some("reading a page".to_string());
+            }
+            let short: String = command.chars().take(80).collect();
+            Some(format!("running `{short}`"))
+        }
+        "fileChange" => Some("editing files".to_string()),
+        "webSearch" => Some("searching the web".to_string()),
+        "mcpToolCall" => {
+            let tool = item.get("tool").and_then(Value::as_str).unwrap_or("a tool");
+            Some(format!("using {tool}"))
+        }
+        "reasoning" => Some("thinking".to_string()),
+        _ => None,
+    }
+}
+
+/// A raw HTTP/1.1 exchange on loopback; returns (status, headers, body).
+async fn http(port: u16, request: &[u8]) -> Result<(u16, String, Vec<u8>), String> {
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.map_err(|err| format!("ragon web is not answering on port {port}: {err}"))?;
+    stream.write_all(request).await.map_err(|err| err.to_string())?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.map_err(|err| err.to_string())?;
+    let split = response.windows(4).position(|w| w == b"\r\n\r\n").ok_or("ragon web sent no HTTP response")?;
+    let head = String::from_utf8_lossy(&response[..split]).into_owned();
+    let status = head.split_whitespace().nth(1).and_then(|code| code.parse().ok()).ok_or("ragon web sent no status")?;
+    Ok((status, head, response[split + 4..].to_vec()))
+}
+
+fn form_escape(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+fn header_value(head: &str, name: &str) -> Vec<String> {
+    head.lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.trim().eq_ignore_ascii_case(name).then(|| value.trim().to_string())
+        })
+        .collect()
+}
+
+/// Trades a pairing code from `ragon web pair` for a device cookie (`ragon_device=…`).
+/// `device` is the name it is listed and revoked by ([`device_name`]).
+pub async fn pair(port: u16, code: &str, device: &str) -> Result<String, String> {
+    let body = format!("code={}&name={}", form_escape(code.trim()), form_escape(device));
+    let request = format!(
+        "POST /pair HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let (status, head, _) = http(port, request.as_bytes()).await?;
+    header_value(&head, "set-cookie")
+        .into_iter()
+        .map(|cookie| cookie.split(';').next().unwrap_or_default().trim().to_string())
+        .find(|cookie| cookie.starts_with(&format!("{DEVICE_COOKIE}=")))
+        .ok_or_else(|| format!("ragon web refused the pairing code (HTTP {status}); run `ragon web pair` for a new one"))
+}
+
+/// What `ragon web` answered for one upload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Saved {
+    /// Where it was written in the thread's folder.
+    pub path: String,
+    /// An image's text, read by `ragon web`'s offline reader.
+    pub text: Option<String>,
+    /// Whether the served model takes images.
+    pub vision: bool,
+}
+
+/// Reads `/api/upload`'s answer. A `ragon web` from before `read=1` answers the path alone: then no
+/// text was read, and the model is not taken to take images.
+pub fn saved_from(body: &str) -> Saved {
+    let value: Value = serde_json::from_str(body).unwrap_or(Value::String(body.to_string()));
+    Saved {
+        path: value.get("path").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| body.to_string()),
+        text: value.get("text").and_then(Value::as_str).map(str::to_string),
+        vision: value.get("vision").and_then(Value::as_bool).unwrap_or(false),
+    }
+}
+
+/// Puts one attachment into an Ask thread's folder (`/api/upload`, with `read=1` so an image's text
+/// is read and the model's image support reported; specs/DREAMFERENCE_RAGON_SIGNAL.md §19.1).
+pub async fn upload(port: u16, cookie: &str, thread: &str, name: &str, image: bool, bytes: &[u8]) -> Result<Saved, String> {
+    let kind = if image { "image" } else { "file" };
+    let mut request = format!(
+        "POST /api/upload?thread={}&kind={kind}&name={}&read=1 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nCookie: {cookie}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        form_escape(thread),
+        form_escape(name),
+        bytes.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(bytes);
+    let (status, _, body) = http(port, &request).await?;
+    let body = String::from_utf8_lossy(&body).trim().to_string();
+    if status != 200 {
+        return Err(format!("the upload was refused (HTTP {status}): {body}"));
+    }
+    Ok(saved_from(&body))
+}
+
+/// A voice note as text, through `ragon web`'s `/api/transcribe` (the speech-to-text service on
+/// the node): the text, or what went wrong (specs/DREAMFERENCE_RAGON_SIGNAL.md §19.5).
+pub async fn transcribe(port: u16, cookie: &str, media: &str, bytes: &[u8]) -> Result<String, String> {
+    let media: String = media.split(';').next().unwrap_or_default().chars().filter(|c| c.is_ascii_alphanumeric() || "/-.+".contains(*c)).collect();
+    let mut request = format!(
+        "POST /api/transcribe HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nCookie: {cookie}\r\nContent-Type: {media}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        bytes.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(bytes);
+    let (_, _, body) = http(port, &request).await?;
+    heard_from(&body)
+}
+
+/// Reads `/api/transcribe`'s answer: `{text}` or `{error}`.
+pub fn heard_from(body: &[u8]) -> Result<String, String> {
+    let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    match value.get("text").and_then(Value::as_str) {
+        Some(text) if !text.trim().is_empty() => Ok(text.trim().to_string()),
+        Some(_) => Err("nothing was heard in it".to_string()),
+        None => Err(value.get("error").and_then(Value::as_str).unwrap_or("ragon web did not transcribe it").to_string()),
+    }
+}
+
+/// The files `thread`'s agent changed since `since_ms` (`/api/ask/files`): (name, bytes).
+pub async fn made_files(port: u16, cookie: &str, thread: &str, since_ms: u64) -> Result<Vec<(String, u64)>, String> {
+    let request = format!("GET /api/ask/files?thread={}&since={since_ms} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n", form_escape(thread));
+    let (status, _, body) = http(port, request.as_bytes()).await?;
+    if status != 200 {
+        return Err(format!("ragon web did not list the thread's files (HTTP {status})"));
+    }
+    let value: Value = serde_json::from_slice(&body).map_err(|err| err.to_string())?;
+    Ok(made_from(&value))
+}
+
+/// Reads `/api/ask/files`' answer.
+pub fn made_from(value: &Value) -> Vec<(String, u64)> {
+    value
+        .get("files")
+        .and_then(Value::as_array)
+        .map(|files| files.iter().filter_map(|f| Some((f.get("name")?.as_str()?.to_string(), f.get("bytes")?.as_u64()?))).collect())
+        .unwrap_or_default()
+}
+
+/// One file of `thread`'s folder (`/api/ask/file`), which `ragon web` refuses at `/airgapped on`.
+pub async fn made_file(port: u16, cookie: &str, thread: &str, name: &str) -> Result<Vec<u8>, String> {
+    let request = format!(
+        "GET /api/ask/file?thread={}&name={} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n",
+        form_escape(thread),
+        form_escape(name)
+    );
+    let (status, _, body) = http(port, request.as_bytes()).await?;
+    if status == 200 {
+        return Ok(body);
+    }
+    let value: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    Err(value.get("error").and_then(Value::as_str).unwrap_or("ragon web refused it").to_string())
+}
+
+/// A JSON request to one of `ragon web`'s routes (Night Shift's, §19.7): GET, or POST with a body.
+pub async fn web_json(port: u16, cookie: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
+    let request = match body {
+        None => format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n"),
+        Some(body) => {
+            let body = body.to_string();
+            format!(
+                "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nCookie: {cookie}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        }
+    };
+    let (status, _, raw) = http(port, request.as_bytes()).await?;
+    let value: Value = serde_json::from_slice(&raw).map_err(|_| format!("ragon web answered HTTP {status} without JSON"))?;
+    if status == 200 {
+        Ok(value)
+    } else {
+        Err(value.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("ragon web refused (HTTP {status})")))
+    }
+}
+
+/// The chat settings of the user's configuration (`[chat]`), as `ragon web` reads them for the
+/// bridge, which cannot (`/api/chat/settings`; specs/DREAMFERENCE_RAGON_SIGNAL.md §19).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatSettings {
+    /// A question after this long a silence starts a new thread; None: never.
+    pub new_thread_after_ms: Option<u64>,
+    /// An answer's time, tool calls and one command's time (limits.rs); None: no limit.
+    pub answer_ms: Option<u64>,
+    pub tool_calls: Option<u32>,
+    pub command_ms: Option<u64>,
+    /// Whether Night Shift's morning report comes here (`[chat] night_report_to`; §19.7).
+    pub night_reports: bool,
+    /// Whether sync's notices come here (`[chat] sync_notices_to`; RAGON_SYNC §18.3).
+    pub sync_notices: bool,
+}
+
+impl Default for ChatSettings {
+    fn default() -> ChatSettings {
+        ChatSettings::from_json(&Value::Null)
+    }
+}
+
+impl ChatSettings {
+    /// `/api/chat/settings`' answer; a missing field keeps the bridge's default (`ragon web`'s
+    /// `chat_settings.rs` has the same defaults).
+    pub fn from_json(value: &Value) -> ChatSettings {
+        let millis = |key: &str, default_s: u64| match value.get(key).and_then(Value::as_u64) {
+            Some(0) => None,
+            Some(seconds) => Some(seconds * 1000),
+            None => Some(default_s * 1000),
+        };
+        ChatSettings {
+            new_thread_after_ms: millis("newThreadAfterSeconds", crate::bridge::NEW_THREAD_AFTER_MS / 1000),
+            answer_ms: millis("answerSeconds", 180),
+            command_ms: millis("commandSeconds", 60),
+            tool_calls: match value.get("toolCalls").and_then(Value::as_u64) {
+                Some(0) => None,
+                Some(n) => Some(n.min(10_000) as u32),
+                None => Some(25),
+            },
+            night_reports: value.get("nightReportTo").and_then(Value::as_array).map_or(true, |to| to.iter().any(|m| m.as_str() == Some("signal"))),
+            sync_notices: value.get("syncNoticesTo").and_then(Value::as_array).map_or(true, |to| to.iter().any(|m| m.as_str() == Some("signal"))),
+        }
+    }
+}
+
+pub async fn chat_settings(port: u16, cookie: &str) -> Result<ChatSettings, String> {
+    let request = format!("GET /api/chat/settings HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n");
+    let (status, _, body) = http(port, request.as_bytes()).await?;
+    if status != 200 {
+        return Err(format!("ragon web did not report the chat settings (HTTP {status})"));
+    }
+    let value: Value = serde_json::from_slice(&body).map_err(|err| err.to_string())?;
+    Ok(ChatSettings::from_json(&value))
+}
+
+/// The user-level air-gap level, as `ragon web` resolves it (`/api/airgapped`): true for `on`.
+pub async fn airgap_level(port: u16, cookie: &str) -> Result<bool, String> {
+    level_of(&airgapped(port, cookie, "/api/airgapped").await?)
+}
+
+/// One thread's air-gap level (`/api/airgapped?thread=<id>`), the strictest of its own, its
+/// folder's and the user's: Ok(true) at `on` (§11). An answer that does not name the thread, as the
+/// user-level one an older `ragon web` gives, is an error, so the caller refuses.
+pub async fn thread_airgap(port: u16, cookie: &str, thread: &str) -> Result<bool, String> {
+    if thread.is_empty() || !thread.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(format!("not a thread id: {thread:?}"));
+    }
+    let value = airgapped(port, cookie, &format!("/api/airgapped?thread={thread}")).await?;
+    if value.get("thread").and_then(Value::as_str) != Some(thread) {
+        return Err("ragon web did not report this thread's air-gap level".to_string());
+    }
+    level_of(&value)
+}
+
+async fn airgapped(port: u16, cookie: &str, path: &str) -> Result<Value, String> {
+    let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n");
+    let (status, _, body) = http(port, request.as_bytes()).await?;
+    if status != 200 {
+        return Err(format!("ragon web did not report the air-gap level (HTTP {status})"));
+    }
+    serde_json::from_slice(&body).map_err(|err| err.to_string())
+}
+
+fn level_of(value: &Value) -> Result<bool, String> {
+    match value.get("level").and_then(Value::as_str) {
+        Some("on") => Ok(true),
+        Some("off") => Ok(false),
+        other => Err(format!("unknown air-gap level {other:?}")),
+    }
+}
+
+type Socket = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
+type Sink = futures::stream::SplitSink<Socket, Message>;
+
+/// One bridge connection to `ragon web`.
+pub struct Connection {
+    sink: Sink,
+    next_call: u64,
+    next_request: u64,
+}
+
+/// What the reader task delivers.
+#[derive(Debug)]
+pub enum Incoming {
+    /// A protocol message from the app-server.
+    Message(Value),
+    /// The answer to one of the envelope's calls.
+    Answer { call: u64, error: Option<String> },
+    Closed,
+}
+
+impl Connection {
+    /// Opens `/ws` with the device cookie; the reader's frames arrive on the returned channel.
+    pub async fn open(port: u16, cookie: &str) -> Result<(Connection, tokio::sync::mpsc::UnboundedReceiver<Incoming>), String> {
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.map_err(|err| format!("ragon web is not answering on port {port}: {err}"))?;
+        let mut request = format!("ws://127.0.0.1:{port}/ws").into_client_request().map_err(|err| err.to_string())?;
+        let headers = request.headers_mut();
+        headers.insert(header::ORIGIN, HeaderValue::from_str(&format!("http://127.0.0.1:{port}")).map_err(|err| err.to_string())?);
+        headers.insert(header::COOKIE, HeaderValue::from_str(cookie).map_err(|err| err.to_string())?);
+        let (socket, _) = tokio_tungstenite::client_async(request, stream).await.map_err(|err| format!("ragon web refused the bridge: {err}"))?;
+        let (sink, mut stream) = socket.split();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(Ok(frame)) = stream.next().await {
+                let Message::Text(text) = frame else {
+                    if matches!(frame, Message::Close(_)) {
+                        break;
+                    }
+                    continue;
+                };
+                let Ok(value) = serde_json::from_str::<Value>(text.as_str()) else { continue };
+                if let Some(call) = value.get("answer").and_then(Value::as_u64) {
+                    let error = value.get("error").map(|e| e.as_str().map(str::to_string).unwrap_or_else(|| e.to_string()));
+                    let _ = tx.send(Incoming::Answer { call, error });
+                    continue;
+                }
+                match value.pointer("/event/channel").and_then(Value::as_str) {
+                    Some("work://message") => {
+                        let _ = tx.send(Incoming::Message(value["event"]["payload"].clone()));
+                    }
+                    Some("work://exit") => break,
+                    _ => {}
+                }
+            }
+            let _ = tx.send(Incoming::Closed);
+        });
+        Ok((Connection { sink, next_call: 0, next_request: 100 }, rx))
+    }
+
+    /// Sends one envelope call; returns its number (the answer arrives as [`Incoming::Answer`]).
+    pub async fn call(&mut self, message: Value) -> Result<u64, String> {
+        self.next_call += 1;
+        let call = self.next_call;
+        self.sink.send(Message::Text(json!({ "call": call, "message": message }).to_string().into())).await.map_err(|err| err.to_string())?;
+        Ok(call)
+    }
+
+    /// Sends one protocol message through `work/send`.
+    pub async fn send(&mut self, message: Value) -> Result<u64, String> {
+        self.call(json!({ "type": "work/send", "message": message })).await
+    }
+
+    /// Sends a request; returns its id, for the translator.
+    pub async fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.next_request += 1;
+        let id = json!(self.next_request);
+        self.send(json!({ "id": id, "method": method, "params": params })).await?;
+        Ok(id)
+    }
+}
+
+/// The opening of every connection: connect the tab to the app-server, `initialize`, `initialized`.
+pub fn handshake() -> Vec<Value> {
+    vec![
+        json!({ "type": "work/start" }),
+        json!({ "type": "work/send", "message": { "id": 1, "method": "initialize", "params": { "clientInfo": { "name": "ragon-signal", "title": "Ragon over Signal", "version": env!("CARGO_PKG_VERSION") } } } }),
+        json!({ "type": "work/send", "message": { "method": "initialized" } }),
+    ]
+}
+
+/// A turn's input: the text, and each image uploaded into the thread's folder.
+pub fn turn_input(text: &str, images: &[String]) -> Value {
+    let mut input = Vec::new();
+    if !text.trim().is_empty() {
+        input.push(json!({ "type": "text", "text": text.trim(), "text_elements": [] }));
+    }
+    for image in images {
+        input.push(json!({ "type": "localImage", "path": image }));
+    }
+    Value::Array(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn events(t: &mut Translator, message: Value) -> Vec<AgentEvent> {
+        t.read(&message).into_iter().filter_map(|x| if let Translated::Event(e) = x { Some(e) } else { None }).collect()
+    }
+
+    #[test]
+    fn sync_notices_come_here_unless_the_settings_leave_signal_out() {
+        assert!(ChatSettings::default().sync_notices);
+        assert!(ChatSettings::from_json(&json!({ "syncNoticesTo": ["signal", "matrix"] })).sync_notices);
+        assert!(!ChatSettings::from_json(&json!({ "syncNoticesTo": ["matrix"] })).sync_notices);
+        assert!(!ChatSettings::from_json(&json!({ "syncNoticesTo": [] })).sync_notices);
+    }
+
+    #[test]
+    fn thread_responses_name_the_thread_or_the_failure() {
+        let mut t = Translator::default();
+        t.expect(&json!(101), Pending::OpenThread);
+        assert_eq!(events(&mut t, json!({"id": 101, "result": {"thread": {"id": "th-1"}}})), vec![AgentEvent::ThreadReady { thread: "th-1".to_string() }]);
+        t.expect(&json!(102), Pending::OpenThread);
+        assert_eq!(events(&mut t, json!({"id": 102, "error": {"message": "no rollout"}})), vec![AgentEvent::ThreadFailed { error: "no rollout".to_string() }]);
+        // A response nobody waits for is nothing.
+        assert!(events(&mut t, json!({"id": 999, "result": {}})).is_empty());
+        t.expect(&json!(104), Pending::Steer { thread: "th-1".to_string(), text: "more".to_string() });
+        assert_eq!(
+            events(&mut t, json!({"id": 104, "error": {"message": "no active turn"}})),
+            vec![AgentEvent::SteerFailed { thread: "th-1".to_string(), text: "more".to_string() }]
+        );
+        t.expect(&json!(105), Pending::Steer { thread: "th-1".to_string(), text: "ok".to_string() });
+        assert!(events(&mut t, json!({"id": 105, "result": {}})).is_empty());
+        t.expect(&json!(103), Pending::StartTurn { thread: "th-1".to_string() });
+        assert_eq!(
+            events(&mut t, json!({"id": 103, "error": {"message": "busy"}})),
+            vec![AgentEvent::TurnCompleted { thread: "th-1".to_string(), error: Some("busy".to_string()) }]
+        );
+    }
+
+    #[test]
+    fn a_turn_streams_and_completes() {
+        let mut t = Translator::default();
+        assert_eq!(events(&mut t, json!({"method": "turn/started", "params": {"threadId": "a", "turn": {"id": "u"}}})), vec![AgentEvent::TurnStarted { thread: "a".to_string(), turn: "u".to_string() }]);
+        assert_eq!(
+            events(&mut t, json!({"method": "item/started", "params": {"threadId": "a", "item": {"type": "commandExecution", "id": "c1", "command": "ls -la"}}})),
+            vec![
+                AgentEvent::Activity { thread: "a".to_string(), text: "running `ls -la`".to_string() },
+                AgentEvent::ToolStarted { thread: "a".to_string(), item: "c1".to_string(), command: Some("ls -la".to_string()) },
+            ]
+        );
+        assert_eq!(
+            events(&mut t, json!({"method": "item/completed", "params": {"threadId": "a", "item": {"type": "commandExecution", "id": "c1"}}})),
+            vec![AgentEvent::ToolCompleted { thread: "a".to_string(), item: "c1".to_string() }]
+        );
+        assert_eq!(events(&mut t, json!({"method": "item/agentMessage/delta", "params": {"threadId": "a", "delta": "Hi"}})), vec![AgentEvent::Delta { thread: "a".to_string(), text: "Hi".to_string() }]);
+        assert_eq!(events(&mut t, json!({"method": "turn/completed", "params": {"threadId": "a", "turn": {"status": "completed"}}})), vec![AgentEvent::TurnCompleted { thread: "a".to_string(), error: None }]);
+    }
+
+    #[test]
+    fn the_web_commands_say_what_they_do() {
+        let started = |command: &str| json!({"threadId": "a", "item": {"type": "commandExecution", "id": "c", "command": command}});
+        assert_eq!(activity(&started("ragon-search --read \"birthplace of portugal\" -n 6")).as_deref(), Some("searching the web"));
+        assert_eq!(activity(&started("timeout 30 ragon-fetch 'https://example.org'")).as_deref(), Some("reading a page"));
+        assert_eq!(activity(&started("/bin/bash -lc \"ragon-search x\"")).as_deref(), Some("searching the web"));
+        assert_eq!(activity(&started("python3 calc.py")).as_deref(), Some("running `python3 calc.py`"));
+    }
+
+    #[test]
+    fn a_failed_turn_carries_its_error() {
+        let mut t = Translator::default();
+        events(&mut t, json!({"method": "error", "params": {"threadId": "a", "willRetry": true, "error": {"message": "retrying"}}}));
+        events(&mut t, json!({"method": "error", "params": {"threadId": "a", "willRetry": false, "error": {"message": "connection refused"}}}));
+        assert_eq!(
+            events(&mut t, json!({"method": "turn/completed", "params": {"threadId": "a", "turn": {"status": "failed"}}})),
+            vec![AgentEvent::TurnCompleted { thread: "a".to_string(), error: Some("connection refused".to_string()) }]
+        );
+        assert_eq!(
+            events(&mut t, json!({"method": "turn/completed", "params": {"threadId": "a", "turn": {"status": "interrupted"}}})),
+            vec![AgentEvent::TurnCompleted { thread: "a".to_string(), error: Some("interrupted".to_string()) }]
+        );
+    }
+
+    #[test]
+    fn approvals_are_the_owners_and_other_requests_are_declined() {
+        let mut t = Translator::default();
+        let approval = json!({"id": 7, "method": "item/commandExecution/requestApproval", "params": {"threadId": "a", "turnId": "u", "itemId": "i", "command": "rm -rf build", "cwd": "/x", "reason": "cleanup"}});
+        assert_eq!(
+            events(&mut t, approval),
+            vec![AgentEvent::Approval { id: json!(7), thread: "a".to_string(), kind: ApprovalKind::Command, command: Some("rm -rf build".to_string()), cwd: Some("/x".to_string()), reason: Some("cleanup".to_string()) }]
+        );
+        let other = t.read(&json!({"id": "e1", "method": "mcpServer/elicitation/request", "params": {"threadId": "a"}}));
+        assert!(matches!(&other[0], Translated::Respond(v) if v["id"] == json!("e1") && v["error"]["code"] == json!(-32601)));
+    }
+
+    #[test]
+    fn turn_input_adds_images_and_never_sends_empty_text() {
+        let input = turn_input("look", &["/a/x.jpg".to_string()]);
+        assert_eq!(input[0]["text"], json!("look"));
+        assert_eq!(input[1], json!({"type": "localImage", "path": "/a/x.jpg"}));
+        assert_eq!(turn_input("plain", &[]).as_array().unwrap().len(), 1);
+        // An image alone: no empty text item beside it.
+        assert_eq!(turn_input("  ", &["/a/x.jpg".to_string()]), json!([{"type": "localImage", "path": "/a/x.jpg"}]));
+    }
+
+    #[test]
+    fn chat_settings_come_from_ragon_web_with_the_bridges_defaults() {
+        assert_eq!(ChatSettings::from_json(&json!({"newThreadAfterSeconds": 7200})).new_thread_after_ms, Some(7_200_000));
+        assert_eq!(ChatSettings::from_json(&json!({"newThreadAfterSeconds": 0})).new_thread_after_ms, None);
+        assert_eq!(ChatSettings::from_json(&json!({})).new_thread_after_ms, Some(crate::bridge::NEW_THREAD_AFTER_MS));
+        let defaults = ChatSettings::default();
+        assert_eq!((defaults.answer_ms, defaults.tool_calls, defaults.command_ms), (Some(180_000), Some(25), Some(60_000)));
+        let set = ChatSettings::from_json(&json!({"answerSeconds": 60, "toolCalls": 0, "commandSeconds": 30}));
+        assert_eq!((set.answer_ms, set.tool_calls, set.command_ms), (Some(60_000), None, Some(30_000)));
+    }
+
+    #[test]
+    fn transcriptions_are_read_with_their_failures() {
+        assert_eq!(heard_from(br#"{"text":" hello there "}"#), Ok("hello there".to_string()));
+        assert_eq!(heard_from(br#"{"text":"  "}"#), Err("nothing was heard in it".to_string()));
+        assert_eq!(heard_from(br#"{"error":"Speech-to-text is not running on this machine: start it with `ragon-admin voice start`."}"#).unwrap_err(), "Speech-to-text is not running on this machine: start it with `ragon-admin voice start`.");
+        assert!(heard_from(b"<html>").is_err());
+    }
+
+    #[test]
+    fn upload_answers_are_read_old_and_new() {
+        assert_eq!(saved_from(r#"{"path":"/a/x.jpg","bytes":3}"#), Saved { path: "/a/x.jpg".to_string(), text: None, vision: false });
+        assert_eq!(
+            saved_from(r#"{"path":"/a/x.jpg","bytes":3,"text":"HEPA","vision":true}"#),
+            Saved { path: "/a/x.jpg".to_string(), text: Some("HEPA".to_string()), vision: true }
+        );
+    }
+
+    #[test]
+    fn form_values_are_escaped() {
+        assert_eq!(form_escape("a b&c=d/é"), "a%20b%26c%3Dd%2F%C3%A9");
+    }
+}

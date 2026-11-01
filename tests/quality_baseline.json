@@ -1,0 +1,1046 @@
+{
+ "counts": {
+  "dreamference/__init__.py": {
+   "D415": 1,
+   "PQ002": 1
+  },
+  "dreamference/audit/docs_egress_audit.py": {
+   "D205": 2,
+   "E501": 3,
+   "PLR2004": 1,
+   "PTH118": 12,
+   "T201": 11
+  },
+  "dreamference/audit/egress_audit.py": {
+   "BLE001": 1,
+   "C901": 3,
+   "D205": 7,
+   "E501": 6,
+   "PLR0912": 1,
+   "PLR0913": 2,
+   "PLR0915": 2,
+   "PLR1702": 2,
+   "PLR2004": 4,
+   "PTH100": 1,
+   "PTH118": 21,
+   "PTH119": 1,
+   "PTH120": 3,
+   "PTH208": 3,
+   "RUF001": 3,
+   "SIM115": 1,
+   "T201": 26
+  },
+  "dreamference/audit/egress_verdict.py": {
+   "D205": 1
+  },
+  "dreamference/audit/preview_page.py": {
+   "D105": 2,
+   "D107": 1,
+   "D205": 1,
+   "E501": 1,
+   "PLR2004": 1
+  },
+  "dreamference/audit/strace_parser.py": {
+   "C901": 1,
+   "PLR0912": 1,
+   "PLR2004": 20,
+   "PTH119": 1
+  },
+  "dreamference/audit/tui_session.py": {
+   "C901": 1,
+   "D205": 2,
+   "PLR1702": 3,
+   "PLR2004": 3,
+   "PTH118": 2,
+   "PTH207": 1,
+   "RUF001": 1
+  },
+  "dreamference/chat/desktop_installer.py": {
+   "D205": 2,
+   "E501": 1,
+   "PLR2004": 7,
+   "PTH111": 1,
+   "PTH113": 2,
+   "PTH117": 1,
+   "PTH118": 2,
+   "PTH123": 2,
+   "PTH208": 1,
+   "T201": 17
+  },
+  "dreamference/chat/desktop_runner.py": {
+   "D205": 3,
+   "PTH100": 1,
+   "PTH103": 2,
+   "PTH111": 3,
+   "PTH112": 3,
+   "PTH113": 2,
+   "PTH118": 6,
+   "PTH119": 1,
+   "PTH120": 3,
+   "PTH123": 3,
+   "T201": 22
+  },
+  "dreamference/chat/docker_bridge.py": {
+   "PLR2004": 1
+  },
+  "dreamference/chat/gmail_client.py": {
+   "PTH118": 1
+  },
+  "dreamference/chat/gmail_credentials.py": {
+   "PTH111": 1,
+   "PTH118": 1,
+   "T201": 1
+  },
+  "dreamference/chat/gmail_search_service.py": {
+   "BLE001": 8,
+   "C901": 4,
+   "D102": 2,
+   "D205": 1,
+   "D301": 1,
+   "E501": 1,
+   "PLR0911": 2,
+   "PLR0912": 1,
+   "PLR0915": 1,
+   "PLR1702": 9,
+   "PLR2004": 36,
+   "PTH107": 1,
+   "PTH118": 4,
+   "PTH123": 3,
+   "S110": 2
+  },
+  "dreamference/chat/image_search_mcp.py": {
+   "D205": 3,
+   "PLR2004": 8
+  },
+  "dreamference/chat/image_search_service.py": {
+   "ANN401": 7,
+   "BLE001": 11,
+   "C901": 2,
+   "D205": 4,
+   "E501": 1,
+   "N818": 1,
+   "PLR1702": 1,
+   "PLR2004": 10,
+   "PTH118": 3,
+   "PTH123": 3,
+   "S110": 1
+  },
+  "dreamference/chat/image_search_sidecar.py": {
+   "D205": 2,
+   "PTH111": 2,
+   "PTH118": 3,
+   "PTH208": 1
+  },
+  "dreamference/chat/matrix_homeserver.py": {
+   "C901": 1,
+   "D102": 5,
+   "D205": 3,
+   "E501": 1,
+   "PLR0911": 1,
+   "PLR0912": 1,
+   "PLR2004": 10,
+   "PTH111": 1,
+   "PTH118": 4,
+   "T201": 27
+  },
+  "dreamference/chat/searxng_sidecar.py": {
+   "D205": 3,
+   "PTH111": 1,
+   "T201": 4
+  },
+  "dreamference/chat/sidecar_network.py": {
+   "D205": 2,
+   "PLR2004": 1
+  },
+  "dreamference/chat/speech_sidecar.py": {
+   "D205": 3
+  },
+  "dreamference/cli/code_index_setup.py": {
+   "D205": 4,
+   "E501": 2,
+   "PLR0911": 1,
+   "PLR1702": 2,
+   "PLR2004": 3,
+   "PQ001": 1,
+   "PTH118": 19,
+   "PTH119": 1,
+   "PTH120": 6,
+   "RET504": 1
+  },
+  "dreamference/cli/dreamference_cli_controller.py": {
+   "BLE001": 18,
+   "C414": 1,
+   "C901": 6,
+   "D205": 4,
+   "E501": 26,
+   "E722": 1,
+   "F841": 1,
+   "PLR0912": 3,
+   "PLR0915": 5,
+   "PLR1702": 41,
+   "PLR2004": 137,
+   "PTH109": 1,
+   "PTH118": 1,
+   "S110": 13
+  },
+  "dreamference/cli/model_deep_inspector.py": {
+   "B905": 1,
+   "BLE001": 4,
+   "PLR2004": 3
+  },
+  "dreamference/config/__init__.py": {
+   "D104": 1
+  },
+  "dreamference/config/config_file_storage_manager.py": {
+   "BLE001": 1,
+   "PLR2004": 2,
+   "T201": 1
+  },
+  "dreamference/config/config_path_resolver.py": {
+   "D205": 1,
+   "D415": 1
+  },
+  "dreamference/config/dreamference_config.py": {
+   "ANN401": 2,
+   "C901": 2,
+   "E501": 1,
+   "PLR0912": 2,
+   "PLR0913": 1,
+   "PLR0915": 1,
+   "PLR2004": 2
+  },
+  "dreamference/config/proxy_bypass.py": {
+   "PLR2004": 1
+  },
+  "dreamference/context_engine/__init__.py": {
+   "D104": 1
+  },
+  "dreamference/context_engine/ast_symbol_extractor.py": {
+   "BLE001": 1,
+   "S110": 1
+  },
+  "dreamference/context_engine/context_engine.py": {
+   "BLE001": 2,
+   "D205": 1,
+   "E501": 1,
+   "PLR2004": 3
+  },
+  "dreamference/context_engine/embedding_calculator.py": {
+   "BLE001": 1,
+   "T201": 1
+  },
+  "dreamference/context_engine/sqlite_context_storage.py": {
+   "BLE001": 1,
+   "PLR1702": 1,
+   "S110": 1
+  },
+  "dreamference/context_engine/tfidf_calculator.py": {
+   "PLR1702": 1
+  },
+  "dreamference/hardware/hardware_manager.py": {
+   "BLE001": 2,
+   "PLR1702": 4,
+   "PLR2004": 3,
+   "PTH110": 1,
+   "PTH118": 5,
+   "PTH123": 3,
+   "PTH208": 1,
+   "S110": 2
+  },
+  "dreamference/hardware/model_downloader.py": {
+   "BLE001": 5,
+   "C901": 2,
+   "PLR0911": 1,
+   "PLR0912": 1,
+   "PLR0915": 1,
+   "PLR1702": 2,
+   "PLR2004": 2,
+   "RUF001": 1,
+   "S110": 2,
+   "T201": 23
+  },
+  "dreamference/mcp_server/code_index_search.py": {
+   "PTH109": 1,
+   "PTH118": 1
+  },
+  "dreamference/mcp_server/mcp_server.py": {
+   "ANN401": 2,
+   "BLE001": 1,
+   "C901": 1,
+   "PLR0911": 1,
+   "PLR2004": 13
+  },
+  "dreamference/mcp_server/web_tools.py": {
+   "PLR2004": 3
+  },
+  "dreamference/night_shift/__init__.py": {
+   "D205": 1
+  },
+  "dreamference/night_shift/night_shift_best_of_n.py": {
+   "ANN401": 2,
+   "BLE001": 1,
+   "D205": 2,
+   "PLR0913": 1,
+   "PLR2004": 6
+  },
+  "dreamference/night_shift/night_shift_chooser.py": {
+   "E501": 1,
+   "PLR2004": 3
+  },
+  "dreamference/night_shift/night_shift_host.py": {
+   "D205": 4,
+   "PLR2004": 6,
+   "PTH115": 1,
+   "PTH118": 1,
+   "PTH119": 4,
+   "RUF002": 1
+  },
+  "dreamference/night_shift/night_shift_index.py": {
+   "D205": 1,
+   "E501": 1,
+   "PLR2004": 2,
+   "PTH118": 1
+  },
+  "dreamference/night_shift/night_shift_queue.py": {
+   "ANN401": 2,
+   "D205": 1,
+   "PLR2004": 1,
+   "PTH111": 1
+  },
+  "dreamference/night_shift/night_shift_remote.py": {
+   "D205": 2,
+   "E501": 1,
+   "PLR0911": 1,
+   "PLR1702": 1,
+   "PLR2004": 6,
+   "T201": 7
+  },
+  "dreamference/night_shift/night_shift_report.py": {
+   "C901": 1,
+   "PLR2004": 4
+  },
+  "dreamference/night_shift/night_shift_runner.py": {
+   "ANN401": 1,
+   "C901": 1,
+   "D205": 4,
+   "PLR1702": 1,
+   "PLR2004": 1,
+   "T201": 6
+  },
+  "dreamference/night_shift/night_shift_scheduler.py": {
+   "D205": 4,
+   "PLR2004": 1,
+   "PTH111": 2,
+   "T201": 5
+  },
+  "dreamference/night_shift/night_shift_settings.py": {
+   "ANN401": 1,
+   "D205": 1
+  },
+  "dreamference/night_shift/night_shift_task_run.py": {
+   "ANN401": 1,
+   "BLE001": 2,
+   "C901": 2,
+   "D205": 3,
+   "E501": 1,
+   "PLR0911": 2,
+   "PLR0912": 1,
+   "PLR0913": 1,
+   "PLR1702": 3,
+   "PLR2004": 9,
+   "PTH120": 1
+  },
+  "dreamference/node/__init__.py": {
+   "D205": 1
+  },
+  "dreamference/node/fleet_askpass.py": {
+   "D205": 2,
+   "PLR1702": 1
+  },
+  "dreamference/node/fleet_bundle.py": {
+   "D205": 2,
+   "PLR2004": 2,
+   "T201": 5
+  },
+  "dreamference/node/fleet_model_plan.py": {
+   "PLR2004": 2
+  },
+  "dreamference/node/fleet_probe.py": {
+   "D205": 1,
+   "PLR2004": 10
+  },
+  "dreamference/node/fleet_session.py": {
+   "D205": 7,
+   "PLR2004": 5
+  },
+  "dreamference/node/node_advertiser.py": {
+   "BLE001": 1,
+   "D205": 13,
+   "E501": 1,
+   "PLR2004": 3,
+   "T201": 19
+  },
+  "dreamference/node/node_browser.py": {
+   "D205": 1,
+   "PLR2004": 5
+  },
+  "dreamference/node/node_identity.py": {
+   "D205": 2
+  },
+  "dreamference/node/node_job.py": {
+   "ANN401": 4,
+   "BLE001": 2,
+   "C901": 1,
+   "D205": 8,
+   "PLR0913": 1,
+   "PLR2004": 9,
+   "PTH111": 2,
+   "T201": 3
+  },
+  "dreamference/node/node_job_sender.py": {
+   "ANN401": 1,
+   "BLE001": 1,
+   "D205": 4,
+   "PLR0911": 1,
+   "PLR0913": 2,
+   "PLR2004": 5,
+   "T201": 20
+  },
+  "dreamference/node/node_lanes.py": {
+   "ANN401": 4,
+   "C901": 1,
+   "PLR2004": 1
+  },
+  "dreamference/node/node_model_sync.py": {
+   "ANN401": 1,
+   "D205": 1,
+   "PLR1702": 2,
+   "PLR2004": 1,
+   "T201": 11
+  },
+  "dreamference/node/node_pairing.py": {
+   "ANN401": 1,
+   "D205": 5,
+   "PLR2004": 5,
+   "T201": 20
+  },
+  "dreamference/node/node_prepare.py": {
+   "D205": 1,
+   "PLR2004": 4,
+   "T201": 11
+  },
+  "dreamference/node/node_provisioner.py": {
+   "D205": 1,
+   "PLR2004": 6,
+   "RUF003": 1,
+   "T201": 14
+  },
+  "dreamference/node/node_remote.py": {
+   "D205": 1,
+   "PLR2004": 2,
+   "T201": 1
+  },
+  "dreamference/node/node_serve.py": {
+   "C901": 1,
+   "D205": 4,
+   "PLR0911": 2,
+   "PLR2004": 18,
+   "T201": 16
+  },
+  "dreamference/node/node_service_file.py": {
+   "ANN401": 2,
+   "D205": 1,
+   "PLR2004": 2
+  },
+  "dreamference/node/node_settings.py": {
+   "D205": 6
+  },
+  "dreamference/runner/cline_installer.py": {
+   "BLE001": 2,
+   "S110": 1,
+   "T201": 6
+  },
+  "dreamference/runner/cline_runner.py": {
+   "BLE001": 1,
+   "D205": 1,
+   "PTH109": 2,
+   "T201": 11
+  },
+  "dreamference/runner/codex_branded_builder.py": {
+   "C901": 2,
+   "D205": 4,
+   "PLR1702": 2,
+   "PLR2004": 3,
+   "PTH100": 2,
+   "PTH111": 11,
+   "PTH118": 43,
+   "PTH119": 3,
+   "PTH120": 5,
+   "PTH208": 1,
+   "T201": 35
+  },
+  "dreamference/runner/codex_installer.py": {
+   "D205": 1,
+   "PTH111": 1,
+   "T201": 1
+  },
+  "dreamference/runner/codex_runner.py": {
+   "PTH118": 1,
+   "T201": 6
+  },
+  "dreamference/runner/codex_test_runner.py": {
+   "PLR0911": 1,
+   "PLR0913": 1,
+   "PLR1702": 3,
+   "PLR2004": 4,
+   "PTH111": 2,
+   "PTH118": 34,
+   "PTH119": 1,
+   "PTH120": 1,
+   "PTH208": 2,
+   "T201": 18
+  },
+  "dreamference/runner/continue_installer.py": {
+   "BLE001": 2,
+   "S110": 1,
+   "T201": 6
+  },
+  "dreamference/runner/continue_runner.py": {
+   "BLE001": 2,
+   "D205": 1,
+   "PTH109": 1,
+   "S110": 1,
+   "T201": 5
+  },
+  "dreamference/runner/docs_index_setup.py": {
+   "B007": 1,
+   "E501": 2,
+   "PLR1702": 1,
+   "PTH118": 7,
+   "PTH119": 1,
+   "PTH120": 3,
+   "T201": 1
+  },
+  "dreamference/runner/openhands_installer.py": {
+   "BLE001": 3,
+   "T201": 4
+  },
+  "dreamference/runner/openhands_runner.py": {
+   "BLE001": 1,
+   "D205": 1,
+   "PTH109": 1,
+   "T201": 6
+  },
+  "dreamference/runner/vllm_readiness_waiter.py": {
+   "BLE001": 1,
+   "PLR2004": 2,
+   "T201": 6
+  },
+  "dreamference/swe_bench/swe_bench_arm_smoke.py": {
+   "D205": 1,
+   "PLR0911": 1,
+   "PLR2004": 4,
+   "T201": 2
+  },
+  "dreamference/swe_bench/swe_bench_code_index.py": {
+   "D205": 6,
+   "PLR2004": 5,
+   "PTH118": 1,
+   "PTH119": 2,
+   "PTH120": 1,
+   "T201": 8
+  },
+  "dreamference/swe_bench/swe_bench_command.py": {
+   "ANN401": 1,
+   "D205": 1,
+   "E501": 2,
+   "PLR0911": 1,
+   "PLR2004": 8,
+   "T201": 36
+  },
+  "dreamference/swe_bench/swe_bench_evaluator.py": {
+   "C901": 2,
+   "D205": 2,
+   "PLR0912": 1,
+   "PLR0915": 1,
+   "PLR2004": 2,
+   "T201": 2
+  },
+  "dreamference/swe_bench/swe_bench_gate_hold.py": {
+   "ANN401": 1,
+   "BLE001": 1,
+   "D105": 2,
+   "D205": 5,
+   "PLR2004": 2,
+   "S110": 1,
+   "SIM105": 1
+  },
+  "dreamference/swe_bench/swe_bench_harness.py": {
+   "D205": 8,
+   "PLR0913": 1,
+   "PLR2004": 3,
+   "T201": 4
+  },
+  "dreamference/swe_bench/swe_bench_hooks.py": {
+   "D205": 3,
+   "PLR2004": 2
+  },
+  "dreamference/swe_bench/swe_bench_images.py": {
+   "D205": 7,
+   "T201": 1
+  },
+  "dreamference/swe_bench/swe_bench_instance_run.py": {
+   "ANN401": 1,
+   "BLE001": 1,
+   "C901": 3,
+   "D205": 6,
+   "E501": 1,
+   "PLR0911": 1,
+   "PLR0912": 2,
+   "PLR0913": 1,
+   "PLR0915": 1,
+   "PLR1702": 13,
+   "PLR2004": 17
+  },
+  "dreamference/swe_bench/swe_bench_issue_gate.py": {
+   "ANN401": 1,
+   "BLE001": 2,
+   "C901": 2,
+   "PLR0911": 1,
+   "PLR1702": 5,
+   "PLR2004": 21,
+   "PTH118": 5,
+   "PTH119": 1,
+   "PTH206": 1,
+   "UP006": 22,
+   "UP035": 2,
+   "UP045": 7
+  },
+  "dreamference/swe_bench/swe_bench_issue_targets.py": {
+   "C901": 3,
+   "D205": 6,
+   "E501": 1,
+   "PLR0912": 1,
+   "PLR0915": 1,
+   "PLR1702": 1,
+   "PLR2004": 12
+  },
+  "dreamference/swe_bench/swe_bench_name_stripper.py": {
+   "D205": 2,
+   "PLR2004": 8
+  },
+  "dreamference/swe_bench/swe_bench_patch_filter.py": {
+   "D205": 4,
+   "PLR2004": 1
+  },
+  "dreamference/swe_bench/swe_bench_relay.py": {
+   "D205": 2,
+   "PLR2004": 1
+  },
+  "dreamference/swe_bench/swe_bench_report.py": {
+   "ANN401": 11,
+   "C901": 3,
+   "D205": 5,
+   "E501": 1,
+   "PLR2004": 20
+  },
+  "dreamference/swe_bench/swe_bench_run_store.py": {
+   "C901": 1,
+   "D205": 15,
+   "D415": 1,
+   "PLR2004": 8
+  },
+  "dreamference/swe_bench/swe_bench_runner.py": {
+   "ANN401": 3,
+   "BLE001": 1,
+   "C901": 2,
+   "D205": 9,
+   "PLR0911": 1,
+   "PLR0912": 2,
+   "PLR0915": 2,
+   "PLR1702": 15,
+   "PLR2004": 6,
+   "T201": 33
+  },
+  "dreamference/swe_bench/swe_bench_runtime.py": {
+   "D205": 4,
+   "PLR2004": 2,
+   "PTH118": 1,
+   "PTH119": 3,
+   "PTH120": 1,
+   "T201": 1
+  },
+  "dreamference/swe_bench/swe_bench_settings.py": {
+   "D205": 3,
+   "PTH111": 2
+  },
+  "dreamference/vllm_server/__init__.py": {
+   "D104": 1
+  },
+  "dreamference/vllm_server/chat_template_patcher.py": {
+   "PTH111": 1,
+   "T201": 1
+  },
+  "dreamference/vllm_server/diagnostics.py": {
+   "BLE001": 4,
+   "C901": 1,
+   "D100": 1,
+   "D102": 1,
+   "D107": 1,
+   "PLR0912": 1,
+   "PLR0915": 1,
+   "PLR1702": 4,
+   "PLR2004": 6,
+   "PTH123": 2,
+   "S110": 4
+  },
+  "dreamference/vllm_server/diffusion_openai_service.py": {
+   "ANN401": 8,
+   "BLE001": 3,
+   "C901": 1,
+   "PLR0913": 1,
+   "PLR1702": 2,
+   "PLR2004": 4,
+   "PTH123": 1,
+   "T201": 2
+  },
+  "dreamference/vllm_server/diffusion_server_manager.py": {
+   "BLE001": 2,
+   "PLR2004": 2,
+   "T201": 5
+  },
+  "dreamference/vllm_server/host_safety_setup.py": {
+   "ANN401": 2,
+   "PLR1702": 3,
+   "PLR2004": 12,
+   "PTH110": 2,
+   "PTH119": 1,
+   "PTH123": 4,
+   "PTH202": 1,
+   "T201": 4
+  },
+  "dreamference/vllm_server/model_gate.py": {
+   "PLR2004": 4,
+   "PTH111": 1,
+   "T201": 2
+  },
+  "dreamference/vllm_server/model_gate_service.py": {
+   "ANN401": 1,
+   "C901": 2,
+   "PLR0912": 1,
+   "PLR1702": 2,
+   "PLR2004": 18,
+   "PTH118": 2,
+   "RUF046": 2,
+   "T201": 1
+  },
+  "dreamference/vllm_server/model_loading_monitor.py": {
+   "BLE001": 2,
+   "PLR2004": 4,
+   "S110": 1,
+   "T201": 4
+  },
+  "dreamference/vllm_server/psi_watchdog.py": {
+   "BLE001": 1,
+   "PLR1702": 3,
+   "PLR2004": 3,
+   "PTH110": 1,
+   "PTH123": 2,
+   "T201": 1
+  },
+  "dreamference/vllm_server/sandbox_prerequisite.py": {
+   "C901": 1,
+   "PLR0911": 1,
+   "PLR2004": 6,
+   "PTH111": 2,
+   "PTH123": 1,
+   "T201": 10
+  },
+  "dreamference/vllm_server/sglang_launch_builder.py": {
+   "PLR0913": 1,
+   "PLR2004": 1
+  },
+  "dreamference/vllm_server/tool_call_canary.py": {
+   "BLE001": 1,
+   "PLR0911": 1,
+   "PLR2004": 6
+  },
+  "dreamference/vllm_server/vllm_log_streamer.py": {
+   "ANN401": 2,
+   "BLE001": 1,
+   "S110": 1
+  },
+  "dreamference/vllm_server/vllm_server_manager.py": {
+   "ANN401": 3,
+   "BLE001": 12,
+   "C901": 3,
+   "PLR0911": 1,
+   "PLR0912": 2,
+   "PLR0913": 2,
+   "PLR0915": 2,
+   "PLR1702": 6,
+   "PLR2004": 27,
+   "PTH103": 2,
+   "PTH111": 2,
+   "PTH119": 2,
+   "PTH123": 4,
+   "PTH208": 1,
+   "RET508": 1,
+   "S110": 3,
+   "T201": 33,
+   "UP031": 1
+  },
+  "dreamference/vllm_server/vllm_startup_monitor.py": {
+   "BLE001": 1,
+   "PLR1702": 1,
+   "PTH123": 1,
+   "T201": 1
+  },
+  "dreamference/vllm_server/wifi_power_save.py": {
+   "PLR2004": 5
+  },
+  "dreamference/web_canvas.py": {
+   "A002": 1,
+   "D100": 1,
+   "D101": 1,
+   "D102": 2,
+   "E501": 2,
+   "PLR2004": 1,
+   "T201": 1,
+   "W291": 1,
+   "W293": 1
+  },
+  "tests/conftest.py": {
+   "C408": 3,
+   "D205": 1,
+   "PTH100": 1,
+   "PTH111": 1,
+   "PTH118": 2,
+   "PTH119": 6,
+   "PTH120": 1
+  },
+  "tests/test_admin_reference.py": {
+   "PTH100": 1,
+   "PTH118": 2,
+   "PTH120": 2
+  },
+  "tests/test_airgapped.py": {
+   "D205": 1
+  },
+  "tests/test_cli_entry_points.py": {
+   "SIM115": 1
+  },
+  "tests/test_code_index.py": {
+   "D205": 1,
+   "PTH115": 3,
+   "PTH118": 1,
+   "PTH211": 1
+  },
+  "tests/test_codex_branded_builder.py": {
+   "PTH115": 6,
+   "PTH118": 9,
+   "PTH119": 1,
+   "SIM115": 2
+  },
+  "tests/test_codex_test_runner.py": {
+   "B007": 1,
+   "PTH116": 1,
+   "PTH118": 6,
+   "PTH119": 2,
+   "PTH120": 2,
+   "PTH207": 2,
+   "PTH208": 1,
+   "RUF001": 2
+  },
+  "tests/test_conftest_guards.py": {
+   "PTH118": 7,
+   "RUF043": 1
+  },
+  "tests/test_context_budget_replay.py": {
+   "PTH100": 1,
+   "PTH118": 1,
+   "PTH120": 2
+  },
+  "tests/test_desktop.py": {
+   "D205": 1,
+   "PTH100": 1,
+   "PTH118": 2
+  },
+  "tests/test_desktop_parity.py": {
+   "PLR1702": 1
+  },
+  "tests/test_desktop_work.py": {
+   "D205": 1
+  },
+  "tests/test_diffusion_server.py": {
+   "N806": 3
+  },
+  "tests/test_diffusion_switched_off.py": {
+   "D205": 1
+  },
+  "tests/test_docs_index.py": {
+   "D205": 1,
+   "E501": 1,
+   "PTH118": 2
+  },
+  "tests/test_egress_audit.py": {
+   "D205": 1,
+   "E501": 7,
+   "PTH100": 1,
+   "PTH111": 2,
+   "PTH118": 7,
+   "PTH119": 2,
+   "PTH120": 3,
+   "RUF001": 1
+  },
+  "tests/test_fleet_provision.py": {
+   "PTH116": 2,
+   "RUF012": 2
+  },
+  "tests/test_image_search_service.py": {
+   "E741": 6
+  },
+  "tests/test_image_search_sidecar.py": {
+   "B023": 1,
+   "D205": 1
+  },
+  "tests/test_matrix_homeserver.py": {
+   "C901": 1,
+   "D205": 1,
+   "PTH116": 2,
+   "PTH118": 2,
+   "PTH208": 1,
+   "SIM115": 6
+  },
+  "tests/test_model_gate.py": {
+   "D205": 1,
+   "PLR1702": 1,
+   "RUF012": 1
+  },
+  "tests/test_night_shift.py": {
+   "D205": 1,
+   "PTH111": 2,
+   "PTH115": 1,
+   "RUF012": 4
+  },
+  "tests/test_night_shift_best_of_n.py": {
+   "F811": 2,
+   "RET503": 1
+  },
+  "tests/test_night_shift_compaction.py": {
+   "D205": 1,
+   "F811": 7
+  },
+  "tests/test_node.py": {
+   "E501": 5,
+   "PTH111": 1,
+   "RUF043": 1,
+   "SIM115": 1
+  },
+  "tests/test_ragon_privacy.py": {
+   "PTH111": 1,
+   "PTH118": 2,
+   "PTH120": 1,
+   "SIM115": 1
+  },
+  "tests/test_ragon_prompt.py": {
+   "D205": 1
+  },
+  "tests/test_ragon_slash_commands.py": {
+   "C901": 1,
+   "D205": 2,
+   "PTH119": 1,
+   "RUF001": 3
+  },
+  "tests/test_refine.py": {
+   "D205": 1
+  },
+  "tests/test_release_install.py": {
+   "D205": 4,
+   "E501": 4,
+   "PLR0913": 1,
+   "PTH115": 1,
+   "RET503": 1
+  },
+  "tests/test_release_notes.py": {
+   "PTH100": 1,
+   "PTH118": 1,
+   "PTH120": 2
+  },
+  "tests/test_runner.py": {
+   "PTH109": 1
+  },
+  "tests/test_sidecar_network.py": {
+   "PLR0911": 1
+  },
+  "tests/test_skills.py": {
+   "D205": 1
+  },
+  "tests/test_swe_bench.py": {
+   "B018": 1,
+   "C901": 2,
+   "D205": 1,
+   "E501": 3,
+   "PLR0911": 2,
+   "PLR0912": 2,
+   "PLR0915": 1,
+   "RUF012": 1,
+   "RUF043": 1
+  },
+  "tests/test_swe_bench_best_of.py": {
+   "PTH100": 1,
+   "PTH118": 1,
+   "PTH120": 2
+  },
+  "tests/test_swe_bench_chooser.py": {
+   "PTH100": 1,
+   "PTH118": 1,
+   "PTH120": 2
+  },
+  "tests/test_swe_bench_chooser_v2.py": {
+   "C901": 1,
+   "D205": 3,
+   "E731": 3,
+   "PLR0911": 1,
+   "PTH100": 1,
+   "PTH118": 1,
+   "PTH120": 3,
+   "RET503": 1,
+   "RUF005": 3,
+   "RUF015": 1
+  },
+  "tests/test_swe_bench_fresh.py": {
+   "PLR0913": 1,
+   "PTH100": 1,
+   "PTH118": 1,
+   "PTH120": 2
+  },
+  "tests/test_swe_bench_night_script.py": {
+   "E501": 1,
+   "PTH100": 1,
+   "PTH118": 1,
+   "PTH120": 2
+  },
+  "tests/test_turn_end_compaction_bench.py": {
+   "PLR0913": 2
+  },
+  "tests/test_vllm_server.py": {
+   "ERA001": 1,
+   "PTH111": 1
+  },
+  "tests/test_web_commands.py": {
+   "PTH100": 1,
+   "PTH118": 2,
+   "PTH120": 2
+  },
+  "tests/test_wifi_power_save.py": {
+   "D205": 1,
+   "E501": 1
+  },
+  "tests/test_windows_installer.py": {
+   "D205": 1
+  }
+ },
+ "ruff": "0.16.10",
+ "total": 2589
+}

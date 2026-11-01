@@ -1,0 +1,1647 @@
+//! Finding the Ragon node (specs/DREAMFERENCE_RAGON_NODE.md §5.3, §6).
+//!
+//! Before the client/server split the launcher talked to `localhost:8000` unless told otherwise.
+//! It now resolves where the model server is through tiers, the first that yields a host winning:
+//!
+//! 1. `DREAMFERENCE_VLLM_HOST`, then `vllm_host` in a configuration file: "I know where it is";
+//! 2. `RAGON_NODE=<name>`: one node, for one command;
+//! 3. this machine is a node (it has `~/.config/dreamference/node-id`): loopback, and no browse;
+//! 3a. the remembered node's overlay name (`ragon-<id>.<domain>`, REMOTE_ACCESS §5), when
+//!    NetBird's client says it is connected to management and the name resolves: no browse, and
+//!    it works off the LAN. The name carries the id, so it can only be that node;
+//! 4. the node remembered in `$CODEX_HOME/node.json`, found again on the network **by its id**, so
+//!    an address change costs nothing; its last address is tried only when a browse returns
+//!    nothing at all;
+//! 5. a browse of `_ragon-node._tcp`: one node is used and remembered, several are a question
+//!    unless only one of them serves a coding model, or only one of those is not stopped.
+//!
+//! When a browse misses (nothing answered, the remembered node did not, or the pinned one is not
+//! there), a Linux client whose own Wi-Fi saves power gets one more line saying so, with the
+//! commands that turn it off: power saving loses most of the multicast a browse is (measured).
+//! It is a hint, never a failure, and `ragon` runs none of it
+//! (`ragon_node_locator::wifi_power_save_hint`).
+//!
+//! A node other than the remembered one is never adopted silently: prompts and source code go to
+//! whichever node is chosen. `ragon node list|use|forget` is the same logic from a shell.
+//!
+//! Only this module browses. `ragon-search` and the others read `node.json` through the
+//! `ragon-node-locator` crate, so they need no multicast and work inside the sandbox.
+
+use std::io::IsTerminal;
+use std::io::Write;
+use std::net::IpAddr;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
+use std::time::Instant;
+
+use anyhow::bail;
+pub use ragon_node_locator::Node;
+use ragon_node_locator as locator;
+
+/// How long a browse may take when nothing answers.
+const BROWSE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long a browse for one node (remembered, or named) may take before that node answers. The
+/// browse sends its query at 0, 1 and 3 s (`mdns-sd` doubles the interval), so this is one query
+/// more than [`BROWSE_TIMEOUT`] allows: on the owner's desktop, on Wi-Fi with power saving, the
+/// remembered node missed a 2 s browse in five of ten runs, each then saved only by
+/// its last address. The browse still ends as soon as the node answers.
+const WANTED_TIMEOUT: Duration = Duration::from_millis(4500);
+
+/// How long a browse may take: longer when it waits for one node.
+fn browse_timeout(wanted: Option<&Node>) -> Duration {
+    match wanted {
+        Some(node) if !node.node.is_empty() || !node.name.trim().is_empty() => WANTED_TIMEOUT,
+        _ => BROWSE_TIMEOUT,
+    }
+}
+
+/// How long to keep listening after the first answer, for a second node or a better address.
+/// When a node is remembered, only its own answer starts this (see [`after_answer`]).
+const SETTLE: Duration = Duration::from_millis(1500);
+
+/// What a browse does after an answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Listen {
+    /// Stop now: the remembered node answered where it is remembered.
+    Stop,
+    /// Keep listening for [`SETTLE`] after the first such answer, then stop.
+    Settle,
+    /// Keep listening until the browse's deadline.
+    Deadline,
+}
+
+/// Decides, after each answer, how much longer the browse listens. With no node wanted, the first
+/// answer from a node that is [`serving`] starts [`SETTLE`]. With one wanted, another node's answer starts nothing: on Wi-Fi the
+/// wanted node often answers well after another one, and settling on the first answer declared it
+/// gone (a client on the owner's desktop, with a second, stopped node advertised: two of
+/// four `ragon exec` runs said the remembered node was not on the network, and `ragon node use
+/// <name>` said there was no such node). The wanted node is the remembered one, by its id, or, with
+/// no id, the one named by `RAGON_NODE` or `ragon node use` (its name, address or id, as
+/// [`matches`] reads them).
+///
+/// With nothing wanted, a node whose model server is stopped, or one without a coding model,
+/// starts nothing either: a client with nothing remembered would otherwise end the browse with
+/// only such a node and adopt it (the owner keeps a second node advertised with its model server
+/// usually stopped).
+fn after_answer(wanted: Option<&Node>, found: &[Advert]) -> Listen {
+    let any_serving = || if found.iter().any(serving) { Listen::Settle } else { Listen::Deadline };
+    let Some(wanted) = wanted else {
+        return any_serving();
+    };
+    if wanted.node.is_empty() {
+        if wanted.name.trim().is_empty() {
+            return any_serving();
+        }
+        return if found.iter().any(|seen| matches(seen, &wanted.name)) { Listen::Stop } else { Listen::Deadline };
+    }
+    let mut same_id = found.iter().filter(|seen| seen.node.node == wanted.node).peekable();
+    if same_id.peek().is_none() {
+        Listen::Deadline
+    } else if same_id.any(|seen| seen.addresses.contains(&wanted.address)) {
+        Listen::Stop
+    } else {
+        Listen::Settle
+    }
+}
+
+/// Whether a node offers a coding model that is not advertised as stopped: the only kind of node
+/// a client may end up using without being told which.
+fn serving(advert: &Advert) -> bool {
+    advert.main && advert.state != "stopped"
+}
+
+/// The node a name stands for while a browse looks for it: no id, so [`after_answer`] matches the name.
+fn named(name: &str) -> Node {
+    Node { name: name.trim().to_string(), ..Node::default() }
+}
+
+/// One command's choice of node, by name, address or id.
+pub const PIN_ENV: &str = "RAGON_NODE";
+
+const USAGE: &str = "Usage: ragon node [list [--json]] | ragon node use <name|address> | ragon node forget\n       \
+                     ragon node remote join --code <8 digits>   (remote access, on the node's LAN)";
+
+/// What a node advertises: where it is, and the records that are not kept in `node.json`.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Advert {
+    pub node: Node,
+    /// Every usable address the node answered on, best first; `node.address` is the first, or
+    /// the remembered one when the node still answers there.
+    pub addresses: Vec<String>,
+    /// The advertised contract version; a higher one than [`locator::PROTO`] is refused.
+    pub proto: u32,
+    /// `stopped`, `loading` or `ready`; empty when the node does not say.
+    pub state: String,
+    /// Whether the node's model is one a coding client can use.
+    pub main: bool,
+}
+
+/// Something that can browse the local network for nodes. The real one is [`MdnsBrowser`]; the
+/// tests use a list.
+pub trait Browser {
+    /// Returns the nodes that answered. With `wanted` set (the remembered node) it may stop as
+    /// soon as that node answers on its remembered address.
+    fn browse(&self, wanted: Option<&Node>) -> Vec<Advert>;
+}
+
+/// What the tiers are decided from.
+#[derive(Clone, Debug, Default)]
+pub struct Inputs {
+    /// `DREAMFERENCE_VLLM_HOST`, then `vllm_host` in a configuration file.
+    pub configured: Option<String>,
+    /// `RAGON_NODE`.
+    pub pinned: Option<String>,
+    pub is_node: bool,
+    pub remembered: Option<Node>,
+    /// Whether the remembered node's overlay name answers: NetBird's client is connected and the
+    /// name resolves. Checked only when the node has one.
+    pub overlay: bool,
+}
+
+/// Where the tiers ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Resolution {
+    /// A host given by configuration, or loopback on a node. Nothing was browsed.
+    Host(String),
+    /// A node that answered a browse.
+    Found { advert: Advert, remember: bool, note: Option<String> },
+    /// The remembered node, by its last address, because no browse reached it.
+    LastAddress { node: Node, note: Option<String> },
+    /// The remembered node at its overlay name (remote access). Nothing was browsed.
+    Overlay { node: Node },
+    /// Several nodes and no way to choose without asking; `gone` names a remembered node that
+    /// did not answer while others did.
+    Choose { adverts: Vec<Advert>, gone: Option<String> },
+    /// No node answered and none is remembered.
+    NoneFound,
+    /// A node was named that cannot be used; the text says why.
+    Refused(String),
+}
+
+/// Runs the tiers.
+pub fn resolve(inputs: &Inputs, browser: &dyn Browser) -> Resolution {
+    if let Some(host) = inputs.configured.as_deref().filter(|host| !host.trim().is_empty()) {
+        return Resolution::Host(host.to_string());
+    }
+    if let Some(name) = inputs.pinned.as_deref().filter(|name| !name.trim().is_empty()) {
+        let found = browser.browse(Some(&named(name)));
+        return match the_one(&found, name) {
+            Ok(Some(advert)) => checked(advert.clone(), false, None),
+            Ok(None) => Resolution::Refused(format!(
+                "{PIN_ENV}={name}: no such node on this network.{}",
+                listing(&found, None)
+            )),
+            Err(message) => Resolution::Refused(format!("{PIN_ENV}={message}")),
+        };
+    }
+    if inputs.is_node {
+        return Resolution::Host(crate::DEFAULT_VLLM_HOST.to_string());
+    }
+    if let Some(remembered) = inputs.remembered.as_ref().filter(|node| inputs.overlay && node.overlay_name_is_its_own()) {
+        return Resolution::Overlay { node: remembered.via_overlay() };
+    }
+    if let Some(remembered) = &inputs.remembered {
+        // Set by address and never seen in a browse: there is no id to look for.
+        if remembered.node.is_empty() {
+            return Resolution::LastAddress { node: remembered.clone(), note: None };
+        }
+        let found = browser.browse(Some(remembered));
+        // An id is only what an advert says, and anything on the network can say it. Two adverts
+        // with the remembered id are therefore a question, unless one of them is at the address
+        // the node was remembered at (security review).
+        let same_id: Vec<&Advert> = found.iter().filter(|advert| advert.node.node == remembered.node).collect();
+        let at_remembered = same_id
+            .iter()
+            .find(|advert| advert.addresses.iter().any(|address| *address == remembered.address))
+            .copied();
+        if same_id.len() > 1 && at_remembered.is_none() {
+            return Resolution::Choose { adverts: found, gone: Some(label(remembered).to_string()) };
+        }
+        if let Some(advert) = at_remembered.or_else(|| same_id.first().copied()) {
+            // A node with several addresses (two interfaces, or seen from its own machine) keeps
+            // the one that is remembered for as long as it answers there: the address changes,
+            // and the line that says so appears, only when the node has really moved.
+            let mut advert = advert.clone();
+            if advert.addresses.iter().any(|address| *address == remembered.address) {
+                advert.node.address = remembered.address.clone();
+            }
+            let note = (advert.node.address != remembered.address).then(|| {
+                format!("Node {} is now at {}.", label(&advert.node), advert.node.address)
+            });
+            return checked(advert, true, note);
+        }
+        // Nothing answered, or only nodes whose model server is stopped: nothing to choose
+        // between, so the remembered node's last address is tried, as when the browse is silent.
+        if !found.iter().any(serving) {
+            return Resolution::LastAddress {
+                node: remembered.clone(),
+                note: Some(format!(
+                    "Node {} did not answer a browse of this network; trying its last address, {}.",
+                    label(remembered),
+                    remembered.address
+                )),
+            };
+        }
+        return Resolution::Choose { adverts: found, gone: Some(label(remembered).to_string()) };
+    }
+    let found = browser.browse(None);
+    let chosen = match found.as_slice() {
+        [] => return Resolution::NoneFound,
+        [only] => only,
+        several => {
+            // Two Sparks, one with a coding model and one with speech or embeddings, need no
+            // answer from anyone; two that both serve a coding model need one, once. Nor do two
+            // coding nodes of which only one has its model server up: a stopped one can serve
+            // nothing, and counting it made a client that remembers no node (the desktop app on
+            // the owner's desktop) refuse to start.
+            let mut main = several.iter().filter(|advert| advert.main);
+            let mut up = several.iter().filter(|advert| serving(advert));
+            match (main.next(), main.next(), up.next(), up.next()) {
+                (Some(only), None, _, _) => only,
+                (_, _, Some(only), None) => only,
+                _ => return Resolution::Choose { adverts: found, gone: None },
+            }
+        }
+    };
+    // A node advertised as stopped is used, since it is the only one, but not remembered: once its
+    // model server is up, or another node's, the next browse decides again.
+    let remember = chosen.state != "stopped";
+    let note = remember.then(|| {
+        format!(
+            "Using Ragon node {} at {} (remembered; `ragon node list` shows every node).",
+            label(&chosen.node),
+            chosen.node.address
+        )
+    });
+    checked(chosen.clone(), remember, note)
+}
+
+/// Whether the tiers ended because a browse did not find the node: nothing answered and nothing
+/// is remembered, the remembered node did not answer (its last address is tried), or the node
+/// named in [`PIN_ENV`] is not among those that did. Those are the ends a lossy network explains,
+/// so they are the ones [`wifi_hint`] is read for; a configured host, a node, or a node set by
+/// address never browsed.
+pub fn browse_missed(resolution: &Resolution) -> bool {
+    match resolution {
+        Resolution::NoneFound => true,
+        Resolution::LastAddress { note, .. } => note.is_some(),
+        Resolution::Refused(message) => message.starts_with(&format!("{PIN_ENV}=")),
+        _ => false,
+    }
+}
+
+/// The Wi-Fi power-saving hint for a browse that missed (Linux, NetworkManager, a Wi-Fi
+/// connection that saves power), or `None`. It reads nmcli and iw; it never fails and never runs
+/// anything as root.
+fn wifi_hint(missed: bool) -> Option<String> {
+    if missed { locator::wifi_power_save_hint() } else { None }
+}
+
+/// A message with the hint, if any, as its last line.
+pub fn with_hint(message: String, hint: Option<String>) -> String {
+    match hint {
+        Some(hint) => format!("{message}\n{hint}"),
+        None => message,
+    }
+}
+
+/// Refuses a node that speaks a newer contract than this client knows.
+fn checked(advert: Advert, remember: bool, note: Option<String>) -> Resolution {
+    if advert.proto > locator::PROTO {
+        return Resolution::Refused(format!(
+            "Node {} speaks a newer protocol ({}) than this ragon ({}). Update this machine: ragon update",
+            label(&advert.node),
+            advert.proto,
+            locator::PROTO
+        ));
+    }
+    Resolution::Found { advert, remember, note }
+}
+
+/// Whether `name` names this node: its name, its address or its id (or a prefix of the id of at
+/// least four characters), ignoring case.
+pub fn matches(advert: &Advert, name: &str) -> bool {
+    let name = name.trim().to_lowercase();
+    let node = &advert.node;
+    node.name.to_lowercase() == name
+        || node.name.to_lowercase() == name.trim_end_matches(".local")
+        || node.address.to_lowercase() == name
+        || (name.len() >= 4 && !node.node.is_empty() && node.node.to_lowercase().starts_with(&name))
+}
+
+fn label(node: &Node) -> &str {
+    if node.name.is_empty() { &node.address } else { &node.name }
+}
+
+/// The one advert `name` picks out. Several nodes answering to one name, as a second instance
+/// claiming a node's id or name would, are listed with their ids rather than one taken at random.
+fn the_one<'a>(adverts: &'a [Advert], name: &str) -> Result<Option<&'a Advert>, String> {
+    let found: Vec<&Advert> = adverts.iter().filter(|advert| matches(advert, name)).collect();
+    if found.len() < 2 {
+        return Ok(found.first().copied());
+    }
+    let mut text = format!("{name}: {} nodes answer to this name. Name one by its id or its address:", found.len());
+    for advert in found {
+        text.push_str(&format!("\n  {:<16} {:<15} {}", label(&advert.node), advert.node.address, advert.node.node));
+    }
+    Err(text)
+}
+
+/// The nodes as lines, for a message. Empty when there are none.
+fn listing(adverts: &[Advert], in_use: Option<&Node>) -> String {
+    let mut text = String::new();
+    for advert in adverts {
+        let node = &advert.node;
+        let used = in_use.is_some_and(|used| !used.node.is_empty() && used.node == node.node);
+        text.push_str(&format!(
+            "\n  {:<16} {:<15} {}{}{}",
+            label(node),
+            node.address,
+            if advert.state.is_empty() { "?" } else { &advert.state },
+            if advert.main { "" } else { "  (not a coding model)" },
+            if used { "  (in use)" } else { "" },
+        ));
+    }
+    text
+}
+
+/// §6.4's message for a browse that found nothing.
+pub fn none_found_message() -> String {
+    "No Ragon node found on this network.\n\
+     - On a GB10: ragon-admin server start, then ragon-admin node enable\n\
+     - Or name one by its address: ragon node use <address>"
+        .to_string()
+}
+
+/// What a node's advertised state and its model port's answer mean together (§6.4). `Ok` carries
+/// a line to print before waiting, if any; `Err` is a message and no wait.
+pub fn state_verdict(node: &Node, state: &str, answers: bool) -> Result<Option<String>, String> {
+    if answers {
+        return Ok(None);
+    }
+    match state {
+        "stopped" => Err(format!(
+            "Node {} found, but its model server is not running. On the node: ragon-admin server start",
+            label(node)
+        )),
+        "loading" => Ok(Some(format!("Node {}: model loading", label(node)))),
+        // `ready` and refusing: the server stopped without `server stop`, or it is loading again
+        // after a restart of the machine, which the advert cannot know.
+        "ready" => Err(format!(
+            "Node {} is advertised as ready, but its model server at {} does not answer. \
+             On the node: ragon-admin status (it may still be loading after a restart)",
+            label(node),
+            node.model_url()
+        )),
+        // Not seen in a browse (a remembered address) or an advert without a state: wait, as
+        // before the split.
+        _ => Ok(None),
+    }
+}
+
+/// Reads the tiers' inputs from the environment and the files.
+pub fn inputs() -> Inputs {
+    let configured = crate::configured_vllm_host();
+    let is_node = locator::is_node();
+    let remembered = locator::remembered();
+    // Asked only when it can decide something: no configured host, not a node, an overlay name.
+    let overlay = configured.is_none()
+        && !is_node
+        && remembered.as_ref().is_some_and(|node| node.overlay_name_is_its_own() && overlay_answers(&node.remote));
+    Inputs { configured, pinned: std::env::var(PIN_ENV).ok(), is_node, remembered, overlay }
+}
+
+/// Whether NetBird's client is connected to its management and `name` resolves. NetBird is asked
+/// first so that, with the overlay down, the name is never sent to the system's DNS servers.
+fn overlay_answers(name: &str) -> bool {
+    locator::overlay_up()
+        && std::net::ToSocketAddrs::to_socket_addrs(&(name, locator::DEFAULT_MODEL_PORT)).is_ok_and(|mut found| found.next().is_some())
+}
+
+/// Resolves the model server's base URL for a command that needs the model, printing what the
+/// user should know and remembering the node. `interactive` says whether a question may be asked.
+pub async fn resolve_host(interactive: bool) -> anyhow::Result<String> {
+    let inputs = inputs();
+    let resolution = resolve(&inputs, &MdnsBrowser);
+    let missed = browse_missed(&resolution);
+    let (node, state, remember, note) = match resolution {
+        Resolution::Host(host) => return Ok(host),
+        Resolution::Refused(message) => bail!("{}", with_hint(message, wifi_hint(missed))),
+        Resolution::NoneFound => {
+            // A machine with a model server on loopback that has not written its node id yet
+            // (installed before the split): keep working, as before.
+            if answers(crate::DEFAULT_VLLM_HOST).await {
+                return Ok(crate::DEFAULT_VLLM_HOST.to_string());
+            }
+            bail!("{}", with_hint(none_found_message(), wifi_hint(missed)));
+        }
+        Resolution::Choose { adverts, gone } => {
+            let chosen = choose(&adverts, gone.as_deref(), interactive)?;
+            (chosen.node, chosen.state, true, None)
+        }
+        Resolution::Found { advert, remember, note } => (advert.node, advert.state, remember, note),
+        Resolution::LastAddress { node, note } => (node, String::new(), false, note),
+        Resolution::Overlay { node } => {
+            let note = format!("Node {} over the overlay ({}).", label(&node), node.address);
+            (node, String::new(), false, Some(note))
+        }
+    };
+    if let Some(note) = note {
+        eprintln!("{note}");
+    }
+    // The remembered node's last address is tried next, and may well answer; the hint says why
+    // the browse missed it, without stopping anything.
+    if let Some(hint) = wifi_hint(missed) {
+        eprintln!("{hint}");
+    }
+    if remember {
+        remember_node(&node);
+    }
+    version_notice(&node);
+    let host = node.model_url();
+    match state_verdict(&node, &state, answers(&host).await) {
+        Ok(Some(line)) => eprintln!("{line}"),
+        Ok(None) => {}
+        Err(message) => bail!("{message}"),
+    }
+    Ok(host)
+}
+
+/// Asks which of several nodes to use, or refuses with the list where no question can be asked.
+fn choose(adverts: &[Advert], gone: Option<&str>, interactive: bool) -> anyhow::Result<Advert> {
+    let heading = match gone {
+        Some(name) => format!("The remembered node, {name}, is not on this network, and another is:"),
+        None => "Several Ragon nodes are on this network:".to_string(),
+    };
+    if !interactive || !std::io::stdin().is_terminal() {
+        bail!(
+            "{heading}{}\nChoose one with: ragon node use <name>   (or {PIN_ENV}=<name> for one command)",
+            listing(adverts, None)
+        );
+    }
+    eprintln!("{heading}");
+    for (index, advert) in adverts.iter().enumerate() {
+        eprintln!("  {}. {} at {}", index + 1, label(&advert.node), advert.node.address);
+    }
+    loop {
+        eprint!("Use which? [1-{}] ", adverts.len());
+        let _ = std::io::stderr().flush();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+            bail!("no node chosen");
+        }
+        if let Some(advert) = line.trim().parse::<usize>().ok().and_then(|n| adverts.get(n.wrapping_sub(1))) {
+            return match checked(advert.clone(), true, None) {
+                Resolution::Refused(message) => Err(anyhow::anyhow!(message)),
+                _ => Ok(advert.clone()),
+            };
+        }
+    }
+}
+
+async fn answers(host: &str) -> bool {
+    let Ok(client) = crate::proxy::direct_client(Duration::from_secs(2)) else {
+        return false;
+    };
+    crate::served_model(&client, host).await.is_some()
+}
+
+/// Writes `node.json`, unless it already says the same apart from when the node was last seen
+/// today: the file is rewritten when something changed, not on every start.
+fn remember_node(node: &Node) {
+    let Some(path) = locator::node_file() else { return };
+    let now = chrono::Local::now();
+    let mut node = node.clone();
+    node.last_seen = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    if let Some(existing) = locator::remembered_at(&path) {
+        let same_day = existing.last_seen.get(..10) == node.last_seen.get(..10);
+        if same_day && (Node { last_seen: String::new(), ..existing }) == (Node { last_seen: String::new(), ..node.clone() }) {
+            return;
+        }
+    }
+    if let Err(error) = write_node_file(&path, &node) {
+        eprintln!("Could not remember the node in {}: {error}", path.display());
+    }
+}
+
+/// Remembers a node after `ragon node remote join`, with its overlay name.
+pub fn remember_enrolled(node: &Node) -> Result<(), String> {
+    let path = locator::node_file().ok_or("could not resolve CODEX_HOME")?;
+    write_node_file(&path, node).map_err(|error| format!("could not write {}: {error}", path.display()))
+}
+
+fn write_node_file(path: &Path, node: &Node) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let staging = path.with_file_name(format!(".{}.{}.tmp", locator::NODE_FILE, std::process::id()));
+    std::fs::write(&staging, node.render())?;
+    std::fs::rename(&staging, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&staging);
+    })
+}
+
+/// One line, at most once a day, when the node runs another Ragon version. Nothing is blocked:
+/// the model API is the contract, and it does not move with Ragon's version.
+fn version_notice(node: &Node) {
+    let Some(mine) = crate::update::RAGON_VERSION else { return };
+    let Some(home) = locator::codex_home() else { return };
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let marker = home.join("node-version-notice");
+    if let Some(line) = version_notice_line(mine, node, std::fs::read_to_string(&marker).ok().as_deref(), &today) {
+        eprintln!("{line}");
+        let _ = std::fs::write(&marker, &today);
+    }
+}
+
+fn version_notice_line(mine: &str, node: &Node, last_notice: Option<&str>, today: &str) -> Option<String> {
+    if node.version.is_empty() || node.version == mine || last_notice.map(str::trim) == Some(today) {
+        return None;
+    }
+    Some(format!(
+        "Note: node {} runs Ragon {}, this machine {mine}. `ragon update` here, or update the node.",
+        label(node),
+        node.version
+    ))
+}
+
+// -- `ragon node` ----------------------------------------------------------------------------------
+
+/// What a `ragon node …` command line asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Request {
+    List,
+    /// `ragon node list --json`: the same browse for the desktop app's node page, as JSON.
+    ListJson,
+    Use(String),
+    Forget,
+    /// `ragon node remote …` (remote_join.rs).
+    Remote(Vec<String>),
+    Usage,
+}
+
+impl Request {
+    pub fn from_args(args: &[String]) -> Request {
+        match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+            [] | ["list"] => Request::List,
+            ["list", "--json"] => Request::ListJson,
+            ["use", name] => Request::Use(name.to_string()),
+            ["forget"] => Request::Forget,
+            ["remote", ..] => Request::Remote(args[1..].to_vec()),
+            _ => Request::Usage,
+        }
+    }
+}
+
+/// Runs `ragon node …` and returns the exit code.
+pub async fn run_cli(args: &[String]) -> i32 {
+    let Some(path) = locator::node_file() else {
+        eprintln!("ragon node: could not resolve CODEX_HOME");
+        return 1;
+    };
+    match Request::from_args(args) {
+        Request::Remote(rest) => crate::remote_join::run_cli(&rest).await,
+        Request::Usage => {
+            println!("{USAGE}");
+            2
+        }
+        Request::Forget => {
+            for line in forget(&path) {
+                println!("{line}");
+            }
+            0
+        }
+        Request::List | Request::ListJson => {
+            let adverts = MdnsBrowser.browse(None);
+            let mut models = Vec::new();
+            for advert in &adverts {
+                models.push(served(&advert.node.model_url()).await);
+            }
+            let hint = wifi_hint(adverts.is_empty());
+            if Request::from_args(args) == Request::ListJson {
+                println!("{}", list_json(&inputs(), &adverts, &models, hint.as_deref()));
+                return 0;
+            }
+            for line in list_lines(&inputs(), &adverts, &models) {
+                println!("{line}");
+            }
+            if let Some(hint) = hint {
+                println!("{hint}");
+            }
+            0
+        }
+        Request::Use(name) => {
+            let adverts = MdnsBrowser.browse(Some(&named(&name)));
+            let node = match pick(&adverts, &name) {
+                Ok(node) => node,
+                Err(message) => {
+                    eprintln!("{}", with_hint(message, wifi_hint(adverts.is_empty())));
+                    return 1;
+                }
+            };
+            let reachable = answers(&node.model_url()).await;
+            let mut remembered = node.clone();
+            remembered.last_seen = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+            if let Err(error) = write_node_file(&path, &remembered) {
+                eprintln!("Could not write {}: {error}", path.display());
+                return 1;
+            }
+            println!("Using node {} at {}.", label(&node), node.model_url());
+            if !reachable {
+                println!("Its model server does not answer right now; ragon will wait for it.");
+            }
+            if locator::is_node() {
+                println!("Note: this machine is a node, so ragon uses its own model server; set {PIN_ENV} to use another for one command.");
+            }
+            0
+        }
+    }
+}
+
+async fn served(host: &str) -> Option<crate::ServedModel> {
+    let client = crate::proxy::direct_client(Duration::from_secs(2)).ok()?;
+    crate::served_model(&client, host).await
+}
+
+/// The node `name` names among those that answered; or, when none does and `name` is an address
+/// (`host` or `host:port`), a node at that address with nothing else known about it, so that a
+/// network without multicast still works.
+pub fn pick(adverts: &[Advert], name: &str) -> Result<Node, String> {
+    if let Some(advert) = the_one(adverts, name)? {
+        return match checked(advert.clone(), true, None) {
+            Resolution::Refused(message) => Err(message),
+            _ => Ok(advert.node.clone()),
+        };
+    }
+    let name = name.trim().trim_end_matches('/');
+    let scheme = name.split_once("://").map(|(scheme, _)| scheme.to_ascii_lowercase());
+    if scheme.as_deref().is_some_and(|scheme| scheme != "http") {
+        return Err(format!("{name}: a node's model port speaks http. Name it by its address: ragon node use <address>"));
+    }
+    let name = name.split_once("://").map_or(name, |(_, rest)| rest);
+    let not_an_address = || format!("{name}: not a node name or an address{}", listing(adverts, None));
+    let (address, port) = if let Some(bracketed) = name.strip_prefix('[') {
+        // `[v6]` or `[v6]:port`, as in a URL.
+        let (host, after) = bracketed.split_once(']').ok_or_else(not_an_address)?;
+        match after.strip_prefix(':') {
+            Some(port) => (host, port.parse::<u16>().map_err(|_| not_an_address())?),
+            None if after.is_empty() => (host, locator::DEFAULT_MODEL_PORT),
+            None => return Err(not_an_address()),
+        }
+    } else {
+        match name.rsplit_once(':') {
+            // `host:port`, but not a bare IPv6 address, whose colons are not a port separator.
+            Some((host, port)) if !host.contains(':') => (host, port.parse::<u16>().map_err(|_| not_an_address())?),
+            _ => (name, locator::DEFAULT_MODEL_PORT),
+        }
+    };
+    let looks_like_address = address.parse::<IpAddr>().is_ok() || address.contains('.');
+    if address.is_empty() || !looks_like_address {
+        return Err(format!(
+            "No node named {name} on this network.{}\nAn address works without discovery: ragon node use <address>",
+            listing(adverts, None)
+        ));
+    }
+    Ok(Node { address: address.to_string(), model_port: port, ..Node::default() })
+}
+
+fn forget(path: &Path) -> Vec<String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => vec!["Forgotten. The next start looks for a node on the network again.".to_string()],
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => vec!["No node was remembered.".to_string()],
+        Err(error) => vec![format!("Could not remove {}: {error}", path.display())],
+    }
+}
+
+/// Whether `node` is the one `used` stands for: the same id, or for a node remembered without one
+/// the same address.
+fn is_used(used: &Node, node: &Node) -> bool {
+    (!used.node.is_empty() && used.node == node.node) || (used.node.is_empty() && used.address == node.address)
+}
+
+/// What `ragon node use` is given to choose `node`: its name, else its id; never its address, which
+/// changes (a node is found by name or id at use time). None for a node advertising neither.
+fn choice_of(node: &Node) -> Option<&str> {
+    [node.name.as_str(), node.node.as_str()].into_iter().find(|text| !text.is_empty())
+}
+
+/// `ragon node list --json`, for the desktop app's node page: the nodes that answered, by name, with
+/// what each serves and which one this machine uses. No address, URL or configured host is in it,
+/// so the page shows and sends names only.
+pub fn list_json(inputs: &Inputs, adverts: &[Advert], models: &[Option<crate::ServedModel>], hint: Option<&str>) -> serde_json::Value {
+    let this_machine = if inputs.configured.is_some() {
+        "configured"
+    } else if inputs.is_node {
+        "node"
+    } else {
+        "client"
+    };
+    let in_use = inputs.remembered.as_ref().filter(|_| inputs.configured.is_none() && !inputs.is_node);
+    let nodes: Vec<serde_json::Value> = adverts
+        .iter()
+        .enumerate()
+        .map(|(index, advert)| {
+            let node = &advert.node;
+            let model = models.get(index).and_then(Option::as_ref);
+            serde_json::json!({
+                "name": node.name,
+                "id": node.node,
+                "choice": choice_of(node),
+                "inUse": in_use.is_some_and(|used| is_used(used, node)),
+                "model": model.map(|model| model.id.clone()),
+                "contextTokens": model.map(|model| model.max_model_len),
+                "state": advert.state,
+                "version": node.version,
+                "coding": advert.main,
+            })
+        })
+        .collect();
+    let away = in_use.filter(|used| !adverts.iter().any(|advert| is_used(used, &advert.node)));
+    serde_json::json!({
+        "thisMachine": this_machine,
+        "nodes": nodes,
+        "rememberedAway": away.map(|used| serde_json::json!({ "name": used.name, "id": used.node })),
+        "hint": hint,
+    })
+}
+
+/// The lines `ragon node list` prints: every node that answered, with what it serves, which one
+/// this machine uses, and the URL to paste into another tool.
+pub fn list_lines(inputs: &Inputs, adverts: &[Advert], models: &[Option<crate::ServedModel>]) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(host) = &inputs.configured {
+        lines.push(format!("This machine is configured to use {host} (DREAMFERENCE_VLLM_HOST or vllm_host)."));
+    } else if inputs.is_node {
+        lines.push(format!("This machine is a node: ragon uses its own model server, {}.", crate::DEFAULT_VLLM_HOST));
+    }
+    let in_use = inputs.remembered.as_ref().filter(|_| inputs.configured.is_none() && !inputs.is_node);
+    if adverts.is_empty() {
+        lines.push("No Ragon node answered on this network.".to_string());
+    }
+    for (index, advert) in adverts.iter().enumerate() {
+        let node = &advert.node;
+        let serving = match models.get(index).and_then(Option::as_ref) {
+            Some(model) => format!("{} ({} tokens)", model.id, model.max_model_len),
+            None if advert.state.is_empty() => "not answering".to_string(),
+            None => advert.state.clone(),
+        };
+        let used = in_use.is_some_and(|used| is_used(used, node));
+        lines.push(format!(
+            "{}{}  {}/v1  {}  Ragon {}{}",
+            if used { "* " } else { "  " },
+            label(node),
+            node.model_url(),
+            serving,
+            if node.version.is_empty() { "?" } else { &node.version },
+            if advert.main { "" } else { "  (not a coding model)" },
+        ));
+        if !node.remote.is_empty() {
+            lines.push(format!("      off the LAN: {} (remote access)", node.remote));
+        }
+    }
+    if let Some(used) = in_use {
+        let seen = adverts.iter().any(|advert| is_used(used, &advert.node));
+        if !seen && inputs.overlay && used.overlay_name_is_its_own() {
+            lines.push(format!("* {}  {}/v1  over the overlay (remote access)", label(used), used.via_overlay().model_url()));
+        } else if !seen {
+            lines.push(format!(
+                "* {}  {}/v1  remembered, did not answer this browse",
+                label(used),
+                used.model_url()
+            ));
+        }
+    } else if inputs.configured.is_none() && !inputs.is_node && !adverts.is_empty() {
+        lines.push("None is remembered yet: the next `ragon` uses the one it finds, or asks.".to_string());
+    }
+    lines
+}
+
+// -- the browse -------------------------------------------------------------------------------------
+
+/// Browses with the pure-Rust `mdns-sd` crate: one code path on Linux, macOS and Windows.
+pub struct MdnsBrowser;
+
+impl Browser for MdnsBrowser {
+    fn browse(&self, wanted: Option<&Node>) -> Vec<Advert> {
+        let Ok(daemon) = mdns_sd::ServiceDaemon::new() else {
+            return Vec::new();
+        };
+        let Ok(events) = daemon.browse(locator::SERVICE_TYPE) else {
+            let _ = daemon.shutdown();
+            return Vec::new();
+        };
+        let deadline = Instant::now() + browse_timeout(wanted);
+        let mut settle: Option<Instant> = None;
+        let mut found: Vec<Advert> = Vec::new();
+        loop {
+            let limit = settle.map_or(deadline, |settle| settle.min(deadline));
+            let now = Instant::now();
+            if now >= limit {
+                break;
+            }
+            let slice = (limit - now).min(Duration::from_millis(10));
+            let waited = Instant::now();
+            let Ok(event) = events.recv_timeout(slice) else {
+                std::thread::sleep(slice.saturating_sub(waited.elapsed()));
+                continue;
+            };
+            match event {
+                mdns_sd::ServiceEvent::ServiceResolved(service) => {
+                    let addresses: Vec<IpAddr> = service.addresses.iter().map(mdns_sd::ScopedIp::to_ip_addr).collect();
+                    let records: Vec<(String, String)> = service
+                        .txt_properties
+                        .iter()
+                        .map(|property| (property.key().to_string(), property.val_str().to_string()))
+                        .collect();
+                    let Some(advert) = advert_from(&service.fullname, service.port, &addresses, &records) else {
+                        continue;
+                    };
+                    merge(&mut found, advert);
+                    match after_answer(wanted, &found) {
+                        Listen::Stop => break,
+                        Listen::Settle => {
+                            settle.get_or_insert(Instant::now() + SETTLE);
+                        }
+                        Listen::Deadline => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        let _ = daemon.stop_browse(locator::SERVICE_TYPE);
+        let _ = daemon.shutdown();
+        found.sort_by(|a, b| a.node.name.cmp(&b.node.name));
+        found
+    }
+}
+
+/// Builds an advert from what a browse resolved. `None` when no usable address came with it.
+pub fn advert_from(fullname: &str, port: u16, addresses: &[IpAddr], records: &[(String, String)]) -> Option<Advert> {
+    let record = |key: &str| records.iter().find(|(name, _)| name == key).map(|(_, value)| value.as_str());
+    let port_record = |key: &str| record(key).and_then(|value| value.parse::<u16>().ok()).filter(|port| *port != 0);
+    let name = fullname
+        .strip_suffix(locator::SERVICE_TYPE)
+        .map(|name| name.trim_end_matches('.'))
+        .unwrap_or(fullname);
+    let usable = usable_addresses(addresses);
+    let mut node = Node {
+        node: record("node").unwrap_or_default().to_string(),
+        name: name.to_string(),
+        address: usable.first()?.to_string(),
+        model_port: port,
+        web_port: port_record("web"),
+        search_port: port_record("search"),
+        version: record("version").unwrap_or_default().to_string(),
+        last_seen: String::new(),
+        remote: record("remote").unwrap_or_default().to_ascii_lowercase(),
+    };
+    // An overlay name that is not the node's own (`ragon-<its id>.`) is not kept.
+    if !node.overlay_name_is_its_own() {
+        node.remote.clear();
+    }
+    Some(Advert {
+        addresses: usable.iter().map(IpAddr::to_string).collect(),
+        node,
+        // An advert without the record predates nothing: it is treated as the first contract.
+        proto: record("proto").and_then(|value| value.parse().ok()).unwrap_or(1),
+        state: record("state").unwrap_or_default().to_string(),
+        main: record("main").is_some_and(|value| value != "0"),
+    })
+}
+
+/// Connect to the resolved address, never the `.local` name. IPv4 first; then an IPv6 address
+/// that needs no scope. Two kinds are dropped: a link-local IPv6 address, usable only with a
+/// scope id that a URL cannot carry here; and loopback, which can never be the node a browsing
+/// machine is looking for, because a node does not browse (the live browse, run on
+/// the node itself, was answered on loopback and on each Docker bridge in turn).
+pub fn best_address(addresses: &[IpAddr]) -> Option<IpAddr> {
+    usable_addresses(addresses).first().copied()
+}
+
+/// The addresses a client can connect to, best first, without duplicates.
+pub fn usable_addresses(addresses: &[IpAddr]) -> Vec<IpAddr> {
+    let rank = |address: &IpAddr| match address {
+        IpAddr::V4(v4) if v4.is_loopback() => None,
+        IpAddr::V4(v4) if v4.is_link_local() => Some(1),
+        IpAddr::V4(_) => Some(0),
+        IpAddr::V6(v6) if v6.is_loopback() => None,
+        IpAddr::V6(v6) if (v6.segments()[0] & 0xffc0) == 0xfe80 => None,
+        IpAddr::V6(_) => Some(3),
+    };
+    let mut usable: Vec<(u8, IpAddr)> = addresses.iter().filter_map(|address| Some((rank(address)?, *address))).collect();
+    usable.sort();
+    usable.dedup();
+    usable.into_iter().map(|(_, address)| address).collect()
+}
+
+/// Adds a node to those found, or adds the addresses of this answer to one already there: answers
+/// arrive per interface and per address family, and one node must be one row, at its best address.
+/// One node is one instance name (its host name, on every interface) with one id: another name
+/// claiming the same id stays a row of its own, so that [`resolve`] sees two claimants.
+fn merge(found: &mut Vec<Advert>, advert: Advert) {
+    let same = |other: &Advert| other.node.name == advert.node.name && other.node.node == advert.node.node;
+    match found.iter_mut().find(|other| same(other)) {
+        None => found.push(advert),
+        Some(existing) => {
+            let all: Vec<IpAddr> = existing
+                .addresses
+                .iter()
+                .chain(advert.addresses.iter())
+                .filter_map(|address| address.parse().ok())
+                .collect();
+            let usable = usable_addresses(&all);
+            let address = usable.first().map(IpAddr::to_string).unwrap_or_else(|| existing.node.address.clone());
+            *existing = Advert {
+                addresses: usable.iter().map(IpAddr::to_string).collect(),
+                node: Node { address, ..advert.node },
+                ..advert
+            };
+        }
+    }
+}
+
+/// `$CODEX_HOME/node.json`, for callers outside this module.
+pub fn node_file() -> Option<PathBuf> {
+    locator::node_file()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    /// A browser that answers from a list and records what it was asked for.
+    struct Fixed {
+        adverts: Vec<Advert>,
+        asked: RefCell<Vec<Option<String>>>,
+        asked_names: RefCell<Vec<Option<String>>>,
+    }
+
+    impl Fixed {
+        fn new(adverts: Vec<Advert>) -> Fixed {
+            Fixed { adverts, asked: RefCell::new(Vec::new()), asked_names: RefCell::new(Vec::new()) }
+        }
+    }
+
+    impl Browser for Fixed {
+        fn browse(&self, wanted: Option<&Node>) -> Vec<Advert> {
+            self.asked.borrow_mut().push(wanted.map(|node| node.node.clone()));
+            self.asked_names.borrow_mut().push(wanted.map(|node| node.name.clone()));
+            self.adverts.clone()
+        }
+    }
+
+    fn advert(name: &str, id: &str, address: &str) -> Advert {
+        Advert {
+            addresses: vec![address.to_string()],
+            node: Node {
+                node: id.to_string(),
+                name: name.to_string(),
+                address: address.to_string(),
+                model_port: 8000,
+                web_port: Some(3000),
+                search_port: Some(8888),
+                version: "0.9.0".to_string(),
+                last_seen: String::new(),
+                remote: String::new(),
+            },
+            proto: 1,
+            state: "ready".to_string(),
+            main: true,
+        }
+    }
+
+    fn spark1() -> Advert {
+        advert("spark-1", "11111111-aaaa", "192.168.50.105")
+    }
+
+    fn spark2() -> Advert {
+        advert("spark-2", "22222222-bbbb", "192.168.50.106")
+    }
+
+    #[test]
+    fn another_nodes_answer_does_not_cut_the_browse_for_the_remembered_one_short() {
+        let remembered = spark1().node;
+        // Only the other node so far: keep listening until the deadline, not just SETTLE more.
+        assert_eq!(after_answer(Some(&remembered), &[spark2()]), Listen::Deadline);
+        // The remembered node where it is remembered: done.
+        assert_eq!(after_answer(Some(&remembered), &[spark2(), spark1()]), Listen::Stop);
+        // The remembered node at another address: settle, in case it answers where it was.
+        let moved = advert("spark-1", "11111111-aaaa", "192.168.50.120");
+        assert_eq!(after_answer(Some(&remembered), &[moved]), Listen::Settle);
+        // Nothing wanted: the first answer settles.
+        assert_eq!(after_answer(None, &[spark2()]), Listen::Settle);
+        assert_eq!(after_answer(Some(&named(" ")), &[spark2()]), Listen::Settle);
+        // A node wanted by name (RAGON_NODE, `ragon node use`): listen until it answers.
+        assert_eq!(after_answer(Some(&named("spark-1")), &[spark2()]), Listen::Deadline);
+        assert_eq!(after_answer(Some(&named("spark-1.local")), &[spark2(), spark1()]), Listen::Stop);
+        assert_eq!(after_answer(Some(&named("192.168.50.105")), &[spark1()]), Listen::Stop);
+    }
+
+    fn stopped(advert: Advert) -> Advert {
+        Advert { state: "stopped".into(), ..advert }
+    }
+
+    #[test]
+    fn a_browse_for_one_node_waits_one_query_longer() {
+        assert_eq!(browse_timeout(None), BROWSE_TIMEOUT);
+        assert_eq!(browse_timeout(Some(&named(" "))), BROWSE_TIMEOUT);
+        assert_eq!(browse_timeout(Some(&spark1().node)), WANTED_TIMEOUT);
+        assert_eq!(browse_timeout(Some(&named("spark-1"))), WANTED_TIMEOUT);
+        assert!(WANTED_TIMEOUT > Duration::from_secs(3));
+    }
+
+    #[test]
+    fn a_stopped_node_does_not_cut_a_browse_for_any_node_short() {
+        assert_eq!(after_answer(None, &[stopped(spark2())]), Listen::Deadline);
+        assert_eq!(after_answer(None, &[Advert { main: false, ..spark2() }]), Listen::Deadline);
+        assert_eq!(after_answer(None, &[stopped(spark2()), spark1()]), Listen::Settle);
+        assert_eq!(after_answer(None, &[Advert { state: "loading".into(), ..spark1() }]), Listen::Settle);
+    }
+
+    #[test]
+    fn of_two_coding_nodes_the_one_whose_model_server_is_up_is_used() {
+        // The owner's second node stays advertised with its model server stopped: a client that
+        // remembers no node uses the other, and remembers it.
+        let browser = Fixed::new(vec![spark1(), stopped(spark2())]);
+        assert!(matches!(
+            resolve(&Inputs::default(), &browser),
+            Resolution::Found { advert, remember: true, note: Some(_) } if advert == spark1()
+        ));
+        let loading = Advert { state: "loading".into(), ..spark1() };
+        let browser = Fixed::new(vec![loading.clone(), stopped(spark2())]);
+        assert!(matches!(resolve(&Inputs::default(), &browser), Resolution::Found { advert, .. } if advert == loading));
+        // Both stopped, or both up: still a question.
+        let browser = Fixed::new(vec![stopped(spark1()), stopped(spark2())]);
+        assert!(matches!(resolve(&Inputs::default(), &browser), Resolution::Choose { gone: None, .. }));
+    }
+
+    #[test]
+    fn a_stopped_node_found_alone_is_used_but_not_remembered() {
+        let browser = Fixed::new(vec![stopped(spark2())]);
+        assert!(matches!(
+            resolve(&Inputs::default(), &browser),
+            Resolution::Found { remember: false, note: None, .. }
+        ));
+    }
+
+    #[test]
+    fn only_stopped_nodes_answering_send_the_remembered_one_to_its_last_address() {
+        // The remembered node did not answer and the only other node's model server is stopped:
+        // nothing to choose between, so the last address is tried, as when nothing answers.
+        let inputs = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        let browser = Fixed::new(vec![stopped(spark2())]);
+        let Resolution::LastAddress { node, note } = resolve(&inputs, &browser) else { panic!("not the last address") };
+        assert_eq!(node, spark1().node);
+        assert!(note.is_some_and(|note| note.contains("did not answer a browse")));
+        // Another node that serves is still a question, never a silent switch.
+        let browser = Fixed::new(vec![stopped(spark2()), advert("spark-3", "33333333-cccc", "192.168.50.107")]);
+        assert!(matches!(resolve(&inputs, &browser), Resolution::Choose { gone: Some(_), .. }));
+    }
+
+    #[test]
+    fn a_pinned_node_is_browsed_for_by_its_name() {
+        let browser = Fixed::new(vec![spark2(), spark1()]);
+        let inputs = Inputs { pinned: Some("spark-1".into()), ..Inputs::default() };
+        assert!(matches!(resolve(&inputs, &browser), Resolution::Found { remember: false, .. }));
+        assert_eq!(*browser.asked_names.borrow(), vec![Some("spark-1".to_string())]);
+    }
+
+    #[test]
+    fn a_configured_host_wins_and_nothing_is_browsed() {
+        let browser = Fixed::new(vec![spark1()]);
+        let inputs = Inputs { configured: Some("http://10.0.0.1:8000".into()), is_node: true, remembered: Some(spark2().node), pinned: Some("spark-1".into()), overlay: false };
+        assert_eq!(resolve(&inputs, &browser), Resolution::Host("http://10.0.0.1:8000".into()));
+        assert!(browser.asked.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_blank_host_or_pin_is_no_setting() {
+        let browser = Fixed::new(vec![spark1()]);
+        let inputs = Inputs { configured: Some(" ".into()), pinned: Some(" \n".into()), is_node: true, ..Inputs::default() };
+        assert_eq!(resolve(&inputs, &browser), Resolution::Host(crate::DEFAULT_VLLM_HOST.to_string()));
+        assert!(browser.asked.borrow().is_empty());
+    }
+
+    #[test]
+    fn the_one_coding_node_beside_a_speech_node_is_used_even_while_stopped() {
+        let speech = Advert { main: false, ..spark2() };
+        let browser = Fixed::new(vec![speech, stopped(spark1())]);
+        match resolve(&Inputs::default(), &browser) {
+            Resolution::Found { advert, remember, .. } => {
+                assert_eq!(advert.node.node, spark1().node.node);
+                assert!(!remember);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_node_uses_loopback_and_never_browses() {
+        let browser = Fixed::new(vec![spark2()]);
+        let inputs = Inputs { is_node: true, remembered: Some(spark2().node), ..Inputs::default() };
+        assert_eq!(resolve(&inputs, &browser), Resolution::Host(crate::DEFAULT_VLLM_HOST.into()));
+        assert!(browser.asked.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_pinned_node_is_used_for_one_command_and_not_remembered() {
+        let browser = Fixed::new(vec![spark1(), spark2()]);
+        let inputs = Inputs { pinned: Some("SPARK-2".into()), is_node: true, ..Inputs::default() };
+        assert_eq!(resolve(&inputs, &browser), Resolution::Found { advert: spark2(), remember: false, note: None });
+        let missing = Inputs { pinned: Some("spark-9".into()), ..Inputs::default() };
+        let Resolution::Refused(message) = resolve(&missing, &browser) else { panic!("not refused") };
+        assert!(message.contains("RAGON_NODE=spark-9: no such node") && message.contains("spark-1"), "{message}");
+    }
+
+    #[test]
+    fn the_remembered_node_is_found_again_by_id_at_a_new_address() {
+        let moved = advert("spark-1", "11111111-aaaa", "192.168.50.200");
+        let browser = Fixed::new(vec![moved.clone()]);
+        let inputs = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        assert_eq!(
+            resolve(&inputs, &browser),
+            Resolution::Found { advert: moved, remember: true, note: Some("Node spark-1 is now at 192.168.50.200.".into()) }
+        );
+        // The browse was told which id to stop at.
+        assert_eq!(*browser.asked.borrow(), vec![Some("11111111-aaaa".to_string())]);
+        // At the same address nothing is said.
+        let same = Fixed::new(vec![spark1()]);
+        assert_eq!(resolve(&inputs, &same), Resolution::Found { advert: spark1(), remember: true, note: None });
+    }
+
+    #[test]
+    fn a_second_advert_claiming_the_remembered_id_is_never_followed_silently() {
+        let inputs = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        let impostor = advert("spark-1", "11111111-aaaa", "192.168.50.66");
+        // The real node still answers where it was remembered: that one is used, whatever order
+        // the browse returned them in.
+        assert_eq!(
+            resolve(&inputs, &Fixed::new(vec![impostor.clone(), spark1()])),
+            Resolution::Found { advert: spark1(), remember: true, note: None }
+        );
+        // Two claimants and neither at the remembered address: the user is asked.
+        let other = advert("spark-1", "11111111-aaaa", "192.168.50.67");
+        assert!(matches!(resolve(&inputs, &Fixed::new(vec![impostor, other])), Resolution::Choose { .. }));
+    }
+
+    #[test]
+    fn a_node_with_several_addresses_keeps_the_remembered_one() {
+        // Seen live: a node with a Wi-Fi address and Docker bridges answered a
+        // different address on each start, and each start said it had moved.
+        let inputs = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        let mut seen = advert("spark-1", "11111111-aaaa", "172.18.0.1");
+        seen.addresses = vec!["172.18.0.1".into(), "192.168.50.105".into()];
+        assert_eq!(
+            resolve(&inputs, &Fixed::new(vec![seen.clone()])),
+            Resolution::Found { advert: Advert { node: spark1().node, ..seen.clone() }, remember: true, note: None }
+        );
+        // It no longer answers there: it has moved, and the line says so.
+        seen.addresses = vec!["172.18.0.1".into()];
+        assert!(matches!(resolve(&inputs, &Fixed::new(vec![seen])), Resolution::Found { note: Some(note), .. } if note.contains("now at 172.18.0.1")));
+    }
+
+    #[test]
+    fn the_last_address_is_tried_only_when_the_browse_returns_nothing_at_all() {
+        let inputs = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        let silent = Fixed::new(Vec::new());
+        let Resolution::LastAddress { node, note } = resolve(&inputs, &silent) else { panic!("not the last address") };
+        assert_eq!(node, spark1().node);
+        assert!(note.is_some_and(|note| note.contains("did not answer a browse") && note.contains("192.168.50.105")));
+    }
+
+    #[test]
+    fn a_different_node_is_never_adopted_silently() {
+        // The remembered node is gone and another answers: a question, not a switch. Prompts and
+        // source code go to whichever node is chosen.
+        let inputs = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        let browser = Fixed::new(vec![spark2()]);
+        assert_eq!(
+            resolve(&inputs, &browser),
+            Resolution::Choose { adverts: vec![spark2()], gone: Some("spark-1".into()) }
+        );
+    }
+
+    #[test]
+    fn a_node_set_by_address_is_used_without_a_browse() {
+        let by_hand = Node { address: "10.0.0.7".into(), model_port: 8000, ..Node::default() };
+        let browser = Fixed::new(vec![spark1()]);
+        let inputs = Inputs { remembered: Some(by_hand.clone()), ..Inputs::default() };
+        assert_eq!(resolve(&inputs, &browser), Resolution::LastAddress { node: by_hand, note: None });
+        assert!(browser.asked.borrow().is_empty());
+    }
+
+    #[test]
+    fn one_node_found_is_used_and_remembered_with_one_line() {
+        let browser = Fixed::new(vec![spark1()]);
+        let Resolution::Found { advert, remember, note } = resolve(&Inputs::default(), &browser) else { panic!("not found") };
+        assert_eq!((advert, remember), (spark1(), true));
+        assert_eq!(note.as_deref(), Some("Using Ragon node spark-1 at 192.168.50.105 (remembered; `ragon node list` shows every node)."));
+    }
+
+    #[test]
+    fn only_the_ends_a_lost_browse_explains_read_the_wifi() {
+        let empty = Fixed::new(Vec::new());
+        // Nothing answered and nothing is remembered.
+        assert!(browse_missed(&resolve(&Inputs::default(), &empty)));
+        // The remembered node did not answer: its last address is tried, and the hint is read.
+        let remembered = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        assert!(browse_missed(&resolve(&remembered, &empty)));
+        // The node named for one command is not among those that answered.
+        let pinned = Inputs { pinned: Some("spark-9".into()), ..Inputs::default() };
+        assert!(browse_missed(&resolve(&pinned, &Fixed::new(vec![spark1()]))));
+        assert!(browse_missed(&resolve(&pinned, &empty)));
+
+        // No browse, or a browse that found the node: nothing is read.
+        let configured = Inputs { configured: Some("http://10.0.0.1:8000".into()), ..Inputs::default() };
+        assert!(!browse_missed(&resolve(&configured, &empty)));
+        let node = Inputs { is_node: true, ..Inputs::default() };
+        assert!(!browse_missed(&resolve(&node, &empty)));
+        let by_hand = Inputs { remembered: Some(Node { address: "10.0.0.2".into(), ..Node::default() }), ..Inputs::default() };
+        assert!(!browse_missed(&resolve(&by_hand, &empty)));
+        assert!(!browse_missed(&resolve(&Inputs::default(), &Fixed::new(vec![spark1()]))));
+        assert!(!browse_missed(&resolve(&Inputs::default(), &Fixed::new(vec![spark1(), spark2()]))));
+        // A node found but refused for its protocol is not a lost browse.
+        let newer = Advert { proto: locator::PROTO + 1, ..spark1() };
+        assert!(!browse_missed(&resolve(&Inputs::default(), &Fixed::new(vec![newer]))));
+    }
+
+    #[test]
+    fn the_hint_is_the_last_line_and_nothing_without_one() {
+        let hint = locator::wifi_hint_from(&[locator::WifiInterface {
+            device: "wlP9s9".into(),
+            connection: "TP-Link_DA74".into(),
+            setting: "default".into(),
+            radio: Some(true),
+        }]);
+        let message = with_hint(none_found_message(), hint);
+        assert!(message.starts_with("No Ragon node found on this network."));
+        assert!(message.lines().last().is_some_and(|line| line.starts_with("Hint: Wi-Fi power saving is on for wlP9s9")
+            && line.contains("sudo nmcli connection modify TP-Link_DA74 802-11-wireless.powersave 2")
+            && line.ends_with("sudo iw dev wlP9s9 set power_save off")));
+        assert_eq!(with_hint(none_found_message(), None), none_found_message());
+        assert!(!browse_missed(&Resolution::Refused("Node x speaks a newer protocol".into())));
+        assert!(browse_missed(&Resolution::Refused(format!("{PIN_ENV}=x: no such node on this network."))));
+    }
+
+    #[test]
+    fn none_found_and_none_remembered_is_its_own_case() {
+        assert_eq!(resolve(&Inputs::default(), &Fixed::new(Vec::new())), Resolution::NoneFound);
+        let message = none_found_message();
+        assert!(message.starts_with("No Ragon node found on this network."));
+        assert!(message.contains("ragon-admin node enable") && message.contains("ragon node use <address>"));
+    }
+
+    #[test]
+    fn several_nodes_need_an_answer_unless_exactly_one_serves_a_coding_model() {
+        let both = Fixed::new(vec![spark1(), spark2()]);
+        assert_eq!(resolve(&Inputs::default(), &both), Resolution::Choose { adverts: vec![spark1(), spark2()], gone: None });
+        let speech = Advert { main: false, ..spark2() };
+        let one_main = Fixed::new(vec![speech.clone(), spark1()]);
+        assert!(matches!(resolve(&Inputs::default(), &one_main), Resolution::Found { advert, remember: true, .. } if advert == spark1()));
+        let none_main = Fixed::new(vec![speech.clone(), Advert { main: false, ..spark1() }]);
+        assert!(matches!(resolve(&Inputs::default(), &none_main), Resolution::Choose { .. }));
+    }
+
+    #[test]
+    fn where_no_question_can_be_asked_the_choice_is_refused_with_the_list() {
+        let error = choose(&[spark1(), spark2()], None, false).unwrap_err().to_string();
+        assert!(error.starts_with("Several Ragon nodes are on this network:"), "{error}");
+        assert!(error.contains("spark-1") && error.contains("192.168.50.106") && error.contains("ragon node use <name>"));
+        let gone = choose(&[spark2()], Some("spark-1"), false).unwrap_err().to_string();
+        assert!(gone.starts_with("The remembered node, spark-1, is not on this network, and another is:"), "{gone}");
+    }
+
+    #[test]
+    fn a_node_with_a_newer_protocol_is_refused_and_names_the_update() {
+        let newer = Advert { proto: locator::PROTO + 1, ..spark1() };
+        let Resolution::Refused(message) = resolve(&Inputs::default(), &Fixed::new(vec![newer.clone()])) else { panic!("not refused") };
+        assert!(message.contains("newer protocol (2)") && message.ends_with("ragon update"), "{message}");
+        assert!(pick(&[newer], "spark-1").is_err());
+    }
+
+    #[test]
+    fn each_state_has_its_own_message() {
+        let node = spark1().node;
+        assert_eq!(state_verdict(&node, "stopped", true), Ok(None));
+        assert_eq!(
+            state_verdict(&node, "stopped", false),
+            Err("Node spark-1 found, but its model server is not running. On the node: ragon-admin server start".to_string())
+        );
+        assert_eq!(state_verdict(&node, "loading", false), Ok(Some("Node spark-1: model loading".to_string())));
+        let stale = state_verdict(&node, "ready", false).unwrap_err();
+        assert!(stale.contains("advertised as ready") && stale.contains("http://192.168.50.105:8000") && stale.contains("ragon-admin status"));
+        // A remembered address that no browse confirmed: wait, as before the split.
+        assert_eq!(state_verdict(&node, "", false), Ok(None));
+    }
+
+    #[test]
+    fn a_node_is_named_by_name_address_or_id_prefix() {
+        let node = spark1();
+        for name in ["spark-1", "Spark-1.local", "192.168.50.105", "1111", "11111111-AAAA"] {
+            assert!(matches(&node, name), "{name}");
+        }
+        for name in ["spark", "111", "192.168.50.10", ""] {
+            assert!(!matches(&node, name), "{name}");
+        }
+    }
+
+    #[test]
+    fn use_takes_a_name_or_an_address_that_no_browse_confirmed() {
+        let adverts = [spark1(), spark2()];
+        assert_eq!(pick(&adverts, "spark-2"), Ok(spark2().node));
+        assert_eq!(
+            pick(&[], "10.0.0.7"),
+            Ok(Node { address: "10.0.0.7".into(), model_port: 8000, ..Node::default() })
+        );
+        assert_eq!(pick(&[], "http://spark.lan:9000/").map(|node| (node.address, node.model_port)), Ok(("spark.lan".to_string(), 9000)));
+        assert_eq!(pick(&[], "fd00::7").map(|node| node.model_url()), Ok("http://[fd00::7]:8000".to_string()));
+        let unknown = pick(&adverts, "spark-9").unwrap_err();
+        assert!(unknown.starts_with("No node named spark-9") && unknown.contains("spark-1"), "{unknown}");
+        assert!(pick(&[], "10.0.0.7:http").is_err());
+    }
+
+    #[test]
+    fn use_takes_a_bracketed_address_with_a_port_and_any_scheme_case() {
+        assert_eq!(pick(&[], "[fd00::2]:9000").map(|node| node.model_url()), Ok("http://[fd00::2]:9000".to_string()));
+        assert_eq!(pick(&[], "http://[fd00::2]/").map(|node| node.model_url()), Ok("http://[fd00::2]:8000".to_string()));
+        assert_eq!(pick(&[], "HTTP://spark.lan:9000").map(|node| (node.address, node.model_port)), Ok(("spark.lan".to_string(), 9000)));
+        let https = pick(&[], "https://spark.lan:9000").unwrap_err();
+        assert!(https.contains("speaks http"), "{https}");
+        assert!(pick(&[], "[fd00::2]x").is_err());
+    }
+
+    #[test]
+    fn a_name_two_nodes_answer_to_is_refused_rather_than_guessed() {
+        let twin = advert("spark-1", "99999999-cccc", "192.168.50.199");
+        let adverts = [spark1(), twin.clone(), spark2()];
+        let refused = pick(&adverts, "spark-1").unwrap_err();
+        assert!(refused.contains("11111111") && refused.contains("99999999"), "{refused}");
+        assert_eq!(pick(&adverts, "1111"), Ok(spark1().node));
+        let pinned = Inputs { pinned: Some("spark-1".into()), ..Inputs::default() };
+        match resolve(&pinned, &Fixed::new(adverts.to_vec())) {
+            Resolution::Refused(message) => assert!(message.contains("99999999"), "{message}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_command_line_is_parsed() {
+        let args = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+        assert_eq!(Request::from_args(&[]), Request::List);
+        assert_eq!(Request::from_args(&args(&["list"])), Request::List);
+        assert_eq!(Request::from_args(&args(&["list", "--json"])), Request::ListJson);
+        assert_eq!(Request::from_args(&args(&["--json"])), Request::Usage);
+        assert_eq!(Request::from_args(&args(&["use", "spark-2"])), Request::Use("spark-2".into()));
+        assert_eq!(Request::from_args(&args(&["forget"])), Request::Forget);
+        assert_eq!(Request::from_args(&args(&["use"])), Request::Usage);
+        assert_eq!(Request::from_args(&args(&["enable"])), Request::Usage);
+    }
+
+    #[test]
+    fn the_list_says_which_node_is_in_use_and_gives_the_url_to_paste() {
+        let model = crate::ServedModel { id: "RadixArk/Qwen3.8-27B-NVFP4".into(), max_model_len: 262_144, owned_by: "sglang".into() };
+        let inputs = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        let lines = list_lines(&inputs, &[spark1(), Advert { state: "stopped".into(), main: false, ..spark2() }], &[Some(model), None]);
+        assert_eq!(lines[0], "* spark-1  http://192.168.50.105:8000/v1  RadixArk/Qwen3.8-27B-NVFP4 (262144 tokens)  Ragon 0.9.0");
+        assert_eq!(lines[1], "  spark-2  http://192.168.50.106:8000/v1  stopped  Ragon 0.9.0  (not a coding model)");
+        assert_eq!(lines.len(), 2);
+        // The remembered node did not answer: it is still shown as the one in use.
+        let away = list_lines(&inputs, &[spark2()], &[None]);
+        assert!(away.last().is_some_and(|line| line.starts_with("* spark-1") && line.ends_with("did not answer this browse")));
+        // On a node the list says so, and marks none as in use.
+        let on_node = list_lines(&Inputs { is_node: true, ..Inputs::default() }, &[spark1()], &[None]);
+        assert!(on_node[0].starts_with("This machine is a node") && on_node[1].starts_with("  spark-1"));
+        assert_eq!(list_lines(&Inputs::default(), &[], &[]), vec!["No Ragon node answered on this network.".to_string()]);
+    }
+
+    #[test]
+    fn another_node_at_the_remembered_address_does_not_hide_that_the_remembered_one_is_away() {
+        // The remembered node has an id, so it is found by its id; another node that now has its
+        // old address is not it, in the list as in `resolve`.
+        let inputs = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        let other = advert("spark-2", "22222222-bbbb", "192.168.50.105");
+        let lines = list_lines(&inputs, std::slice::from_ref(&other), &[None]);
+        assert!(lines[0].starts_with("  spark-2"), "{lines:?}");
+        assert!(lines.last().is_some_and(|line| line.starts_with("* spark-1") && line.ends_with("did not answer this browse")), "{lines:?}");
+        let list = list_json(&inputs, &[other], &[None], None);
+        assert_eq!(list["nodes"][0]["inUse"], false);
+        assert_eq!(list["rememberedAway"]["name"], "spark-1");
+    }
+
+    #[test]
+    fn the_json_list_names_the_nodes_and_never_an_address() {
+        let model = crate::ServedModel { id: "RadixArk/Qwen3.8-27B-NVFP4".into(), max_model_len: 262_144, owned_by: "sglang".into() };
+        let inputs = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        let stopped = Advert { state: "stopped".into(), main: false, ..spark2() };
+        let list = list_json(&inputs, &[spark1(), stopped], &[Some(model), None], None);
+        assert_eq!(list["thisMachine"], "client");
+        assert_eq!(list["nodes"][0]["name"], "spark-1");
+        assert_eq!(list["nodes"][0]["choice"], "spark-1");
+        assert_eq!(list["nodes"][0]["inUse"], true);
+        assert_eq!(list["nodes"][0]["model"], "RadixArk/Qwen3.8-27B-NVFP4");
+        assert_eq!(list["nodes"][0]["contextTokens"], 262_144);
+        assert_eq!(list["nodes"][1]["inUse"], false);
+        assert_eq!(list["nodes"][1]["model"], serde_json::Value::Null);
+        assert_eq!(list["nodes"][1]["state"], "stopped");
+        assert_eq!(list["nodes"][1]["coding"], false);
+        assert_eq!(list["rememberedAway"], serde_json::Value::Null);
+        let text = list.to_string();
+        assert!(!text.contains("192.168.") && !text.contains("http"), "{text}");
+        // The remembered node did not answer: named, still without its address.
+        let away = list_json(&inputs, &[spark2()], &[None], Some("Wi-Fi power saving is on"));
+        assert_eq!(away["rememberedAway"]["name"], "spark-1");
+        assert_eq!(away["hint"], "Wi-Fi power saving is on");
+        assert!(!away.to_string().contains("192.168.50.105"));
+        // A node with no name is chosen by its id; one with neither cannot be chosen.
+        let unnamed = Advert { node: Node { name: String::new(), ..spark2().node }, ..spark2() };
+        let bare = Advert { node: Node { name: String::new(), node: String::new(), ..spark2().node }, ..spark2() };
+        let list = list_json(&Inputs::default(), &[unnamed, bare], &[None, None], None);
+        assert_eq!(list["nodes"][0]["choice"], "22222222-bbbb");
+        assert_eq!(list["nodes"][1]["choice"], serde_json::Value::Null);
+        assert!(!list.to_string().contains("192.168."));
+        // A node, or a configured host, uses no node from the list.
+        let on_node = list_json(&Inputs { is_node: true, remembered: Some(spark1().node), ..Inputs::default() }, &[spark1()], &[None], None);
+        assert_eq!(on_node["thisMachine"], "node");
+        assert_eq!(on_node["nodes"][0]["inUse"], false);
+        let configured = list_json(&Inputs { configured: Some("http://10.0.0.7:8000".into()), ..Inputs::default() }, &[], &[], None);
+        assert_eq!(configured["thisMachine"], "configured");
+        assert!(!configured.to_string().contains("10.0.0.7"));
+    }
+
+    #[test]
+    fn an_advert_is_read_from_the_browse_answer() {
+        let records: Vec<(String, String)> = [("proto", "1"), ("node", "7c1e"), ("version", "0.9.0"), ("web", "3000"), ("search", "8888"), ("state", "loading"), ("main", "1")]
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        let addresses: Vec<IpAddr> = ["fe80::1", "172.17.0.1", "192.168.50.105"].iter().filter_map(|a| a.parse().ok()).collect();
+        let advert = advert_from("gx10-1a2b._ragon-node._tcp.local.", 8000, &addresses, &records);
+        let advert = advert.unwrap_or_default();
+        assert_eq!(advert.node.name, "gx10-1a2b");
+        assert_eq!((advert.node.node.as_str(), advert.node.model_port, advert.node.web_port, advert.node.search_port), ("7c1e", 8000, Some(3000), Some(8888)));
+        assert_eq!((advert.proto, advert.state.as_str(), advert.main), (1, "loading", true));
+        // A node that shares nothing but the model, and says nothing else.
+        let bare = advert_from("spark._ragon-node._tcp.local.", 8000, &addresses, &[]).unwrap_or_default();
+        assert_eq!((bare.node.web_port, bare.node.search_port, bare.main, bare.proto), (None, None, false, 1));
+        // Only a link-local IPv6 address: nothing to connect to.
+        assert_eq!(advert_from("x._ragon-node._tcp.local.", 8000, &["fe80::1".parse::<IpAddr>().ok()].into_iter().flatten().collect::<Vec<_>>(), &[]), None);
+    }
+
+    #[test]
+    fn ipv4_is_preferred_and_link_local_ipv6_is_dropped() {
+        let parse = |addresses: &[&str]| addresses.iter().filter_map(|a| a.parse::<IpAddr>().ok()).collect::<Vec<_>>();
+        assert_eq!(best_address(&parse(&["fe80::1", "fd00::2", "192.168.50.105"])), "192.168.50.105".parse().ok());
+        assert_eq!(best_address(&parse(&["fe80::1", "fd00::2"])), "fd00::2".parse().ok());
+        assert_eq!(best_address(&parse(&["127.0.0.1", "169.254.3.4"])), "169.254.3.4".parse().ok());
+        assert_eq!(best_address(&parse(&["fe80::1"])), None);
+        // Loopback is never the node a browsing machine wants: a node does not browse.
+        assert_eq!(best_address(&parse(&["127.0.0.1", "::1"])), None);
+    }
+
+    #[test]
+    fn one_node_seen_on_several_interfaces_is_one_row_with_its_best_address() {
+        let mut found = Vec::new();
+        merge(&mut found, advert("spark-1", "1111", "fd00::2"));
+        merge(&mut found, advert("spark-1", "1111", "192.168.50.105"));
+        merge(&mut found, advert("spark-1", "1111", "fd00::2"));
+        merge(&mut found, advert("spark-2", "2222", "192.168.50.106"));
+        assert_eq!(found.iter().map(|a| (a.node.name.as_str(), a.node.address.as_str())).collect::<Vec<_>>(),
+                   vec![("spark-1", "192.168.50.105"), ("spark-2", "192.168.50.106")]);
+        assert_eq!(found[0].addresses, vec!["192.168.50.105".to_string(), "fd00::2".to_string()]);
+    }
+
+    #[test]
+    fn two_instances_claiming_one_id_stay_two_rows_so_the_claim_is_questioned() {
+        // A node advertises one instance name, its host name, on every interface: another name with
+        // the same id is another machine. Merged into one row, `resolve` never saw two claimants
+        // and followed whichever address sorted first, here the impostor's.
+        let mut found = Vec::new();
+        merge(&mut found, advert("spark-1", "11111111-aaaa", "192.168.50.200"));
+        merge(&mut found, advert("impostor", "11111111-aaaa", "192.168.50.66"));
+        assert_eq!(found.len(), 2, "{found:?}");
+        let inputs = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        assert!(matches!(resolve(&inputs, &Fixed::new(found)), Resolution::Choose { .. }));
+    }
+
+    #[test]
+    fn the_node_file_is_written_whole_and_forgotten() {
+        let dir = std::env::temp_dir().join(format!("ragon-node-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("home").join(locator::NODE_FILE);
+        let node = Node { last_seen: "2015-10-02T09:00:00+01:00".into(), ..spark1().node };
+        assert!(write_node_file(&path, &node).is_ok());
+        assert_eq!(locator::remembered_at(&path), Some(node));
+        // No staging file is left beside it.
+        let left: Vec<String> = std::fs::read_dir(dir.join("home")).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left, vec![locator::NODE_FILE.to_string()]);
+        assert_eq!(forget(&path), vec!["Forgotten. The next start looks for a node on the network again.".to_string()]);
+        assert_eq!(forget(&path), vec!["No node was remembered.".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The real browse, against a node advertised on this network. Not run by default: it needs
+    /// an advert (`avahi-publish -s <name> _ragon-node._tcp 8000 proto=1 node=<id> …`, or a real
+    /// node) and multicast. `RAGON_TEST_NODE_ID=<id> cargo test … live_browse -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_browse_finds_an_advertised_node() {
+        let wanted = std::env::var("RAGON_TEST_NODE_ID").unwrap_or_default();
+        let started = Instant::now();
+        let all = MdnsBrowser.browse(None);
+        println!("browse(None): {:?} in {:?}", all, started.elapsed());
+        let started = Instant::now();
+        let one = MdnsBrowser.browse(Some(&Node { node: wanted.clone(), ..Node::default() }));
+        println!("browse(Some({wanted})): {:?} in {:?}", one, started.elapsed());
+        assert!(all.iter().any(|advert| advert.node.node == wanted), "the advertised node was not found");
+        assert!(one.iter().any(|advert| advert.node.node == wanted));
+        let remembered = Node { node: wanted.clone(), address: "192.0.2.1".into(), model_port: 8000, ..Node::default() };
+        let resolution = resolve(&Inputs { remembered: Some(remembered), ..Inputs::default() }, &MdnsBrowser);
+        println!("resolve(remembered at another address): {resolution:?}");
+        assert!(matches!(resolution, Resolution::Found { remember: true, note: Some(_), .. }));
+    }
+
+    #[test]
+    fn a_version_difference_is_said_once_a_day() {
+        let node = spark1().node;
+        assert_eq!(version_notice_line("0.9.0", &node, None, "2015-10-02"), None);
+        let line = version_notice_line("0.9.1", &node, Some("2015-10-01\n"), "2015-10-02");
+        assert_eq!(line.as_deref(), Some("Note: node spark-1 runs Ragon 0.9.0, this machine 0.9.1. `ragon update` here, or update the node."));
+        assert_eq!(version_notice_line("0.9.1", &node, Some("2015-10-02"), "2015-10-02"), None);
+        assert_eq!(version_notice_line("0.9.1", &Node { version: String::new(), ..node }, None, "2015-10-02"), None);
+    }
+
+    // -- remote access (REMOTE_ACCESS §5) ------------------------------------------------------------
+
+    fn enrolled() -> Node {
+        Node { remote: "ragon-11111111-aaaa.netbird.selfhosted".to_string(), ..spark1().node }
+    }
+
+    #[test]
+    fn the_overlay_name_comes_before_any_browse() {
+        let browser = Fixed::new(vec![spark1()]);
+        let inputs = Inputs { remembered: Some(enrolled()), overlay: true, ..Inputs::default() };
+        match resolve(&inputs, &browser) {
+            Resolution::Overlay { node } => assert_eq!(node.model_url(), "http://ragon-11111111-aaaa.netbird.selfhosted:8000"),
+            other => panic!("{other:?}"),
+        }
+        assert!(browser.asked.borrow().is_empty(), "no browse");
+    }
+
+    #[test]
+    fn with_the_overlay_down_the_lan_tiers_run_as_before() {
+        let browser = Fixed::new(vec![spark1()]);
+        let inputs = Inputs { remembered: Some(enrolled()), overlay: false, ..Inputs::default() };
+        assert!(matches!(resolve(&inputs, &browser), Resolution::Found { .. }));
+    }
+
+    #[test]
+    fn configuration_and_a_node_still_win_over_the_overlay() {
+        let browser = Fixed::new(Vec::new());
+        let configured = Inputs { configured: Some("http://10.0.0.1:8000".into()), remembered: Some(enrolled()), overlay: true, ..Inputs::default() };
+        assert_eq!(resolve(&configured, &browser), Resolution::Host("http://10.0.0.1:8000".into()));
+        let node = Inputs { is_node: true, remembered: Some(enrolled()), overlay: true, ..Inputs::default() };
+        assert!(matches!(resolve(&node, &browser), Resolution::Host(_)));
+    }
+
+    #[test]
+    fn an_overlay_name_that_is_not_the_nodes_own_is_never_used() {
+        let browser = Fixed::new(Vec::new());
+        let stranger = Node { remote: "laptop.netbird.selfhosted".to_string(), ..spark1().node };
+        let inputs = Inputs { remembered: Some(stranger), overlay: true, ..Inputs::default() };
+        assert!(matches!(resolve(&inputs, &browser), Resolution::LastAddress { .. }));
+    }
+
+    #[test]
+    fn the_advert_carries_the_overlay_name_only_when_it_is_the_nodes_own() {
+        let addresses = ["192.168.50.105".parse().unwrap()];
+        let record = |remote: &str| {
+            vec![("node".to_string(), "11111111-aaaa".to_string()), ("remote".to_string(), remote.to_string())]
+        };
+        let own = advert_from("spark-1._ragon-node._tcp.local.", 8000, &addresses, &record("Ragon-11111111-AAAA.netbird.selfhosted")).unwrap();
+        assert_eq!(own.node.remote, "ragon-11111111-aaaa.netbird.selfhosted");
+        let other = advert_from("spark-1._ragon-node._tcp.local.", 8000, &addresses, &record("ragon-2222.netbird.selfhosted")).unwrap();
+        assert_eq!(other.node.remote, "");
+    }
+
+    #[test]
+    fn remote_subcommands_go_to_remote_join() {
+        let args: Vec<String> = ["remote", "join", "--code", "12345678"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(Request::from_args(&args), Request::Remote(args[1..].to_vec()));
+    }
+
+    #[test]
+    fn the_list_says_how_the_node_is_reached_off_the_lan() {
+        let inputs = Inputs { remembered: Some(enrolled()), overlay: true, ..Inputs::default() };
+        let lines = list_lines(&inputs, &[], &[]);
+        assert!(lines.iter().any(|line| line.contains("over the overlay (remote access)")), "{lines:?}");
+        let mut advert = spark1();
+        advert.node.remote = enrolled().remote;
+        let lines = list_lines(&Inputs::default(), &[advert], &[None]);
+        assert!(lines.iter().any(|line| line.contains("off the LAN: ragon-11111111-aaaa.netbird.selfhosted")), "{lines:?}");
+    }
+
+}

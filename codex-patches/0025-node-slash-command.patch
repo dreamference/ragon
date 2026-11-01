@@ -1,0 +1,55 @@
+diff --git a/codex-rs/tui/src/app/event_dispatch.rs b/codex-rs/tui/src/app/event_dispatch.rs
+--- a/codex-rs/tui/src/app/event_dispatch.rs
++++ b/codex-rs/tui/src/app/event_dispatch.rs
+@@ -2153,2 +2153,6 @@
+             }
++            AppEvent::RagonNode(args, thread_id) => {
++                let lines = match ragon_launcher::node_command::plan(&args, thread_id) { Ok(run) => tui.with_restored(|| run.execute()).await, Err(lines) => lines };
++                self.chat_widget.add_plain_history_lines(lines.into_iter().map(ratatui::text::Line::from).collect());
++            }
+             AppEvent::RefreshWindowsSandbox { thread_id } => {
+diff --git a/codex-rs/tui/src/app_event.rs b/codex-rs/tui/src/app_event.rs
+--- a/codex-rs/tui/src/app_event.rs
++++ b/codex-rs/tui/src/app_event.rs
+@@ -1486,2 +1486,5 @@
+ 
++    /// Ragon: `/node <args>`, run in the terminal while the TUI is suspended.
++    RagonNode(String, Option<ThreadId>),
++
+     /// Async update of the current git branch for status line rendering.
+diff --git a/codex-rs/tui/src/chatwidget/slash_dispatch.rs b/codex-rs/tui/src/chatwidget/slash_dispatch.rs
+--- a/codex-rs/tui/src/chatwidget/slash_dispatch.rs
++++ b/codex-rs/tui/src/chatwidget/slash_dispatch.rs
+@@ -539,2 +539,3 @@ impl ChatWidget {
+             SlashCommand::Night => self.add_plain_history_lines(ragon_launcher::night::command("", &self.config.cwd).into_iter().map(ratatui::text::Line::from).collect()),
++            SlashCommand::Node => self.app_event_tx.send(AppEvent::RagonNode(String::new(), self.thread_id)),
+             SlashCommand::Airgapped => self.add_plain_history_lines(ragon_launcher::airgapped::session_command(self.thread_id, "", codex_sandboxing::policy_transforms::runs_without_platform_sandbox(self.config.permissions.permission_profile())).into_iter().map(ratatui::text::Line::from).collect()),
+@@ -783,2 +784,3 @@ impl ChatWidget {
+             SlashCommand::Night => self.add_plain_history_lines(ragon_launcher::night::command(trimmed, &self.config.cwd).into_iter().map(ratatui::text::Line::from).collect()),
++            SlashCommand::Node => self.app_event_tx.send(AppEvent::RagonNode(trimmed.to_string(), self.thread_id)),
+             SlashCommand::Airgapped => self.add_plain_history_lines(ragon_launcher::airgapped::session_command(self.thread_id, trimmed, codex_sandboxing::policy_transforms::runs_without_platform_sandbox(self.config.permissions.permission_profile())).into_iter().map(ratatui::text::Line::from).collect()),
+@@ -1276,2 +1278,3 @@ impl ChatWidget {
+             | SlashCommand::Tui
++            | SlashCommand::Node
+             | SlashCommand::Pets => QueueDrain::Stop,
+diff --git a/codex-rs/tui/src/slash_command.rs b/codex-rs/tui/src/slash_command.rs
+--- a/codex-rs/tui/src/slash_command.rs
++++ b/codex-rs/tui/src/slash_command.rs
+@@ -45,2 +45,3 @@ pub enum SlashCommand {
+     Night,
++    Node,
+     Agents,
+@@ -140,2 +141,3 @@ impl SlashCommand {
+             SlashCommand::Night => "queue a task for the overnight run",
++            SlashCommand::Node => "provision, pair and check Ragon nodes",
+             SlashCommand::Airgapped => "set how much of the internet this session may use",
+@@ -180,2 +182,3 @@ impl SlashCommand {
+                 | SlashCommand::Night
++                | SlashCommand::Node
+                 | SlashCommand::Airgapped
+@@ -268,3 +271,4 @@ impl SlashCommand {
+             | SlashCommand::MemoryDrop
+-            | SlashCommand::MemoryUpdate => false,
++            | SlashCommand::MemoryUpdate
++            | SlashCommand::Node => false,
+             SlashCommand::Diff

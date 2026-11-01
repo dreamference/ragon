@@ -1,0 +1,94 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE / Editor settings
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Dreamference / Antigravity
+.dreamference/
+.antigravity/
+.gemini/
+/config/
+
+# The Electron app: npm's install, Vite's and Forge's output, the binaries copied in for bundling
+desktop/electron/node_modules
+desktop/electron/.vite/
+desktop/electron/out/
+desktop/electron/resources/
+desktop/electron/e2e/results/
+
+# The Work window's frontend: npm's install and Vite's build (dist/ is covered above)
+desktop/ui/node_modules
+desktop/ui/.vite/
+
+# ragon-code build output
+ragon-code-rs/target/
+
+# MkDocs build output (the product site)
+site/
+
+# Local builds of the standalone Rust crates (the builder uses ~/.cache/dreamference/*/target).
+/ragon-web-rs/target/
+
+# Tool caches (ruff, mypy)
+.ruff_cache/
+.mypy_cache/
+
+# Local tool files: editor and assistant settings, generated context maps, helper scripts
+.mcp.json
+# ...except the delegation plugin's own server declaration (it enables nothing by itself).
+!claude-plugin/.mcp.json
+.cursorrules
+.codesight/
+.neurr/
+.github/copilot-instructions.md
+/codex.md
+/do
+/pgy
+.cbmignore
+
+
+# Cargo build output of any crate folder.
+**/target/
+
+# Agent instruction files and agent state are personal and never committed, at any depth.
+# AGENTS.md is the project's own guide and stays tracked.
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+AGENTS.override.md
+GEMINI.md
+.cursor/
+.cursorrules
+.windsurfrules

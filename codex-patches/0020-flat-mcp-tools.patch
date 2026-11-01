@@ -1,0 +1,26 @@
+diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
+--- a/codex-rs/core/Cargo.toml
++++ b/codex-rs/core/Cargo.toml
+@@ -73,2 +73,3 @@ codex-thread-store = { workspace = true }
+ codex-tools = { workspace = true }
++ragon-tools = { path = "../ragon/tools" }
+ codex-utils-absolute-path = { workspace = true }
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -946,3 +946,3 @@ impl ModelClient {
+                 prompt.base_instructions.text.clone(),
+-                Some(create_tools_raw_json_for_responses_api(&prompt.tools)?.into()),
++                Some(ragon_tools::for_server(create_tools_raw_json_for_responses_api(&prompt.tools)?, &mut input).into()),
+             )
+@@ -2415,2 +2415,3 @@ where
+                 Ok(ResponseEvent::OutputItemDone(item)) => {
++                    let item = ragon_tools::from_server(item);
+                     items_added.push(item.clone());
+diff --git a/codex-rs/core/src/tools/router.rs b/codex-rs/core/src/tools/router.rs
+--- a/codex-rs/core/src/tools/router.rs
++++ b/codex-rs/core/src/tools/router.rs
+@@ -257,2 +257,3 @@ impl ToolRouter {
+             } => {
++                let (namespace, name) = ragon_tools::resolve(namespace, name);
+                 let tool_name = ToolName::new(namespace, name).with_default_namespace();

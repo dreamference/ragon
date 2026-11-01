@@ -1,0 +1,13 @@
+#!/bin/sh
+# Ragon's .deb, before removal: unload and remove the AppArmor profile postinst wrote, and the
+# `ragon-app` launcher script.
+set -e
+PROFILE=/etc/apparmor.d/ragon
+if [ -f "$PROFILE" ]; then
+    if command -v apparmor_parser >/dev/null 2>&1 && [ -d /sys/kernel/security/apparmor ]; then
+        apparmor_parser -R "$PROFILE" >/dev/null 2>&1 || true
+    fi
+    rm -f "$PROFILE"
+fi
+rm -f /usr/bin/ragon-app
+exit 0

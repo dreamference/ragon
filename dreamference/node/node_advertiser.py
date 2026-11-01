@@ -1,0 +1,512 @@
+"""`ragon-admin node enable|disable|status`.
+
+offering this machine to the local network as a Ragon node (specs/DREAMFERENCE_RAGON_NODE.md
+§4, §5.2).
+
+Enabling does three things: it installs the Avahi service file that advertises the node, it
+publishes the web UI and SearXNG beyond loopback, and it records that it did so, so that a later
+`searxng start` keeps that address. Disabling undoes all three. The web UI the advert names is
+`ragon web` on port 3100 (specs/DREAMFERENCE_RAGON_ASK.md §4.2, §8), which serves a device only
+once it is paired.
+Root is needed once, for the file under `/etc/avahi`; the command is printed before it
+runs and sudo prompts on the terminal. With no terminal it still runs when sudo needs no password,
+and `--yes` (what `install.sh` passes) never waits for input: `sudo -n` or nothing.
+"""
+
+import getpass
+import os
+import pathlib
+import shutil
+import socket
+import subprocess
+import tempfile
+import urllib.request
+from urllib.parse import urlparse
+
+from dreamference.node.node_browser import NodeBrowser
+from dreamference.node.node_identity import NodeIdentity
+from dreamference.node.node_service_file import NodeServiceFile
+from dreamference.node.node_settings import LOOPBACK, NodeSettings
+
+# `ragon web`'s port (ragon-rs/web/src/server.rs DEFAULT_PORT): what the advert's `web` record names.
+WEB_PORT = 3100
+# `ragon web`'s user unit (ragon-rs/web/src/cli.rs UNIT_NAME), which `ragon web start` writes.
+WEB_UNIT = str(pathlib.Path("~/.config/systemd/user/ragon-web.service").expanduser())
+# Ubuntu puts the daemon in /usr/sbin, which is not on every user's PATH.
+AVAHI_DAEMON = "/usr/sbin/avahi-daemon"
+DEFAULT_MODEL_PORT = 8000
+
+SHARING_NOTICE = (
+    "⚠️  Anyone on the local network can now use this node: send prompts to its model and search\n"
+    "   through its SearXNG. Nothing is encrypted."
+)
+WEB_NOTICE = (
+    f"🌐 The Ragon web UI (`ragon web`, port {WEB_PORT}) is on the local network: a phone or another\n"
+    "   computer opens it once paired, with the code `ragon web pair` prints on this node.\n"
+    "   `ragon-admin node enable --no-web` keeps it on this machine."
+)
+
+
+class NodeAdvertiser:
+    """Enables, disables and reports the node's advertisement."""
+
+    @classmethod
+    def enable(cls, no_web: bool = False, yes: bool = False) -> bool:
+        """Advertises this machine as a node and publishes what clients need.
+
+        Args:
+            no_web: Keep the web UI on loopback; clients then get `ragon` and web search only.
+            yes: Never wait for input (`node enable --yes`, as `install.sh` runs it): root through
+                `sudo -n` only.
+
+        Returns:
+            bool: True when the service file is installed and the binds applied; False, with
+            nothing published, when the file could not be installed.
+        """
+        if not cls.is_gb10():
+            print(
+                "⚠️  This machine does not look like a GB10 (DGX Spark); a node on anything else is "
+                "untested."
+            )
+        # DGX OS has Avahi (GNOME depends on it); a GB10 reinstalled as Ubuntu Server does not, and
+        # without the daemon there is neither a folder to put the file in nor anyone to publish it.
+        if not cls.avahi_installed() and not cls.run_privileged(
+            ["apt-get", "install", "-y", "avahi-daemon"],
+            "install Avahi, which publishes the advertisement",
+            yes=yes,
+        ):
+            print(
+                "❌ Avahi is not installed, so this node cannot be advertised: `sudo apt install avahi-daemon`, "
+                "then run this again. Until then a client reaches it with RAGON_NODE=<this machine's address>."
+            )
+            return False
+        node_id = NodeIdentity.ensure()
+        before = NodeSettings.load()
+        NodeSettings.save(advertise=True, web=not no_web)
+        port = cls.model_port()
+        text = NodeServiceFile.render(
+            port=port,
+            node_id=node_id,
+            version=cls.version(),
+            state="ready" if cls.model_answers(port) else "stopped",
+            web_port=WEB_PORT if cls.ragon_web_available() and not no_web else None,
+            search_port=cls.search_port(),
+            main=cls.serves_main_model(),
+            remote=cls.remote_name(),
+        )
+        # The advertisement first, the binds only once it is in place: a node whose web UI is on
+        # the LAN but which nobody can find is the worst of both states.
+        if not cls.install_service_file(text, yes=yes):
+            NodeSettings.save(advertise=before["advertise"], web=before["web"])
+            print(
+                "⚠️  Nothing was published. Run `ragon-admin node enable` from a terminal, where sudo "
+                "can ask for the password once."
+            )
+            return False
+        cls.warn_wifi_power_save()
+        print(SHARING_NOTICE)
+        if not no_web:
+            print(WEB_NOTICE)
+        cls.apply_binds()
+        print(
+            f"✅ This node is advertised as {socket.gethostname()} (_ragon-node._tcp, port {port}, "
+            f"id {node_id[:8]}…). Clients find it with no address typed."
+        )
+        return True
+
+    @classmethod
+    def warn_wifi_power_save(cls) -> None:
+        """Prints a warning, not an error, when a connected Wi-Fi interface has power saving on: it
+        loses the multicast mDNS this advertisement travels by, so clients may not find the node.
+        """
+        from dreamference.vllm_server.wifi_power_save import WifiPowerSave
+
+        warning = WifiPowerSave.warning()
+        if warning:
+            print(warning)
+
+    @classmethod
+    def disable(cls) -> bool:
+        """Stops advertising and puts the web UI and SearXNG back on loopback.
+
+        Returns:
+            bool: True when no advertisement is left.
+        """
+        NodeSettings.save(advertise=False)
+        cls.apply_binds()
+        path = NodeServiceFile.service_path
+        if not path.exists():
+            print("✅ This node is not advertised.")
+            return True
+        if cls.run_privileged(["rm", "-f", str(path)], "remove the advertisement"):
+            print(
+                "✅ The node is no longer advertised; the web UI and SearXNG are on this machine only."
+            )
+            return True
+        # Without root the file cannot be removed, but its owner can empty it: Avahi publishes
+        # nothing from a file that is not a service group.
+        try:
+            path.write_text("")
+            print(
+                f"⚠️  {path} was emptied, which stops the advertisement; remove it with the command above."
+            )
+            return True
+        except OSError:
+            print(f"❌ {path} is still in place and still advertises this node.")
+            return False
+
+    @classmethod
+    def status(cls) -> str:
+        """Returns:
+        str: The node's id, what it shares, the advertised records, the published addresses,
+        and what a browse of the network returns.
+        """
+        settings = NodeSettings.load()
+        node_id = NodeIdentity.read()
+        lines = [f"Node id: {node_id or 'none (this machine has not been a node yet)'}"]
+        if not settings["advertise"]:
+            lines.append(
+                "Advertised: no (`ragon-admin node enable` offers this node to the local network)"
+            )
+        else:
+            lines.append(
+                "Advertised: yes" + ("" if settings["web"] else ", without the web UI (--no-web)")
+            )
+        records = NodeServiceFile.read()
+        if records is None:
+            lines.append(f"Service file: none at {NodeServiceFile.service_path}")
+            if settings["advertise"]:
+                lines.append(
+                    "  The node is enabled but not advertised: run `ragon-admin node enable` again."
+                )
+        else:
+            shown = ", ".join(f"{key}={value}" for key, value in records.items())
+            lines.append(f"Service file: {shown}")
+        if not cls.ragon_web_available():
+            lines.append(f"Web UI (ragon web, port {WEB_PORT}): ragon is not installed")
+        else:
+            shared = settings["advertise"] and settings["web"]
+            lines.append(
+                f"Web UI (ragon web, port {WEB_PORT}): {'the local network, paired devices only' if shared else 'this machine only'}"
+            )
+        searxng = cls.searxng_published_address()
+        lines.append(f"SearXNG published on: {searxng or 'not running'}")
+        found = NodeBrowser.browse()
+        if not found:
+            lines.append(
+                "Seen on the network: no node (a browse of _ragon-node._tcp returned nothing)"
+            )
+        for node in found:
+            mine = " (this node)" if node_id and node.get("node") == node_id else ""
+            lines.append(
+                f"Seen on the network: {node['name']} at {node['address']}:{node['port']} "
+                f"state={node.get('state', '?')} version={node.get('version', '?')}{mine}"
+            )
+        return "\n".join(lines)
+
+    # -- what `server start` and `server stop` report ----------------------------------------------
+
+    @classmethod
+    def on_server_starting(cls, model_key: str, port: int) -> None:
+        """Called when a model load begins.
+
+        the machine is a node from here on, and an advertised node says `loading`, because a refused
+        connection looks the same for a stopped node and a loading one.
+
+        Args:
+            model_key: The model being loaded.
+            port: The model server's port.
+        """
+        NodeIdentity.ensure()
+        cls._report(
+            NodeServiceFile.update(
+                state="loading", port=port, version=cls.version(), main=cls.is_main_model(model_key)
+            )
+        )
+
+    @classmethod
+    def on_server_ready(cls) -> None:
+        """Called when the model server first answers."""
+        cls._report(NodeServiceFile.update(state="ready"))
+
+    @classmethod
+    def on_server_stopped(cls) -> None:
+        """Called when the model server is stopped, removed, or failed to start."""
+        cls._report(NodeServiceFile.update(state="stopped"))
+
+    @classmethod
+    def on_searxng_started(cls) -> None:
+        """Called when `ragon-admin searxng start` has SearXNG running: an advertised node offers it."""
+        if NodeSettings.advertised():
+            cls._report(NodeServiceFile.update(search_port=cls.search_port()))
+
+    @classmethod
+    def ragon_executable(cls) -> str | None:
+        """Returns:
+        Optional[str]: The installed `ragon`, which serves `ragon web`, or None.
+        """
+        from dreamference.runner.codex_branded_builder import CodexBrandedBuilder
+
+        path = CodexBrandedBuilder.executable_path()
+        return path if pathlib.Path(path).is_file() and os.access(path, os.X_OK) else None
+
+    @classmethod
+    def ragon_web_available(cls) -> bool:
+        """Returns:
+        bool: True if this machine can serve the Ragon web UI (`ragon web`, part of `ragon`).
+        """
+        return cls.ragon_executable() is not None
+
+    @classmethod
+    def serve_web(cls, shared: bool) -> bool:
+        """Puts `ragon web` where the settings say.
+
+        on the local network for an advertised node that shares its web UI (`ragon web start --lan`,
+        which refuses on any other machine), and back on loopback when a unit this command started
+        on the network is no longer wanted there. A machine that never ran `ragon web` is left alone
+        when nothing is shared.
+
+        Args:
+            shared: Whether the web UI is shared with the network.
+
+        Returns:
+            bool: True when `ragon web` was (re)started.
+        """
+        ragon = cls.ragon_executable()
+        if ragon is None:
+            return False
+        if shared:
+            command = [ragon, "web", "start", "--lan"]
+        else:
+            try:
+                with pathlib.Path(WEB_UNIT).open() as handle:
+                    on_lan = " --lan" in handle.read()
+            except OSError:
+                on_lan = False
+            if not on_lan:
+                return False
+            command = [ragon, "web", "start"]
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=120, check=False
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            print(f"⚠️  Could not run `ragon {' '.join(command[1:])}`: {error}")
+            return False
+        if result.returncode != 0:
+            reason = (result.stderr or result.stdout).strip()
+            print(f"⚠️  `ragon {' '.join(command[1:])}` failed{': ' + reason if reason else ''}")
+            return False
+        return True
+
+    @classmethod
+    def _report(cls, outcome: bool | None) -> None:
+        if outcome is False:
+            print(
+                f"⚠️  Could not update {NodeServiceFile.service_path}; clients may see a stale state. "
+                "Run `ragon-admin node enable` again."
+            )
+
+    # -- pieces, each a seam for the tests ---------------------------------------------------------
+
+    @classmethod
+    def apply_binds(cls) -> bool:
+        """Publishes the web UI and SearXNG where the settings say, recreating a container only when
+        its address changes. `ragon web` is started on the network for a node that shares its web
+        UI (`serve_web`); SearXNG is not installed or started by this: a node without it simply
+        does not offer it.
+
+        Returns:
+            bool: True when the web UI is shared with the network.
+        """
+        from dreamference.chat.searxng_sidecar import SEARXNG_CONTAINER_NAME, SearxngSidecar
+        from dreamference.chat.sidecar_network import SidecarNetwork
+
+        shared = NodeSettings.advertised() and NodeSettings.web_bind_address() != LOOPBACK
+        cls.serve_web(shared)
+        if SidecarNetwork.network_mode(SEARXNG_CONTAINER_NAME):
+            SearxngSidecar.start()
+        return shared
+
+    @classmethod
+    def avahi_installed(cls) -> bool:
+        """Returns:
+        bool: True if the Avahi daemon, which publishes the service file, is installed.
+        """
+        return shutil.which("avahi-daemon") is not None or pathlib.Path(AVAHI_DAEMON).exists()
+
+    @classmethod
+    def install_service_file(cls, text: str, yes: bool = False) -> bool:
+        """Puts the service file in place.
+
+        written directly when it is already this user's, created through sudo (owned by this user,
+        so later updates need no root) otherwise.
+
+        Args:
+            text: The file's content.
+            yes: Never wait for a password (`sudo -n` only).
+
+        Returns:
+            bool: True when the file is installed with this content.
+        """
+        if NodeServiceFile.write(text):
+            return True
+        path = NodeServiceFile.service_path
+        with tempfile.NamedTemporaryFile("w", suffix=".service", delete=False) as staged:
+            staged.write(text)
+        try:
+            user = getpass.getuser()
+            command = ["install", "-m", "644", "-o", user, staged.name, str(path)]
+            if cls.run_privileged(
+                command, "advertise the node (Avahi publishes files in this folder)", yes=yes
+            ):
+                return True
+        finally:
+            pathlib.Path(staged.name).unlink()
+        print(
+            f"💡 To advertise the node, save the following as {path}, owned by {getpass.getuser()}:\n"
+        )
+        print(text)
+        return False
+
+    @classmethod
+    def run_privileged(cls, command: list[str], purpose: str, yes: bool = False) -> bool:
+        """Runs one command as root, visibly: it is printed first and sudo prompts on the terminal.
+
+        With no terminal it runs only if sudo needs no password; otherwise it is only printed.
+
+        Args:
+            command: The argv, without `sudo`.
+            purpose: What it is for, for the message.
+            yes: Never wait for input: `sudo -n` or nothing, terminal or not.
+
+        Returns:
+            bool: True if the command ran and succeeded.
+        """
+        from dreamference.vllm_server.host_safety_setup import HostSafetySetup
+
+        line = "sudo " + " ".join(command)
+        mode = HostSafetySetup.root_mode(yes)
+        if mode is None:
+            print(f"💡 Run this to {purpose}:\n   {line}")
+            if yes:
+                print("   (sudo needs a password, and --yes never waits for one)")
+            return False
+        print(f"🔑 Needs root once, to {purpose}:\n   {line}")
+        try:
+            return (
+                subprocess.run(
+                    HostSafetySetup.root_argv(command, mode),
+                    check=False,
+                    stdin=None if mode == "sudo" else subprocess.DEVNULL,
+                ).returncode
+                == 0
+            )
+        except OSError:
+            return False
+
+    @classmethod
+    def remote_name(cls) -> str | None:
+        """The node's overlay name, for the advert's `remote` record (REMOTE_ACCESS §7).
+
+        Returns:
+            str | None: The name when remote access is set up, else None.
+        """
+        from dreamference.remote.remote_settings import RemoteSettings
+
+        record = RemoteSettings.read()
+        return record.get("overlay_name") if record else None
+
+    @classmethod
+    def model_port(cls) -> int:
+        """Returns:
+        int: The model server's port, from the configured host.
+        """
+        from dreamference.config import DreamferenceConfig
+
+        return urlparse(DreamferenceConfig().vllm_host).port or DEFAULT_MODEL_PORT
+
+    @classmethod
+    def model_answers(cls, port: int) -> bool:
+        """Args: port: The model server's port.
+
+        Returns:
+            bool: True if `/v1/models` answers on loopback.
+        """
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/v1/models", timeout=2
+            ) as response:
+                return response.status == 200
+        except (OSError, ValueError):
+            return False
+
+    @classmethod
+    def search_port(cls) -> int | None:
+        """Returns:
+        Optional[int]: SearXNG's host port when its container exists, else None.
+        """
+        from dreamference.chat.searxng_sidecar import SEARXNG_CONTAINER_NAME, SEARXNG_HOST_PORT
+        from dreamference.chat.sidecar_network import SidecarNetwork
+
+        return SEARXNG_HOST_PORT if SidecarNetwork.network_mode(SEARXNG_CONTAINER_NAME) else None
+
+    @classmethod
+    def serves_main_model(cls) -> bool:
+        """Returns:
+        bool: True if the model assigned to this node is one a coding client can use.
+        """
+        from dreamference.config import DreamferenceConfig
+
+        return cls.is_main_model(DreamferenceConfig().model)
+
+    @classmethod
+    def is_main_model(cls, model_key: str) -> bool:
+        """Args: model_key: A model matrix key.
+
+        Returns:
+            bool: True for a chat model; False for a diffusion model or an unknown key. It is a
+            property of the matrix entry, so nobody sets it.
+        """
+        from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
+
+        return model_key in ModelMatrixRegistry.MATRIX and not ModelMatrixRegistry.is_diffusion(
+            model_key
+        )
+
+    @classmethod
+    def is_gb10(cls) -> bool:
+        """Returns:
+        bool: True if the hardware detection qualifies this machine as a GB10.
+        """
+        try:
+            from dreamference.hardware.hardware_manager import HardwareManager
+
+            return bool(HardwareManager.detect_gb10_hardware().is_gb10)
+        except Exception:
+            return False
+
+    @classmethod
+    def version(cls) -> str:
+        """Returns:
+        str: Ragon's version on this node.
+        """
+        from dreamference import __version__
+
+        return __version__
+
+    @classmethod
+    def searxng_published_address(cls) -> str:
+        """Returns:
+        str: The address SearXNG's container publishes on, or "" when there is none.
+        """
+        from dreamference.chat.searxng_sidecar import SearxngSidecar
+
+        return SearxngSidecar.published_address()
+
+    @classmethod
+    def summary(cls) -> dict[str, object]:
+        """Returns:
+        Dict[str, object]: The settings and the node id, for `ragon-admin status`.
+        """
+        return {"node": NodeIdentity.read(), **NodeSettings.load()}

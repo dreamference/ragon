@@ -1,0 +1,667 @@
+# The Windows client (specs/DREAMFERENCE_RAGON_WINDOWS_ARM.md, Phase 1): ragon.exe and its
+# commands for Windows on Arm (the RTX Spark laptops) and x86-64 Windows, built and tested, then
+# installed with install.ps1 under Windows PowerShell 5.1.
+#
+# Where the x86-64 build runs: the self-hosted runner the repository variable WINDOWS_X64_RUNNER
+# names (a JSON runs-on value), else GitHub's windows-latest. The `windows_x64_runner` input
+# `github` forces GitHub's runner for one run; deleting the variable does it for every run (the
+# runner is offline: a job waiting for it would queue for a day). aarch64 stays on GitHub's Arm
+# runner, since every job runs what it builds. The self-hosted runner is a non-administrator, so
+# what needs an administrator (install.ps1's elevated step, the sandbox, the ETW audit) is the
+# `checks` job's, on GitHub's runners, from the uploaded build. The desktop job, which opens a
+# window, stays on GitHub's runners too.
+#
+# The self-hosted runner must never be reachable from a pull request: this repository is public,
+# and a fork's pull request runs the workflow as the fork wrote it. This workflow has no
+# pull_request trigger, its callers have none, the runner's own job-started hook refuses every
+# event but push, workflow_dispatch and schedule, and outside contributors' workflows wait for
+# approval. Never add pull_request or pull_request_target here or in release-build.yml.
+#
+# Runs on pushes to `windows/**` branches while the port is worked on, by hand, and from the
+# Release workflow (`build_windows`), which then publishes what this uploads. Windows builds are a
+# preview and are not signed (decided).
+name: Windows
+
+on:
+  push:
+    branches: ["windows/**"]
+  workflow_dispatch:
+    inputs:
+      windows_x64_runner:
+        description: "Runner for the x86-64 build and tools: box (the WINDOWS_X64_RUNNER variable's, if set) or github"
+        type: choice
+        default: box
+        options:
+          - box
+          - github
+  workflow_call:
+    inputs:
+      version:
+        description: "Release version compiled into ragon (empty: a source build)"
+        type: string
+        default: ""
+      windows_x64_runner:
+        description: "box (the WINDOWS_X64_RUNNER variable's runner, if set) or github (windows-latest)"
+        type: string
+        default: box
+
+permissions:
+  contents: read
+
+jobs:
+  # The small crates and the two standalone ones: minutes, so their failures show long before the
+  # Codex build finishes.
+  tools:
+    name: Tools - ${{ matrix.target }}
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: '"windows-11-arm"'
+            target: aarch64-pc-windows-msvc
+          # JSON for runs-on: the self-hosted runner's labels from WINDOWS_X64_RUNNER, or windows-latest.
+          - runner: ${{ (inputs.windows_x64_runner != 'github' && !startsWith(github.event_name, 'pull_request') && vars.WINDOWS_X64_RUNNER) || '"windows-latest"' }}
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          targets: ${{ matrix.target }}
+      # The std-only crates, each in a copy outside the launcher workspace (they inherit nothing
+      # from it), tested natively: the air-gap resolver, the node locator, the skills crate with
+      # its directory junctions.
+      - name: Test the launcher's standalone crates
+        shell: bash
+        run: |
+          set -euo pipefail
+          for crate in airgapped node-locator skills; do
+            rm -rf "$RUNNER_TEMP/$crate"
+            cp -r "ragon-rs/$crate" "$RUNNER_TEMP/$crate"
+            (cd "$RUNNER_TEMP/$crate" && cargo test --release)
+          done
+      - name: Test the web commands
+        working-directory: ragon-web-rs
+        run: cargo test --release --locked
+      - name: Test the code index's queries
+        working-directory: ragon-code-rs
+        run: cargo test --release --locked --lib
+
+  ragon:
+    name: ragon - ${{ matrix.target }}
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    # Upstream's own Windows release builds "can exceed an hour" on larger machines.
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: '"windows-11-arm"'
+            target: aarch64-pc-windows-msvc
+          # JSON for runs-on: the self-hosted runner's labels from WINDOWS_X64_RUNNER, or windows-latest.
+          - runner: ${{ (inputs.windows_x64_runner != 'github' && !startsWith(github.event_name, 'pull_request') && vars.WINDOWS_X64_RUNNER) || '"windows-latest"' }}
+            target: x86_64-pc-windows-msvc
+    env:
+      # Compiled into the launcher, so `ragon update` can tell whether a newer release exists.
+      RAGON_VERSION: ${{ inputs.version }}
+      # The builder prints emoji, which the runner's cp1252 console cannot encode.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - name: Long paths
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Codex submodule
+        run: git submodule update --init --depth 1 codex
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      # The builder imports only these; the package's own dependencies (PyTorch among them) are
+      # for the node and have no Windows on Arm wheels.
+      - name: Install the builder
+        run: |
+          pip install --no-deps -e .
+          pip install requests rich
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          targets: ${{ matrix.target }}
+      # Upstream's own action, from the pinned submodule: the MSVC environment and LLVM's linker
+      # for this target.
+      - name: MSVC environment
+        uses: ./codex/.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.target }}
+      # `ragon web` serves the Ragon UI from inside the binary: the build runs desktop/ui's
+      # Vite build first and embeds it (RAGON_WEB_UI_DIST, ragon-rs/web/build.rs).
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Build ragon
+        shell: bash
+        run: python -c "import sys; from dreamference.runner.codex_branded_builder import CodexBrandedBuilder as B; sys.exit(0 if B.build(force=True) else 1)"
+      - name: Smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$(dirname "$(python -c 'from dreamference.runner.codex_branded_builder import CodexBrandedBuilder as B; print(B.executable_path())')")"
+          ls -l "$bin"
+          "$bin/ragon.exe" --version
+          "$bin/ragon.exe" --help > /dev/null
+          "$bin/ragon-search.exe" --help > /dev/null
+          "$bin/ragon-code.exe" --help > /dev/null
+      - name: Package
+        run: python .github/scripts/package_ragon.py dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ !cancelled() }}
+        with:
+          name: ragon-windows-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+      # Last, so the smoke test and the packaging run whatever the tests say. The same
+      # export, V8 and target directory the build used, so the tests reuse its crates.
+      - name: Launcher test environment
+        if: ${{ !cancelled() }}
+        run: |
+          python -c "import os; from dreamference.runner.codex_branded_builder import BUILD_CACHE_DIR as C, CodexBrandedBuilder as B; src = os.path.join(C, 'src'); env = dict(B.fetch_rusty_v8(src), RAGON_EXPORT=os.path.join(src, 'codex-rs'), CARGO_TARGET_DIR=os.path.join(C, 'target'), CARGO_PROFILE_RELEASE_DEBUG='none', CARGO_PROFILE_RELEASE_STRIP='debuginfo'); open(os.environ['GITHUB_ENV'], 'a').write(''.join(f'{k}={v}\n' for k, v in env.items()))"
+      - name: Launcher tests
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          Set-Location $env:RAGON_EXPORT
+          cargo test --release -p ragon-launcher
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  # install.ps1, the air gap and the egress audit, from the build the ragon job uploaded, on GitHub's
+  # runners: they need an administrator (the sandbox's accounts, the firewall rule, ETW), which the
+  # self-hosted runner is not, and install.ps1 changes the user's PATH, which a persistent runner
+  # would keep. Like the steps they were in the ragon job, whatever the launcher's tests say: they
+  # need only the uploaded build.
+  checks:
+    name: Install and air gap - ${{ matrix.target }}
+    needs: ragon
+    if: ${{ !cancelled() }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ragon-windows-${{ matrix.target }}
+          path: dist
+      - name: The build's checksums
+        shell: bash
+        run: (cd dist && sha256sum -c "ragon-${{ matrix.target }}.sha256sums")
+      # install.ps1 end to end, under Windows PowerShell 5.1 (what a standard Windows 11 laptop
+      # has), against a stand-in for GitHub's release API serving the assets just packaged.
+      - name: install.ps1 under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $server = Start-Process -PassThru -NoNewWindow python -ArgumentList ".github\scripts\fake_release.py", "dist", "8787", "dreamference/ragon", "v0.0.0-ci"
+          Start-Sleep -Seconds 3
+          # The stand-in release is unsigned; only a named pre-signing tag may install unsigned.
+          $env:RAGON_RELEASE_API = "http://127.0.0.1:8787"
+          $env:RAGON_INSTALL_DIR = Join-Path $env:RUNNER_TEMP "ragon-install\bin"
+          # A fresh profile's user PATH: one entry, REG_EXPAND_SZ, with a variable in it. install.ps1
+          # once glued its folder onto a lone entry and rewrote the value as REG_SZ.
+          $envKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+          $noExpand = [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+          $savedPath = $envKey.GetValue("Path", $null, $noExpand)
+          $savedKind = if ($null -ne $savedPath) { $envKey.GetValueKind("Path") } else { $null }
+          $fresh = "%USERPROFILE%\AppData\Local\Microsoft\WindowsApps"
+          $envKey.SetValue("Path", $fresh, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+          try {
+            Write-Host "PowerShell $($PSVersionTable.PSVersion)"
+            & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Version v0.0.0-ci
+            if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed" }
+            & (Join-Path $env:RAGON_INSTALL_DIR "ragon.exe") --version
+            if ($LASTEXITCODE -ne 0) { throw "the installed ragon.exe did not run" }
+            # Again, over the installed files: the replace-aside path.
+            & powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Version v0.0.0-ci
+            if ($LASTEXITCODE -ne 0) { throw "a second install.ps1 failed" }
+            Get-ChildItem $env:RAGON_INSTALL_DIR | Format-Table Name, Length
+            $rawPath = $envKey.GetValue("Path", "", $noExpand)
+            Write-Host "user PATH: $rawPath ($($envKey.GetValueKind("Path")))"
+            if ($rawPath -ne "$fresh;$($env:RAGON_INSTALL_DIR)") { throw "the user's PATH is not its one entry and the install folder" }
+            if ($envKey.GetValueKind("Path") -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) { throw "the user's PATH is no longer REG_EXPAND_SZ" }
+            # The runner is already an administrator, so install.ps1's one elevated step ran without
+            # a prompt: the sandbox's accounts and the mDNS rule must exist now. One rule for this
+            # ragon.exe after two installs, named by WINDOWS_ARM section 16.4's scheme, computed here
+            # by Python as the check (tests/test_install_ps1.py runs this same line on Linux).
+            $program = Join-Path $env:RAGON_INSTALL_DIR "ragon.exe"
+            $expected = python -c "import hashlib, sys; print('Ragon-mDNS-' + hashlib.sha256(sys.argv[1].lower().encode('utf-8')).hexdigest()[:8])" $program
+            $rules = @(Get-NetFirewallRule | Where-Object { $_.Name -like "Ragon-mDNS-*" } | Where-Object { ($_ | Get-NetFirewallApplicationFilter).Program -eq $program })
+            $rules | Format-List Name, DisplayName, Profile, Enabled
+            if ($rules.Count -ne 1) { throw "expected one mDNS rule for $program, found $($rules.Count)" }
+            if ($rules[0].Name -ne $expected) { throw "the mDNS rule for $program is $($rules[0].Name), not $expected" }
+            Get-LocalUser | Where-Object { $_.Name -like "CodexSandbox*" } | Format-Table Name, Enabled
+            if (-not (Get-LocalUser | Where-Object { $_.Name -like "CodexSandboxOffline*" })) { throw "the sandbox's offline account was not created" }
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+            # The runner's own PATH back, with the install folder (the later steps use it).
+            if ($null -ne $savedPath) { $envKey.SetValue("Path", "$savedPath;$($env:RAGON_INSTALL_DIR)", $savedKind) }
+            $envKey.Close()
+          }
+      # Phase 2 (WINDOWS_ARM §7, §14, §18): the refusal at `on`, the offline account taking a
+      # sandboxed command's network away, and the egress audit over ETW, against a stand-in model
+      # server. The runner is an administrator, which both the sandbox and ETW need.
+      - name: Air gap and egress audit
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ragon = Join-Path $env:RUNNER_TEMP "ragon-install\bin\ragon.exe"
+          $server = Start-Process -PassThru -NoNewWindow python -ArgumentList ".github\scripts\stub_model_server.py", "8799"
+          Start-Sleep -Seconds 3
+          # Native commands write to stderr; that is output here, not a terminating error.
+          $ErrorActionPreference = "Continue"
+          try {
+            # At `on`, a sandbox that cannot take the network away is refused before anything starts.
+            $env:DREAMFERENCE_RAGON_AIRGAPPED = "on"
+            $env:DREAMFERENCE_VLLM_HOST = "http://127.0.0.1:8799"
+            $refused = & $ragon -c windows.sandbox=unelevated exec --skip-git-repo-check "hello" 2>&1 | Out-String
+            $refusedExit = $LASTEXITCODE
+            Write-Host "refusal: exit $refusedExit, $refused"
+            if ($refusedExit -eq 0 -or $refused -notmatch "non-admin sandbox") { throw "the non-admin sandbox was not refused at on" }
+            # The elevated sandbox: a command reaches the network at `off` and not at `on`. Plain
+            # HTTP: Windows' curl.exe uses Schannel, which acquires no credentials for a restricted
+            # token (SEC_E_NO_CREDENTIALS; WINDOWS_ARM §23.4 W3), so an https probe fails at off.
+            $probe = @("sandbox", "-c", "sandbox_mode=workspace-write", "-c", "sandbox_workspace_write.network_access=true", "--", "curl.exe", "-sS", "-m", "20", "-o", "NUL", "-w", "%{http_code}", "http://example.com")
+            $env:DREAMFERENCE_RAGON_AIRGAPPED = "off"
+            $off = & $ragon @probe 2>&1 | Out-String
+            $offExit = $LASTEXITCODE
+            Write-Host "off: exit $offExit, $off"
+            $env:DREAMFERENCE_RAGON_AIRGAPPED = "on"
+            $on = & $ragon @probe 2>&1 | Out-String
+            $onExit = $LASTEXITCODE
+            Write-Host "on: exit $onExit, $on"
+            Remove-Item Env:DREAMFERENCE_RAGON_AIRGAPPED
+            # The egress audit: one real session against the stand-in, traced over ETW.
+            & $ragon audit egress --host http://127.0.0.1:8799
+            $auditExit = $LASTEXITCODE
+            if ($offExit -ne 0) { throw "a sandboxed curl failed at off, so the result at on proves nothing" }
+            if ($onExit -eq 0) { throw "a sandboxed curl reached the network at on" }
+            if ($auditExit -ne 0) { throw "the egress audit did not pass (exit $auditExit)" }
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
+      # A second user's elevated setup (WINDOWS_ARM §23.4 W11): the sandbox accounts get new passwords,
+      # and every user set up before must get them too. A stand-in second profile holds a passwords
+      # file from before; after this user's setup it must hold the new one, and this user's sandbox runs.
+      - name: Sandbox setup on a PC with two users
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ragon = Join-Path $env:RUNNER_TEMP "ragon-install\bin\ragon.exe"
+          $mine = Join-Path $env:USERPROFILE ".ragon\.sandbox-secrets\sandbox_users.json"
+          $other = Join-Path (Split-Path $env:USERPROFILE) "ragon-ci-other\.ragon\.sandbox-secrets"
+          New-Item -ItemType Directory -Force $other | Out-Null
+          $otherFile = Join-Path $other "sandbox_users.json"
+          Copy-Item $mine $otherFile
+          $before = Get-Content -Raw $otherFile
+          $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+          $ErrorActionPreference = "Continue"
+          $out = & $ragon sandbox setup --elevated --user $user --codex-home (Join-Path $env:USERPROFILE ".ragon") 2>&1 | Out-String
+          Write-Host "setup: exit $LASTEXITCODE, $out"
+          $ErrorActionPreference = "Stop"
+          $after = Get-Content -Raw $otherFile
+          if ($after -eq $before) { throw "the other user's passwords file was not updated" }
+          if ($after -ne (Get-Content -Raw $mine)) { throw "the other user's passwords file differs from this user's" }
+          $echo = & $ragon sandbox -- cmd.exe /c echo shared 2>&1 | Out-String
+          if ($echo -notmatch "shared") { throw "this user's sandbox did not run after the setup: $echo" }
+          Remove-Item -Recurse -Force (Split-Path (Split-Path $other))
+      # `ragon doctor` on Windows (WINDOWS_ARM §23.4 W9): no vendor app in its endpoint check, and no
+      # warning for the rg.exe the release does not ship.
+      - name: ragon doctor
+        shell: powershell
+        run: |
+          $ragon = Join-Path $env:RUNNER_TEMP "ragon-install\bin\ragon.exe"
+          $out = & $ragon doctor 2>&1 | Out-String
+          Write-Host $out
+          if ($out -match "Codex exclusions|Install ripgrep|signed Codex app") { throw "ragon doctor still names Codex's exclusions or asks for ripgrep" }
+      # https inside the sandbox (WINDOWS_ARM §23.4 W3): Schannel cannot, so sessions set Git to
+      # OpenSSL; here the same setting, given to git directly, must reach GitHub from the sandbox.
+      - name: Git over https in the sandbox
+        shell: powershell
+        run: |
+          # Native commands write to stderr; that is output here, not a terminating error.
+          $ErrorActionPreference = "Continue"
+          $ragon = Join-Path $env:RUNNER_TEMP "ragon-install\bin\ragon.exe"
+          $git = (Get-Command git.exe).Source
+          $out = & $ragon sandbox -c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=true -- $git -c http.sslBackend=openssl ls-remote https://github.com/git/git HEAD 2>&1 | Out-String
+          Write-Host "openssl: exit $LASTEXITCODE, $out"
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch "HEAD") { throw "git over OpenSSL did not reach https from the sandbox" }
+          $schannel = & $ragon sandbox -c sandbox_mode=workspace-write -c sandbox_workspace_write.network_access=true -- $git -c http.sslBackend=schannel ls-remote https://github.com/git/git HEAD 2>&1 | Out-String
+          Write-Host "schannel (expected to fail while W3 stands): exit $LASTEXITCODE, $schannel"
+          # The session's own setting: a stand-in model asks for git ls-remote over https, which must
+          # answer from the sandbox with no -c of ours.
+          $ws = Join-Path $env:RUNNER_TEMP "git-tls"
+          New-Item -ItemType Directory -Force $ws | Out-Null
+          Set-Location $ws
+          git init -q
+          $record = Join-Path $env:RUNNER_TEMP "requests-git.jsonl"
+          $server = Start-Process -PassThru -NoNewWindow python -ArgumentList "$env:GITHUB_WORKSPACE\.github\scripts\stub_model_server.py", "8797", "--shell-call", '"git ls-remote https://github.com/git/git HEAD"', "--record", "`"$record`""
+          Start-Sleep -Seconds 3
+          try {
+            $env:DREAMFERENCE_VLLM_HOST = "http://127.0.0.1:8797"
+            $session = & $ragon -c windows.sandbox=elevated -s workspace-write -c sandbox_workspace_write.network_access=true exec --skip-git-repo-check "list the remote's HEAD" 2>&1 | Out-String
+            Write-Host "session: exit $LASTEXITCODE, $session"
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
+          $outputs = @(Get-Content $record | ForEach-Object { $_ | ConvertFrom-Json } | ForEach-Object { $_.input } | Where-Object { $_.type -like "*call_output" } | ForEach-Object { "$($_.output)" })
+          Write-Host "tool output: $outputs"
+          if (-not ($outputs -match "HEAD")) { throw "git over https did not answer in a sandboxed session" }
+      # The compatibility mode on Windows (WINDOWS_ARM §23.4 W1): Codex dispatches none of its
+      # hooks there yet, so CLAUDE.md, the settings files' hooks and the permission rules would be
+      # skipped. The mode must refuse to start, with its reason, in print mode, in a session and when
+      # switched on, and no request may reach the model server. On Linux and macOS the mode is
+      # unchanged; this step is Windows-only.
+      - name: Compatibility mode refuses on Windows
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+          $ragon = Join-Path $env:RUNNER_TEMP "ragon-install\bin\ragon.exe"
+          $expected = "compatibility mode isn't available on Windows yet"
+          $ws = Join-Path $env:RUNNER_TEMP "compat-refuses"
+          New-Item -ItemType Directory -Force $ws | Out-Null
+          Set-Location $ws
+          git init -q
+          Set-Content -Path CLAUDE.md -Value "The magic word for this project is BLUEBERRY."
+          $record = Join-Path $env:RUNNER_TEMP "requests-compat.jsonl"
+          $server = Start-Process -PassThru -NoNewWindow python -ArgumentList "$env:GITHUB_WORKSPACE\.github\scripts\stub_model_server.py", "8798", "--shell-call", '"echo probe > probe.txt"', "--record", "`"$record`""
+          Start-Sleep -Seconds 3
+          $env:DREAMFERENCE_VLLM_HOST = "http://127.0.0.1:8798"
+          $failures = @()
+          try {
+            $cases = [ordered]@{
+              "print mode" = @("--compat", "claude", "-p", "What is the magic word?", "--disallowedTools", "Bash(echo *)")
+              "a session" = @("--compat", "claude", "exec", "--skip-git-repo-check", "What is the magic word?")
+              "switched on" = @("compat", "use", "claude")
+            }
+            foreach ($case in $cases.Keys) {
+              $out = $null | & $ragon @($cases[$case]) 2>&1 | Out-String
+              $code = $LASTEXITCODE
+              Write-Host "${case}: exit $code, $out"
+              if ($code -eq 0) { $failures += "${case}: exit 0" }
+              if ($out -notmatch [regex]::Escape($expected)) { $failures += "${case}: no refusal message" }
+            }
+            $env:DREAMFERENCE_RAGON_COMPAT = "claude"
+            $out = $null | & $ragon exec --skip-git-repo-check "What is the magic word?" 2>&1 | Out-String
+            $code = $LASTEXITCODE
+            Remove-Item Env:DREAMFERENCE_RAGON_COMPAT
+            Write-Host "the variable: exit $code, $out"
+            if ($code -eq 0) { $failures += "the variable: exit 0" }
+            if ($out -notmatch [regex]::Escape($expected)) { $failures += "the variable: no refusal message" }
+            # Each refusal names what turned the mode on and how to turn it off (compat.rs,
+            # how_to_turn_off), the desktop app's own server too, whose window shows its last lines.
+            # Out-String wraps at the console's width, so the checks read the text with its whitespace collapsed.
+            if (($out -replace '\s+', ' ') -notmatch [regex]::Escape("Remove-Item Env:DREAMFERENCE_RAGON_COMPAT")) { $failures += "the variable: the refusal does not say how to remove it" }
+            $env:DREAMFERENCE_RAGON_COMPAT = "claude"
+            $out = $null | & $ragon app-server 2>&1 | Out-String
+            $code = $LASTEXITCODE
+            Remove-Item Env:DREAMFERENCE_RAGON_COMPAT
+            Write-Host "the app's server: exit $code, $out"
+            if ($code -eq 0 -or ($out -replace '\s+', ' ') -notmatch [regex]::Escape("Remove-Item Env:DREAMFERENCE_RAGON_COMPAT")) { $failures += "the app's server: no refusal saying how to remove the variable" }
+            $out = $null | & $ragon --compat claude exec --skip-git-repo-check "What is the magic word?" 2>&1 | Out-String
+            if (($out -replace '\s+', ' ') -notmatch [regex]::Escape("on this command line: leave that out")) { $failures += "the flag: the refusal does not name it" }
+            $compatHome = Join-Path $env:RUNNER_TEMP "compat-home"
+            New-Item -ItemType Directory -Force (Join-Path $compatHome ".config\dreamference") | Out-Null
+            Set-Content -Path (Join-Path $compatHome ".config\dreamference\config.toml") -Value 'ragon_compat = "claude"'
+            $ownHome = $env:HOME
+            $env:HOME = $compatHome
+            $out = $null | & $ragon exec --skip-git-repo-check "What is the magic word?" 2>&1 | Out-String
+            $code = $LASTEXITCODE
+            $env:HOME = $ownHome
+            Write-Host "the user's file: exit $code, $out"
+            if ($code -eq 0 -or ($out -replace '\s+', ' ') -notmatch [regex]::Escape("ragon compat use off")) { $failures += "the user's file: no refusal naming ragon compat use off" }
+          } finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
+          if ((Test-Path $record) -and (Get-Item $record).Length -gt 0) { $failures += "a request reached the model server" }
+          if (Test-Path probe.txt) { $failures += "probe.txt exists: a command ran" }
+          if ($failures.Count -gt 0) { throw ($failures -join "; ") }
+          # The refusals left a non-zero $LASTEXITCODE, which the runner would take as the step's result.
+          exit 0
+      # `ragon uninstall` (WINDOWS_ARM section 16.4) on what install.ps1 installed: the folder (the
+      # running ragon.exe by a detached step once it exits), the user's Path entry and the mDNS rule.
+      # The runner is an administrator, so the firewall step runs without a prompt.
+      # Runs even when an earlier test step failed, so the uninstall is always checked.
+      - name: ragon uninstall
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "ragon-install\bin"
+          $program = Join-Path $dir "ragon.exe"
+          & $program uninstall --yes
+          if ($LASTEXITCODE -ne 0) { throw "ragon uninstall failed (exit $LASTEXITCODE)" }
+          $ErrorActionPreference = "Stop"
+          # The detached removal waits for ragon.exe to exit, then starts a PowerShell, which can take
+          # a while on a fresh runner ("Preparing modules for first use").
+          for ($i = 0; $i -lt 90 -and (Test-Path $dir); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path $dir) {
+            Get-ChildItem -Force $dir | Format-Table Name
+            $left = Join-Path $env:TEMP "ragon-uninstall-left.txt"
+            if (Test-Path $left) { Write-Host "left: $(Get-Content -Raw $left)" } else { Write-Host "no left file: the removal has not finished" }
+            Get-Process | Where-Object { $_.Path -like "$dir*" } | Format-Table Id, Name, Path
+            throw "$dir is still there"
+          }
+          $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          if (($userPath -split ";") -contains $dir) { throw "the install folder is still on the user's PATH" }
+          $rules = @(Get-NetFirewallRule | Where-Object { $_.Name -like "Ragon-mDNS-*" } | Where-Object { ($_ | Get-NetFirewallApplicationFilter).Program -eq $program })
+          if ($rules.Count -ne 0) { throw "the mDNS rule for $program is still there" }
+
+  # The desktop app for Windows (DESKTOP_PARITY Phase 3 item 12; WINDOWS_ARM §11, superseded by
+  # Electron): desktop/electron packaged natively on each runner with this run's ragon.exe and
+  # codex-code-mode-host.exe inside, its tests and typecheck first, then the same hidden audit
+  # session the Mac preview runs (the window opens, the bundled app-server starts, the app quits by
+  # itself), from where the installer put it. An NSIS installer (windows/installer.nsi), per user and
+  # unsigned like the rest of the Windows preview, installed, started and uninstalled here.
+  desktop:
+    name: Desktop app - ${{ matrix.target }}
+    needs: ragon
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            arch: arm64
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            arch: x64
+    env:
+      INPUT_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ragon-windows-${{ matrix.target }}
+          path: clients
+      - name: Bundled binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Checked against the build's own sums file before anything is unpacked.
+          (cd clients && sha256sum -c "ragon-${{ matrix.target }}.sha256sums")
+          mkdir -p desktop/electron/resources
+          # Named exactly: `ragon-*` would also match ragon-search, ragon-fetch and ragon-code.
+          for name in ragon codex-code-mode-host; do
+            gunzip -c "clients/$name-${{ matrix.target }}.gz" > "desktop/electron/resources/$name.exe"
+          done
+          desktop/electron/resources/ragon.exe --version
+          version="$INPUT_VERSION"
+          [[ -n "$version" ]] || version="$(node -p 'require("./desktop/electron/package.json").version')"
+          echo "RAGON_VERSION=$version" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      # bash, so a failing command fails the step (pwsh would carry on past a native command's exit code).
+      - name: Work window frontend
+        working-directory: desktop/ui
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+      - name: Build the app
+        working-directory: desktop/electron
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          # Electron 42's package has no install step: the binary is fetched the first time anything
+          # requires `electron`, and vitest's parallel workers raced each other to fetch it. Once,
+          # here, with one retry, before any test; a no-op when it is already there.
+          node node_modules/electron/install.js || { sleep 15; node node_modules/electron/install.js; }
+          npm run typecheck
+          npm run package
+      # The main process's unit tests on Windows (paths compared as the file system
+      # has them, `.cmd` stand-ins for ragon, cmd.exe for tasks): they gate the job again.
+      - name: Main process unit tests
+        working-directory: desktop/electron
+        shell: bash
+        run: npm test
+      # The installer, built with makensis (where it comes from: below).
+      - name: Installer
+        shell: pwsh
+        run: |
+          # NSIS from the runner image if it has one, else NSIS 3.12 as electron-builder ships it, from its
+          # GitHub release and pinned by SHA-256 (Chocolatey's feed answered 503 in runs 39257291454 and
+          # 39269638527). makensis is an x86 program, which Windows on Arm emulates.
+          $makensis = Get-Command makensis -ErrorAction SilentlyContinue
+          if ($makensis) { $makensis = $makensis.Source } else {
+            $makensis = @("${env:ProgramFiles(x86)}\NSIS\makensis.exe", "$env:ProgramFiles\NSIS\makensis.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $makensis) {
+            $bundle = Join-Path $env:RUNNER_TEMP "nsis-bundle-3.12.tar.gz"
+            Invoke-WebRequest -Uri "https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis%402.0.1/nsis-bundle-3.12.tar.gz" -OutFile $bundle -MaximumRetryCount 3 -RetryIntervalSec 10
+            if ((Get-FileHash $bundle -Algorithm SHA256).Hash -ne "fe36a357f3a220db893498e830fd80e0769768a18a99f4e4d2447b982538feed") { throw "the NSIS bundle is not the one pinned" }
+            tar -xzf $bundle -C $env:RUNNER_TEMP
+            if ($LASTEXITCODE -ne 0) { throw "could not unpack the NSIS bundle" }
+            $env:NSISDIR = Join-Path $env:RUNNER_TEMP "nsis-bundle\windows"
+            $makensis = Join-Path $env:NSISDIR "makensis.exe"
+          }
+          $source = (Resolve-Path "desktop\electron\out\Ragon-win32-${{ matrix.arch }}").Path
+          New-Item -ItemType Directory -Force -Path dist-desktop | Out-Null
+          $out = Join-Path (Resolve-Path dist-desktop).Path "Ragon-Setup-$env:RAGON_VERSION-${{ matrix.arch }}.exe"
+          # A release candidate (0.9.1-rc.1) names the installer in full; Windows' file version is 0.9.1.
+          $numeric = ($env:RAGON_VERSION -split '[-+]')[0]
+          & $makensis /V2 "/DVERSION=$env:RAGON_VERSION" "/DNUMERIC_VERSION=$numeric" "/DARCH=${{ matrix.arch }}" "/DSOURCE=$source" "/DOUTFILE=$out" desktop\electron\windows\installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
+          Get-Item $out | Format-List Name, Length
+      # Installed silently, as a user would get it; then the audit's session, hidden, from the installed
+      # app: the window opens on Ask, its own `ragon app-server` starts (the bundled ragon.exe), and the
+      # app quits by itself; a crash or a hang fails the job. Then uninstalled, and checked gone.
+      - name: Install, start and quit, uninstall
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist-desktop\Ragon-Setup-*.exe | Select-Object -First 1
+          $process = Start-Process -FilePath $setup.FullName -ArgumentList "/S" -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "the installer exited with $($process.ExitCode)" }
+          $installed = Join-Path $env:LOCALAPPDATA "Programs\Ragon\App"
+          $app = Join-Path $installed "Ragon.exe"
+          if (-not (Test-Path $app)) { throw "no Ragon.exe in $installed" }
+          if (-not (Test-Path (Join-Path $installed "resources\ragon.exe"))) { throw "the installed app has no ragon.exe" }
+          $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Ragon"
+          if ((Get-ItemProperty $key).DisplayVersion -ne $env:RAGON_VERSION) { throw "the uninstall entry does not say $env:RAGON_VERSION" }
+          $shortcut = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Ragon.lnk"
+          if (-not (Test-Path $shortcut)) { throw "no Start menu entry at $shortcut" }
+          $scratch = Join-Path $env:RUNNER_TEMP "ragon-app-home"
+          New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+          $ownProfile = $env:USERPROFILE
+          $ownLocal = $env:LOCALAPPDATA
+          $env:USERPROFILE = $scratch
+          # The app's data folder is %LOCALAPPDATA%\dev.dreamference.ragon (data-folder.ts, W4).
+          $env:LOCALAPPDATA = Join-Path $scratch "AppData\Local"
+          $env:CODEX_HOME = Join-Path $scratch ".ragon"
+          $env:RAGON_APP_AUDIT = "8"
+          $env:ELECTRON_ENABLE_LOGGING = "1"
+          $started = Start-Process -FilePath $app -PassThru
+          $null = $started.Handle  # kept, so ExitCode is there after the app has gone
+          if (-not $started.WaitForExit(90000)) { Stop-Process -Id $started.Id -Force; throw "the app did not quit by itself" }
+          if ($started.ExitCode -ne 0) { throw "the app exited with $($started.ExitCode)" }
+          $data = Join-Path $env:LOCALAPPDATA "dev.dreamference.ragon"
+          if (-not (Test-Path $data)) { throw "the app wrote no data folder at $data" }
+          if (Test-Path (Join-Path $scratch ".local\share\dev.dreamference.ragon")) { throw "the app wrote its data under .local\share" }
+          # The app wrote its Application User Model ID into the Start menu entry, without which
+          # Windows shows none of its notifications (app-identity.ts; installer.nsi cannot write it).
+          $entry = (New-Object -ComObject Shell.Application).NameSpace((Split-Path $shortcut)).ParseName((Split-Path -Leaf $shortcut))
+          $id = $entry.ExtendedProperty("System.AppUserModel.ID")
+          if ($id -ne "dev.dreamference.ragon") { throw "the Start menu entry's AppUserModelID is '$id', not the app's" }
+          # The uninstaller with the runner's own profile: Windows finds the Start menu from USERPROFILE.
+          $env:USERPROFILE = $ownProfile
+          $env:LOCALAPPDATA = $ownLocal
+          # An NSIS uninstaller copies itself to the temporary folder and runs from there, so -Wait
+          # returns at once: wait for the folder to go.
+          Start-Process -FilePath (Join-Path $installed "Uninstall Ragon.exe") -ArgumentList "/S" -Wait
+          $deadline = (Get-Date).AddSeconds(120)
+          while ((Test-Path $installed) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          if (Test-Path $app) { throw "the uninstaller left Ragon.exe" }
+          if (Test-Path $shortcut) { throw "the uninstaller left the Start menu entry" }
+          if (Test-Path $key) { throw "the uninstaller left its Apps entry" }
+      # The installer and the uninstaller while the app runs, as a user's update or removal meets it:
+      # the app and the ragon.exe serving it hold their files, and the installer must close them and
+      # replace the folder whole, or stop with exit code 2; never mix two versions (installer.nsi,
+      # FreeAppFolder). The app runs normally here (no audit), so it waits until it is closed.
+      - name: Install over the running app, uninstall it running
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist-desktop\Ragon-Setup-*.exe | Select-Object -First 1).FullName
+          $installed = Join-Path $env:LOCALAPPDATA "Programs\Ragon\App"
+          $app = Join-Path $installed "Ragon.exe"
+          $scratch = Join-Path $env:RUNNER_TEMP "ragon-app-running"
+          New-Item -ItemType Directory -Force -Path $scratch | Out-Null
+          $env:CODEX_HOME = Join-Path $scratch ".ragon"
+          $env:DREAMFERENCE_VLLM_HOST = "http://127.0.0.1:9"
+          function Start-App {
+            $started = Start-Process -FilePath $app -PassThru
+            $null = $started.Handle
+            $deadline = (Get-Date).AddSeconds(60)
+            do {
+              Start-Sleep -Seconds 2
+              $running = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$installed\", [StringComparison]::OrdinalIgnoreCase) })
+            } while (-not ($running | Where-Object { $_.Name -eq "ragon.exe" }) -and (Get-Date) -lt $deadline)
+            Write-Host "running from the app's folder: $(($running | ForEach-Object { $_.Name }) -join ', ')"
+            if ($started.HasExited) { throw "the app exited at once ($($started.ExitCode))" }
+            return $started
+          }
+          $process = Start-Process -FilePath $setup -ArgumentList "/S" -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "the installer exited with $($process.ExitCode)" }
+          $started = Start-App
+          $clock = [Diagnostics.Stopwatch]::StartNew()
+          $process = Start-Process -FilePath $setup -ArgumentList "/S" -PassThru -Wait
+          Write-Host "installed over the running app in $([int]$clock.Elapsed.TotalSeconds) s (over 10 s: it was ended, not closed)"
+          if ($process.ExitCode -ne 0) { throw "the installer over the running app exited with $($process.ExitCode)" }
+          if (-not $started.HasExited) { throw "the installer left the old app running" }
+          if (-not (Test-Path (Join-Path $installed "resources\ragon.exe"))) { throw "the new app has no ragon.exe" }
+          if (Test-Path "$installed.old") { throw "the old app's folder was left beside the new one" }
+          $started = Start-App
+          Start-Process -FilePath (Join-Path $installed "Uninstall Ragon.exe") -ArgumentList "/S" -Wait
+          $deadline = (Get-Date).AddSeconds(120)
+          while (((Test-Path $installed) -or (Test-Path "$installed.old")) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          if (Test-Path $installed) { throw "the uninstaller left the running app's folder" }
+          if (Test-Path "$installed.old") { throw "the uninstaller left the folder it moved aside" }
+          if (-not $started.HasExited) { throw "the uninstaller left the app running" }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ !cancelled() }}
+        with:
+          name: desktop-windows-${{ matrix.arch }}
+          path: dist-desktop/Ragon-Setup-*.exe
+          if-no-files-found: error

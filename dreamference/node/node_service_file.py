@@ -1,0 +1,252 @@
+"""The Avahi service file that advertises the node (specs/DREAMFERENCE_RAGON_NODE.md §5.1, §5.2).
+
+A static file under `/etc/avahi/services/` needs no running publisher, so the node is advertised
+after a reboot with nobody logged in. Creating it needs root once (`NodeAdvertiser.enable`); it
+is then owned by the node's user, and `server start`, `server stop` and an update rewrite it in
+place. Every method that writes is a no-op when the file does not exist, so a node that was never
+enabled is never advertised by a side effect.
+"""
+
+import re
+from html import escape, unescape
+from pathlib import Path
+from typing import Any, Final
+
+SERVICE_TYPE: Final[str] = "_ragon-node._tcp"
+# The forge's own record beside the node's (specs/DREAMFERENCE_RAGON_FORGEJO.md §2.1).
+FORGE_SERVICE_TYPE: Final[str] = "_ragon-forge._tcp"
+FORGE_ROLES: Final[tuple] = ("record", "mirror")
+
+# Version of the advertised contract. A client refuses a node whose `proto` is higher than its own.
+PROTO: Final[int] = 1
+
+STATES: Final[tuple] = ("stopped", "loading", "ready")
+
+# "Leave this record as it is", for the two records whose value can also be "absent" (None).
+KEEP: Final[object] = object()
+
+
+class NodeServiceFile:
+    """Renders, reads and rewrites `ragon-node.service`."""
+
+    # Where Avahi looks. A class attribute so tests point it at a scratch folder.
+    service_path: Path = Path("/etc/avahi/services/ragon-node.service")
+
+    @classmethod
+    def render(  # noqa: PLR0913 - one per TXT record
+        cls,
+        port: int,
+        node_id: str,
+        version: str,
+        state: str = "stopped",
+        web_port: int | None = None,
+        search_port: int | None = None,
+        main: bool = False,
+        remote: str | None = None,
+        forge: tuple[str, int] | None = None,
+    ) -> str:
+        """Renders the service file.
+
+        Args:
+            port: The model server's port (the SRV port).
+            node_id: The node's stable id.
+            version: Ragon's version on the node.
+            state: `stopped`, `loading` or `ready`.
+            web_port: The web UI's port; None when it is not shared.
+            search_port: SearXNG's port; None when it is not shared.
+            main: Whether the model assigned to the node is one a coding client can use.
+            remote: The node's overlay name once remote access is set up (REMOTE_ACCESS §7); a
+                name, never an address. None leaves the record out.
+            forge: The forge's role (`record` or `mirror`) and HTTP port, advertised as a second
+                service, `_ragon-forge._tcp`; None when the forge is off.
+
+        Returns:
+            str: The file's exact text. The instance name is the host name (`%h`).
+        """
+        if state not in STATES:
+            raise ValueError(f"not a node state: {state!r}")
+        records = [f"proto={PROTO}", f"node={node_id}", f"version={version}"]
+        if web_port is not None:
+            records.append(f"web={web_port}")
+        if search_port is not None:
+            records.append(f"search={search_port}")
+        records.append(f"state={state}")
+        if main:
+            records.append("main=1")
+        if remote:
+            records.append(f"remote={remote}")
+        lines = [
+            "<?xml version=\"1.0\" standalone='no'?>",
+            '<!DOCTYPE service-group SYSTEM "avahi-service.dtd">',
+            "<!-- Written by `ragon-admin node enable`; rewritten by `ragon-admin server start|stop`. -->",
+            "<service-group>",
+            '  <name replace-wildcards="yes">%h</name>',
+            "  <service>",
+            f"    <type>{SERVICE_TYPE}</type>",
+            f"    <port>{int(port)}</port>",
+        ]
+        lines += [f"    <txt-record>{escape(record)}</txt-record>" for record in records]
+        lines.append("  </service>")
+        if forge is not None:
+            role, forge_port = forge
+            if role not in FORGE_ROLES:
+                raise ValueError(f"not a forge role: {role!r}")
+            lines += [
+                "  <service>",
+                f"    <type>{FORGE_SERVICE_TYPE}</type>",
+                f"    <port>{int(forge_port)}</port>",
+                f"    <txt-record>{escape(f'node={node_id}')}</txt-record>",
+                f"    <txt-record>{escape(f'role={role}')}</txt-record>",
+                "  </service>",
+            ]
+        lines += ["</service-group>", ""]
+        return "\n".join(lines)
+
+    @classmethod
+    def parse(cls, text: str) -> dict[str, str] | None:
+        """Reads a service file back.
+
+        Args:
+            text: The file's text.
+
+        Returns:
+            Optional[Dict[str, str]]: `port` and every TXT record by key, or None if the text is
+            not a `_ragon-node._tcp` service.
+        """
+        if f"<type>{SERVICE_TYPE}</type>" not in text:
+            return None
+        text = cls.service_block(text, SERVICE_TYPE) or text
+        port = re.search(r"<port>(\d+)</port>", text)
+        if not port:
+            return None
+        records: dict[str, str] = {"port": port.group(1)}
+        for record in re.findall(r"<txt-record>(.*?)</txt-record>", text, re.DOTALL):
+            key, _, value = unescape(record).partition("=")
+            records[key] = value
+        return records
+
+    @classmethod
+    def service_block(cls, text: str, service_type: str) -> str | None:
+        """Find one service's block in a service file.
+
+        Args:
+            text: A service file's text.
+            service_type: The service whose block is wanted.
+
+        Returns:
+            str | None: That `<service>` block, or None when the file has none.
+        """
+        for block in re.findall(r"<service>.*?</service>", text, re.DOTALL):
+            if f"<type>{service_type}</type>" in block:
+                return block
+        return None
+
+    @classmethod
+    def parse_forge(cls, text: str) -> tuple[str, int] | None:
+        """Read the advertised forge's role and port back.
+
+        Args:
+            text: A service file's text.
+
+        Returns:
+            tuple[str, int] | None: The advertised forge's role and port, or None.
+        """
+        block = cls.service_block(text, FORGE_SERVICE_TYPE)
+        role = re.search(r"<txt-record>role=(\w+)</txt-record>", block or "")
+        port = re.search(r"<port>(\d+)</port>", block or "")
+        if not role or not port or role.group(1) not in FORGE_ROLES:
+            return None
+        return role.group(1), int(port.group(1))
+
+    @classmethod
+    def read(cls) -> dict[str, str] | None:
+        """Returns:
+        Optional[Dict[str, str]]: The installed file's records, or None when the node is not
+        advertised.
+        """
+        try:
+            return cls.parse(cls.service_path.read_text())
+        except OSError:
+            return None
+
+    @classmethod
+    def write(cls, text: str) -> bool:
+        """Rewrites the installed file in place.
+
+        In place, not write-and-rename: the folder belongs to root and only the file is the user's.
+
+        Args:
+            text: The new content.
+
+        Returns:
+            bool: False when the file does not exist or this user cannot write it (`node enable`
+            must then be run again).
+        """
+        if not cls.service_path.is_file():
+            return False
+        try:
+            cls.service_path.write_text(text)
+        except OSError:
+            return False
+        return True
+
+    @classmethod
+    def update(  # noqa: PLR0913
+        cls,
+        state: str | None = None,
+        port: int | None = None,
+        main: bool | None = None,
+        version: str | None = None,
+        web_port: Any = KEEP,
+        search_port: Any = KEEP,
+        remote: object = KEEP,
+        forge: object = KEEP,
+    ) -> bool | None:
+        """Changes records of the installed file and leaves the others as they are.
+
+        Args:
+            state: The new `state`, if it changes.
+            port: The model server's port, if it changes.
+            main: Whether the node now serves a model a coding client can use, if known.
+            version: Ragon's version, if it changes.
+            web_port: The web UI's port, or None to stop advertising it; `KEEP` leaves it.
+            search_port: SearXNG's port, or None to stop advertising it; `KEEP` leaves it.
+            remote: The node's overlay name, or None to stop advertising it; `KEEP` leaves it.
+            forge: The forge's (role, port), or None to stop advertising it; `KEEP` leaves it.
+
+        Returns:
+            Optional[bool]: None when the node is not advertised (nothing to do), True when the
+            file was rewritten or already said so, False when it could not be written.
+        """
+        current = cls.read()
+        if current is None or "node" not in current:
+            return None
+        if forge is KEEP:
+            try:
+                forge = cls.parse_forge(cls.service_path.read_text())
+            except OSError:
+                forge = None
+        advertised_forge = forge if isinstance(forge, tuple) else None
+        text = cls.render(
+            port=int(port if port is not None else current["port"]),
+            node_id=current["node"],
+            version=version or current.get("version", ""),
+            state=state or current.get("state", "stopped"),
+            web_port=(int(current["web"]) if current.get("web", "").isdigit() else None)
+            if web_port is KEEP
+            else web_port,
+            search_port=(int(current["search"]) if current.get("search", "").isdigit() else None)
+            if search_port is KEEP
+            else search_port,
+            main=("main" in current) if main is None else main,
+            remote=(current.get("remote") or None)
+            if remote is KEEP
+            else (str(remote) if remote else None),
+            forge=advertised_forge,
+        )
+        try:
+            if cls.service_path.read_text() == text:
+                return True
+        except OSError:
+            pass
+        return cls.write(text)

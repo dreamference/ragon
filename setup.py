@@ -1,0 +1,43 @@
+from setuptools import setup, find_packages
+
+setup(
+    name="dreamference",
+    version="0.9.0",
+    license="AGPL-3.0-or-later",
+    classifiers=[
+        "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    ],
+    packages=find_packages(),
+    # Data a release install needs at run time, which a wheel carries only when named here:
+    # the code index's pinned tools and npm lockfile (`ragon-admin code setup`).
+    package_data={"dreamference.cli": ["code_index_pins/*"], "dreamference.swe_bench": ["image_digests/*"]},
+    # Floors for requests, sentence-transformers, sqlite-vec and Pillow are the first
+    # releases without a published advisory (specs/DREAMFERENCE_RAGON_DEPENDENCY_AUDIT.md).
+    install_requires=[
+        "pyyaml>=6.0",
+        "toml>=0.10.2",
+        "rich>=13.0.0",
+        "requests>=2.33.0",
+        "sentence-transformers>=5.6.0",
+        "sqlite-vec>=0.1.3",
+        "tensorizer>=2.0.0",
+        "einops>=0.7.0",
+        # Imported directly (image search, web tools), not just a dependency of a
+        # dependency: they were only ever present locally because another package pulled them in.
+        "Pillow>=12.3.0",
+        "beautifulsoup4>=4.12.0",
+    ],
+    extras_require={
+        # The code standard's tools (specs/DREAMFERENCE_PYTHON_QUALITY.md §4), pinned: the ratchet
+        # test compares ruff's findings with a baseline that only the pinned version recorded.
+        "dev": ["ruff==0.16.10", "mypy==2.4.0"],
+    },
+    entry_points={
+        "console_scripts": [
+            "ragon-admin=dreamference.cli:main",
+            # `ragon-search` and `ragon-fetch` are not console scripts: they are Rust binaries
+            # (ragon-web-rs/) that `ragon-admin codex build` installs beside `ragon`.
+        ],
+    },
+)
+

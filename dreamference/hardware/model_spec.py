@@ -1,0 +1,77 @@
+"""Model Specification Data Structure for Dreamference.
+
+This module defines the ModelSpec dataclass, which encapsulates metadata, memory
+requirements, quantization support, and HuggingFace repository mapping for LLM models
+qualified to run on NVIDIA GB10 hardware.
+"""
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class ModelSpec:
+    """Data model representing a Large Language Model's hardware requirements and attributes.
+
+    Attributes:
+        name (str): Human-readable display name of the model (e.g., 'Qwen 2.5 Coder 32B').
+        params_b (float): Total parameter count in billions (e.g., 32.0).
+        supported_precisions (List[str]): Supported floating-point or quantized formats (e.g., ['BF16', 'FP8']).
+        min_memory_gb (float): Minimum estimated VRAM/RAM required in GB for single batch inference.
+        max_memory_gb (float): Maximum estimated VRAM/RAM required in GB for high concurrency/context length.
+        compatible_gb10 (bool): Flag indicating if model fits within NVIDIA GB10 128GB unified memory.
+        notes (str): Operational or performance guidance notes for deployment.
+        hf_repo_id (str): Official HuggingFace repository identifier (e.g., 'Qwen/Qwen2.5-Coder-32B-Instruct').
+        launch_overrides (Dict[str, Any]): Per-model vLLM launch recipe. Not every model runs well on the
+            same flags: NVFP4 checkpoints on GB10 (SM121) need a specific GEMM/MoE backend pair and their
+            own tool-call parser, and picking the wrong one yields silent numerical corruption rather than
+            an error. Keys mirror `build_launch_command` parameter names, plus 'env' (a Dict[str, str] of
+            environment variables exported into the vLLM container). Explicit caller arguments always win
+            over these values; they only fill in what the caller left unset.
+
+            'docker_image' is among those keys: a model may pin the vLLM build it runs on, because the
+            engine is part of a recipe just as much as the flags are. A checkpoint whose KV geometry
+            needs a patch its own upstream ships cannot be served by whatever image the rest of the
+            matrix uses, and pinning it per model is cheaper than forking one image to suit every model.
+            Unset means DEFAULT_VLLM_IMAGE.
+
+            'load_transient_gb' is read by the start-up memory gate, not by the launch builder: the
+            memory a load needs beyond its arena, measured for this checkpoint, in place of the
+            global `LOAD_TRANSIENT_FRACTION` estimate (never below `MIN_LOAD_TRANSIENT_GB`). Unset
+            means the global estimate. The PSI watchdog does not read it and stays on regardless.
+        supports_vision (bool): Whether the checkpoint accepts image input as well as text. Not a
+            launch flag -- vLLM reads this from the checkpoint's own config and needs no telling --
+            but clients do: a client may refuse an upload unless told, and Ask relies
+            on it when it sends an image (specs/DREAMFERENCE_RAGON_ASK.md §1).
+            The signal is the checkpoint's architecture (`...ForConditionalGeneration` with a
+            `vision_config`) rather than the name, which is why it is recorded per entry here
+            rather than guessed from the alias.
+        engine_recipes (Dict[str, Dict[str, Any]]): The same checkpoint's recipes for engines other
+            than the one `launch_overrides` names, by engine name (`launch_overrides['engine']`'s
+            values: `vllm`, `sglang`, `ragon`). `launch_overrides` is the default; one of these is
+            served when the user asks for its engine (`server start --engine`, `server_engine` in
+            the config). Each is a complete recipe of its own, never layered over the default.
+        is_diffusion (bool): Whether the checkpoint is a diffusion language model rather than an
+            autoregressive one. Diffusion checkpoints cannot be served by vLLM -- they load
+            through transformers with trust_remote_code and their own block-denoising generate --
+            so this flag routes them to the diffusion sidecar and keeps `main-model set` from
+            pointing vLLM at a checkpoint it would fail to launch.
+        swe_bench_max_parallel (Optional[int]): The most SWE-bench instances that may run at once
+            beside this model, whatever `[swe_bench] max_parallel` says. For a checkpoint that
+            leaves the host too little memory for the default number of task containers. None
+            means no cap of the model's own.
+    """
+
+    name: str
+    params_b: float
+    supported_precisions: list[str]
+    min_memory_gb: float
+    max_memory_gb: float
+    compatible_gb10: bool
+    notes: str
+    hf_repo_id: str
+    launch_overrides: dict[str, Any] = field(default_factory=dict)
+    engine_recipes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    supports_vision: bool = False
+    is_diffusion: bool = False
+    swe_bench_max_parallel: int | None = None

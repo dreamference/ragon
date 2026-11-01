@@ -1,0 +1,14 @@
+{
+  "name": "ragon",
+  "owner": {
+    "name": "Dreamference"
+  },
+  "plugins": [
+    {
+      "name": "ragon",
+      "source": "./claude-plugin",
+      "description": "Ragon local delegation plugin for Claude Code (Phase P1: class W1 watch tool, no model).",
+      "version": "0.9.0"
+    }
+  ]
+}

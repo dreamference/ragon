@@ -1,0 +1,722 @@
+"""Remote access, the refusals and rollbacks (specs/DREAMFERENCE_RAGON_REMOTE_ACCESS.md).
+
+Each test reaches one decision branch of the `remote` package that the other `test_remote_*.py`
+files leave out: a command with no setup record, a step that fails and stops the ones after it,
+a rollback that puts the box back. Nothing here reaches a real box, Docker, systemd, sudo or the
+network: every class's seam is replaced, as in the other remote tests.
+"""
+
+import hashlib
+import subprocess
+
+import pytest
+
+from dreamference.remote import (
+    RemoteAccess,
+    RemoteBox,
+    RemoteCertificateAuthority,
+    RemoteControlPlane,
+    RemotePublicCertificate,
+    RemoteRelayCertificate,
+    RemoteSettings,
+    RemoteTunnel,
+    remote_box,
+)
+
+NODE_ID = "7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001"
+BOX = "relay.example.org"
+RELAY = "turn.example.org"
+NOT_SET_UP = "Remote access is not set up on this node"
+
+
+def _set_up(**extra):
+    RemoteSettings.write(
+        {
+            "dns_name": BOX,
+            "overlay_name": f"ragon-{NODE_ID}.netbird.selfhosted",
+            "node_peer": True,
+            **extra,
+        }
+    )
+    RemoteSettings.write_private("admin-token", "tok")
+
+
+def _never(name):
+    def fail(cls, *args, **kwargs):
+        pytest.fail(f"{name} was called")
+
+    return classmethod(fail)
+
+
+# -- the certificate commands with nothing to act on ------------------------------------------------
+
+
+@pytest.mark.parametrize("record", [None, {"dns_name": BOX, "box_only": True}])
+def test_a_public_certificate_is_refused_before_the_node_is_set_up(monkeypatch, capsys, record):
+    if record:
+        RemoteSettings.write(record)
+    monkeypatch.setattr(RemotePublicCertificate, "obtain", _never("obtain"))
+    assert RemoteAccess.certificate_issue() == 3
+    assert NOT_SET_UP in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("record", [None, {"dns_name": BOX, "box_only": True}])
+def test_a_relay_certificate_is_refused_before_the_node_is_set_up(monkeypatch, capsys, record):
+    if record:
+        RemoteSettings.write(record)
+    monkeypatch.setattr(RemoteRelayCertificate, "obtain", _never("obtain"))
+    assert RemoteAccess.certificate_relay() == 3
+    assert NOT_SET_UP in capsys.readouterr().out
+
+
+def test_turning_the_relay_certificate_off_without_one_changes_nothing(monkeypatch, capsys):
+    monkeypatch.setattr(RemoteRelayCertificate, "off", _never("off"))
+    assert RemoteAccess.certificate_relay_off() == 0
+    _set_up()
+    assert RemoteAccess.certificate_relay_off() == 0
+    assert capsys.readouterr().out.count("The relay has no certificate of its own.") == 2
+
+
+def test_a_relay_that_cannot_be_put_back_is_an_error(monkeypatch, capsys):
+    _set_up(relay_name=RELAY)
+    monkeypatch.setattr(RemoteRelayCertificate, "off", classmethod(lambda cls, record: False))
+    assert RemoteAccess.certificate_relay_off() == 1
+    assert "Could not put the relay back" in capsys.readouterr().out
+
+
+def test_turning_the_public_certificate_off_without_a_setup_record_exits_3(monkeypatch, capsys):
+    monkeypatch.setattr(RemotePublicCertificate, "serve", _never("serve"))
+    assert RemoteAccess.certificate_off() == 3
+    assert "not set up" in capsys.readouterr().out
+
+
+def test_turning_the_public_certificate_off_needs_the_node_cas_files(monkeypatch, capsys):
+    _set_up(public_certificate=True)
+    monkeypatch.setattr(RemotePublicCertificate, "serve", _never("serve"))
+    monkeypatch.setattr(RemotePublicCertificate, "remove_timer", _never("remove_timer"))
+    assert RemoteAccess.certificate_off() == 1
+    assert "certificate is missing" in capsys.readouterr().out
+    assert RemoteSettings.read()["public_certificate"] is True, "the record is left as it was"
+
+
+def test_a_control_plane_that_will_not_serve_the_node_cas_certificate_is_an_error(monkeypatch):
+    _set_up(public_certificate=True)
+    RemoteSettings.write_private("certs/control-plane.crt", "crt")
+    RemoteSettings.write_private("certs/control-plane.key", "key")
+    served = []
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "serve",
+        classmethod(lambda cls, name, crt, key: served.append((name, crt, key)) or False),
+    )
+    monkeypatch.setattr(RemotePublicCertificate, "remove_timer", classmethod(lambda cls: None))
+    assert RemoteAccess.certificate_off() == 1
+    assert served == [(BOX, "crt", "key")]
+
+
+# -- issuing ----------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def issuing(monkeypatch):
+    """A set-up node whose public certificate steps all succeed; the test breaks one."""
+    _set_up()
+    steps = {"obtain": True, "due": True, "install": True, "timer": True}
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "obtain",
+        classmethod(lambda cls, name, staging=False: steps["obtain"]),
+    )
+    monkeypatch.setattr(RemotePublicCertificate, "due", classmethod(lambda cls, name: steps["due"]))
+    monkeypatch.setattr(
+        RemotePublicCertificate, "install", classmethod(lambda cls, name: steps["install"])
+    )
+    monkeypatch.setattr(
+        RemotePublicCertificate, "install_timer", classmethod(lambda cls: steps["timer"])
+    )
+    monkeypatch.setattr(RemotePublicCertificate, "describe", classmethod(lambda cls, path: None))
+    return steps
+
+
+def test_a_certificate_the_acme_flow_did_not_give_stops_the_issue(issuing, monkeypatch):
+    issuing["obtain"] = False
+    monkeypatch.setattr(RemotePublicCertificate, "install", _never("install"))
+    assert RemoteAccess.certificate_issue() == 1
+    assert "public_certificate" not in RemoteSettings.read()
+
+
+def test_a_control_plane_that_will_not_restart_with_the_certificate_is_not_recorded(issuing):
+    issuing["install"] = False
+    assert RemoteAccess.certificate_issue() == 1
+    assert "public_certificate" not in RemoteSettings.read()
+
+
+def test_a_renewal_timer_that_does_not_start_fails_the_issue_with_a_warning(issuing, capsys):
+    issuing["timer"] = False
+    assert RemoteAccess.certificate_issue() == 1
+    assert "renewal timer did not start" in capsys.readouterr().out
+    assert RemoteSettings.read()["public_certificate"] is True
+
+
+def test_a_certificate_already_served_is_not_installed_again(issuing, monkeypatch):
+    issuing["due"] = False
+    monkeypatch.setattr(RemotePublicCertificate, "install", _never("install"))
+    assert RemoteAccess.certificate_issue() == 0
+
+
+# -- renewing ---------------------------------------------------------------------------------------
+
+
+def test_a_failed_relay_renewal_is_a_failed_renewal(monkeypatch):
+    _set_up(relay_name=RELAY)
+    monkeypatch.setattr(RemoteRelayCertificate, "renew", classmethod(lambda cls, record: False))
+    assert RemoteAccess.certificate_renew() == 1
+
+
+# -- the relay's certificate ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def relay_issuing(monkeypatch):
+    """A relay certificate issue whose steps succeed; the test breaks one."""
+    _set_up()
+    steps = {"addresses": True, "obtain": True, "switch": True, "timer": True}
+    monkeypatch.setattr(
+        RemoteRelayCertificate,
+        "ensure_addresses",
+        classmethod(lambda cls, relay, box: steps["addresses"]),
+    )
+    monkeypatch.setattr(
+        RemoteRelayCertificate,
+        "obtain",
+        classmethod(lambda cls, relay, staging=False: steps["obtain"]),
+    )
+    monkeypatch.setattr(
+        RemoteRelayCertificate, "switch", classmethod(lambda cls, record, relay: steps["switch"])
+    )
+    monkeypatch.setattr(
+        RemotePublicCertificate, "install_timer", classmethod(lambda cls: steps["timer"])
+    )
+    monkeypatch.setattr(RemotePublicCertificate, "describe", classmethod(lambda cls, path: None))
+    return steps
+
+
+def test_a_relay_name_whose_addresses_cannot_be_set_stops_before_the_challenge(
+    relay_issuing, monkeypatch
+):
+    relay_issuing["addresses"] = False
+    monkeypatch.setattr(RemoteRelayCertificate, "obtain", _never("obtain"))
+    assert RemoteAccess.certificate_relay(name=RELAY) == 1
+
+
+def test_a_relay_certificate_the_acme_flow_did_not_give_leaves_the_box_alone(
+    relay_issuing, monkeypatch
+):
+    relay_issuing["obtain"] = False
+    monkeypatch.setattr(RemoteRelayCertificate, "switch", _never("switch"))
+    assert RemoteAccess.certificate_relay(name=RELAY) == 1
+
+
+def test_a_relay_that_fails_to_switch_is_reported_as_put_back(relay_issuing, monkeypatch, capsys):
+    relay_issuing["switch"] = False
+    monkeypatch.setattr(RemotePublicCertificate, "install_timer", _never("install_timer"))
+    assert RemoteAccess.certificate_relay(name=RELAY) == 1
+    assert "put back on the node CA's certificate" in capsys.readouterr().out
+
+
+def test_a_relay_whose_renewal_timer_does_not_start_fails_with_a_warning(relay_issuing, capsys):
+    relay_issuing["timer"] = False
+    assert RemoteAccess.certificate_relay(name=RELAY) == 1
+    assert "renewal timer did not start" in capsys.readouterr().out
+
+
+# -- setup stages -----------------------------------------------------------------------------------
+
+
+def test_a_node_ca_that_cannot_be_made_stops_the_certificates(monkeypatch):
+    monkeypatch.setattr(RemoteCertificateAuthority, "ensure", classmethod(lambda cls, scope: False))
+    monkeypatch.setattr(RemoteCertificateAuthority, "issue", _never("issue"))
+    run = {"scope": "example.org", "dns_name": BOX}
+    assert RemoteAccess._stage_certificates(run) is False
+    assert "control" not in run
+
+
+@pytest.mark.parametrize("failing", ["control-plane", "relay"])
+def test_a_certificate_that_cannot_be_issued_stops_setup_before_the_secret(monkeypatch, failing):
+    monkeypatch.setattr(RemoteCertificateAuthority, "ensure", classmethod(lambda cls, scope: True))
+    monkeypatch.setattr(
+        RemoteCertificateAuthority,
+        "issue",
+        classmethod(lambda cls, label, names: None if label == failing else (label, label)),
+    )
+    run = {"scope": "example.org", "dns_name": BOX}
+    assert RemoteAccess._stage_certificates(run) is False
+    assert RemoteSettings.read_private("relay-secret") is None
+
+
+@pytest.fixture
+def owner_made(monkeypatch):
+    """The two starts and waits of making the owner, recorded; the test breaks one."""
+    monkeypatch.setattr(RemoteTunnel, "state", classmethod(lambda cls: "absent"))
+    log = []
+    answers = {"start": [True, True], "ready": [{}, {}]}
+
+    def start(cls, setup_pat=False):
+        log.append(("start", setup_pat))
+        return answers["start"].pop(0)
+
+    def ready(cls, name, seconds=120):
+        log.append(("ready",))
+        return answers["ready"].pop(0)
+
+    monkeypatch.setattr(RemoteControlPlane, "start", classmethod(start))
+    monkeypatch.setattr(RemoteControlPlane, "wait_ready", classmethod(ready))
+    monkeypatch.setattr(
+        RemoteControlPlane,
+        "bootstrap",
+        classmethod(lambda cls, d, n: log.append(("bootstrap",)) or "nbp"),
+    )
+    return log, answers
+
+
+@pytest.mark.parametrize(
+    ("start", "ready"), [([False], [{}]), ([True], [None])], ids=["start", "ready"]
+)
+def test_an_owner_is_not_made_when_the_setup_start_fails(owner_made, start, ready):
+    log, answers = owner_made
+    answers["start"], answers["ready"] = list(start), list(ready)
+    assert RemoteAccess._bootstrap_token(BOX, NODE_ID) is None
+    assert ("bootstrap",) not in log and ("start", False) not in log
+
+
+@pytest.mark.parametrize(
+    ("start", "ready"), [([True, False], [{}]), ([True, True], [{}, None])], ids=["start", "ready"]
+)
+def test_a_token_is_not_given_when_the_closing_restart_fails(owner_made, start, ready):
+    log, answers = owner_made
+    answers["start"], answers["ready"] = list(start), list(ready)
+    assert RemoteAccess._bootstrap_token(BOX, NODE_ID) is None
+    assert ("bootstrap",) in log, "the owner was made on the first start"
+
+
+# -- status -----------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def healthy(monkeypatch):
+    """Everything `status` asks about is healthy; the test makes one thing not."""
+    _set_up()
+    box = {"units": {"haproxy": "active", "relay": "active"}}
+    monkeypatch.setattr(
+        RemoteBox, "unit_states", classmethod(lambda cls, d, ssh_to=None: box["units"])
+    )
+    monkeypatch.setattr(
+        RemoteBox,
+        "check_public_port",
+        classmethod(lambda cls, d, ca: {"own": "verified", "other": "closed"}),
+    )
+    monkeypatch.setattr(RemoteTunnel, "state", classmethod(lambda cls: "active"))
+    monkeypatch.setattr(RemoteControlPlane, "running", classmethod(lambda cls: True))
+    monkeypatch.setattr(RemoteControlPlane, "peers", classmethod(lambda cls, d, t: []))
+    return box
+
+
+def test_status_without_a_setup_record_exits_3(capsys):
+    assert RemoteAccess.status() == 3
+    assert "not set up" in capsys.readouterr().out
+
+
+def test_status_of_a_box_that_does_not_answer_over_ssh_is_unhealthy(healthy, capsys):
+    healthy["units"] = None
+    assert RemoteAccess.status() == 1
+    assert "did not answer" in capsys.readouterr().out
+
+
+def test_status_of_a_management_that_does_not_answer_is_unhealthy(healthy, monkeypatch, capsys):
+    monkeypatch.setattr(RemoteControlPlane, "peers", classmethod(lambda cls, d, t: None))
+    assert RemoteAccess.status() == 1
+    assert "management did not answer" in capsys.readouterr().out
+
+
+def test_status_of_a_public_certificate_that_cannot_be_read_is_unhealthy(
+    healthy, monkeypatch, capsys
+):
+    _set_up(public_certificate=True)
+    monkeypatch.setattr(RemotePublicCertificate, "describe", classmethod(lambda cls, path: None))
+    monkeypatch.setattr(RemotePublicCertificate, "timer_state", classmethod(lambda cls: "active"))
+    assert RemoteAccess.status() == 1
+    assert "certificate cannot be read" in capsys.readouterr().out
+
+
+def test_status_of_a_relay_certificate_that_cannot_be_read_is_unhealthy(
+    healthy, monkeypatch, capsys
+):
+    _set_up(relay_name=RELAY)
+    monkeypatch.setattr(RemotePublicCertificate, "describe", classmethod(lambda cls, path: None))
+    monkeypatch.setattr(RemoteBox, "_handshake", classmethod(lambda cls, *a, **k: "verified"))
+    assert RemoteAccess.status() == 1
+    assert f"certificate for {RELAY} cannot be read" in capsys.readouterr().out
+
+
+# -- remove -----------------------------------------------------------------------------------------
+
+
+def test_a_purge_whose_box_cannot_be_cleaned_is_not_reported_removed(monkeypatch, capsys):
+    _set_up()
+    monkeypatch.setattr(RemoteAccess, "_advertise", classmethod(lambda cls, name: None))
+    monkeypatch.setattr(RemoteBox, "remove", classmethod(lambda cls, d, ssh_to=None: False))
+    monkeypatch.setattr(RemoteTunnel, "remove", classmethod(lambda cls: None))
+    monkeypatch.setattr(RemoteControlPlane, "stop", classmethod(lambda cls: True))
+    monkeypatch.setattr(RemoteControlPlane, "remove_proxy", classmethod(lambda cls: None))
+    monkeypatch.setattr(RemotePublicCertificate, "remove_timer", classmethod(lambda cls: None))
+    monkeypatch.setattr(
+        "dreamference.remote.RemoteNodePeer.leave", classmethod(lambda cls, yes: True)
+    )
+    assert RemoteAccess.remove(purge=True, yes=True) == 1
+    out = capsys.readouterr().out
+    assert "✅" not in out and "Not removed" not in out
+    assert RemoteSettings.read() is None, "the node's own records are gone all the same"
+
+
+# -- the CAA records --------------------------------------------------------------------------------
+
+ACCOUNT = "https://acme-v02.api.letsencrypt.org/acme/acct/1"
+
+
+def _caa_cloudflare(monkeypatch, existing, delete_status=200):
+    calls = []
+
+    def fake(cls, method, path, body=None):
+        calls.append((method, path.rsplit("/", 1)[-1], body))
+        if path.startswith("/zones?"):
+            return 200, {"result": [{"id": "z1"}]}
+        if method == "GET":
+            return 200, {"result": existing}
+        if method == "DELETE":
+            return delete_status, {}
+        return 200, {}
+
+    monkeypatch.setattr(RemotePublicCertificate, "_cloudflare", classmethod(fake))
+    return calls
+
+
+def test_a_caa_record_already_present_is_not_added_again_and_an_allowed_one_is_kept(monkeypatch):
+    kept, issuewild = RemotePublicCertificate.caa_records([ACCOUNT])
+    existing = [
+        {"id": "keep", "data": kept},
+        {"id": "old", "data": {"flags": 0, "tag": "issue", "value": "evil-ca.example"}},
+    ]
+    calls = _caa_cloudflare(monkeypatch, existing)
+    assert RemotePublicCertificate.ensure_caa(BOX, [ACCOUNT]) is True
+    changes = [(method, last, body and body["data"]) for method, last, body in calls[2:]]
+    assert changes == [("POST", "dns_records", issuewild), ("DELETE", "old", None)]
+
+
+def test_a_caa_record_that_cannot_be_deleted_fails_after_the_new_ones_went_in(monkeypatch, caplog):
+    stale = {"id": "old", "data": {"flags": 0, "tag": "issue", "value": "evil-ca.example"}}
+    calls = _caa_cloudflare(monkeypatch, [stale], delete_status=403)
+    with caplog.at_level("ERROR"):
+        assert RemotePublicCertificate.ensure_caa(BOX, [ACCOUNT]) is False
+    assert [method for method, *_ in calls[2:]] == ["POST", "POST", "DELETE"]
+    assert "kept an old CAA record" in caplog.text
+
+
+# -- the control plane ------------------------------------------------------------------------------
+
+
+def test_a_config_is_written_again_from_the_secret_and_the_store_key_on_disk():
+    RemoteSettings.write_private("relay-secret", "the-secret")
+    RemoteSettings.write_private("store-key", "the-store-key")
+    assert RemoteControlPlane.rewrite_config(BOX) is True
+    config = RemoteSettings.path("server", "config.yaml").read_text()
+    assert "the-secret" in config and "the-store-key" in config
+
+
+def test_a_new_internal_network_is_made_before_the_container_is_run(monkeypatch):
+    calls = []
+
+    def run(cls, argv, timeout=120):
+        calls.append(argv[:3])
+        return subprocess.CompletedProcess(argv, 1 if argv[2:3] == ["inspect"] else 0, "", "")
+
+    monkeypatch.setattr(RemoteControlPlane, "_run", classmethod(run))
+    monkeypatch.setattr(RemoteControlPlane, "geolocation_ready", classmethod(lambda cls: True))
+    monkeypatch.setattr(
+        RemoteControlPlane, "run_command", classmethod(lambda cls, pat: ["docker", "run"])
+    )
+    monkeypatch.setattr(RemoteControlPlane, "install_proxy", classmethod(lambda cls: False))
+    assert RemoteControlPlane.start() is False, "the proxy is the last step and fails here"
+    assert calls[:3] == [
+        ["docker", "network", "inspect"],
+        ["docker", "network", "create"],
+        ["docker", "rm", "-f"],
+    ]
+    assert ["docker", "run"] in calls
+
+
+def test_a_renewal_mints_the_token_for_the_owner_in_the_user_list(monkeypatch):
+    calls = []
+
+    def request(cls, dns_name, method, path, body=None, token=None):
+        calls.append((method, path))
+        if method == "GET":
+            return 200, [{"id": "u2", "role": "admin"}, {"id": "u1", "role": "owner"}]
+        return 200, {"plain_token": "new-token"}
+
+    monkeypatch.setattr(RemoteControlPlane, "_request", classmethod(request))
+    assert RemoteControlPlane.renew_token(BOX, "tok") == "new-token"
+    assert calls == [("GET", "/api/users"), ("POST", "/api/users/u1/tokens")]
+
+
+# -- the relay's certificate ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cloudflare(monkeypatch):
+    """Cloudflare as a script: `replies` maps (method) to (status, body); every call is kept."""
+    calls = []
+    replies = {"GET": (500, {}), "POST": (200, {}), "DELETE": (200, {})}
+
+    def fake(cls, method, path, body=None):
+        calls.append((method, path, body))
+        reply = replies[method]
+        return reply(path) if callable(reply) else reply
+
+    monkeypatch.setattr(RemotePublicCertificate, "zone_id", classmethod(lambda cls, name: "z1"))
+    monkeypatch.setattr(RemotePublicCertificate, "_cloudflare", classmethod(fake))
+    return calls, replies
+
+
+def test_a_relay_name_in_no_zone_gets_no_dns_record(monkeypatch, cloudflare, caplog):
+    calls, _ = cloudflare
+    monkeypatch.setattr(RemotePublicCertificate, "zone_id", classmethod(lambda cls, name: None))
+    with caplog.at_level("ERROR"):
+        assert RemoteRelayCertificate.ensure_addresses(RELAY, BOX) is False
+    assert calls == [] and "holds no zone" in caplog.text
+
+
+def test_addresses_that_cloudflare_will_not_list_change_nothing(cloudflare, caplog):
+    calls, _ = cloudflare
+    with caplog.at_level("ERROR"):
+        assert RemoteRelayCertificate.ensure_addresses(RELAY, BOX) is False
+    assert {method for method, *_ in calls} == {"GET"}, "nothing was deleted or added"
+    assert "did not list the A records" in caplog.text
+
+
+def test_an_address_record_cloudflare_refuses_fails_the_relay_name(cloudflare, caplog):
+    calls, replies = cloudflare
+
+    def listing(path):
+        if f"name={BOX}" in path:
+            return 200, {"result": [{"id": "src", "content": "192.0.2.7"}]}
+        return 200, {"result": [{"id": "old", "content": "192.0.2.9", "proxied": True}]}
+
+    replies["GET"] = listing
+    replies["POST"] = (403, {"errors": [{"message": "no"}]})
+    with caplog.at_level("ERROR"):
+        assert RemoteRelayCertificate.ensure_addresses(RELAY, BOX) is False
+    changes = [(method, body and body["content"]) for method, _, body in calls if method != "GET"]
+    assert changes == [("DELETE", None), ("POST", "192.0.2.7")]
+    assert "refused a A record" in caplog.text
+
+
+def _node_ca_relay(monkeypatch, tmp_path, update=True):
+    """The node CA's relay certificate and the box's update, recorded."""
+    crt, key = tmp_path / "relay.crt", tmp_path / "relay.key"
+    crt.write_text("node-ca-crt")
+    key.write_text("node-ca-key")
+    sent = []
+    monkeypatch.setattr(
+        RemoteCertificateAuthority, "issue", classmethod(lambda cls, label, names: (crt, key))
+    )
+    monkeypatch.setattr(
+        RemoteBox,
+        "update_relay",
+        classmethod(lambda cls, name, c, k, ssh: sent.append((name, c, k, ssh)) or update),
+    )
+    return sent
+
+
+def test_a_relay_whose_management_cannot_be_pointed_is_put_back_on_the_node_ca(
+    monkeypatch, tmp_path
+):
+    record = {"dns_name": BOX, "ssh": "the-box"}
+    with_relay = {**record, "relay_name": RELAY, "relay_pushed": "fp"}
+    RemoteSettings.write(with_relay)
+    sent = _node_ca_relay(monkeypatch, tmp_path)
+    points = []
+
+    def point(cls, dns_name):
+        points.append(dns_name)
+        return len(points) > 1
+
+    monkeypatch.setattr(RemoteRelayCertificate, "push", classmethod(lambda cls, r, n: True))
+    monkeypatch.setattr(RemoteRelayCertificate, "_point_management", classmethod(point))
+    assert RemoteRelayCertificate.switch(record, RELAY) is False
+    assert sent == [(BOX, "node-ca-crt", "node-ca-key", "the-box")]
+    assert RemoteSettings.read() == record, "the relay's name and fingerprint are out of the record"
+    assert points == [BOX, BOX], "management was pointed, failed, and pointed back"
+
+
+def test_a_relay_that_cannot_be_put_back_keeps_its_own_record(monkeypatch, tmp_path):
+    with_relay = {"dns_name": BOX, "ssh": "the-box", "relay_name": RELAY}
+    RemoteSettings.write(with_relay)
+    _node_ca_relay(monkeypatch, tmp_path, update=False)
+    monkeypatch.setattr(RemoteRelayCertificate, "_point_management", _never("_point_management"))
+    assert RemoteRelayCertificate.off(with_relay) is False
+    assert RemoteSettings.read() == with_relay
+
+
+def test_no_node_ca_relay_certificate_leaves_the_relay_as_it_is(monkeypatch):
+    with_relay = {"dns_name": BOX, "relay_name": RELAY}
+    RemoteSettings.write(with_relay)
+    monkeypatch.setattr(
+        RemoteCertificateAuthority, "issue", classmethod(lambda cls, label, names: None)
+    )
+    monkeypatch.setattr(RemoteBox, "update_relay", _never("update_relay"))
+    assert RemoteRelayCertificate.off(with_relay) is False
+    assert RemoteSettings.read() == with_relay
+
+
+def test_management_is_not_pointed_without_the_relays_secret(monkeypatch, caplog):
+    monkeypatch.setattr(RemotePublicCertificate, "serve", _never("serve"))
+    with caplog.at_level("ERROR"):
+        assert RemoteRelayCertificate._point_management(BOX) is False
+    assert "secret or the store key is missing" in caplog.text
+
+
+def test_management_is_not_pointed_without_the_served_certificate(monkeypatch):
+    RemoteSettings.write_private("relay-secret", "s")
+    RemoteSettings.write_private("store-key", "k")
+    monkeypatch.setattr(RemotePublicCertificate, "serve", _never("serve"))
+    assert RemoteRelayCertificate._point_management(BOX) is False
+
+
+def test_a_relay_certificate_that_cannot_be_renewed_is_not_pushed(monkeypatch):
+    record = {"dns_name": BOX, "relay_name": RELAY}
+    RemoteSettings.write(record)
+    monkeypatch.setattr(
+        RemoteRelayCertificate, "obtain", classmethod(lambda cls, n, staging=False: False)
+    )
+    monkeypatch.setattr(RemoteRelayCertificate, "push", _never("push"))
+    assert RemoteRelayCertificate.renew(record) is False
+
+
+# -- the box ----------------------------------------------------------------------------------------
+
+
+def _box_commands(monkeypatch, fail=(), out=None, err="boom"):
+    """Replaces `RemoteBox._run`: a command starting with one of `fail`'s prefixes exits 1."""
+    calls = []
+
+    def fake(cls, argv, input_bytes=None, timeout=600):
+        calls.append(argv)
+        failing = any(argv[: len(prefix)] == list(prefix) for prefix in fail)
+        if argv[:2] == ["docker", "create"]:
+            return subprocess.CompletedProcess(argv, 1 if failing else 0, "c0ffee\n", err)
+        stdout = (out or {}).get(argv[0], "")
+        return subprocess.CompletedProcess(
+            argv, 1 if failing else 0, stdout, err if failing else ""
+        )
+
+    monkeypatch.setattr(RemoteBox, "_run", classmethod(fake))
+    return calls
+
+
+def test_a_box_that_ssh_cannot_reach_gives_its_error_not_facts(monkeypatch):
+    _box_commands(monkeypatch, fail=[["ssh"]], err="Permission denied")
+    assert RemoteBox.probe(BOX) == {"error": "Permission denied"}
+
+
+def test_a_box_that_ssh_cannot_reach_and_says_nothing_gives_the_exit_status(monkeypatch):
+    _box_commands(monkeypatch, fail=[["ssh"]], err="")
+    assert RemoteBox.probe(BOX) == {"error": "ssh exited 1"}
+
+
+@pytest.mark.parametrize(
+    ("failing", "ran_after"),
+    [
+        (["docker", "pull"], False),
+        (["docker", "create"], False),
+        (["docker", "cp"], True),
+    ],
+)
+def test_a_relay_binary_that_docker_cannot_give_is_none_and_the_scratch_container_goes(
+    monkeypatch, failing, ran_after
+):
+    calls = _box_commands(monkeypatch, fail=[failing])
+    assert RemoteBox.relay_binary("amd64") is None
+    assert (
+        ["docker", "rm", "c0ffee"] in calls
+        if ran_after
+        else ["docker", "cp"] not in [argv[:2] for argv in calls]
+    )
+
+
+def _deploy_ready(monkeypatch):
+    binary = b"\x7fELF relay"
+    digest = hashlib.sha256(binary).hexdigest()
+    monkeypatch.setitem(remote_box.RELAY_BINARY_SHA256, "amd64", digest)
+    monkeypatch.setattr(RemoteBox, "relay_binary", classmethod(lambda cls, arch: binary))
+    return RemoteSettings.write_private("certs/relay.crt", "CERT")
+
+
+@pytest.mark.parametrize("failing", ["copy", "install"])
+def test_a_deploy_whose_upload_or_install_fails_is_false_with_the_reason(
+    monkeypatch, caplog, failing
+):
+    cert = _deploy_ready(monkeypatch)
+    seen = []
+
+    def run(cls, argv, input_bytes=None, timeout=600):
+        seen.append(argv)
+        installing = bool(input_bytes) and input_bytes.startswith(b"set -eu")
+        broken = installing if failing == "install" else not installing
+        return subprocess.CompletedProcess(argv, 1 if broken else 0, "", "disk full")
+
+    monkeypatch.setattr(RemoteBox, "_run", classmethod(run))
+    with caplog.at_level("ERROR"):
+        assert RemoteBox.deploy(BOX, "amd64", "apt", "s", cert, cert, "ssh-ed25519 AAAA t") is False
+    assert "disk full" in caplog.text
+    assert len(seen) == (2 if failing == "install" else 1), "an upload that fails runs no script"
+
+
+def test_a_deploy_whose_script_never_says_ready_is_a_failed_deploy(monkeypatch, caplog):
+    cert = _deploy_ready(monkeypatch)
+    _box_commands(monkeypatch)
+    with caplog.at_level("ERROR"):
+        assert RemoteBox.deploy(BOX, "amd64", "apt", "s", cert, cert, "ssh-ed25519 AAAA t") is False
+    assert "Installing on" in caplog.text
+
+
+@pytest.mark.parametrize("failing", ["copy", "update"])
+def test_a_relay_update_that_fails_is_false_with_the_reason(monkeypatch, caplog, failing):
+    seen = []
+
+    def run(cls, argv, input_bytes=None, timeout=600):
+        seen.append(argv)
+        updating = bool(input_bytes) and input_bytes.startswith(b"set -eu")
+        broken = updating if failing == "update" else not updating
+        return subprocess.CompletedProcess(argv, 1 if broken else 0, "", "unit failed")
+
+    monkeypatch.setattr(RemoteBox, "_run", classmethod(run))
+    with caplog.at_level("ERROR"):
+        assert RemoteBox.update_relay(BOX, "crt", "key") is False
+    assert "unit failed" in caplog.text
+    assert len(seen) == (2 if failing == "update" else 1)
+
+
+def test_a_relay_update_without_the_ready_mark_is_false(monkeypatch):
+    _box_commands(monkeypatch)
+    assert RemoteBox.update_relay(BOX, "crt", "key") is False
+
+
+def test_a_box_that_reports_itself_clean_is_removed(monkeypatch):
+    _box_commands(monkeypatch, out={"ssh": remote_box.REMOVED_MARK + "\n"})
+    assert RemoteBox.remove(BOX) is True
+
+
+@pytest.mark.parametrize("answer", ["active\n", "active\nactive\nactive\n", ""])
+def test_unit_states_of_a_box_that_answers_the_wrong_number_of_lines_is_none(monkeypatch, answer):
+    _box_commands(monkeypatch, out={"ssh": answer})
+    assert RemoteBox.unit_states(BOX) is None

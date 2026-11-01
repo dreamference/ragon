@@ -1,0 +1,122 @@
+// Ask threads (specs/DREAMFERENCE_RAGON_ASK.md §3): conversations with the same agent in a
+// scratch folder instead of a project. The UI only names the prompt (`ask`); the policy layer in
+// `ragon web` composes its text, creates the folder and confines the thread to it, so nothing here
+// decides where an Ask thread works. Pure helpers, tested without a window.
+
+import type { Thread } from "./protocol/v2/Thread";
+import type { UserInput } from "./protocol/v2/UserInput";
+
+/** The prompt an Ask thread starts with: one of the policy's `namedPrompts`. */
+export const ASK_PROMPT = "ask";
+
+/** A scratch folder's name, as `ragon web` makes them (`ask/q-<hex>`, or `ask/chat-<hex>` for a
+ * phone bridge's thread; ragon-rs/web/src/ask.rs). */
+const SCRATCH_FOLDER = /[\\/]ask[\\/](q|chat)-[0-9a-f]+$/;
+
+/** Whether a thread works in an Ask scratch folder: under the host's Ask root when it named one. */
+export function isAskThread(thread: Pick<Thread, "cwd">, askRoot: string | null): boolean {
+  const cwd = thread.cwd ?? "";
+  if (askRoot) {
+    const root = askRoot.replace(/[\\/]+$/, "");
+    return cwd.startsWith(`${root}/`) || cwd.startsWith(`${root}\\`) ? SCRATCH_FOLDER.test(cwd) : false;
+  }
+  return SCRATCH_FOLDER.test(cwd);
+}
+
+/** Ask threads, most recent first; subagents and ephemeral threads are left out, as in Work. */
+export function askThreads(threads: Thread[], askRoot: string | null): Thread[] {
+  const recency = (thread: Thread) => thread.recencyAt ?? thread.updatedAt;
+  return threads
+    .filter((thread) => !thread.ephemeral && !thread.parentThreadId && isAskThread(thread, askRoot))
+    .sort((a, b) => recency(b) - recency(a));
+}
+
+/** An attachment once it is in the thread's folder. */
+export interface Attached {
+  kind: "image" | "file";
+  path: string;
+  name: string;
+}
+
+/** Whether a file the user picked is sent as an image the model sees, or as a file it reads. */
+export function attachmentKind(type: string, name: string): "image" | "file" {
+  if (/^image\/(png|jpe?g|gif|webp)$/i.test(type)) return "image";
+  return /\.(png|jpe?g|gif|webp)$/i.test(name) ? "image" : "file";
+}
+
+/**
+ * A turn's input: the text, then each image as `localImage` (the model has vision); other files
+ * are named in the text, so the agent reads them from its folder.
+ */
+export function turnInput(text: string, attached: Attached[]): UserInput[] {
+  const files = attached.filter((item) => item.kind === "file");
+  const note = files.length
+    ? `\n\nAttached file${files.length > 1 ? "s" : ""} (in this thread's folder):\n${files.map((file) => `- ${file.path}`).join("\n")}`
+    : "";
+  const body = `${text}${note}`.trim();
+  const inputs: UserInput[] = body ? [{ type: "text", text: body, text_elements: [] }] : [];
+  for (const image of attached.filter((item) => item.kind === "image")) inputs.push({ type: "localImage", path: image.path });
+  return inputs;
+}
+
+/** A pasted or picked file's name, for one without (a pasted screenshot has none). */
+export function attachmentName(name: string | undefined, type: string, index: number): string {
+  if (name && name.trim()) return name;
+  const extension = type.split("/")[1]?.replace("jpeg", "jpg") ?? "bin";
+  return `pasted-${Date.now()}-${index}.${extension}`;
+}
+
+/** A short title for a thread in the Ask list. */
+export function askTitle(thread: Pick<Thread, "name" | "preview">): string {
+  return thread.name || thread.preview || "New question";
+}
+
+/** Whether a path is inside a folder (the folder itself is not), on either separator. */
+export function insideFolder(path: string, folder: string): boolean {
+  const root = folder.replace(/[\\/]+$/, "");
+  return root !== "" && (path.startsWith(`${root}/`) || path.startsWith(`${root}\\`));
+}
+
+/** Whether a path is inside an Ask scratch folder: under the host's Ask root, or of the folder's shape. */
+export function isAskPath(path: string, askRoot: string | null): boolean {
+  if (askRoot) return insideFolder(path, askRoot);
+  return /[\\/]ask[\\/]q-[0-9a-f]+[\\/]/.test(path);
+}
+
+/**
+ * The tabs a view shows beside its thread (DESKTOP_PARITY_CLAUDE §4.1). Ask shows only the files of
+ * the question in front (`folder`, its scratch folder), the way the compared app shows what an answer
+ * made in a panel beside it; Work shows every tab except the files of Ask questions. The list itself
+ * stays one, so a tab keeps its place when the view switches back.
+ */
+export function viewTabs<T extends { kind: string; path?: string }>(tabs: T[], view: "ask" | "work", folder: string | null, askRoot: string | null): T[] {
+  if (view === "ask") return folder ? tabs.filter((tab) => tab.kind === "file" && typeof tab.path === "string" && insideFolder(tab.path, folder)) : [];
+  return tabs.filter((tab) => !(tab.kind === "file" && typeof tab.path === "string" && isAskPath(tab.path, askRoot)));
+}
+
+/** What a file an answer made is, in words, for its card. */
+export function fileKindLabel(kind: "markdown" | "image" | "pdf" | "html" | "latex" | "table" | "office" | null): string {
+  switch (kind) {
+    case "markdown":
+      return "Document";
+    case "image":
+      return "Image";
+    case "pdf":
+      return "PDF";
+    case "html":
+      return "Web page";
+    case "latex":
+      return "LaTeX";
+    case "table":
+      return "Table";
+    case "office":
+      return "Office document";
+    default:
+      return "File";
+  }
+}
+
+/** A file's name, from its path. */
+export function baseName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}

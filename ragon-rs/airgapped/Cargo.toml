@@ -1,0 +1,18 @@
+# The air-gap level's one reader (specs/DREAMFERENCE_RAGON_AIRGAPPED.md §6.5), with no
+# dependency beyond the standard library, so the sandbox helper (patch 0019), the launcher and the
+# web and docs commands (by path dependency) all decide it the same way; Python and the desktop app
+# ask `ragon airgapped --json`. Its conformance cases are cases.json.
+[package]
+name = "ragon-airgapped"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "ragon_airgapped"
+path = "src/lib.rs"
+
+# The conformance cases (cases.json) are JSON; only the tests read them.
+[dev-dependencies]
+serde_json = "1"

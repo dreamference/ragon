@@ -1,0 +1,758 @@
+"""The rented box, deployed and removed over SSH (specs/DREAMFERENCE_RAGON_REMOTE_ACCESS.md §3).
+
+The box is untrusted and does two jobs. NetBird's relay (with its embedded STUN) carries WireGuard
+packets between peers that cannot reach each other directly; it terminates TLS with a certificate
+from the node's CA and sees only ciphertext. haproxy, the distribution's package and the only one
+added, listens on 443 in TCP mode and hands a connection whose TLS server name is the box's own name
+to the reverse tunnel's loopback listener, unopened; any other name is refused. Nothing else is
+installed: no Docker, no dashboard, no identity provider.
+
+The relay binary comes from the relay image's per-architecture manifest, pinned by digest, and is
+checked by SHA-256 on the node after extraction and again on the box before it is installed.
+
+Everything runs through the user's own `ssh <dns-name>` (their key, their configuration; or the
+`Host` alias they name with `--ssh`), as root or through passwordless sudo, in two steps: the
+staged files are copied, then one generated script installs them and leaves a manifest that
+`remove` reads. SSH and Docker go through `_run`, the seam the tests replace; the check of the
+public port goes through `_handshake`.
+"""
+
+import hashlib
+import io
+import logging
+import secrets
+import shlex
+import socket
+import ssl
+import subprocess
+import tarfile
+from pathlib import Path
+from typing import Final
+
+from dreamference.remote.remote_settings import (
+    BOX_PUBLIC_PORT,
+    BOX_RELAY_DIR,
+    BOX_TUNNEL_PORT,
+    BOX_TUNNEL_USER,
+    RELAY_BINARY_IN_IMAGE,
+    RELAY_BINARY_SHA256,
+    RELAY_IMAGES,
+    RELAY_PORT,
+    STUN_PORT,
+    RemoteSettings,
+)
+
+# Failures go to standard error through this logger; the console-facing `RemoteAccess` prints
+# the rest (specs/DREAMFERENCE_PYTHON_QUALITY.md §3.9).
+LOG: Final[logging.Logger] = logging.getLogger(__name__)
+
+# Each upload stages in a new folder under this prefix, made by its user with a random name: a
+# fixed name in /tmp would let another user on the box plant or swap what root installs.
+STAGE_PREFIX: str = "/tmp/ragon-remote-stage-"
+# A server name that is not the box's: haproxy must refuse it (`check_public_port`).
+OTHER_NAME: str = "not-this-box.invalid"
+RELAY_USER: str = "ragon-relay"
+RELAY_UNIT: str = "ragon-relay.service"
+BOX_UNITS: Final[tuple[str, str]] = ("haproxy", "relay")
+APT: Final[str] = "apt"
+# What the box's scripts print last, so a script that stopped half-way is not taken for done.
+READY_MARK: Final[str] = "ragon-box-ready"
+REMOVED_MARK: Final[str] = "ragon-box-removed"
+# The outcomes of one TLS handshake with the box's public port (`_handshake`).
+UNREACHABLE: Final[str] = "unreachable"
+VERIFIED: Final[str] = "verified"
+FOREIGN: Final[str] = "foreign"
+CLOSED: Final[str] = "closed"
+SSHD_DROP_IN: str = "/etc/ssh/sshd_config.d/ragon-tunnel.conf"
+HAPROXY_CONFIG: str = "/etc/haproxy/haproxy.cfg"
+# Runs the script on stdin as root: directly when the SSH user is root, through `sudo -n` otherwise.
+AS_ROOT: str = 'if [ "$(id -u)" -eq 0 ]; then exec bash -s; else exec sudo -n bash -s; fi'
+ARCHITECTURES: dict[str, str] = {
+    "x86_64": "amd64",
+    "amd64": "amd64",
+    "aarch64": "arm64",
+    "arm64": "arm64",
+}
+
+
+class RemoteBox:
+    """`remote setup`'s and `remote remove`'s work on the box."""
+
+    @classmethod
+    def _run(
+        cls, argv: list[str], input_bytes: bytes | None = None, timeout: int = 600
+    ) -> subprocess.CompletedProcess:
+        try:
+            result = subprocess.run(
+                argv, capture_output=True, input=input_bytes, timeout=timeout, check=False
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+            return subprocess.CompletedProcess(argv, 127, "", str(error))
+        return subprocess.CompletedProcess(
+            argv,
+            result.returncode,
+            result.stdout.decode(errors="replace"),
+            result.stderr.decode(errors="replace"),
+        )
+
+    @classmethod
+    def ssh(cls, dns_name: str, command: str) -> list[str]:
+        """The SSH command to the box.
+
+        Args:
+            dns_name: The box's public DNS name, as the user's SSH configuration knows it.
+            command: The remote command.
+
+        Returns:
+            List[str]: The argv: no password prompt, a bounded connection time.
+        """
+        return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", dns_name, command]
+
+    # -- preflight --------------------------------------------------------------------------------
+
+    @classmethod
+    def probe(cls, dns_name: str, ssh_to: str | None = None) -> dict[str, str]:
+        """Asks the box what it is.
+
+        Args:
+            dns_name: The box's public DNS name.
+            ssh_to: The user's SSH destination for it (a `Host` alias), when not the DNS name.
+
+        Returns:
+            Dict[str, str]: `arch` (amd64 or arm64), `root` (`yes` when root or passwordless sudo
+            works), `packages` (`apt`, `dnf` or empty) and `host_key` (the ed25519 host key line);
+            `error` instead when SSH failed.
+        """
+        script = (
+            "printf 'arch=%s\\n' \"$(uname -m)\"; "
+            'if [ "$(id -u)" -eq 0 ] || sudo -n true 2>/dev/null; then echo root=yes; else echo root=no; fi; '
+            "if command -v apt-get >/dev/null; then echo packages=apt; elif command -v dnf >/dev/null; then echo "
+            "packages=dnf; else echo packages=; fi; "
+            "printf 'host_key=%s\\n' \"$(cat /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null)\""
+        )
+        result = cls._run(cls.ssh(ssh_to or dns_name, script), timeout=60)
+        if result.returncode != 0:
+            return {
+                "error": (result.stderr or result.stdout).strip()[:300]
+                or f"ssh exited {result.returncode}"
+            }
+        facts: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            key, _, value = line.partition("=")
+            facts[key.strip()] = value.strip()
+        facts["arch"] = ARCHITECTURES.get(facts.get("arch", ""), "")
+        return facts
+
+    # -- the relay binary -------------------------------------------------------------------------
+
+    @classmethod
+    def relay_binary(cls, arch: str) -> bytes | None:
+        """Takes the relay binary out of the pinned image for the box's architecture and checks it.
+
+        Args:
+            arch: `amd64` or `arm64`.
+
+        Returns:
+            Optional[bytes]: The binary, or None when it could not be had or its digest is wrong.
+        """
+        image = RELAY_IMAGES[arch]
+        target = RemoteSettings.path("box", f"netbird-relay-{arch}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if cls._run(["docker", "pull", "-q", image]).returncode != 0:
+            LOG.error(f"❌ Could not pull {image}.")
+            return None
+        created = cls._run(["docker", "create", image])
+        container = created.stdout.strip()
+        if created.returncode != 0 or not container:
+            LOG.error(f"❌ Could not open {image}: {created.stderr.strip()[:300]}")
+            return None
+        try:
+            copied = cls._run(["docker", "cp", f"{container}:{RELAY_BINARY_IN_IMAGE}", str(target)])
+        finally:
+            cls._run(["docker", "rm", container])
+        if copied.returncode != 0:
+            LOG.error(f"❌ Could not copy the relay out of {image}: {copied.stderr.strip()[:300]}")
+            return None
+        data = target.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != RELAY_BINARY_SHA256[arch]:
+            LOG.error(
+                f"❌ The relay binary's SHA-256 is {digest}, not the pinned {RELAY_BINARY_SHA256[arch]}; nothing is "
+                "installed."
+            )
+            return None
+        return data
+
+    # -- what goes to the box ---------------------------------------------------------------------
+
+    @classmethod
+    def haproxy_config(cls, dns_name: str) -> str:
+        """Haproxy's configuration on the box.
+
+        Args:
+            dns_name: The box's public DNS name.
+
+        Returns:
+            str: haproxy's configuration: TCP on 443, the box's own server name to the tunnel,
+            anything else refused.
+        """
+        return "\n".join(
+            [
+                "# Written by `ragon-admin remote setup` on the Ragon node (REMOTE_ACCESS §3).",
+                "# TCP only: TLS ends on the node; this box reads the server name and nothing else.",
+                "global",
+                "    log /dev/log local0",
+                "    maxconn 2000",
+                "    user haproxy",
+                "    group haproxy",
+                "defaults",
+                "    mode tcp",
+                "    log global",
+                "    option tcplog",
+                "    timeout connect 10s",
+                "    timeout client 1h",
+                "    timeout server 1h",
+                "frontend ragon_tls",
+                f"    bind :{BOX_PUBLIC_PORT}",
+                "    tcp-request inspect-delay 5s",
+                "    tcp-request content accept if { req.ssl_hello_type 1 }",
+                f"    use_backend node if {{ req.ssl_sni -i {dns_name} }}",
+                "    default_backend refuse",
+                "backend node",
+                f"    server tunnel 127.0.0.1:{BOX_TUNNEL_PORT}",
+                "backend refuse",
+                "    tcp-request content reject",
+                "",
+            ]
+        )
+
+    @classmethod
+    def relay_unit(cls, dns_name: str) -> str:
+        """The relay's systemd unit on the box.
+
+        Args:
+            dns_name: The box's public DNS name.
+
+        Returns:
+            str: The relay's system unit.
+        """
+        return "\n".join(
+            [
+                "# Written by `ragon-admin remote setup` on the Ragon node (REMOTE_ACCESS §3).",
+                "[Unit]",
+                "Description=Ragon remote access: NetBird relay and STUN",
+                "After=network-online.target",
+                "Wants=network-online.target",
+                "",
+                "[Service]",
+                f"User={RELAY_USER}",
+                f"EnvironmentFile={BOX_RELAY_DIR}/relay.env",
+                f"ExecStart={BOX_RELAY_DIR}/netbird-relay --listen-address :{RELAY_PORT}"
+                f" --exposed-address {RemoteSettings.relay_address(dns_name)}"
+                f" --tls-cert-file {BOX_RELAY_DIR}/relay.crt --tls-key-file {BOX_RELAY_DIR}/relay.key"
+                f" --enable-stun --stun-ports {STUN_PORT} --health-listen-address 127.0.0.1:9000",
+                "Restart=always",
+                "RestartSec=5",
+                "NoNewPrivileges=yes",
+                "ProtectSystem=strict",
+                "ProtectHome=yes",
+                "PrivateTmp=yes",
+                "",
+                "[Install]",
+                "WantedBy=multi-user.target",
+                "",
+            ]
+        )
+
+    @classmethod
+    def sshd_drop_in(cls) -> str:
+        """The SSH server's drop-in for the tunnel account.
+
+        Returns:
+            str: The SSH server's settings for the tunnel account: remote forwarding only.
+        """
+        return "\n".join(
+            [
+                "# Written by `ragon-admin remote setup` on the Ragon node (REMOTE_ACCESS §3).",
+                f"Match User {BOX_TUNNEL_USER}",
+                "    AllowTcpForwarding remote",
+                "    GatewayPorts no",
+                "    PermitTTY no",
+                "    X11Forwarding no",
+                "    AllowAgentForwarding no",
+                "    PermitTunnel no",
+                "",
+            ]
+        )
+
+    @staticmethod
+    def stage_folder() -> str:
+        """A new folder name to stage one upload in.
+
+        Returns:
+            str: `STAGE_PREFIX` and 32 random hex digits.
+        """
+        return f"{STAGE_PREFIX}{secrets.token_hex(16)}"
+
+    @staticmethod
+    def upload_command(folder: str) -> str:
+        """The command that receives the archive on standard input.
+
+        Args:
+            folder: From `stage_folder`; `mkdir` without `-p`, so one that exists stops the copy.
+
+        Returns:
+            str: Makes the folder, private to the SSH user, and writes `stage.tgz` into it.
+        """
+        return f"umask 077; mkdir {shlex.quote(folder)} && cat > {shlex.quote(folder)}/stage.tgz"
+
+    @classmethod
+    def install_script(cls, arch: str, packages: str, folder: str) -> str:
+        """The root script that installs the box's half.
+
+        Args:
+            arch: The box's architecture.
+            packages: `apt` or `dnf`.
+            folder: Where the archive was staged (`upload_command`).
+
+        Returns:
+            str: The root script that installs the staged files. It fails at the first error.
+        """
+        install_haproxy = (
+            "DEBIAN_FRONTEND=noninteractive apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q "
+            "haproxy"
+            if packages == APT
+            else "dnf install -y -q haproxy"
+        )
+        port_rules = [
+            f"{BOX_PUBLIC_PORT}/tcp",
+            f"{RELAY_PORT}/tcp",
+            f"{RELAY_PORT}/udp",
+            f"{STUN_PORT}/udp",
+        ]
+        return "\n".join(
+            [
+                "set -eu",
+                "stage=$(mktemp -d)",
+                f'tar -xzf {shlex.quote(folder)}/stage.tgz -C "$stage" && rm -rf {shlex.quote(folder)}',
+                f"echo '{RELAY_BINARY_SHA256[arch]}  '\"$stage\"/netbird-relay | sha256sum -c --quiet -",
+                f"install -d -m 0755 {BOX_RELAY_DIR}",
+                # A rerun (a redeploy, or `setup` after `--box-only`) finds haproxy installed by the
+                # first run; it must stay recorded as ours, or `remove` would leave the package behind.
+                f"manifest={BOX_RELAY_DIR}/MANIFEST",
+                'ours=$(grep -x \'haproxy=installed\' "$manifest" 2>/dev/null || true); : > "$manifest"',
+                'if [ -n "$ours" ] && command -v haproxy >/dev/null; then echo \'haproxy=installed\' >> "$manifest"',
+                "elif command -v haproxy >/dev/null; then echo 'haproxy=present' >> \"$manifest\"; else",
+                f"  {install_haproxy}",
+                "  echo 'haproxy=installed' >> \"$manifest\"",
+                "fi",
+                f"[ -f {HAPROXY_CONFIG}.ragon-orig ] || cp {HAPROXY_CONFIG} {HAPROXY_CONFIG}.ragon-orig "
+                "2>/dev/null || true",
+                f'install -m 0644 "$stage"/haproxy.cfg {HAPROXY_CONFIG}',
+                "haproxy -c -q -f /etc/haproxy/haproxy.cfg",
+                f"id -u {RELAY_USER} >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin "
+                f"{RELAY_USER}",
+                f'install -m 0755 "$stage"/netbird-relay {BOX_RELAY_DIR}/netbird-relay',
+                f'install -m 0644 -o {RELAY_USER} "$stage"/relay.crt {BOX_RELAY_DIR}/relay.crt',
+                f'install -m 0600 -o {RELAY_USER} "$stage"/relay.key {BOX_RELAY_DIR}/relay.key',
+                f'install -m 0600 -o root "$stage"/relay.env {BOX_RELAY_DIR}/relay.env',
+                f'install -m 0644 "$stage"/{RELAY_UNIT} /etc/systemd/system/{RELAY_UNIT}',
+                f"id -u {BOX_TUNNEL_USER} >/dev/null 2>&1 || useradd --system --create-home --home-dir "
+                f"/var/lib/{BOX_TUNNEL_USER} --shell /usr/sbin/nologin {BOX_TUNNEL_USER}",
+                f"install -d -m 0700 -o {BOX_TUNNEL_USER} /var/lib/{BOX_TUNNEL_USER}/.ssh",
+                f'install -m 0600 -o {BOX_TUNNEL_USER} "$stage"/authorized_keys '
+                f"/var/lib/{BOX_TUNNEL_USER}/.ssh/authorized_keys",
+                # The drop-in's Match block must change nothing for anyone else: the effective settings
+                # for root are compared before and after, and a difference undoes it.
+                "global_before=$(sshd -T -C user=root,host=localhost,addr=127.0.0.1 2>/dev/null | sort)",
+                f'install -m 0644 "$stage"/sshd-tunnel.conf {SSHD_DROP_IN}',
+                "sshd -t",
+                "global_after=$(sshd -T -C user=root,host=localhost,addr=127.0.0.1 2>/dev/null | sort)",
+                f'if [ "$global_before" != "$global_after" ]; then rm -f {SSHD_DROP_IN}; '
+                "echo 'the sshd drop-in changed settings beyond the tunnel account; undone' >&2; exit 1; fi",
+                "systemctl reload ssh 2>/dev/null || systemctl reload sshd",
+                "systemctl daemon-reload",
+                f"systemctl enable --now {RELAY_UNIT}",
+                f"systemctl restart {RELAY_UNIT}",
+                "systemctl enable haproxy",
+                "systemctl restart haproxy",
+                "if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then",
+                *[f"  ufw allow {rule} >/dev/null" for rule in port_rules],
+                "  echo 'firewall=ufw' >> \"$manifest\"",
+                "elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then",
+                *[f"  firewall-cmd --quiet --permanent --add-port={rule}" for rule in port_rules],
+                "  firewall-cmd --quiet --reload",
+                "  echo 'firewall=firewalld' >> \"$manifest\"",
+                "fi",
+                'rm -rf "$stage"',
+                f"echo {READY_MARK}",
+                "",
+            ]
+        )
+
+    @classmethod
+    def remove_script(cls) -> str:
+        """The root script that removes the box's half.
+
+        Returns:
+            str: The root script that undoes `install_script`, reading its manifest. It carries on
+            past a missing piece, so a half-installed box is cleaned too.
+        """
+        port_rules = [
+            f"{BOX_PUBLIC_PORT}/tcp",
+            f"{RELAY_PORT}/tcp",
+            f"{RELAY_PORT}/udp",
+            f"{STUN_PORT}/udp",
+        ]
+        return "\n".join(
+            [
+                "set -u",
+                f"manifest={BOX_RELAY_DIR}/MANIFEST",
+                'has() { grep -qx "$1" "$manifest" 2>/dev/null; }',
+                f"systemctl disable --now {RELAY_UNIT} 2>/dev/null",
+                f"rm -f /etc/systemd/system/{RELAY_UNIT}",
+                "systemctl daemon-reload",
+                f"if [ -f {HAPROXY_CONFIG}.ragon-orig ]; then mv -f {HAPROXY_CONFIG}.ragon-orig "
+                f"{HAPROXY_CONFIG}; fi",
+                "if has haproxy=installed; then",
+                "  systemctl disable --now haproxy 2>/dev/null",
+                "  if command -v apt-get >/dev/null; then DEBIAN_FRONTEND=noninteractive apt-get purge -y -q haproxy "
+                ">/dev/null; else dnf remove -y -q haproxy >/dev/null; fi",
+                "else systemctl restart haproxy 2>/dev/null; fi",
+                "if has firewall=ufw; then",
+                *[f"  ufw delete allow {rule} >/dev/null 2>&1" for rule in port_rules],
+                "elif has firewall=firewalld; then",
+                *[
+                    f"  firewall-cmd --quiet --permanent --remove-port={rule}"
+                    for rule in port_rules
+                ],
+                "  firewall-cmd --quiet --reload",
+                "fi",
+                f"rm -f {SSHD_DROP_IN}",
+                "sshd -t && { systemctl reload ssh 2>/dev/null || systemctl reload sshd; }",
+                f"pkill -u {BOX_TUNNEL_USER} 2>/dev/null; userdel -r {BOX_TUNNEL_USER} 2>/dev/null",
+                f"userdel {RELAY_USER} 2>/dev/null",
+                f"rm -rf {BOX_RELAY_DIR}",
+                f"echo {REMOVED_MARK}",
+                "",
+            ]
+        )
+
+    @classmethod
+    def stage(cls, files: dict[str, bytes]) -> bytes:
+        """The staged archive copied to the box.
+
+        Args:
+            files: Name to content.
+
+        Returns:
+            bytes: A gzipped tar of the files, every one mode 0600 (the script sets the real modes).
+        """
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            for name, data in sorted(files.items()):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                info.mode = 0o600
+                archive.addfile(info, io.BytesIO(data))
+        return buffer.getvalue()
+
+    # -- the two operations -----------------------------------------------------------------------
+
+    @classmethod
+    def deploy(  # noqa: PLR0913 - every input of the box's half, named
+        cls,
+        dns_name: str,
+        arch: str,
+        packages: str,
+        secret: str,
+        relay_certificate: Path,
+        relay_key: Path,
+        tunnel_public_key: str,
+        ssh_to: str | None = None,
+    ) -> bool:
+        """Installs the relay, haproxy and the tunnel account on the box.
+
+        Args:
+            dns_name: The box's public DNS name.
+            arch: Its architecture.
+            packages: Its package manager.
+            secret: The relay's shared secret.
+            relay_certificate: The relay's certificate, from the node's CA.
+            relay_key: Its key.
+            tunnel_public_key: The node's tunnel key.
+            ssh_to: The user's SSH destination for the box, when not the DNS name.
+
+        Returns:
+            bool: True when the box reported itself ready.
+        """
+        destination = ssh_to or dns_name
+        from dreamference.remote.remote_tunnel import RemoteTunnel
+
+        binary = cls.relay_binary(arch)
+        if binary is None:
+            return False
+        archive = cls.stage(
+            {
+                "netbird-relay": binary,
+                "relay.crt": relay_certificate.read_bytes(),
+                "relay.key": relay_key.read_bytes(),
+                "relay.env": f"NB_AUTH_SECRET={secret}\n".encode(),
+                "haproxy.cfg": cls.haproxy_config(dns_name).encode(),
+                RELAY_UNIT: cls.relay_unit(dns_name).encode(),
+                "authorized_keys": (
+                    RemoteTunnel.authorized_line(tunnel_public_key) + "\n"
+                ).encode(),
+                "sshd-tunnel.conf": cls.sshd_drop_in().encode(),
+            }
+        )
+        folder = cls.stage_folder()
+        copied = cls._run(cls.ssh(destination, cls.upload_command(folder)), input_bytes=archive)
+        if copied.returncode != 0:
+            LOG.error(f"❌ Could not copy the files to {dns_name}: {copied.stderr.strip()[:300]}")
+            return False
+        installed = cls._run(
+            cls.ssh(destination, AS_ROOT),
+            input_bytes=cls.install_script(arch, packages, folder).encode(),
+        )
+        if installed.returncode != 0 or READY_MARK not in installed.stdout:
+            LOG.error(
+                f"❌ Installing on {dns_name} failed:\n{(installed.stderr or installed.stdout).strip()[-800:]}"
+            )
+            return False
+        return True
+
+    @classmethod
+    def update_relay(
+        cls,
+        dns_name: str,
+        certificate: str,
+        key: str,
+        ssh_to: str | None = None,
+    ) -> bool:
+        """Replaces the relay's certificate and key (and its unit) on the box and restarts the relay.
+
+        Nothing else on the box is touched: not haproxy, not the tunnel's account, not the
+        firewall, and none of the box owner's own services. The unit is rendered from
+        `RemoteSettings.relay_address`, so it carries the relay's current exposed address.
+
+        Args:
+            dns_name: The box's public DNS name.
+            certificate: The relay's certificate with its chain (PEM).
+            key: Its key (PEM); it goes to the box and nowhere else.
+            ssh_to: The user's SSH destination for the box, when not the DNS name.
+
+        Returns:
+            bool: True when the box reported the relay active again.
+        """
+        destination = ssh_to or dns_name
+        archive = cls.stage(
+            {
+                "relay.crt": certificate.encode(),
+                "relay.key": key.encode(),
+                RELAY_UNIT: cls.relay_unit(dns_name).encode(),
+            }
+        )
+        folder = cls.stage_folder()
+        copied = cls._run(cls.ssh(destination, cls.upload_command(folder)), input_bytes=archive)
+        if copied.returncode != 0:
+            LOG.error(f"❌ Could not copy the files to {dns_name}: {copied.stderr.strip()[:300]}")
+            return False
+        done = cls._run(
+            cls.ssh(destination, AS_ROOT), input_bytes=cls.update_relay_script(folder).encode()
+        )
+        if done.returncode != 0 or READY_MARK not in done.stdout:
+            LOG.error(
+                f"❌ Updating the relay on {dns_name} failed:\n{(done.stderr or done.stdout).strip()[-600:]}"
+            )
+            return False
+        return True
+
+    @classmethod
+    def update_relay_script(cls, folder: str) -> str:
+        """The root script behind `update_relay`.
+
+        Args:
+            folder: Where the archive was staged (`upload_command`).
+
+        Returns:
+            str: Installs the staged certificate, key and unit, restarts the relay unit alone and
+            checks that it is active.
+        """
+        return "\n".join(
+            [
+                "set -eu",
+                "stage=$(mktemp -d)",
+                f'tar -xzf {shlex.quote(folder)}/stage.tgz -C "$stage" && rm -rf {shlex.quote(folder)}',
+                f'install -m 0644 -o {RELAY_USER} "$stage"/relay.crt {BOX_RELAY_DIR}/relay.crt',
+                f'install -m 0600 -o {RELAY_USER} "$stage"/relay.key {BOX_RELAY_DIR}/relay.key',
+                f'install -m 0644 "$stage"/{RELAY_UNIT} /etc/systemd/system/{RELAY_UNIT}',
+                "systemctl daemon-reload",
+                f"systemctl restart {RELAY_UNIT}",
+                "sleep 3",
+                f"systemctl is-active --quiet {RELAY_UNIT}",
+                'rm -rf "$stage"',
+                f"echo {READY_MARK}",
+                "",
+            ]
+        )
+
+    @classmethod
+    def remove(cls, dns_name: str, ssh_to: str | None = None) -> bool:
+        """Removes everything `deploy` installed.
+
+        Args:
+            dns_name: The box's public DNS name.
+            ssh_to: The user's SSH destination for the box, when not the DNS name.
+
+        Returns:
+            bool: True when the box reported itself clean.
+        """
+        result = cls._run(
+            cls.ssh(ssh_to or dns_name, AS_ROOT), input_bytes=cls.remove_script().encode()
+        )
+        if result.returncode != 0 or REMOVED_MARK not in result.stdout:
+            LOG.error(
+                f"⚠️  Removing from {dns_name} did not finish:\n{(result.stderr or result.stdout).strip()[-600:]}"
+            )
+            return False
+        return True
+
+    @classmethod
+    def unit_states(cls, dns_name: str, ssh_to: str | None = None) -> dict[str, str] | None:
+        """The box's units, as systemd reports them.
+
+        Args:
+            dns_name: The box's public DNS name.
+            ssh_to: The user's SSH destination for the box, when not the DNS name.
+
+        Returns:
+            Optional[Dict[str, str]]: haproxy's and the relay's states, or None when SSH failed.
+        """
+        result = cls._run(
+            cls.ssh(ssh_to or dns_name, f"systemctl is-active haproxy {RELAY_UNIT}"), timeout=60
+        )
+        lines = result.stdout.split()
+        if len(lines) != len(BOX_UNITS):
+            return None
+        return dict(zip(BOX_UNITS, lines, strict=True))
+
+    # -- the public port, from the node -----------------------------------------------------------
+
+    @classmethod
+    def _handshake(
+        cls,
+        host: str,
+        port: int,
+        server_name: str,
+        ca_file: Path | None,
+        timeout: int = 10,
+        expected: str | None = None,
+    ) -> str:
+        """One TLS handshake with the box's public port.
+
+        Args:
+            host: Where to connect: the box's public DNS name.
+            port: Its public port.
+            timeout: Seconds for the connection and the handshake.
+            server_name: The server name to send.
+            ca_file: The node's CA certificate to verify against; None to verify nothing.
+            expected: With the public certificate (spec §15): the SHA-256 of the leaf the control
+                plane serves. The handshake is then verified against the system store, and a
+                different leaf, however well signed, is `foreign`: the box could get a public
+                certificate of its own for its name.
+
+        Returns:
+            str: `verified` (the handshake completed under `ca_file`), `answered` (it completed and
+            nothing was verified), `foreign` (it completed under a certificate the CA did not
+            sign), `closed` (the box took the connection and closed it without a handshake) or
+            `unreachable` (no TCP connection).
+        """
+        if expected is not None:
+            context = ssl.create_default_context()
+        elif ca_file is None:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        else:
+            context = ssl.create_default_context(cafile=str(ca_file))
+        try:
+            connection = socket.create_connection((host, port), timeout=timeout)
+        except OSError:
+            return UNREACHABLE
+        with connection:
+            try:
+                with context.wrap_socket(connection, server_hostname=server_name) as tls:
+                    leaf = tls.getpeercert(binary_form=True) or b""
+            except ssl.SSLCertVerificationError:
+                return FOREIGN
+            except (ssl.SSLError, OSError):
+                return CLOSED
+        if expected is not None:
+            return VERIFIED if hashlib.sha256(leaf).hexdigest() == expected else FOREIGN
+        return "answered" if ca_file is None else VERIFIED
+
+    @classmethod
+    def check_public_port(cls, dns_name: str, ca_file: Path) -> dict[str, str]:
+        """Checks port 443 the way a peer meets it.
+
+        The box's own name must reach the node's control plane, TLS and all, under the node's CA
+        (or, with the public certificate, under the system store and with exactly the leaf the
+        control plane serves); any other name must be refused by the box.
+
+        Args:
+            dns_name: The box's public DNS name.
+            ca_file: The node's CA certificate.
+
+        Returns:
+            Dict[str, str]: `own` (`verified`, `foreign`, `closed` or `unreachable`) and `other`
+            (`closed` when refused, `answered` when something behind the box spoke TLS for it,
+            or `unreachable`).
+        """
+        expected = None
+        if RemoteSettings.public_certificate():
+            from dreamference.remote.remote_public_certificate import RemotePublicCertificate
+
+            expected = RemotePublicCertificate.fingerprint(
+                RemotePublicCertificate.served_files()[0]
+            )
+        return {
+            "own": cls._handshake(dns_name, BOX_PUBLIC_PORT, dns_name, ca_file, expected=expected),
+            "other": cls._handshake(dns_name, BOX_PUBLIC_PORT, OTHER_NAME, None),
+        }
+
+    @classmethod
+    def public_port_line(cls, outcome: dict[str, str]) -> str:
+        """The port-443 line of `remote status`.
+
+        Args:
+            outcome: `check_public_port`'s answer.
+
+        Returns:
+            str: One line for `remote status`.
+        """
+        own, other = outcome.get("own"), outcome.get("other")
+        if own == UNREACHABLE:
+            return (
+                f"port {BOX_PUBLIC_PORT} does not take a connection "
+                "(haproxy down, or a firewall in front of the box)"
+            )
+        refused = (
+            "other names refused"
+            if other == CLOSED
+            else "⚠️ ANOTHER NAME GOT A TLS ANSWER: the box passes more than its own name"
+        )
+        if own == VERIFIED:
+            trust = (
+                "its public certificate"
+                if RemoteSettings.public_certificate()
+                else "TLS under the node's CA"
+            )
+            return f"the box's name reaches this node's control plane ({trust}); {refused}"
+        if own == FOREIGN:
+            return "❌ something other than this node answers for the box's name " + (
+                "(not the public certificate this node's control plane serves)"
+                if RemoteSettings.public_certificate()
+                else "(a certificate the node's CA did not sign)"
+            )
+        return f"the box takes the connection and nothing answers behind it (the tunnel is not up); {refused}"

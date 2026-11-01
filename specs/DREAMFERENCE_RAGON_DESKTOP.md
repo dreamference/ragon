@@ -1,0 +1,536 @@
+# Ragon Desktop — the Codex desktop app's shape, on `ragon app-server`, grown from today's `ragon-app`
+
+> **Superseded in part:** the Tauri shell, `desktop/src-tauri` and `desktop/bridge` are gone; the app is the stock Electron build of [DESKTOP_ELECTRON](./DREAMFERENCE_RAGON_DESKTOP_ELECTRON.md) (Electron 42.11.11), one window with Ask and Work on one app-server ([RAGON_ASK](./DREAMFERENCE_RAGON_ASK.md) §18.6), its one IPC channel vetted against `ragon-rs/web/policy.json`. Its current feature set and status are [DESKTOP_PARITY](./DREAMFERENCE_RAGON_DESKTOP_PARITY.md) (§2, §4: Phase 2 and Phase 3 merged apart from dark mode). What still holds: §1 (the vendor's app as read), §3's constraints apart from the WebKitGTK and Chat rows, §5 (the measurements), §8 (the air-gap rule in the server, patch `0023`; the busy marker), §13 (risks) and §14's decisions 3 to 5. Kept as the design record.
+
+> **Superseded in part:** the app has several windows on its one app-server again, by the owner's decision: New Window, a thread popped out, the terminal and the diff detachable, one composer per thread ([DESKTOP_ELECTRON](./DREAMFERENCE_RAGON_DESKTOP_ELECTRON.md) §13).
+
+**Status:** proposed, revised the same day after review. Phase 1 (the Work window on `ragon app-server`, §15) was merged. The app is an Electron app ([RAGON_DESKTOP_ELECTRON](./DREAMFERENCE_RAGON_DESKTOP_ELECTRON.md), which supersedes §9 and §10 below), so the Tauri files this document names (`desktop/src-tauri/`, `forwarder.rs`, `discover.rs`, `auto_sign_in.js`, `desktop/bridge/`) are design history; their roles are in `desktop/electron/src/`. The app's chat window is **Ask** on `ragon web` ([RAGON_ASK](./DREAMFERENCE_RAGON_ASK.md) §10), so §4.2's Chat window on `localhost:3000` below is history. The bridge's guarantees below still hold (in `ragon-rs/web/policy.json` and the main process since the Electron rebuild); the two windows do not (one window, ASK §18.6), and the feature map is superseded by DESKTOP_PARITY §2; the rest was proposed. §1 is from the vendor's public documentation and the pinned Codex source (`rust-v0.158.0`). §2 lists the Codex app's features from the launch announcement (read from the Wayback Machine's copy; the page itself answers 403 and its videos could not be analysed, only their captions) and the upstream vendor's documentation and third-party write-ups. **§5 records what was measured on this GB10** by driving the installed `ragon app-server` over stdio from a script; everything else about behaviour is marked as read, not run.
+
+**Goal:** make Ragon's desktop app work the way Codex desktop app does — a desktop client that drives the agent through Codex's **app-server** (JSON-RPC over stdio), with the same projects → threads → turns model, the same composer, approvals, diffs, review, worktrees and terminal — and **get there by growing `ragon-app` in place, never breaking it**. The coding agent arrives as the app's **Work** window, beside its chat window.
+
+**Builds on:**
+- `ragon` itself: the launcher in `ragon-rs/` resolves the model server, writes the model catalog, the prompt blocks and `config.toml`; every Codex hook Ragon has (cave mode's extension, patch `0017` — *removed with cave mode*; MCP tools as plain functions, `0020`; the air-gap sandbox hook, `0019`) applies to app-server clients because they are Codex's;
+- the Tauri shell in `desktop/`: `main.rs` (the WebKitGTK environment), `forwarder.rs` and `discover.rs` (a client reaching its node's web UI), `auto_sign_in.js`;
+- `ragon app`, the launcher's entry to the window (`ragon-rs/src/app.rs`);
+- RAGON_APPS (Gmail and Drive through `/apps`), RAGON_NIGHT_SHIFT, RAGON_AIRGAPPED, RAGON_NODE, RAGON_CAVE_MODE *(removed)*, RAGON_SKILLS.
+
+**Codex patches:** none for Phase 1. Phase 2 needs at most two one-line hooks, each counted against the patch cap and decided in Phase 0: the air-gap check on the app-server's thread and turn paths (§8.2), and `/app` from the TUI on Linux (§6.9).
+
+---
+
+## 1. What the upstream vendor's app is (from public material)
+
+> **Rewritten** (the owner, DESKTOP_PARITY §9.5 item 11): until then this section recorded what was read from the vendor's installed package. That reading predates the clean-room rule (only observable behaviour and public material; DESKTOP_PARITY §9.2) and was removed here, in DESKTOP_ELECTRON §2 and in DESKTOP_PARITY; nothing in these specs rests on it any more.
+
+| What | Public source |
+|---|---|
+| Package | The vendor's desktop app, with Codex as one of its views; on Linux a `.deb` or `.rpm` for x64 and ARM64 that installs a signed vendor package repository, started as `chatgpt` ([linux-app](https://learn.chatgpt.com/docs/linux/linux-app)) |
+| The agent | The vendor documents app-server as "the interface Codex uses to power rich clients", open source in Codex's repository ([app-server](https://learn.chatgpt.com/docs/app-server)); Ragon's window is such a client of `ragon app-server` |
+| Sign-in | The app asks for the vendor's account before it opens ([linux-app](https://learn.chatgpt.com/docs/linux/linux-app)). Measured against `ragon app-server` (our own binary): `requiresOpenaiAuth: false` (§5) |
+| Git, worktrees, terminal emulation | The protocol of our submodule has no commit, push, worktree or PR method (§5), so a window that offers them does them itself |
+
+The app-server it drives is the one in our submodule. Its client requests (`app-server-protocol/schema/typescript/ClientRequest.ts`) are: `thread/start|resume|fork|archive|unarchive|delete|list|loaded/list|read|items/list|turns/list|name/set|metadata/update|revert|compact/start|shellCommand|inject_items|unsubscribe|approveGuardianDeniedAction`, `thread/goal/get|set|clear`, `thread/attachment/add|list|remove`, `threadSection/*`, `turn/start|steer|interrupt`, `review/start`, `model/list`, `modelProvider/capabilities/read`, `skills/list|config/write|extraRoots/set`, `plugin/*`, `marketplace/*`, `app/*`, `hooks/list`, `fs/*` (read, write, copy, remove, metadata, watch), `fuzzyFileSearch`, `gitDiffToRemote`, `command/exec|write|resize|terminate` (with `tty` and a PTY size: a terminal), `config/read|value/write|batchWrite|mcpServer/reload`, `configRequirements/read`, `mcpServerStatus/list`, `mcpServer/tool/call|resource/read|oauth/login`, `permissionProfile/list`, `experimentalFeature/list|enablement/set`, `externalAgentConfig/detect|import`, `account/*`, `feedback/upload`, `getConversationSummary`. Approvals and streamed items come back as server requests and notifications. `codex app-server generate-ts [--experimental]` writes the TypeScript types for whatever binary runs it.
+
+**What follows:** the Codex desktop app is a client of a published, open protocol, served by an open binary. Everything that makes it a *coding agent* is on our side of that line. What is the upstream vendor's own is the window — its layout, its interaction design, its git and terminal plumbing, and its proprietary extras.
+
+---
+
+## 2. What the Codex app offers (the feature inventory)
+
+> **Superseded** by [DREAMFERENCE_RAGON_DESKTOP_PARITY.md](./DREAMFERENCE_RAGON_DESKTOP_PARITY.md) §2, the inventory as documented. Kept as the baseline.
+
+**From the launch announcement** (2 February 2026, macOS; Windows on 4 March 2026): "a command center for agents".
+- **Multiple agents in parallel:** "agents run in separate threads organized by projects, so you can seamlessly switch between tasks without losing context."
+- **Review in the thread:** "review the agent's changes in the thread, comment on the diff, and even open it in your editor to make manual changes."
+- **Worktrees:** "multiple agents can work on the same repo without conflicts … you can check out changes locally or let it continue making progress without touching your local git state."
+- **Shared history:** "the app picks up your session history and configuration from the Codex CLI and IDE extension."
+- **Skills:** "a dedicated interface to create and manage skills"; invoked explicitly or chosen automatically; a library (Figma, Linear, Cloudflare/Netlify/Render/Vercel deploys, GPT Image, the upstream vendor's docs, PDF/spreadsheet/docx); skills made in the app work in the CLI and IDE; checked into a repository for a team.
+- **Automations:** "work in the background on an automatic schedule … instructions with optional skills … when an Automation finishes, the results land in a review queue."
+- **Personality:** "a terse, pragmatic style and a more conversational, empathetic one," chosen with `/personality`.
+- **Security:** the CLI's sandbox, cached web search by default, approval for elevated commands, project or team **rules** that let named commands run elevated.
+- **Video captions** (the videos themselves were not analysable): "Updating a website using the Vercel and image generation skills"; "Creating a spreadsheet to generate shopping lists using the spreadsheet skill"; "Setting up an automation to periodically create new skills"; a 3D racing game built from one prompt over 7 million tokens, with Codex "playing the game" to test it.
+
+**Added since, from the upstream vendor's documentation and changelog and third-party write-ups:** local / worktree / cloud execution modes and **hand-off** of a thread between Local and Worktree; a **review pane** with staged and unstaged diffs, stage / unstage / revert per file and per hunk, split or unified view, inline comments sent to the composer; **commit, push and "Create pull request"**; **"Open in"** an editor, terminal or file manager; **IDE extension sync** (the app follows the files open in the editor); an **integrated terminal** per thread (Cmd+J); a **command palette** (Cmd+K); **voice dictation**; **pop-out windows**; **queued follow-ups and steering** while a turn runs; editing the previous message (Esc twice); a **context-usage indicator** with a Compress action; **plan mode**; **thread fork**; **local environments** with setup scripts and **project actions**; **notifications**, prevent-sleep; an **artifact viewer** (documents, spreadsheets, images), **sites**; an **in-app browser** and **computer use**; image inputs and generation; web search; **MCP servers**, **plugins**, **apps** (connectors); settings pages and keyboard shortcuts; **Chat/Work** modes in the upstream desktop app; `/app` in the CLI to continue a session in the app.
+
+§6 maps every one of these.
+
+---
+
+## 3. What "identical" can and cannot mean here
+
+| Constraint | Consequence |
+|---|---|
+| Ragon talks to no upstream vendor service (patches `0013`, `0015`, `0016`; the egress audit) | No vendor sign-in, no `codex_apps`, no cloud tasks, no rate-limit or credits UI, no Statsig, no Sentry |
+| The upstream vendor's app is proprietary and not ours to redistribute | Ragon cannot ship it, its webview bundle, its icons, sounds or strings |
+| Ragon is AGPL-3.0 | Anything we take must be licence-compatible (MIT and Apache-2.0 are) |
+| The model is local and smaller | Features that need the upstream vendor's hosted models (image generation, deep research, the upstream vendor's computer-use model) have nothing to call |
+| The webview is WebKitGTK, not Chromium (Tauri era; the app is Chromium through Electron, DESKTOP_ELECTRON, and the preview tab is built, DESKTOP_PARITY §2.9) | The upstream vendor's agent-driven browser plugin cannot be reproduced. A **preview pane** showing a local dev server is just another webview and can be |
+| Today's `ragon-app` has users (the Chat window it protects is gone, DESKTOP_ELECTRON §11, ASK §18.6) | Its window, its address, its sign-in and its client forwarding must keep working through every phase (§4.1) |
+
+So "as close as possible" means: **the same architecture** (an app-server client over stdio), **the same information architecture and interaction model** (projects, threads, a composer, item-by-item streaming, inline approvals, a review pane, worktrees per thread, terminal tabs, settings that write `config.toml`), **the same keyboard shortcuts and slash commands where they apply** (§6.10), and **sessions shared with the TUI** as the upstream vendor's app shares them with its CLI. Not the same pixels, and not the upstream vendor's trade dress: Ragon's own name, icon (icons in `desktop/electron/icons/`), colours and copy.
+
+---
+
+## 4. The approach: grow `desktop/` in place
+
+> **Superseded:** §4.1 to §4.3 and §4.5 describe the Tauri project, its two windows and the Chat window, all gone. The shell is [DESKTOP_ELECTRON](./DREAMFERENCE_RAGON_DESKTOP_ELECTRON.md) §3 and §4; the one window and one app-server are ASK §18.6; the bridge's allow-list and dropped fields (§4.3) are `ragon-rs/web/policy.json`, enforced by the main process (`policy.ts`) and `ragon web` alike (DESKTOP_PARITY §1.5). §4.3's launcher rules (`ragon app-server`, `clientInfo` `ragon_desktop`), §4.4 (types generated from the pin) and §4.6 still hold.
+
+**Chosen: evolve the existing Tauri project.** `desktop/` stays the project, `ragon-app` (`dev.dreamference.ragon`) stays the binary, and nothing a user has today changes until Work passes its Phase 1 acceptance.
+
+- **[CodexMonitor](https://github.com/Dimillian/CodexMonitor)** (Thomas Ricouard, **MIT**, Tauri + React, an app-server client with threads, worktrees, diffs, a terminal dock and dictation) is a **parts bin, not a fork**: the stdio bridge, the thread list, item rendering and the terminal dock are taken file by file where they fit, with its MIT notice kept in `desktop/LICENSES/`. Its layout (one app-server per workspace, a "monitor" sidebar) is not taken.
+- **Writing the rest from scratch** on types generated from our pinned binary (§4.4) is the default for everything CodexMonitor does not already do well.
+- **Running the upstream vendor's app on `ragon` is rejected** as the product (§4.6).
+
+### 4.1 What stays exactly as it is
+
+- The window labelled **`ragon`** on `http://localhost:3000/app` **was the Chat window** (history).
+- `main.rs`'s webview environment (`WEBKIT_DISABLE_DMABUF_RENDERER`, `GTK_THEME`), `forwarder.rs`, `discover.rs`, `node_locator.rs` and `auto_sign_in.js`, unchanged.
+- `ragon app` with no arguments keeps opening the Chat window **until Work's Phase 1 acceptance passes**; then it opens Work, and Chat is one click (and one shortcut) away. People who never open Work keep everything they have.
+- A test loads the Chat window exactly as today (its URL, its sign-in script, the forwarder path on a client) and fails on any difference.
+
+### 4.2 What changes in the current code
+
+| Where | Today | Becomes |
+|---|---|---|
+| `tauri.conf.json` windows | one window, `ragon`, external URL | two: `ragon` (Chat, unchanged) and **`work`** (bundled UI, `WebviewUrl::App`), Work hidden until enabled |
+| `tauri.conf.json` `frontendDist` | `../dist`, which does not exist | the Work UI's build output (`desktop/ui/dist`), built by `ragon-admin desktop build` |
+| `tauri.conf.json` `security.csp` | `null` | for Work: `default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: data:` (no remote script, style, font or connect). |
+| `capabilities/` | none | one capability, **Work window only**, granting the bridge's commands. Chat gets no capability: Tauri gives a remote-URL webview no IPC unless a capability names its URL (read from `tauri` 2.11.5, `ipc/authority.rs`), so the Chat page cannot reach the agent |
+| `src-tauri/src/` | `main.rs`, `discover.rs`, `forwarder.rs`, `node_locator.rs` | + `bridge.rs` (the app-server process and JSON-RPC routing), `git.rs` (worktrees, staging, commit, push), `pty.rs` only if `command/exec`'s terminal proves insufficient |
+| `ragon-rs/src/app.rs` | ignores a folder argument | refuses only when **the window being opened** needs a missing service (Work needs the model server, and shows its own waiting screen instead of refusing); `ragon app <folder>` opens Work on that project; `ragon app --thread <id>` opens that thread |
+| `ragon-rs/src/lib.rs` | `app-server` waits for the model and gets `--oss --model <id>`, which it ignores (§5) | `app-server` gets **`-c model="<id>"`**; `app-server generate-ts` and `generate-json-schema` are offline (`COMMANDS_WITHOUT_MODEL`) |
+| `dreamference/night_shift/night_shift_host.py` | `app-server` and `app` are in `NON_INTERACTIVE`: an app-server never holds a night run back | a live **turn** in Work holds it back; an idle open window does not (§8.3) |
+
+Two windows, not one window with two webviews: a child webview (`Window::add_child`) is behind Tauri's `unstable` feature (read from `tauri` 2.11.5), and a second top-level window is stable. The Chat/Work toggle (§6.1) therefore raises the other window, in the same position and size, rather than swapping a pane. If `unstable` multi-webview is ever stabilised, the toggle can become a pane without changing anything else.
+
+### 4.3 The bridge
+
+```
+ragon-app (Tauri)
+ ├─ window "work" — Work UI (React, bundled) ──Tauri IPC──► bridge.rs ──stdio JSON-RPC──► ragon app-server
+ │                                                         git.rs ──► git (worktrees, stage, commit, push)
+ └─ window "ragon" — Chat: http://localhost:3000/app
+```
+
+- **One `ragon app-server` per app,** started when the Work window first opens, as the upstream vendor's app does: threads carry their own `cwd`, so one server serves every project. (Phase 0 measured an idle server; §5.)
+- **Started through the launcher, never as bare `codex`:** `ragon app-server`. The launcher brings the model server tiers (node, `node.json`, mDNS), the model catalog with Ragon's prompt blocks, `CODEX_HOME=~/.ragon`, `chatgpt_base_url` at a closed port, the skills links, the air-gap seal and `/prompt`'s choice.
+- **The launcher's wait for the model server** (up to 600 s on a cold load) goes to **stderr**, which the bridge shows as Work's start-up screen. Measured: stdout carried JSON-RPC only (§5).
+- **`initialize`** with `clientInfo: {name: "ragon_desktop", title: "Ragon Desktop", version}` and `experimentalApi: true`. Not `Codex Desktop`.
+- **What the UI never sends:** `thread/start`'s `baseInstructions`, `developerInstructions`, `modelProvider` and `config` (they would replace Ragon's prompt, provider or policy); `feedback/upload`, `account/login/*` and `account/bedrock/*`; `remoteControl/*` (it pairs the machine with the upstream vendor's remote control); `thread/realtime/*` (the upstream vendor's realtime voice); `userVerification/*`. The bridge holds an allow-list of methods and drops everything else, so a UI bug cannot send them either.
+- **Notifications the UI ignores:** `account/rateLimits/updated` (always empty here) and `remoteControl/status/changed` (`disabled`, measured).
+- **On a client machine** the app-server runs locally and the launcher finds the node's model server as it does for the TUI. A Phase 3 option is the upstream vendor's `ssh` host kind: `ssh <node> ragon app-server` as the stdio transport, so the agent runs where the code is.
+
+### 4.4 Protocol types
+
+Generated from the `ragon` binary the release ships: `ragon app-server generate-ts --experimental --out desktop/ui/src/protocol` (the subcommand exists in 0.158.0, `cli/src/main.rs`), never copied from CodexMonitor's or the upstream vendor's newer Codex (the upstream vendor's app bundles 0.160.0; our pin is 0.158.0; the protocol moves between releases). The generated files are committed; a test regenerates them from the submodule's `app-server-protocol` and fails on a diff, so a Codex bump that changes the protocol fails the build rather than the UI.
+
+### 4.5 Work's frontend
+
+React + Vite + TypeScript under `desktop/ui/`, built with the repository's pinned Node toolchain; `node_modules` not committed. Diff rendering, the terminal (xterm.js) and Markdown/Mermaid rendering use MIT or Apache-2.0 libraries bundled into the app, never loaded from a CDN. §9 lists the WebKitGTK lessons for Work.
+
+### 4.6 Running the upstream vendor's app on `ragon` — rejected as the product
+
+Running the vendor's own window over `ragon app-server` is not the product: it is the vendor's proprietary app, with its own updater and package repository, and cannot be shipped. (The passage that described how it would be done came from the earlier reading of its package and was removed, §1.)
+
+---
+
+## 5. Measured (Phase 0, first part)
+
+The installed `ragon` (0.158.0) was driven over stdio by a script: `initialize` → `initialized` → `account/read` → `model/list` → `permissionProfile/list` → `config/read` → `thread/start` (ephemeral, read-only) → `turn/start` ("Reply with exactly the word OK"), with Qwen3.8-27B serving.
+
+| Question | Answer |
+|---|---|
+| Does `ragon app-server` start and complete a turn? | **Yes.** The model answered `OK`; the notifications were `thread/started`, `turn/started`, `item/started`, `item/agentMessage/delta`, `item/reasoning/*`, `item/completed`, `thread/tokenUsage/updated`, `turn/completed`, `mcpServer/startupStatus/updated` |
+| Is stdout clean JSON-RPC through the launcher? | **Yes:** 0 non-JSON lines. The launcher's messages go to stderr |
+| Sign-in | `account/read` → `{"account": null, "requiresOpenaiAuth": false}`: nothing to sign in to |
+| **Does the launcher's model choice reach the app-server?** | **No — a bug in today's `ragon`, independent of the desktop work.** The CLI applies only root `-c` overrides to `app-server` (`cli/src/main.rs`, the `AppServer` arm); `--oss --local-provider --model <id>` are the TUI's flags and are ignored there. The thread started with `model: ""` and the server warned "Model metadata for `` not found. Defaulting to fallback metadata" — **so Ragon's model catalog, and with it Ragon's prompt blocks, did not apply.** With `-c model="RadixArk/Qwen3.8-27B-NVFP4"` the warning is gone and the session's request carries Ragon's prompt ("You are Ragon, a coding agent…", the `ragon-search` block): measured. Fix in §4.2 (the launcher) and, belt and braces, the bridge passes the served model in every `thread/start` |
+| `model/list` | **Empty** even with the model set, although `model_catalog.json` holds the served model. **Cause found:** the launcher's catalog entry said `"supported_in_api": false`, and Codex drops such a model from every picker unless the session has the vendor's sign-in (`ModelPreset::filter_by_auth`, `protocol/src/openai_models.rs`); Ragon never has one, so the TUI's `/model` list was empty too. Nothing else reads the field. Fixed on branch `fix/startup-lines-app-server` (`true`, with a test); not yet in an installed build, so not re-measured |
+| `permissionProfile/list` | `:read-only`, `:workspace`, `:danger-full-access`, all `allowed: true` at level `off` — the picker's three rows |
+| Remote control | `remoteControl/status/changed` → `disabled` |
+| Rate limits | `account/rateLimits/updated` with every field null: ignore it |
+| Do app-server threads appear in `ragon resume`? | **Yes, measured:** a non-ephemeral thread started over the app-server (with `-c model=…`) was written to `~/.ragon/sessions` with `source: vscode` and `originator` set to the client's name, and `ragon resume --last` in the TUI opened it with its turn on screen. (`vscode` is in `INTERACTIVE_SESSION_SOURCES`, `rollout/src/lib.rs`.) The probe's session file and its folder-trust entry were removed afterwards |
+| Does an open app-server hold a night run back? | **No:** `NON_INTERACTIVE` in `night_shift_host.py` lists `app-server` and `app`. §8.3 decides what it should do |
+| Terminal support | `command/exec` takes `tty` and an initial PTY size, with `write`, `resize` and `terminate`: terminal tabs need no PTY code of ours |
+| Git | No worktree, stage, commit, push or PR method; `gitDiffToRemote` only. The TUI's `/worktree` uses the `codex-worktree` crate inside the TUI, not the server. Git is the window's job (`git.rs`), as in the upstream vendor's app |
+| Plan mode | **Found and called:** `ragon app-server generate-ts --experimental` (772 v2 types against 637) gives `turn/start` a `collaborationMode`; `collaborationMode/list` answered `Plan` (`mode: plan`, effort `medium`) and `Default` |
+| Projects and the thread list | `project/list` answered `{"data": []}` (no projects yet, a well-formed list); `thread/list` returned the TUI's own sessions, so TUI threads appear in Work's list (measured) |
+| What `--experimental` adds | `project/create|list|read|update|move|delete|import` (projects kept by the server), `thread/queue/add|list|update|reorder|delete|start` (queued follow-ups), `thread/search`, `thread/searchOccurrences`, `thread/timeline/list`, `thread/settings/update`, `turn/settings/update`, `process/spawn|writeStdin|resizePty|kill` and `thread/backgroundTerminals/*` (terminals), `memory/status|reset`, `thread/memoryMode/set`, `environment/*`, `plugin/search`, `server/diagnostics`; and, never to be sent from Ragon, `thread/realtime/*` (the upstream vendor's realtime voice), `remoteControl/*`, `userVerification/*`, `account/bedrock/*`. `turn/start` also gains `permissions`, `environments` and `runtimeWorkspaceRoots` |
+| Worktree layout | The `codex-worktree` crate implements "the existing Codex Desktop contract": a checkout at `$CODEX_HOME/worktrees/<4-hex bucket>/<repository name>`, created with `git worktree add --detach` (no branch until one is made), the owning thread recorded in `codex-thread.json` in the worktree's git directory, and the settings `[desktop] git-worktree-root`, `worktree-auto-cleanup-enabled` and `worktree-keep-count` in `config.toml`. The TUI's `/worktree` uses it |
+| `/app` in the TUI | Exists upstream: it opens `codex://threads/<id>`, and is compiled only on macOS and Windows (`slash_command.rs`) |
+| Types | `app-server generate-ts` exists in 0.158.0. Today the launcher would make it wait for the model server (§4.2 fixes that) |
+
+---
+
+## 6. Feature by feature
+
+> **Superseded** by [DREAMFERENCE_RAGON_DESKTOP_PARITY.md](./DREAMFERENCE_RAGON_DESKTOP_PARITY.md) §2 and §4, which carry every row below forward with the current status.
+
+Status: **Same** (the Codex app's behaviour, on our server), **Ragon's** (the same idea through a Ragon mechanism), **Later** (a named phase), **No** (not offered, with the reason).
+
+### 6.1 Window and navigation
+
+| Codex app | How | Ragon | Phase |
+|---|---|---|---|
+| Project sidebar, threads per project, pin, rename, archive, sections | `project/*` (experimental), `thread/list`, `threadSection/*`, `thread/name/set`, `thread/archive|unarchive`, `thread/metadata/update` | **Same.** Threads from `ragon` in a terminal appear here and back (both read `~/.ragon/sessions`) | 1 |
+| Switch threads without losing context; several threads running at once | `thread/loaded/list`, one server, per-thread subscriptions | **Same.** Parallel turns share one model server: Work shows the KV pool's headroom (§7) | 1 |
+| Chat / Work toggle | Upstream desktop app | **Ragon's:** Work is the agent, Chat is the chat window (§4.2) | 1 |
+| Command palette, thread search | client, `thread/search` (experimental) | **Same** (Ctrl+K): threads, projects, slash commands, settings | 2 |
+| Pop-out windows | client | **Same:** a thread in its own Tauri window | 2 |
+| Notifications when a turn ends or needs approval | client | **Same:** desktop notification, no bundled sounds | 2 |
+| Prevent sleep while a turn runs | client | **Same:** `systemd-inhibit`-style idle inhibitor while any turn is running | 2 |
+| Settings pages | `config/read`, `config/value/write`, `config/batchWrite` | **Same,** writing `~/.ragon/config.toml` | 1 |
+| Dark mode | client | Built (DESKTOP_PARITY item 11; light only until then, §14 question 3) | 3 |
+
+### 6.2 Composer and turns
+
+| Codex app | How | Ragon | Phase |
+|---|---|---|---|
+| Text, `@` file mentions | `turn/start`, `fuzzyFileSearch` | **Same** | 1 |
+| Images and attachments | `thread/attachment/*`, input items | **Same** for images (Qwen3.8 is text-only today: attachments are offered only when the served model's entry says `supports_vision`) | 2 |
+| Model and effort picker | `model/list`, `turn/start` `model`/`effort` | **Ragon's:** `config/read`'s `model` (set by the launcher once Phase 0 item 2 ships; measured with `-c model`), with `$CODEX_HOME/model_catalog.json` as the fallback, while `model/list` is empty (§5); efforts the patched template accepts | 1 |
+| Personality (`/personality`) | `personality` | **Ragon's: cave mode** (`/cavemode`, RAGON_CAVE_MODE — *removed, `tests/test_removed_cave_settings.py`*), not a second mechanism; `personality` is not sent | 2 |
+| Plan mode | `turn/start` `collaborationMode`, `collaborationMode/list` (experimental, §5) | **Same** | 2 |
+| Steer while running, queued follow-ups, stop | `turn/steer`, `thread/queue/*` (experimental), `turn/interrupt` | **Same** | 1 |
+| Edit the previous message (Esc twice) | `thread/revert` + `turn/start` | **Same** | 2 |
+| Context-usage indicator and Compress | `thread/tokenUsage/updated`, `thread/compact/start` | **Same**, against the launcher's KV-pool-based limit | 1 |
+| Fork a thread | `thread/fork` | **Same** | 2 |
+| Thread goal | `thread/goal/*` | **Same** | 2 |
+| Slash commands | client | The Codex ones, plus Ragon's: `/airgapped`, `/cavemode` *(removed)*, `/night`, `/prompt`, `/apps`, each a call to the launcher's own command (`ragon airgapped`, `ragon night`, `ragon prompt` …) so the TUI and the app cannot drift | 2 |
+| Voice dictation | client; `thread/realtime/*` is the upstream vendor's realtime API | **Ragon's:** the speech-to-text sidecar (`dream-stt`, CPU Whisper) already running for Chat; `thread/realtime/*` is never sent | 2 |
+
+### 6.3 The stream
+
+| Codex app | How | Ragon | Phase |
+|---|---|---|---|
+| Reasoning, commands with output, file edits, plan updates, MCP and `code_*` tool calls | item notifications, `turn/plan/updated` | **Same** | 1 |
+| Markdown and Mermaid rendering | client | **Same** | 1 |
+| Inline approvals: command, patch, network | server requests | **Same**, with the air-gap rule (§8.2) | 1 |
+| Guardian-denied action override | `thread/approveGuardianDeniedAction` | **Same** if the guardian reviewer is configured | 2 |
+
+### 6.4 Review and git
+
+| Codex app | How | Ragon | Phase |
+|---|---|---|---|
+| Diff of the thread's changes | items, `gitDiffToRemote`, git | **Same** | 1 |
+| Review pane: staged and unstaged, stage / unstage / discard per file and per hunk, split or unified | git (`git.rs`) | **Same** | 2 |
+| Inline comments on diff lines, sent to the composer | client | **Same** | 2 |
+| `/review` | `review/start` | **Same,** local model | 2 |
+| Commit, push | git | **Same** | 2 |
+| Create pull request | prefilled hosting URL | **Same,** no API or token: the forge's new-PR page opens with branches prefilled | 2 |
+| Open in editor, terminal, file manager | client | **Same:** detected from `.desktop` entries (VS Code, VSCodium, Cursor, Zed, JetBrains IDEs, terminals) | 2 |
+| Revert the thread's changes | `thread/revert` | **Same** | 1 |
+
+### 6.5 Worktrees and environments
+
+| Codex app | How | Ragon | Phase |
+|---|---|---|---|
+| Worktree per thread; check out locally or let it continue | git, **the Codex Desktop contract** of §5 (shared with the TUI's `/worktree`): `git.rs` either depends on the `codex-worktree` crate by path, if it builds outside Codex's workspace (it inherits workspace dependencies), or implements the same contract with a test that a checkout made by one is listed and owned correctly by the other | **Same.** A thread handed between Work and the TUI keeps its worktree. Night Shift's `night/<id>` branches stay separate | 2 |
+| Hand-off between Local and Worktree | git | **Same** | 2 |
+| Delete a worktree, keeping the branch | git | **Same,** refusing while a turn runs there or with uncommitted changes | 2 |
+| Local environment setup script, project actions | client config | **Same,** in a project file Ragon reads; each runs in a terminal tab | 2 |
+
+### 6.6 Terminal
+
+| Codex app | How | Ragon | Phase |
+|---|---|---|---|
+| A terminal per thread, toggled with Ctrl+J, scoped to the thread's directory or worktree | `command/exec` with `tty`, `write`, `resize`, `terminate`; or `process/*` (experimental) | **Same.** Runs under the thread's sandbox profile, so `/airgapped on` holds there too | 2 |
+
+### 6.7 Skills, plugins, apps, MCP
+
+| Codex app | How | Ragon | Phase |
+|---|---|---|---|
+| Skills list, enable, create | `skills/list`, `skills/config/write`, `skills/extraRoots/set`, `plugin/skill/read` | **Same,** with Ragon's sources shown (Claude, Gemini, OpenClaw, Hermes, ClawHub with its verdict, RAGON_SKILLS) | 2 |
+| Plugins and marketplaces | `plugin/*`, `marketplace/*` | **Same** for local marketplaces; the upstream vendor's featured catalogue stays closed (patch `0015`) | 2 |
+| Apps (Gmail, Drive …) | `app/list|read|installed` | **Ragon's:** RAGON_APPS — local sign-in, read-only tools, nothing through `chatgpt.com` | 2 |
+| MCP servers: status, reload, OAuth, call a tool, read a resource | `mcpServerStatus/list`, `config/mcpServer/reload`, `mcpServer/*` | **Same** | 2 |
+| Hooks | `hooks/list` | **Same** (read-only list), showing the ledger hook | 2 |
+| Import another agent's configuration | `externalAgentConfig/detect|import` | **Same,** beside RAGON_SKILLS's links | 3 |
+| Experimental features | `experimentalFeature/*` | **Same,** in Settings | 3 |
+
+### 6.8 Automations
+
+| Codex app | How | Ragon | Phase |
+|---|---|---|---|
+| Scheduled tasks with instructions and optional skills | the app's own scheduler | **Ragon's: Night Shift.** `/night add` from the composer, the queue as a panel, a schedule on the timer `night enable` installs. No new scheduler | 2 |
+| Results land in a review queue | client | **Ragon's:** the morning report, each task's branch as a thread with its diff in the review pane | 2 |
+| Memory across automation runs | `memory/*`, `thread/memoryMode/set` (experimental) | **Ragon's:** COMPACTION §4.4's nightly notes, if built; Codex's own memory if Phase 0 finds it needs no upstream vendor service | Later |
+| Cloud triggers | The upstream vendor | **No:** no cloud | — |
+
+### 6.9 Handoff and shared history
+
+| Codex app | How | Ragon | Phase |
+|---|---|---|---|
+| Sessions shared with the CLI | `~/.codex` | **Same,** `~/.ragon` (§5) | 1 |
+| `/app` in the TUI continues the session in the app | `codex://threads/<id>`, macOS and Windows only | **Ragon's:** `ragon app --thread <id>` from a shell (no patch); `/app` in the TUI needs one hook (enable on Linux, scheme `ragon://`), against the patch cap; `ragon-app.desktop` registers `x-scheme-handler/ragon` | 2 |
+| IDE extension sync | the IDE extension | **No:** Ragon has no IDE extension. The MCP server for JetBrains and VS Code (`ragon-admin mcp`) is a different thing | — |
+
+### 6.10 Keyboard shortcuts (Linux bindings)
+
+| Action | Codex app (macOS) | Ragon |
+|---|---|---|
+| Command palette | Cmd+K | Ctrl+K |
+| Toggle terminal | Cmd+J | Ctrl+J |
+| Toggle review pane | Cmd+Shift+G | Ctrl+Shift+G |
+| New thread | Cmd+N | Ctrl+N |
+| Edit previous message | Esc Esc | Esc Esc |
+| Stop the turn | Esc | Esc |
+| Chat / Work | — | Ctrl+Shift+C / Ctrl+Shift+W |
+
+Rebindable in Settings, stored with the window's preferences, not in `config.toml`.
+
+### 6.11 Not offered
+
+| Codex app | Why |
+|---|---|
+| Vendor sign-in, plan, credits, rate limits, workspace messages | No hosted account; `requiresOpenaiAuth: false` (§5) |
+| Cloud tasks, cloud environments, remote control | The upstream vendor's services; `cloud` is refused by the launcher, remote control is `disabled` |
+| Computer use, the upstream vendor's browser plugin, image generation, deep research | No local model or runtime for them |
+| Feedback upload | Uploads to the upstream vendor |
+| Sites | Hosted by the upstream vendor |
+
+**Offered later instead:** a **preview pane** (a WebKitGTK webview on a local dev server's URL, Phase 3) and an **artifact viewer** for Markdown, images and PDF (Phase 3).
+
+---
+
+## 7. What Ragon adds, in the Codex app's idioms
+
+- **Air-gap status** in the Work window's title bar: `off` or `on`, the seal held or not, and the `NOT ENFORCED` reasons a click away.
+- **The node:** which model server this app uses (this machine, or a node found on the network), from `node.json`, with `ragon node use` behind a picker on a client.
+- **The model server's state** (starting, serving, stopped) and its KV pool's headroom, from `/v1/models` and `/metrics`, with `ragon-admin server start` as the action when it is stopped, since without it nothing works. Parallel threads share one pool; the headroom is what makes "run several agents at once" honest on one GB10.
+- **The code index:** its state per project (`ragon-code status`); `code_*` tools rendered like any tool call.
+- **`/prompt`:** the system prompt in use per thread, from RAGON_PROMPT.
+
+---
+
+## 8. Security and privacy
+
+### 8.1 The window
+
+- **No telemetry SDK** of any kind in Work's bundle, no remote fonts or scripts (§4.2's CSP), no auto-updater: updates come from `ragon update`, as for the binaries.
+- **The egress audit grows an `--app` mode:** trace `ragon-app` plus its `ragon app-server` through one scripted turn, with the same verdict rules. It must pass before a release ships Work.
+- **Chat cannot reach the agent:** no capability names its origin (§4.2). (there is no Chat window any more; the one window's IPC is answered only for its own `webContents`, DESKTOP_ELECTRON §3.) The `--app` mode exists: `ragon-admin audit egress --app`.
+
+### 8.2 The air-gap rule must hold in the server, not the window
+
+The Full Access refusal at `on` (RAGON_AIRGAPPED §14.7) is enforced in the launcher's argument check and in the TUI's two permission pickers. **An app-server client chooses the sandbox per thread and per turn** (`thread/start`'s `sandbox` and `config`; `turn/start`'s `sandboxPolicy`, `permissions` and `runtimeWorkspaceRoots`), so greying out a row in Work enforces nothing: any other app-server client, or a bug, gets Full Access at `on`. Measured: `permissionProfile/list` reports `:danger-full-access` as `allowed` (at `off`, where it should be).
+
+Where the check goes, decided in Phase 0 in this order:
+1. **Codex's requirements system** (`allowed_permission_profiles` in `requirements.toml`) already removes profiles for every client, but its file is system-wide (`/etc/codex/requirements.toml`) and fixed, not per session: rejected unless a per-`CODEX_HOME` layer exists.
+2. **The launcher's registered extension** (patch `0017`'s registry — *retired when cave mode was removed*): if an extension can veto a thread or turn configuration, the rule moves there with no new patch.
+3. **One hook** where the app-server resolves a thread's or turn's permissions (`thread_processor.rs`, beside `has_permission_override`, and the turn path in `turn_processor.rs`), refusing Full Access when `ragon_airgapped::resolve` says `on`, with the same message as the launcher; and `permissionProfile/list` answering `allowed: false` with the reason at `on`, so every client's picker shows it.
+
+**The seal is a second target.** The seal's protection rests on `$XDG_RUNTIME_DIR` being read-only inside the sandbox (RAGON_AIRGAPPED §14.5). A client passing `runtimeWorkspaceRoots` (or a `permissions` profile, or `config`'s `sandbox_workspace_write.writable_roots`) that covers `$XDG_RUNTIME_DIR/ragon-airgapped` would make it writable, and a command could then delete the seal. The same check therefore also refuses, at `on`, any writable root that contains the seal's directory or the directory itself.
+
+Work also disables the Full Access row at `on`, but as a courtesy, not as the enforcement.
+
+**At `off` the app behaves like Codex's** (owner's decision,; RAGON_AIRGAPPED §14.13): Full Access is selectable, and the composer's `!command` (`thread/shellCommand`, user-initiated, run in the user's shell with no sandbox) is allowed. The policy refuses that request at `on`; since no patch gates it in the app-server, the enforcers' refusal is the binding one, and Electron's fails closed when `ragon airgapped` does not answer.
+
+### 8.3 Sessions and Night Shift
+
+Threads the app starts are ordinary Codex sessions in `~/.ragon/sessions`. Today Night Shift ignores an app-server entirely (§5). An always-open desktop app must not block every night, and process scanning cannot tell a busy server from an idle one. So: **the bridge writes a busy marker** `$CODEX_HOME/night/busy/<pid>`, where `<pid>` is **the `ragon app-server` process's** (the bridge's child, so the night run can check it without knowing about windows), holding the ids of the threads with a live turn. It is written on `turn/started`, rewritten on `turn/completed`, and removed when the last turn ends or the server exits. Night Shift's admission treats a marker whose pid is alive (signal 0, the probe `_probe_direct_kill` uses) and whose `/proc/<pid>/exe` is the installed `ragon` (or, a program of that name running `app-server`, so the app's bundled `ragon` counts: `NightShiftHost._is_app_server`, DESKTOP_ELECTRON §9) as an open session, and deletes any other marker: a window killed hard leaves a marker with a dead pid, which the next check prunes. The night run's own `ragon exec` processes are unaffected.
+
+---
+
+## 9. The webview: what `desktop/` already learned
+
+> **Superseded:** by DESKTOP_ELECTRON §1 and §3. WebKitGTK, `main.rs` and `tauri-plugin-opener` are gone; the app renders with Electron's Chromium and its defaults.
+
+Every setting in `desktop/src-tauri/src/main.rs` applies to both windows: `WEBKIT_DISABLE_DMABUF_RENDERER=1` (no window at all without it under the NVIDIA driver), `GTK_THEME=Adwaita:light` (Work follows it until it has a dark theme), the white `backgroundColor` (a repaint gap shows the window's own background). **`target="_blank"` does nothing**: links to the web go through `tauri-plugin-opener`. **WebKitGTK paints its own scrollbar** that CSS colours cannot reach: Work's scroll areas use `scrollbar-width: thin` and are checked in an offscreen WebKitGTK view, not only in Chromium. CodexMonitor's code was built on macOS first; every part taken from it is checked on the GB10.
+
+---
+
+## 10. Packaging
+
+> **Superseded:** by DESKTOP_ELECTRON §3 (decision 7) and §12: an Electron Forge 8 `.deb` (`ragon`), the unsigned macOS preview dmg (§10, minimum macOS 12.0) and, a Windows zip built in CI (DESKTOP_PARITY §2.17). The scheme is `ragon://` with `ragon://` kept (DESKTOP_PARITY §2.20).
+
+- The app stays `ragon-app` (`dev.dreamference.ragon`), built by `ragon-admin desktop build` (which now also builds `desktop/ui/`) and attached to releases; `install.sh` installs it on a client and a node alike. The `.desktop` entry gains `MimeType=x-scheme-handler/ragon;`.
+- `ragon app` opens Chat until Work passes Phase 1, then Work; `ragon app --chat`, `ragon app <folder>`, `ragon app --thread <id>`.
+- The installed debug build in `~/.local/share/applications` is replaced by the release build.
+
+---
+
+## 11. Phases
+
+> **Dated:** Phase 1 shipped. Phases 2 and 3 were re-planned and are tracked in DESKTOP_PARITY §4.2 and §4.3: Phase 2 merged; Phase 3 items 1 to 10 and 12 merged (the Windows app in CI as an unsigned zip); dark mode approved and built (§6.1, §14 Q3). `git.rs` was never written: window-side git is `desktop/electron/src/git.ts` and `worktree.ts` on the `codex-worktree` contract (Phase 0 item 9 still open).
+
+**Phase 0 — check (about a day; part done, §5).**
+1. ~~`ragon app-server` handshake, sign-in gate, one turn, clean stdout~~ — done (§5).
+2. **The launcher fix, a hard gate for everything after it:** `-c model="<id>"` for `app-server` (**built** on branch `fix/startup-lines-app-server`, with tests; a model the user names as `-c model=` or `--model` wins; not yet in an installed build); offline `generate-ts`. It is a bug in today's `ragon` (any app-server client, including the upstream vendor's app pointed at `ragon`, gets Codex's fallback prompt) and ships on its own, before any desktop work. Re-run §5's probe without the manual `-c` and see the metadata found and Ragon's prompt in the request.
+3. ~~Why `model/list` is empty with a catalog entry present.~~ Found and fixed (§5): `supported_in_api` was `false`. Re-measure after the next build.
+4. ~~`generate-ts --experimental`~~ — done (§5): plan mode, projects, queues, search, terminals.
+5. §8.2: which of the three places holds the air-gap check — **decided: the third**, as a validator on the config's permission constraint (§15.3); written as patch `0023`, in the series. Still to measure: a `thread/start` with `sandbox: "danger-full-access"` at `on` is refused.
+6. The reference run (§4.6), with the upstream vendor's package installed by the user (§14 question 5): The upstream vendor's app on `ragon app-server`, scratch `HOME`, network namespace reaching only the model server; record each screen and request.
+7. ~~A non-ephemeral thread appears in `ragon resume`, and a TUI session in `thread/list`~~ — done (§5).
+8. Memory of an idle and a busy app-server.
+9. `git.rs` against the worktree contract: does `codex-worktree` build as a path dependency of `desktop/` (without running cargo inside `codex/`, which rewrites its lock file)?
+
+*Done when* each has a recorded answer here and item 2 has shipped.
+
+**Phase 1 — Work beside Chat.** The second window, the bridge, the busy marker, the project and thread sidebar, the composer, streaming items, approvals, the permission picker, interrupt and steer, the context indicator, the model picker, settings, the start-up screen, revert, the egress audit's `--app` mode, and the Chat window unchanged. *Done when* (with Phase 0 item 2 shipped, so both sides run Ragon's prompt) a task started in Work can be resumed in the TUI and the other way round, the audit passes, the Chat test passes unchanged — and only then does `ragon app` open Work by default.
+
+**Phase 2 — the rest of the Codex surface.** Review pane and git, worktrees and hand-off, terminal, command palette, pop-outs, notifications, prevent-sleep, fork, goal, edit-previous, images, skills, plugins, apps, MCP, hooks, Night Shift as automations, Ragon's slash commands, dictation, cave mode as personality *(cave mode removed)*, plan mode, `ragon app --thread` and the `ragon://` handler, the air-gap and node indicators, the KV headroom.
+
+**Phase 3 — optional.** `/app` from the TUI on Linux (one hook), the `ssh` host kind to a node, the preview pane, the artifact viewer, external agent import, dark mode, macOS and Windows builds.
+
+**Not proposed:** the vendor's sign-in, cloud tasks and triggers, the upstream vendor's bundled plugins, computer use, the upstream vendor's browser, image generation, sites, feedback upload, IDE extension sync, any telemetry.
+
+---
+
+## 12. Tests
+
+> **Dated:** the Chat-window and `git.rs` items no longer apply; the current tests are DESKTOP_PARITY §5 and [docs/dev/desktop.md](../docs/dev/desktop.md) (Tests).
+
+- **The Chat window is unchanged:** its label, URL, sign-in script and the forwarder path on a client, compared with today's.
+- The bridge: JSON-RPC framing, a server that dies mid-turn, a launcher still waiting for the model (stderr shown, no hang), stray stdout (fails loudly), the dropped `thread/start` fields (§4.3).
+- The launcher: `app-server` gets `-c model=…`; `app-server generate-ts` does not wait for a model server.
+- The generated protocol types match `generate-ts` of the pinned submodule.
+- The UI against a scripted app-server stand-in (as Night Shift's tests script `ragon`): a full turn with a command, a patch, an approval and an interrupt; Full Access disabled at `on`.
+- The air-gap rule against the real app-server binary: `thread/start` and `turn/start` asking for Full Access at `on` are refused, and so is a `turn/start` whose `runtimeWorkspaceRoots` covers the seal's directory.
+- Night Shift: a live busy marker holds the run back; a stale one is pruned; an idle Work window does not hold it back.
+- `git.rs`: worktree create, hand-off, stage per hunk, commit, delete-keeping-branch, against scratch repositories.
+- The egress audit's `--app` fixture, as `--tui` has.
+- No test starts the real window, a real container or the model server, per `tests/conftest.py`.
+
+---
+
+## 13. Risks
+
+- **The protocol moves.** Every Codex bump now has a desktop UI to re-check. Generated types make breakage a compile error.
+- **Experimental methods carry Phase 1.** The project sidebar uses `project/*` and queued follow-ups use `thread/queue/*`, both experimental, which change between releases without the v2 surface's stability (the upstream vendor's own client also sends `experimentalApi: true`). They are re-checked at every Codex bump, and Phase 1 keeps fallbacks: the sidebar groups `thread/list` by `cwd` if `project/*` goes, and follow-ups queue in the window if `thread/queue/*` does, so a removed method degrades a feature instead of breaking the app.
+- **CodexMonitor moves too,** and follows newer Codex. Parts taken from it are owned from then on.
+- **"Close to the Codex app" is a moving target.** The reference is the version recorded in §1–§2; parity with later versions is a decision each time.
+- **Trade dress.** Layout and interaction can follow the upstream vendor's; name, icon, colours, sounds and copy must not.
+- **WebKitGTK** has repeatedly behaved differently from Chromium here (the scrollbar, `target=_blank`, DMABUF).
+- **One model server for parallel threads.** The Codex app's "many agents at once" assumes a cloud. Here they share one GB10's KV pool; several busy threads slow each other and can push compaction (RAGON_COMPACTION). §7's headroom indicator makes that visible rather than solving it.
+
+---
+
+## 14. Open questions
+
+1. ~~Fork CodexMonitor or start from scratch?~~ **Settled by the user's direction:** grow `desktop/` in place, CodexMonitor as a parts bin (§4).
+2. ~~Does Chat stay inside the app?~~ **Settled:** Chat is today's window, unchanged (§4.1). **Reversed:** Chat became Ask and a view of the one window (DESKTOP_ELECTRON §11, ASK §18.6).
+3. ~~Dark mode?~~ **Decided by the user: light only for now.** Reversed: dark mode approved and built (DESKTOP_PARITY item 11, §3.6). Work stays light like Chat (`GTK_THEME=Adwaita:light` applies to both, §9); dark mode stays in Phase 3, as one change for both windows.
+4. ~~One app-server per app or per project?~~ **Decided: one per app** (§4.3), as the upstream vendor's app does: one process, one place for the air-gap check of §8.2. Phase 0 item 8 still measures it, to record the cost, not to decide.
+5. ~~Installing the upstream vendor's package for the reference run?~~ **Decided: yes, installed and kept** for reference comparisons beyond the one run of §4.6. The user runs `sudo apt install ~/Downloads/chatgpt_arm64.deb` from a terminal. Kept means the upstream vendor's apt repository (`/etc/apt/sources.list.d/chatgpt.sources`) and its updater stay, and the app's own `~/.codex` is separate from Ragon's `~/.ragon`. Every reference run still uses a scratch `HOME` and a network namespace reaching only the model server (§4.6, Phase 0 item 6), because the window carries the upstream vendor's telemetry clients and must not reach the upstream vendor while pointed at `ragon app-server`.
+
+---
+
+## 15. As built (branch `desktop/work-window`)
+
+> **History:** `desktop/bridge/` and `desktop/src-tauri/` no longer exist; DESKTOP_ELECTRON §4 maps each part to where it moved, and `ragon-rs/web/policy.json` replaced the bridge's method allow-list.
+
+Written while an overnight SWE-bench run held the machine: nothing below was built into `ragon-app`, installed, or run against the model server. What was run is named in §15.5.
+
+### 15.1 Where it is
+
+| Part | Where |
+|---|---|
+| The bridge's pure half: the method allow-list, the thread fields never sent (`baseInstructions`, `developerInstructions`, `modelProvider`, `config`, `personality`), the framing of stdout, the busy marker, the served model from the catalog, finding `ragon` | `desktop/bridge/` (`ragon-desktop-bridge`, serde_json only) |
+| The bridge: one `ragon app-server` per app, started through the launcher when Work first asks; stdout to Work as `work://message`, stderr as `work://stderr` (the start-up screen), a non-protocol line as `work://protocol-error`; answers only to server requests still waiting; the busy marker kept and removed on exit | `desktop/src-tauri/src/bridge.rs` |
+| Two windows: Chat exactly as configured; Work created only for `--work`, `--cwd <folder>` or `--thread <id>`, in which case Chat's entry is taken out of the configuration and opened later from Work's Chat button. The sign-in script and the forwarder's port rewrite now name Chat's label | `desktop/src-tauri/src/main.rs` |
+| Work's capability (`core:default`, window `work` only); the CSP of §4.2 plus `style-src 'self' 'unsafe-inline'`; `frontendDist` `../ui/dist` | `desktop/src-tauri/capabilities/work.json`, `tauri.conf.json` |
+| The UI: React 19 + Vite 8 + TypeScript; threads grouped by project folder, a new thread on a folder, streaming items (messages as markdown, reasoning, commands with output, file changes and the turn's diff), inline approvals (command, file change, permissions, the legacy pair, questions), steer while a turn runs, Stop (and Esc), revert of the last turn, the context indicator with Compress, the served model, the air-gap level, the permission picker | `desktop/ui/src/` |
+| Protocol types | `desktop/ui/src/protocol/` (873 files), §15.2 |
+| `ragon app --work`, `ragon app <folder>`, `ragon app --thread <id>` (`ragon app` alone opens Ask) | `ragon-rs/src/app.rs` |
+| Night Shift holds back while a Work turn runs | `NightShiftHost.busy_app_server_pids` |
+| The UI built before every `desktop build` and `desktop run` | `DesktopRunner.build_ui` |
+
+### 15.2 Protocol types without running a binary
+
+`codex app-server generate-ts --experimental` does not generate anything at run time: it writes the `typescript` map of `app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst`, which the binary carries through `include_bytes!`, trimming trailing spaces and tabs from each line. `DesktopProtocolTypes` reads the same file from the submodule (`zstd -dc`), so the committed types are byte for byte what the pinned binary writes, with no binary and no model server, and the launcher's `generate-ts` wait (§4.2) does not matter to the build. The drift test compares them and is skipped where there is no submodule (a release install, a worktree without it).
+
+### 15.3 The air-gap rule in the server
+
+The extension registry (§8.2 option 2) cannot veto: its turn admission sees no configuration and skips silently, and its config contributor only observes. Option 3 is therefore a hook, and the narrowest place found is not the app-server's request paths (thread start, resume, fork, each turn's `sandboxPolicy`, `permissions` and `runtimeWorkspaceRoots`, `thread/settings/update`) but the one thing they all set: the config's `Constrained<PermissionProfile>`. Codex already composes validators onto it for managed deny-read rules (`add_validator`), and the session's settings commits run every later change through it, so one validator covers every client and every path. It calls `ragon_airgapped::permission_refusal`, new in the resolver crate (and its byte-identical web copy), which refuses Full Access at a configured `on`, and a writable root that holds the seals while the configured level is `on` or any session is sealed; Full Access is not judged by the seal rule.
+
+- **Patch `0023-airgapped-app-server.patch`, 1,220 bytes:** a dependency line in `core/Cargo.toml` and the validator line in `core/src/config/mod.rs`. It was first kept outside the series for want of room under the cap; the user approved a ceiling of 38,500, and it joined the series (cap 37,500, series 37,288 bytes after 0001–0023). It applies cleanly after 0022.
+- **What it does not see:** a thread's own `/airgapped on` (a session file or a seal for that thread), because the config is resolved before the thread has an id. Work's picker disables Full Access per thread from `work_airgapped`, a courtesy, not enforcement.
+- **Not compiled:** no Codex build ran tonight.
+
+### 15.4 Departures
+
+- **No `git.rs`, settings pages, model picker or the egress audit's `--app` mode yet** (Phase 1 lists them): the served model is shown, not chosen; review and worktrees were Phase 2 anyway.
+- **Chat and Work are separate processes** when started separately: `ragon app` then `ragon app --work` gives two `ragon-app` processes. A single-instance plugin is a new dependency and was left for Phase 2.
+- **Links in the agent's messages are not followable** (no opener plugin yet), and images show their alt text.
+- **`thread/start` passes `permissions`** (a profile id), not `sandbox`, and each `turn/start` passes the picker's profile.
+
+### 15.5 Checked
+
+- `desktop/bridge`: `cargo test` 6 passed. The resolver crate: 11 passed (2 new). `ragon app`'s argument parsing, compiled alone: 3 passed.
+- `desktop/src-tauri`: `cargo check --tests` passed (no warnings). Its own tests were not run: that links the webview.
+- `desktop/ui`: `tsc --noEmit` clean against the generated types; `vitest` 11 passed (the scripted session: a turn with a command, its approval, a patch, the answer; an interrupt; errors; the sidebar; the picker at `on`; markdown safety); `vite build` 287 KB of script.
+- Python: `tests/test_desktop_work.py` (Chat unchanged, Chat without IPC, the CSP, the allow-list against the generated `ClientRequest`, the UI built before Tauri; the drift test run once against the main checkout's submodule: no drift), the Night Shift marker test.
+- **Not checked:** the window itself, a turn through the real bridge, the busy marker under a real night run, the patch compiled or measured.
+
+## 16. Parity backlog
+
+> **Status:** the owner's decision: build what is left of the two parity studies, [DESKTOP_PARITY](./DREAMFERENCE_RAGON_DESKTOP_PARITY.md) (the Codex app: §4.5 items 13 to 40 and the open rows of §9.5) and [DESKTOP_PARITY_CLAUDE](./DREAMFERENCE_RAGON_DESKTOP_PARITY_CLAUDE.md) (the Claude app: §3's ten gaps and the list below them), in the order below, one branch per item (`desktop/backlog-<n>-<name>`), each merged after its gate and shipped in the next daily patch release. Each row's status is updated as it merges.
+
+**Already built, so not here:** DESKTOP_PARITY §4.5 items 13 to 17, 19 and 20, 18 except its Queue-form options, 22's fork from a message and queue edits; §9.5 decisions 1, 2, 3, 5, 6, 7 (its first part), 11 and 12 (several windows); composer predictions and long pastes (§9.5.8); DESKTOP_PARITY_CLAUDE gaps 1, 3, 4, 6 and 7, projects for Ask (gap 2, §4.7), and the export of a question as Markdown (the thread export, in Ask's row menu too); dark mode; the composer's `!` command; plugins at `/airgapped off`; `/worktree`.
+
+**Rules for every item.** Clean room: public behaviour and documentation only, never a vendor's bundle, icon, string or name for a feature. Every new message from the window goes through `policy.json`, enforced by both `ragon-rs/web/src/policy.rs` and `desktop/electron/src/policy.ts`, with a conformance case in `ragon-rs/web/vectors/outgoing.json` that both run; a main-process message (`open/url`, `git/*`, `night/*` and the like) is vetted in `main.ts` as today. No channel to a vendor. At `/airgapped on` nothing new reaches the network: an item that can fetch (an OAuth sign-in, a package runner, `gh`) is refused by the main process at `on`, as push is. The gate: `npm test` in `desktop/ui` and `desktop/electron`, `npm run e2e` after `npm run package`, the conformance cases if the bridge changes, the Python suite if Python changes, the launcher's cargo tests in a build export if `ragon-rs/` changes.
+
+**Order.** Value ÷ size (value H 3, M 2, L 1; size S 1, M 2, L 3), user-visible first; ties by how often the thing is met. One constraint bends that order: an item that adds a method to `policy.json` costs a Rust conformance run in the build export, so the two such items wait at the end of the window-only items and share one run (B33, B35, B36). In the Source column, P is DESKTOP_PARITY and C is DESKTOP_PARITY_CLAUDE.
+
+| # | Item | Source | Value | Size | What and constraints | Status |
+|---|---|---|---|---|---|---|
+| B1 | **Notifications that say which thread** | P §4.5 item 24 | M | S | Title the thread's name (or first words), body the turn's last message on one line, or what waits (the command, the question); separate switches for approvals and for questions in Settings › Notifications, both starting from today's one (`notifyApprovals`). Main process only (`notices.ts`); new keys in both `prefs.json` schema and `prefs.ts`. | **Merged** (`desktop/backlog-1-notices`): the title is the thread's name (its first message until it has one), `notifyQuestions` (null follows `notifyApprovals`) |
+| B2 | **Questions answered in full** | P item 23 | M | S | `requestUserInput`: each option's description, a free-text field when `isOther`, a hidden field when `isSecret`. Window only; the answer is the pending request's response. | **Merged** (`desktop/backlog-2-questions`): answers spelled as ragon's terminal interface spells them (`None of the above`, `user_note: …`), and Skip |
+| B3 | **The plan checklist** | P item 21 | M | S | `turn/plan/updated` as steps with their status and the explanation, above the composer while the turn runs and kept in the turn; updated in place. Reducer and view. | **Merged** (`desktop/backlog-3-plan`) |
+| B4 | **Composer commands** | P item 22 | M | S | `/side`, `/pin`, `/pet`, `/project`, `/chat`, `/worktree` (hand-off), `/local`, `/reasoning`, `/plugins`, `/hooks`, and the enabled skills in the `/` list inserting `$skill`. Each runs an action the window already has; no new method. | **Merged** (`desktop/backlog-4-commands`) |
+| B5 | **Night Shift from Scheduled: node, best-of, status** | P item 18, 34 | M | S | The Queue form takes a node (`--on`, a name `ragon node list` offered, never an address) and best-of (`--best-of`); the view says whether Night Shift is on and when its window is. `night.ts` runs `ragon-admin night` with an argument list, as today. | **Merged** (`desktop/backlog-5-night`) |
+| B6 | **First run** | P item 29, C §2.12 | M | S | Shown once (a window preference): open a folder, start a standalone thread, import another agent's setup (the existing panel), ask in Ask; names `/airgapped` and Quick Entry. Window only. | **Merged** (`desktop/backlog-6-first-run`): shown only to someone with no threads, so an upgrade never sees it |
+| B7 | **Dictation: its key and a dictionary** | P item 33 | M | S | Ctrl+Shift+V starts and stops dictation; Settings › Voice keeps a word list (names, paths, symbols) sent to the speech-to-text sidecar as its prompt. Loopback only (`127.0.0.1:8100`); the sidecar's Python gets the prompt field if it lacks one. | **Merged** (`desktop/backlog-7-dictation`) |
+| B8 | **Always allow from the approval card** | P §9.5.9 | M | S | When a command approval carries `proposedExecpolicyAmendment`, **Always allow commands starting with …** answers `acceptWithExecpolicyAmendment`; a `proposedNetworkPolicyAmendments` entry offers **Allow this host** (`applyNetworkPolicyAmendment`), not shown at `/airgapped on`. Answers go by request id, so `policy.json` is unchanged. | **Merged** (`desktop/backlog-8-always-allow`): answers go by request id, so policy.json is unchanged |
+| B9 | **Two threads on one checkout** | P item 28 | M | S | Starting or steering a turn while another thread's turn runs in the same folder or worktree says which, with Open and **Hand off to a worktree**; nothing is blocked. Window only. | **Merged** (`desktop/backlog-9-same-checkout`) |
+| B10 | **Every thread reachable** | P item 25 | M | M | The sidebar reads `thread/list` page by page (its cursor; today one page of 200) as it is scrolled or searched; a **Chronological** switch; a `searchChats` action with no default key. | **Merged** (`desktop/backlog-10-every-thread`) |
+| B11 | **Tool calls in full** | P item 26 | M | M | MCP calls with arguments, progress (`item/mcpToolCall/progress`) and result folded under them; dynamic tool calls, image views, hook prompts and the rest with a label and payload instead of a type name; reasoning as Markdown. | **Merged** (`desktop/backlog-11-tool-calls`) |
+| B12 | **Review findings on their lines** | P item 27, C §2.5 | M | M | `/review`'s findings (`title — /abs/path:start-end`) become foldable comments on those lines in the review pane, each sendable to the composer. | **Merged** (`desktop/backlog-12-findings`) |
+| B13 | **Pastes and files in Work** | P item 31 | M | M | A pasted image and the paperclip attach in Work as in Ask, the file written by the main process under `$CODEX_HOME`, never into the project; when the served model's `inputModalities` has no image, the chip says it will not be seen. | **Merged** (`desktop/backlog-13-work-pastes`) |
+| B14 | **One menu on every path** | C gap 10 | M | M | Right-click on a path in the stream, the review pane, the file tree and tabs: Attach (Work's composer), Open in the editor, Show in the folder, Copy path. Main process: the existing editor and `shell.showItemInFolder` after the path checks `git.ts` applies. | **Merged** (`desktop/backlog-14-path-menu`) |
+| B15 | **Diagrams in answers** | C gap 9, P §2.4 | M | M | Mermaid bundled in the page (no CDN), rendered from fenced `mermaid` blocks with `securityLevel: "strict"` and no HTML labels; nothing from the answer runs as script. The CSP allows inline styles already. | **Merged** (`desktop/backlog-15-diagrams`): Mermaid 12.1.0, loaded on first use |
+| B16 | **Rules per MCP tool** | C gap 8 | M | M | In Skills and tools › MCP servers, each tool: always allow, ask, or off, written through `config/value/write` with the keys the pinned `ragon` reads (checked against its config first; if it has none, the row is dropped and says why). | **Merged** (`desktop/backlog-16-mcp-tool-rules`) |
+| B17 | **Memories one by one** | C §2.7 | M | M | Settings › Memories lists the memory files under `$CODEX_HOME/memories` with their text; each can be edited or deleted. Main process, confined to that folder, after `memory/status`. | **Merged** (`desktop/backlog-17-memories`) |
+| B18 | **The pet: its place, threads that need you, Blocked** | P item 34 | M | M | The pet's window keeps its position (clamped to a display); its menu lists waiting threads to open; a Blocked state when an approval cannot be asked. | **Merged** (`desktop/backlog-18-pet`) |
+| B19 | **Deep links** | P item 35 | L | S | `ragon://threads/new?prompt&path`, `ragon://new?originUrl` (an open workspace whose remote matches), `ragon://settings/<page>`, `ragon://automations`, `ragon://plugins/<id>`; a `path` not an absolute existing folder is ignored. | **Merged** (`desktop/backlog-19-deep-links`) |
+| B20 | **Menu and tray** | P item 36, C §2.10 | L | S | File: New thread, Open folder, Settings; Help: Show logs (`$CODEX_HOME/log` in the file manager); the tray shows how many threads run and wait. | **Merged** (`desktop/backlog-20-menu-tray`) |
+| B21 | **Subagent marks** | P item 37 | L | S | One colour and glyph per subagent, from its id, in the panel, the stream and the sidebar. | **Merged** (`desktop/backlog-21-subagent-marks`) |
+| B22 | **Enter and the PR description** | P item 40 | L | S | A third Enter mode (Enter sends unless the prompt has several lines); a PR-description instruction in Settings › Git used by the PR tab's text. | **Merged** (`desktop/backlog-22-enter-pr`): the Enter mode; the PR-description instruction moves to B32, which creates the pull request it would describe |
+| B23 | **A readable font** | C §2.7 | L | S | Settings › Appearance offers a bundled, OFL-licensed font made for legibility beside the font lists; no remote font. | **Merged** (`desktop/backlog-23-readable-font`) |
+| B24 | **Recent questions in Quick Entry** | C §4.2 | L | S | The box lists the five most recent Ask questions, each a click away. | **Merged** (`desktop/backlog-24-recent-questions`) |
+| B25 | **Worktrees kept across repositories** | P §9.5.9 | L | S | Settings › Worktrees: the keep-count counted per repository (today, the default) or across all. | **Merged** (`desktop/backlog-25-worktree-count`) |
+| B26 | **Recommended MCP servers** | P §9.5.9 | L | S | A short list of well-known open-source local MCP servers in the Add server form, filling it in; nothing installs by itself, and a server that a package runner fetches is marked as needing the network and not offered at `/airgapped on`. | **Merged** (`desktop/backlog-26-recommended-mcp`) |
+| B27 | **CSV as a table, HTML to the preview** | P item 39 | L | S | A CSV file tab shows a table (capped); an HTML artifact has **Open in the preview tab**. | **Merged** (`desktop/backlog-27-csv-html`) |
+| B28 | **Terminal tabs in the tab area** | P item 38 | L | M | New tab › Terminal in the tab area; Settings says where terminal tabs open. | **Merged** (`desktop/backlog-28-terminal-tabs`) |
+| B29 | **Preview: area comments, address history** | P item 39 | L | M | Comments on an area and several before sending; address suggestions from the tab's own history (no web search). | **Merged** (`desktop/backlog-29-preview-comments`) |
+| B30 | **What Ask made, in one list** | C §2.1 | L | M | A list of the files Ask's answers made across questions (from the questions' folders), each opening in its tab. | **Merged** (`desktop/backlog-30-ask-files`) |
+| B31 | **Office files previewed** | P §9.5.9 | L | M | A `.docx`, `.xlsx`, `.pptx` or `.odt` tab converted to PDF by an installed LibreOffice, run headless with no network (its own network namespace) and a time limit; without one the tab says so. | **Merged** (`desktop/backlog-31-office-previews`) |
+| B32 | **Several repositories and pull requests** | P item 32 | M | L | Each repository's lines changed in the selector, All repos in Last turn; the PR tab's comments and reviews (`gh pr view --json comments,reviews`) and **Create pull request** (`gh pr create`), refused at `/airgapped on`. | **Merged** (`desktop/backlog-32-repos-prs`): each repository's lines changed in the selector, All repos in Last turn; the PR tab's comments and reviews and Create pull request (refused at airgapped on); the PR-description instruction in Settings › Git |
+| B33 | **An Ask question continued in a project** | C §2.1 | M | L | **Continue in a project** forks the question into a project's primary folder as a Work thread. The policy pins an Ask thread's fork to its folder today, so this changes the policy's fork rule (both enforcers, a conformance case each way); it joins B35's run. | **Merged** (`desktop/backlog-33-ask-to-project`): **Continue in a project…** on an Ask question's row menu and its header opens a project picker (the shown projects with a folder) and forks the question into the chosen project's primary folder as a Work thread, joined to the project and opened in Work; the policy's fork rule (both enforcers, `forkRequest` in policy.json, six conformance cases) lets an Ask thread's fork leave its folder only for a Work folder (an existing directory named by an absolute path outside the Ask root), with the Ask folder's `workspace-write` sandbox and none of the UI's sandbox, permissions or extra roots; anything else stays pinned to the question's folder |
+| B34 | **MCP servers and plugins in full** | P item 30 | M | L | Add server: environment, working folder, headers, bearer-token variable; Remove; startup status. Plugins: details before install (`plugin/read`, allowed), search, an Installed row, on/off (`plugins.<id>.enabled`), marketplaces removed (`marketplace/remove`, allowed). Window only; the OAuth half is B35. | **Merged** (`desktop/backlog-34-mcp-plugins`): Add server with environment, working folder, headers and the bearer token's variable (never the token); Remove after a confirmation; each server's startup status; plugin details before install, search, the Installed row with on/off, marketplaces removed |
+| B35 | **MCP sign-in (OAuth)** | P item 30 | M | M | **Authenticate** on an OAuth server: adds `mcpServer/oauth/login` to `policy.json` (both enforcers, a conformance case) and to `airgappedRefusedRequests`; the address opens through `open/url`'s dialog. | |
+| B36 | **Permanent delete, several at once** | C §2.1 | L | M | Delete for good (after a confirmation naming what goes) and a multi-selection in the sidebar for archive, move and delete: adds `thread/delete` to `policy.json` (both enforcers, a conformance case). | **Merged** (`desktop/backlog-36-delete`): Delete for good… on a thread's menu and on the sidebar's choice bar, after a confirmation naming each thread and how many (`thread/delete`, added to policy.json with four conformance cases; local, so allowed at airgapped on); Ctrl/Cmd-click and Shift-click choose several rows for Archive (one undo), Move to a project and Delete; the window forgets deleted threads' pins, unread marks, sections, message versions, Night Shift ties, summaries, context stamps and worktree links |
+| B37 | **A side chat that is not kept** | P §9.5.8 | M | S | Ctrl+Alt+S opens a side chat beside the thread: an ephemeral thread with no folder (`ephemeral: true`, as Incognito), its first message carrying the thread's recap, gone when it is closed; **Keep as a thread** copies it into a saved one. Today's saved recap stays on the thread's menu. Changes what Ctrl+Alt+S does. Window only. | **Merged** (`desktop/backlog-37-side-chat`): Ctrl+Alt+S and `/side` open an unkept side chat beside the thread, its first message carrying the recap; **Keep as a thread** saves a copy; the saved recap is on the thread's menu |
+| B38 | **`/init`: an AGENTS.md for a repository** | P §9.5.8 | M | S | `/init` in Work's / menu starts a turn with Ragon's own prompt (written here): read the repository's build, test and lint commands, layout and conventions, and write a short `AGENTS.md` at its root; with one already there it proposes changes rather than replacing it. The file arrives as the turn's change, in the diff, under the thread's sandbox. Window only. | **Merged** (`desktop/backlog-38-init`): `/init` in Work's / menu starts a turn with Ragon's own prompt for a short AGENTS.md at the repository's root, or edits proposed to the one there, the file arriving as the turn's change in the diff |
+| B39 | **Earlier versions of an edited message** | C gap 5 | M | M | Editing an earlier message (Edit, Edit in a new thread) keeps what came before: the message shows `‹ 2 / 3 ›`, each version the thread it was sent in (the fork `thread/fork` made), switching opens that version's thread where it was left. The lineage is a window preference; nothing is deleted. Window only. | **Merged** (`desktop/backlog-39-message-versions`): Edit (and Esc Esc, `/edit`) and Edit in a new thread fork before the message, keeping it as sent; the message shows `‹ n / m ›`, each version the thread it was sent in, the arrows opening it; the lineage is the window preference `messageVersions` |
+| B40 | **Night tasks inside a chat** | P §9.5.7 | M | M | A Work thread's queued Night Shift tasks show in it as a card (queued, running, done: attempts, the chosen branch, the report's summary), with **Apply** (`ragon night apply`) and **Open the result**; the next morning the result lands in the thread as a note from the night's report, never as a message to the model. Builds on "tonight with a thread's context" (built). | **Merged** (`desktop/backlog-40-night-in-chat`): a task queued from a Work thread (`/night add`, or Scheduled's Queue with the thread's context) shows in it as a card, queued, running, then done with its attempts and chosen branch and its block of the morning report as a note never sent to the model, with Apply (`ragon night apply` in the thread's folder) and Open the result (Scheduled on the run); the tie is the window preference `nightThreads` |
+| B41 | **Night results in the inbox, and an archive** | P §9.5.7 | M | M | Each finished run in Scheduled's inbox, unread until opened, with a count on Scheduled and in the tray, and Mark as read; `ragon-admin night archive` moves reports and transcripts older than a set number of weeks to `~/.ragon/night/archive/` (branches stay), and Scheduled searches the archive. Python and window. | **Merged** (`desktop/backlog-41-night-inbox`): each finished run in Scheduled's inbox is unread until opened (the window preferences `nightSeen` and `nightRead`), counted on Scheduled and in the tray, with Mark all as read; `ragon-admin night archive [--weeks N]` (default 4) moves old finished runs' records, transcripts and reports to `~/.ragon/night/archive/`, branches staying, and Scheduled's Archive searches it |
+| B42 | **Night cadences beyond daily and weekly** | P §9.5.7 | M | M | Recurring tasks on chosen weekdays, every N nights or on a day of the month: `ragon-admin night every --days mon,wed,fri`, `--every N`, `--monthly D` (`night_shift_recurring.py`), offered by Scheduled's Repeat; still run in the night window. Python and window. | **Merged** (`desktop/backlog-42-night-cadences`): `ragon-admin night every --days mon,wed,fri`, `--every N` (1 to 365, the first the night it is set, then N nights after the last time it was queued) and `--monthly D` (1 to 31, the month's last day where it is shorter), one cadence a task, offered by Scheduled's Repeat (On chosen days, Every N nights, Every month), still queued at the start of the night's run |
+| B43 | **Summaries of finished chats** | P §9.5.8 | L | S | A thread idle for a day gets a two-line summary from the local model on an ephemeral thread, only while the model server has nothing else to do (as suggested prompts), shown under its title on hover and in Search threads; the local model only; a setting, on by default. Window only. | **Merged** (`desktop/backlog-43-summaries`): a thread idle a day gets a two-line summary from the served model on an unkept read-only thread, one a minute while no turn runs; shown in the row's tooltip under the title and in Search threads (which also finds by it); the window preference `threadSummaries`, bounded to 100; Settings › Suggested prompts, on by default |
+| B44 | **The window in other languages** | C §2.7 | M | L | An i18n layer bundled with the window (typed message catalogs, plural rules from the platform's `Intl`, no catalog fetched at run time); English and Portuguese first, Settings › Appearance › Language, following the system's language by default; a test fails when a catalog lacks a key. The agent's prompts and answers are not translated. Window only. | |
+| B45 | **MCP bundles (`.mcpb`) installed from a file** | C §6 question 5 | L | M | **Install from a file** in Skills and tools: the bundle's manifest shown first (name, author, the command it runs, the settings it asks for, signed or not), unpacked into `$CODEX_HOME/mcpb/<name>/` by the main process (size and path checks), added to `mcp_servers` through `config/batchWrite`; a bundle runs with runtimes already installed, nothing is fetched, so it installs at `/airgapped on` too; Remove takes it out. | **Merged** (`desktop/backlog-45-mcpb`): Skills and tools › MCP servers › Install from a file: the main process reads the bundle's manifest (name, author, command after substitution, settings, a signature block present or not, never verified) and, on Install, unpacks it into `$CODEX_HOME/mcpb/<name>/` with zip-slip, link, size (1 GB, 20000 files) and CRC checks; the window adds `mcp_servers.<name>` through `config/batchWrite`; installs at airgapped on unless its command is a package runner; Remove takes out both |
+| B46 | **Approve for me, with a local reviewer** | P §9.5.4 | H | L | A thread's approvals can go to Codex's automatic reviewer (`approvals_reviewer = "auto_review"`): its status and risk on each item (`item/autoApprovalReview/*`), and `/approve` retries a denial (adds `thread/approveGuardianDeniedAction` to `policy.json`, both enforcers, a conformance case). The reviewer is Ragon's own served model, never a vendor's: the window offers it only when the launcher's catalog holds the local model alone (so Codex's reviewer choice falls back to it), and refuses it at `/airgapped on` unless the model server is the node's own. Joins the policy run. | |
+| B47 | **Editing in file tabs** | P §9.5.2 | M | M | A file tab can be edited and saved: adds `fs/writeFile` to `policy.json` (both enforcers, conformance cases each way), allowed only for an existing file inside the thread's folder or an open project, never under `.git/`, under a size limit, refused when the file changed on disk since it was read. Reverses the earlier rule that `fs/writeFile` stays refused (P §9.5.2), by the owner's decision. Joins the policy run. | |
+
+**Approved later the same day (the owner): B37–B47.** Items that had waited for the owner, ordered among themselves by the same value ÷ size and added after B36 so the numbers above keep their cross-references. Build order: B23–B32, then the window-only B37–B45, then the policy batch B33–B36 with B46 and B47, which share its one Rust conformance run. The rules for every item hold: each bridge call through `policy.json` in both enforcers with a conformance case, and nothing new reaching the network at `/airgapped on`. "The rest of Night Shift's scheduling" is taken as its three open parts the owner named: tasks inside a chat (B40), results in the inbox with an archive (B41) and recurring cadences beyond daily and weekly (B42); daily and weekly cadences, "tonight" with a thread's context and the inbox's run details were built.
+
+**Waiting for the owner** (each changes behaviour users rely on, or a decision a study left open): the rest of Night Shift's scheduling model beyond B40–B42 (P §9.5.7: local mode, several projects, model and effort per task); Import's automatic updates, which write into `~/.ragon` unasked, and `tectonic` (about 30 MB, and it fetches its TeX bundle from the network) (P §9.5.9, §7 question 4), both still not approved. **Not proposed:** the vendor's site annotation API (its namespace is the vendor's); spoken answers, screen capture and auto-verify (they need a text-to-speech sidecar or a vision model); free pane arrangement; per-project memory; task chips.
+
+## Sources
+
+- **The launch announcement**, [Introducing the Codex app](https://openai.com/index/introducing-the-codex-app/) (2 February 2026; updated 4 March 2026 for Windows). The page answered HTTP 403 to direct requests; it was read from the [Wayback Machine's copy](https://web.archive.org/web/2026/https://openai.com/index/introducing-the-codex-app/). Its videos could not be analysed; their captions are quoted in §2.
+- Codex `rust-v0.158.0`: `cli/src/main.rs` (the `AppServer` arm, `AppServerSubcommand`), `app-server/src/request_processors/thread_processor.rs`, `turn_processor.rs`, `account_processor.rs`, `initialize_processor.rs`, `app-server-protocol/schema/typescript/`, `rollout/src/lib.rs`, `tui/src/slash_command.rs`, `tui/src/chatwidget/slash_dispatch.rs`, `tui/src/app/history_ui.rs`, `config/src/loader/mod.rs`.
+- `tauri` 2.11.5: `src/window/mod.rs` (`add_child` behind `unstable`), `src/ipc/authority.rs` (remote origins).
+- [Codex app documentation](https://learn.chatgpt.com/docs/app) and [changelog](https://learn.chatgpt.com/docs/changelog) (the upstream vendor).
+- [CodexMonitor](https://github.com/Dimillian/CodexMonitor) and its [LICENSE](https://github.com/Dimillian/CodexMonitor/blob/main/LICENSE) (MIT).
+- Third-party: [The Neuron's deep dive](https://www.theneuron.ai/explainer-articles/openai-codex-app-deep-dive-how-it-works/); [ALM Corp's guide](https://almcorp.com/blog/openai-codex-app-macos-guide-features-pricing-security/); [Developer Toolkit's app tips](https://developertoolkit.ai/en/codex/tips-tricks/app-features/); [Daniel Vaughan on the review pane and automations](https://codex.danielvaughan.com/2026/04/17/codex-app-workspace-pr-review-task-sidebar-artifact-viewer/); [ZCode's Codex-parity audit](https://github.com/jptorres26/ZCode/pull/13) (review pane, worktree setup and delete, project actions, diff comments, PR link, Open in); [Best Codex GUI 2026](https://dev.to/stravukarl/best-codex-gui-2026-4-codex-desktop-apps-compared-4c8c).

@@ -1,0 +1,13 @@
+{
+  "name": "dreamference-web",
+  "url": "https://ragon.dreamference.ai",
+  "description": "The Dreamference Web & Ask team's bot: commits, pull requests and reviews for ragon web and Ask, ragon-search and ragon-fetch, and the sidecars behind them. Operated by Dreamference; not a person.",
+  "public": false,
+  "default_permissions": {
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "pull_requests": "write"
+  },
+  "default_events": []
+}

@@ -1,0 +1,81 @@
+# Host safety and the sandbox prerequisite
+
+Developer notes behind the host-safety rules in `AGENTS.md`. Specs: `specs/DREAMFERENCE_INFERENCE.md`, `specs/DREAMFERENCE_SETUP.md` §3.3.
+
+## The host-safety subsystem
+
+`vllm_server/vllm_server_manager.py` + `psi_watchdog.py`. This is the least obvious part of the codebase and exists because unified memory means a model load can freeze the whole host rather than just OOM the container. Two layers:
+
+- `VLLMServerManager.check_host_safety()` runs *before* a load: it inspects swap, `sysctl` values, and whether `earlyoom`/`systemd-oomd` is present and correctly configured, and aborts with an explanation rather than risking a lockup. `HostSafetySetup` (`vllm_server/host_safety_setup.py`, `ragon-admin host setup`) applies what the check only prints; see [install-modes.md](install-modes.md#hostsafetysetup).
+- `MemoryPressureWatchdog` runs *during* a load: it samples `/proc/pressure/memory` (PSI) on a thread, resolves the container's cgroup, and kills it if `avg10` spikes or `avg60` stays above threshold for the trip duration. The kill has three paths, chosen by what the host can still do:
+  1. direct `SIGKILL` to the cgroup's PIDs (fastest, but needs root, which `ragon-admin` normally is not: `_probe_direct_kill` settles that with signal 0 while the host is healthy);
+  2. a kill request over dockerd's unix socket (one connect and one write, no fork: the path that actually runs);
+  3. the `docker` CLI last, because forking a Go binary is the work least likely to be scheduled during a reclaim livelock.
+
+  `_kill()` returns whether anything died, and the trip callback only fires when something did.
+
+Between the two, `start_server()` runs the memory gates. The weights must fit beside the host reserve and inside the arena, and the arena must leave the reserve. MemAvailable must then cover the arena plus a load transient. The transient is `max(MIN_LOAD_TRANSIENT_GB, LOAD_TRANSIENT_FRACTION × weights)`, unless the model's recipe carries a measured `load_transient_gb`, which replaces it for that model alone (`VLLMServerManager.load_transient_gb()`; approved for Qwen3.8-Flash-Next, whose global estimate no GB10 can meet). The floor still applies, the gate still refuses a host that cannot meet the model's own figure, and its message names where the figure came from. The watchdog does not read it. Side services with a cap are added to the requirement while they run (`side_service_allowance()`: the node's forge, 1 GiB; [forge.md](forge.md)), and the refusal names them.
+
+Host RAM exhaustion and GPU VRAM exhaustion are indistinguishable on GB10; the watchdog exists to make that distinction. Preserve both layers when touching `start_server()`. The SGLang engine runs from the same `docker run` prefix (`_docker_run_prefix`), so the layer is engine-independent.
+
+When ragon-engine is the engine (`launch_overrides['engine'] = 'ragon'`, the default since 0.9.0), its footprint includes, besides the weights, the sessions (or, on a paged engine, the KV page pool) and the checkpoint store, the prefix KV store's arena (ragon-engine BACKLOG 35): one allocation made once at start, `min(--prefix-kv-mb, free device memory - RAGON_PREFIX_KV_RESERVE_MB)` (4,096 MB and 16 GB by default), off below 512 MB, never grown while serving. The container cap that `_docker_run_prefix` sizes from the memory fraction must count it, and `check_host_safety()` needs nothing new: the arena is decided before the server answers, inside the load the watchdog already covers.
+
+### ragon-serve's plan is the pre-load check
+
+ragon-serve sizes its sessions, context and KV pool from MemAvailable when it starts (ragon-engine BATCHING §5.6), so the recipe's 0.50 arena is not what it takes, and for it the arena gate above is skipped. `start_server()` asks the engine instead: once the checkpoint is on disk, `VLLMServerManager.ragon_serve_plan()` runs the pinned image with the launch's own arguments and `--plan-only` (`docker run --rm`, nothing loaded, 120 s timeout) and reads the last JSON line of its output. The check is then `plan + load peak + side services <= MemAvailable`; a refusal prints `Plan:`, `Load peak:`, each side service, `Required:`, `Available:` and `Missing:`. With no plan (an image older than the flag, a non-zero exit, a timeout, a line without the four keys) it warns `ragon-serve gave no plan` and falls back to the arena.
+
+This is a second gate in `start_server()`, not a change to `check_host_safety()`: that function takes no arguments and is also called by the tensorizer (`model_downloader.py`) and Night Shift's host probe, neither of which has an engine, an image or a recipe. The watchdog covers the ragon-serve load as it covers any other.
+
+The line, from P4d on (earlier engines print only the first four keys; extra keys are returned untouched):
+
+```json
+{"kv_pages": true, "sessions": 4, "batch": 4, "max_context": 262144, "planned_bytes": 94000000000,
+ "kv_pool_bytes": 66000000000, "kv_pool_pages": 15800, "host_reserve_bytes": 16000000000}
+```
+
+`sessions`, `batch`, `max_context` and `planned_bytes` must be integers; they are all the check reads. The plan is asked of the launch the server will get, so a paged recipe (`"kv-pages"` in `engine_features`) is planned with `--sessions`, `--batch`, `--kv-pages` and the recipe's `--vision` (`on`, so the tower's scratch and embedding cache are in the plan).
+
+The 16 GB arithmetic: ragon-serve keeps `--host-reserve-mb` (16 GB by default) of MemAvailable for the host, so a plan that takes everything it may is about MemAvailable - 16 GB. Adding the load peak (`max(4 GB, 0.15 x weights)` or the recipe's `load_transient_gb`) and the side services (the forge, 1 GiB) means such a plan starts only while those two stay under 16 GB, which they do for the default model (an estimated 20 GB of weights, so the 4 GB floor, plus the forge: about 5.1 GB). `test_the_pre_load_check_on_a_full_plan_turns_on_the_engines_16_gb_reserve` pins this. Measured on the bar night: {{TBD: node-b MemAvailable before start, the plan's sessions x context, planned_bytes, pool pages, the check's margin}}.
+
+### ragon-serve froze node-b
+
+At 08:41:33 UTC a batching measurement on node-b (ragon-engine `specs/DREAMFERENCE_RAGON_ENGINE_BATCHING.md`) started a bare `ragon-serve` with `--sessions 8 --batch 8 --max-context 65536` and the prefix KV store at its default 4 GB, outside `ragon-admin` and so without `check_host_safety()` or the watchdog. It loaded with MemAvailable at 41.7 GB (earlyoom logged 41,870 MiB at 08:41:50); the driver then sent eight warm-up requests at once, each a cold 28-40K-token prefill. The journal stops at 08:42:11: no OOM kill, no earlyoom action, nothing logged, and the host came back only after a reboot at about 08:44. The same build had run with 2, 3 and 4 sessions for hours that night (host memory dropping only about 1 GB over a run), so what an eighth session or eight concurrent prefills did is not known; memory is the likeliest cause and a device fault is not ruled out.
+
+What the incident shows:
+
+- **ragon-serve's allocations are not charged to any cgroup.** On GB10 a CUDA allocation is host memory outside the container's memory accounting, so docker's `--memory` and earlyoom's per-process view do not stop it in time. Only the PSI watchdog (and a MemAvailable floor) see it.
+- **The engine's footprint is set by its flags, not by its traffic.** Each session is a flat slot of KV and state at `--max-context` (4.2-4.6 GB at 65,536 tokens, about 8.9 GB at 131,072 and 17 GB at 262,144, measured on node-b that morning; the engine with two sessions at 262,144, Ragon's `max_model_len`, takes 61.3 GB, 65 GB with the prefix store), allocated at start whatever the requests are. Ragon's recipe passes no `--sessions`, so ragon-serve runs its tested default of 2; nothing in Ragon lets a user raise it (`extra_args` come only from the registry constant).
+- **What follows** (the owner's decisions): until ragon-serve has admission control, at most 4 sessions in any run and 2 in Ragon's opt-in engine. Admission control in ragon-serve (refuse to start, or answer HTTP 503 with the reason, when sessions, KV, state and scratch would push the engine past a cap computed from free memory above a reserve; the prefix store's arena rule applied to everything) is specified in that spec's phase 0. Bench scripts that start a server outside `ragon-admin` run it beside `bench/agentlong/mem_guard.sh` (the watchdog's kill rule plus a MemAvailable floor).
+
+Other memory-safety rules elsewhere: `server start` stops the code index's scopes before its pre-flight ([code-index.md](code-index.md)), the context engine's indexing is bounded because it runs beside a resident model server ([context-engine.md](context-engine.md)), and the diffusion sidecar starts before vLLM when it is switched on ([diffusion.md](diffusion.md)).
+
+## Wi-Fi power saving, the node's own step
+
+`HostSafetySetup.steps()` ends with one step that is neither the model's nor the sandbox's: Wi-Fi power saving, which loses the multicast mDNS clients find a node by (`WifiPowerSave`, `vllm_server/wifi_power_save.py`; why and how measured: [node.md](node.md#advertising-a-node)). `host check` prints the two commands, `host setup` runs them as root like every other step (`nmcli connection modify <connection> 802-11-wireless.powersave 2`, then `iw dev <if> set power_save off` when the radio still says `on`), and `check_host_safety()` does not look at it: it gates model loads, which Wi-Fi does not endanger. `NodePrepare` runs it too (the one NetworkManager change it makes; it refuses any other `nmcli` command), and filters out only the sandbox step, which it checks itself.
+
+## bubblewrap needs an AppArmor profile, and this machine now has one
+
+`kernel.apparmor_restrict_unprivileged_userns` is 1, so without a profile an unconfined process cannot create a user namespace: from a systemd user service (measured) `bwrap` fails with "setting up uid map: Permission denied" and `ragon sandbox -- true` with "bwrap: loopback: Failed RTM_NEWADDR".
+
+Shells under PyCharm carry `snap.pycharm.pycharm (complain)`, where it is allowed, and a `--scope` started from one inherits that, which is why Night Shift, the code index and Codex's sandbox have all passed when run by hand. A unit, the Night Shift timer and a job sent over SSH do not inherit it: check `cat /proc/self/attr/current` before trusting a sandbox result, and see RAGON_NODE §18.7.
+
+The fix needs root: `ragon-admin host setup` installs `/etc/apparmor.d/ragon-bwrap` (a profile granting `userns` to `/usr/bin/bwrap` alone, the shape of Ubuntu's own sandbox profiles) after a sudo prompt, and every `ragon-admin` run checks the sandbox from a throwaway user unit and asks to fix it or to turn Night Shift off (`dreamference/vllm_server/sandbox_prerequisite.py`, SETUP §3.3).
+
+The profile was loaded on this machine: from a throwaway systemd user unit, `bwrap --unshare-user --unshare-net true` and `ragon sandbox -- true` both succeed, and `ragon-admin host check` reports nothing to do. Another GB10 still needs `host setup` once.
+
+The desktop app's Chromium sandbox meets the same rule; see [desktop.md](desktop.md).
+
+**Without sudo** (specs/DREAMFERENCE_RAGON_NO_SUDO.md): there is no route for `ragon`'s sandbox on 24.04 (the pinned Codex's Landlock fallback refuses a restricted filesystem), so `ragon` probes `bwrap` at start (`ragon-rs/src/userns.rs`) and prints the exact one-time command an administrator runs, and refuses `/airgapped on` while the sandbox cannot start. Ubuntu 25.04 and later ship `bwrap-userns-restrict` for `/usr/bin/bwrap`, and the sandbox works there with no step (measured on 26.04). Two profiles attaching to the same binary make AppArmor attach neither (openai/codex#38715), so `host setup` loads a profile already there instead of writing `ragon-bwrap` beside it, and removes ours where both are.
+
+## Host-side git in a checkout the agent can write
+
+The agent can write a checkout's `.git/config`, `.gitattributes` and `.git/info/attributes`, and the web server, the launcher, `ragon delegate`, `ragon monitor`, `ragon-code` and the desktop app's main process run `git` there outside the sandbox. Config keys that make git execute a program (`core.fsmonitor`, `core.pager`, `diff.external`, `filter.<n>.clean`/`smudge`/`process`, `diff.<n>.textconv`, `core.sshCommand`, `core.gitProxy`, `credential.helper`, `gpg.program`, hooks, `protocol.ext.allow`, `merge.<n>.driver`) would run a command of the agent's choosing. Every such call goes through `ragon-rs/safegit` (`ragon_safegit`) or, in the desktop app, `hardenedArgs` in `desktop/electron/src/git.ts`:
+
+- fixed `-c` pairs on the command line, which outrank every config file;
+- the driver names are the agent's to choose, so they are read from the checkout's own config (scopes local, worktree, command; the user's global git-lfs filter keeps working) and blanked one by one;
+- `--no-ext-diff --no-textconv` after `diff`, `show`, `log`;
+- `--upload-pack=` and `--receive-pack=` after `fetch`, `pull`, `ls-remote`, `push`: `remote.<n>.uploadpack` and `.receivepack` are first-value-wins in git, so a `-c` cannot replace the checkout's value but a flag outranks it;
+- `GIT_EXTERNAL_DIFF` removed, and the variables that move a config file or add config (`GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_COUNT` with its `GIT_CONFIG_KEY_n`/`VALUE_n`, `GIT_CONFIG_PARAMETERS`); `GIT_PAGER=cat`, and a timeout on the Rust side.
+- the system config is read, like the global one: only an administrator can write it (a per-user Git for Windows install keeps it in the user's own install folder, the user's, not the checkout's), and a program it names loses to the `-c` pairs. The helpers do not set `GIT_CONFIG_NOSYSTEM=1`: on Windows it would drop Git for Windows' `core.autocrlf=true`, so a file `git stash pop` wrote back with CRLF would differ from `HEAD` in full, and the launcher's test guard would hold a tested change as untested (and the git-lfs filter would be skipped too).
+
+**Repository hooks run from these calls, by the owner's choice ("allow all for now").** Neither the Rust helper nor the Python one overrides `core.hooksPath` or passes `--no-verify`, so a click's commit in the desktop app runs `pre-commit`. The known risk: a hook the agent wrote into `.git/hooks` runs on the host, outside the sandbox. Reversible by adding `core.hooksPath=/dev/null` back to `FIXED_CONFIG` in `ragon-rs/safegit/src/lib.rs`, `SAFE_CONFIG` in `desktop/electron/src/git.ts` and `dreamference/runner/safe_git.py`. **Night Shift is the exception** (owner's decision): its unattended tasks run hooks *inside the task's sandbox*, not on the host. Every host-side `git` of the runner (task run and best-of-N) passes `core.hooksPath=/dev/null`, and the commit itself runs in `ragon sandbox` under the task's scope and `/airgapped` level, in a scratch repository that borrows the repository's objects and config, writes a bundle, and is read back by the host without following a link (`NightShiftTaskRun.commit_in_sandbox`, docs/dev/night-shift.md). A task from another node commits on the host with no hook, as a node job does. (The chat-repos server keeps its own empty hooks folder for its forge clones.) One window stays: a driver name added between the config read and the command. New host-side git in a checkout uses these helpers; Python callers use `SafeGit` (`dreamference/runner/safe_git.py`: the same pairs, flags and environment, a 120 s timeout and 600 s for network commands, a timeout is exit code 124): Night Shift (task run, best-of-n, remote), the node jobs and sender, the fleet bundle, the context engine's file listing and SWE-bench's commit stamp. Not hardened on purpose: git on pinned third-party clones and Codex's submodule (`CodexBrandedBuilder`, `CodexTestRunner`, `SweBenchImageBuilder`: nothing the agent writes), the egress audit's scratch repository and the forge's bare repositories (no worktree and no agent-written config). The web server's turn-finished file count (G14) uses `ragon_safegit` too.

@@ -1,0 +1,354 @@
+# The Ragon desktop app for macOS, as an unsigned preview (specs/DREAMFERENCE_RAGON_DESKTOP_ELECTRON.md
+# §10): the Electron app of desktop/electron, with the macOS `ragon` and `codex-code-mode-host` from
+# build-clients.yml inside, in a `.dmg` per architecture. On a Mac the app is a client: it finds a
+# GB10 node on the network, as `ragon` does.
+#
+# Not signed with a Developer ID and not notarized: the bundle is signed ad hoc only (Apple silicon
+# runs nothing without at least that), so Gatekeeper refuses it until the user allows it once
+# (docs/desktop.md says how). Unless a release asks for signing (`sign`) and the Apple secrets are
+# in the `release` environment: then the app is signed with the Developer ID and the hardened
+# runtime, notarised and stapled, and so is the dmg (docs/dev/macos-signing.md). Without the
+# secrets the run is the unsigned preview, step for step.
+#
+# Runs on pushes to desktop/mac** branches (CI), by hand, and from release.yml
+# (`build_mac_preview`), which publishes the dmgs with the release. It builds no `ragon`: it takes the
+# ragon-client-<target> artifacts of build-clients.yml, from the calling run when the release
+# calls it, else from the run named by `client_run_id`, else from the newest run that has them.
+name: Mac preview
+
+on:
+  push:
+    branches: ["desktop/mac**"]
+  workflow_dispatch:
+    inputs:
+      client_run_id:
+        description: "Run whose ragon-client-<target> artifacts are bundled; empty: the newest such run; none: package without ragon"
+        type: string
+        default: ""
+      version:
+        description: "Version stamped into the app and the dmg's name; empty: desktop/electron/package.json's"
+        type: string
+        default: ""
+      sign:
+        description: "Sign and notarise with the Developer ID (main and release/* only; unsigned while the Apple secrets are absent)"
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      sign:
+        description: "Sign and notarise with the Developer ID when the release environment has the Apple secrets"
+        type: boolean
+        default: false
+      version:
+        description: "Release version stamped into the app and the dmg's name"
+        type: string
+        default: ""
+      client_run_id:
+        description: "this: the calling run's build-clients artifacts (the release)"
+        type: string
+        default: this
+    outputs:
+      signed:
+        description: "true when the dmgs are signed with the Developer ID, notarised and stapled"
+        value: ${{ jobs.build.outputs.signed }}
+
+# Reading another run's artifacts needs actions: read; a caller must grant it (release.yml does).
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    name: Mac preview - ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # GitHub's runners, even when build-clients.yml builds the Apple silicon ragon on the
+          # self-hosted Mac (MACOS_RUNNER): this job starts the app, which opens a window.
+          - arch: arm64
+            target: aarch64-apple-darwin
+            runner: macos-15
+          - arch: x64
+            target: x86_64-apple-darwin
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    # Notarisation waits on Apple twice (the app, then the dmg): usually minutes each.
+    timeout-minutes: 120
+    # The Apple secrets live only in the release environment, which only main and release/* may
+    # use; a job asks for it only when signing is asked for, so a push to desktop/mac** (no
+    # environment) builds the unsigned preview as before.
+    environment: ${{ inputs.sign && 'release' || '' }}
+    outputs:
+      signed: ${{ steps.apple.outputs.sign }}
+    env:
+      CLIENT_RUN_ID: ${{ inputs.client_run_id }}
+      INPUT_VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Version
+        run: |
+          version="$INPUT_VERSION"
+          [[ -n "$version" ]] || version="$(node -p 'require("./desktop/electron/package.json").version')"
+          echo "RAGON_VERSION=$version" >> "$GITHUB_ENV"
+          echo "DMG=Ragon-$version-${{ matrix.arch }}-preview.dmg" >> "$GITHUB_ENV"
+          echo "version $version"
+      # Signed or not (scripts/macos/signing_gate.sh): signing asked for and all six Apple secrets
+      # set. None set: the unsigned preview, as before; some set: an error.
+      - name: Apple signing
+        id: apple
+        env:
+          SIGN: ${{ inputs.sign }}
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: scripts/macos/signing_gate.sh
+
+      # The release: this run's own artifacts (a reusable workflow shares its caller's run).
+      - name: Client binaries (this run)
+        if: ${{ inputs.client_run_id == 'this' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ragon-client-${{ matrix.target }}
+          path: clients
+      # Otherwise another run's: the one named, or the newest that has them.
+      - name: Client binaries (another run)
+        if: ${{ inputs.client_run_id != 'this' }}
+        run: |
+          name="ragon-client-${{ matrix.target }}"
+          run="$CLIENT_RUN_ID"
+          if [[ "$run" == "none" ]]; then
+            echo "::warning::Packaging without ragon, as asked (client_run_id=none)"
+            exit 0
+          fi
+          # Only this repository's own runs, never a pull request's: a pull request's run (a fork's
+          # among them, which runs the workflows as its branch changed them) can upload an artifact
+          # of the same name, sums file included, and this job may sign what it bundles.
+          trusted() {
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1" \
+              --jq '(.head_repository.full_name == .repository.full_name) and (.event | startswith("pull_request") | not)'
+          }
+          if [[ -z "$run" ]]; then
+            candidates="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$name&per_page=100" \
+              --jq '.artifacts[] | select(.expired | not) | select(.workflow_run.head_repository_id == .workflow_run.repository_id) | .workflow_run.id')"
+            for candidate in $candidates; do
+              if [[ "$(trusted "$candidate")" == "true" ]]; then
+                run="$candidate"
+                break
+              fi
+            done
+            if [[ -z "$run" ]]; then
+              echo "::warning::No run of this repository has a $name artifact yet; packaging without ragon"
+              exit 0
+            fi
+          elif [[ "$(trusted "$run")" != "true" ]]; then
+            echo "::error::Run $run is a pull request's or another repository's; its artifacts are not bundled"
+            exit 1
+          fi
+          echo "Taking $name from run $run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run"
+          gh run download "$run" --repo "$GITHUB_REPOSITORY" -n "$name" -D clients
+      - name: Bundled binaries
+        run: |
+          mkdir -p desktop/electron/resources
+          if [[ ! -d clients ]]; then
+            echo "BUNDLED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          ls -l clients
+          # Checked against the build's own sums file before anything is unpacked.
+          (cd clients && shasum -a 256 -c "ragon-${{ matrix.target }}.sha256sums")
+          # Named exactly: `ragon-*` would also match ragon-search, ragon-fetch and ragon-code.
+          for name in ragon codex-code-mode-host; do
+            gunzip -c "clients/$name-${{ matrix.target }}.gz" > "desktop/electron/resources/$name"
+            chmod 755 "desktop/electron/resources/$name"
+            # Ad hoc, like the rest of the bundle: the arm64 build carries only the linker's
+            # signature, and the x86-64 one none at all.
+            codesign --force --sign - "desktop/electron/resources/$name"
+          done
+          file desktop/electron/resources/*
+          desktop/electron/resources/ragon --version
+          echo "BUNDLED=true" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Work window frontend
+        working-directory: desktop/ui
+        run: |
+          npm ci
+          npm test
+      # As the Linux job, but `package` instead of `make`: the dmg is made below, after the checks.
+      # Forge writes out/Ragon-darwin-<arch>/Ragon.app, flips the fuses and signs it ad hoc.
+      - name: Build the app
+        working-directory: desktop/electron
+        run: |
+          npm ci
+          # Electron 42's package has no install step: the binary is fetched the first time anything
+          # requires `electron`, and vitest's parallel workers raced each other to fetch it. Once,
+          # here, with one retry, before any test; a no-op when it is already there.
+          node node_modules/electron/install.js || { sleep 15; node node_modules/electron/install.js; }
+          npm run typecheck
+          npm test
+          npm run package
+          npx vitest run src/credentials.test.ts
+          echo "APP=$PWD/out/Ragon-darwin-${{ matrix.arch }}/Ragon.app" >> "$GITHUB_ENV"
+
+      # The Developer ID, after `package`: its postPackage hook flips the fuses, which leaves an
+      # ad-hoc signature. osx-sign signs everything inside out with the hardened runtime and the
+      # entitlements of mac/entitlements.mjs (the bundled ragon and codex-code-mode-host included).
+      - name: Import the Developer ID
+        if: ${{ steps.apple.outputs.sign == 'true' }}
+        env:
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: scripts/macos/import_identity.sh
+      - name: Sign the app with the Developer ID
+        if: ${{ steps.apple.outputs.sign == 'true' }}
+        working-directory: desktop/electron
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          node mac/sign.mjs "$APP"
+          requirement="anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\""
+          codesign --verify --deep --strict --verbose=2 -R="$requirement" "$APP"
+          for binary in "$APP/Contents/Resources/ragon" "$APP/Contents/Resources/codex-code-mode-host"; do
+            [[ -f "$binary" ]] || continue
+            codesign --verify --strict -R="$requirement" "$binary"
+            echo "$(basename "$binary"):"
+            codesign -d --entitlements - "$binary" 2>/dev/null || true
+          done
+          echo "Ragon.app:"
+          codesign -d --entitlements - "$APP" 2>/dev/null
+
+      # What the bundle is, in the log: the layout, each binary's architecture, the signature
+      # (ad hoc, no Developer ID, so Gatekeeper's assessment is expected to refuse it; signed, it is
+      # refused too until the notarisation below) and the fuses.
+      - name: Inspect the bundle
+        run: |
+          cd "$APP/.."
+          find Ragon.app -maxdepth 3 | sort | sed -n 1,80p
+          ls -l Ragon.app/Contents/Resources
+          plutil -p Ragon.app/Contents/Info.plist
+          file Ragon.app/Contents/MacOS/Ragon "Ragon.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework"
+          for binary in Ragon.app/Contents/Resources/ragon Ragon.app/Contents/Resources/codex-code-mode-host; do
+            [[ -f "$binary" ]] || continue
+            file "$binary"
+            otool -l "$binary" | grep -A4 -E "LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX" || true
+            codesign -dv "$binary" 2>&1 || true
+          done
+          codesign -dvv Ragon.app 2>&1
+          # Must hold: Apple silicon kills a binary whose signature does not verify.
+          codesign --verify --deep --strict --verbose=2 Ragon.app
+          echo "Gatekeeper (expected to reject an ad-hoc signed app):"
+          spctl -a -t exec -vv Ragon.app 2>&1 || true
+          npx --prefix "$GITHUB_WORKSPACE/desktop/electron" @electron/fuses read --app "$APP" || true
+          du -sh Ragon.app Ragon.app/Contents/Resources/* Ragon.app/Contents/Frameworks
+
+      # The app really starts: the audit's session (its one window hidden on Ask, the window's
+      # app-server started with the bundled ragon, quit after a few seconds), with a scratch
+      # CODEX_HOME and the model server named so nothing browses the network. Chromium's mock
+      # keychain: the runner's keychain may not answer the cookie-encryption key without a dialog.
+      - name: Start the app
+        run: |
+          scratch="$(mktemp -d)"
+          set +e
+          CODEX_HOME="$scratch/codex-home" RAGON_APP_AUDIT=8 ELECTRON_ENABLE_LOGGING=1 \
+            DREAMFERENCE_VLLM_HOST=http://127.0.0.1:9 \
+            "$APP/Contents/MacOS/Ragon" --use-mock-keychain > "$scratch/out.log" 2>&1 &
+          pid=$!
+          ragon_seen=false
+          for _ in $(seq 1 90); do
+            kill -0 "$pid" 2>/dev/null || break
+            if pgrep -f "Contents/Resources/ragon" >/dev/null; then
+              if [[ "$ragon_seen" == false ]]; then ps -o pid,ppid,command -p "$(pgrep -f "Contents/Resources/ragon" | tr '\n' ',' | sed 's/,$//')"; fi
+              ragon_seen=true
+            fi
+            sleep 1
+          done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "::error::the app did not quit after its audit session"
+            ps -ax -o pid,ppid,stat,command | grep -i ragon | grep -v grep
+            sample "$pid" 2 -mayDie 2>&1 | sed -n 1,120p
+            kill -9 "$pid"
+            sleep 1
+            cat "$scratch/out.log"
+            exit 1
+          fi
+          wait "$pid"
+          status=$?
+          cat "$scratch/out.log"
+          echo "exit status $status; the bundled ragon ran: $ragon_seen"
+          if [[ "$BUNDLED" == "true" && "$ragon_seen" != "true" ]]; then
+            echo "::warning::no bundled ragon process was seen during the session"
+          fi
+          exit "$status"
+
+      # Apple's notary, then the ticket stapled into the app, so Gatekeeper accepts it offline too (a
+      # Ragon machine may have no internet); the dmg below is made from the stapled app.
+      - name: Notarise and staple the app
+        if: ${{ steps.apple.outputs.sign == 'true' }}
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          zip="$RUNNER_TEMP/Ragon-${{ matrix.arch }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$zip"
+          scripts/macos/notarize.sh "$zip"
+          rm -f "$zip"
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+          spctl -a -t exec -vv "$APP"
+
+      # HFS+ rather than APFS, so the image can be listed and unpacked off a Mac (7z) as well.
+      - name: Make the dmg
+        run: |
+          staging="$(mktemp -d)/Ragon"
+          mkdir -p "$staging"
+          ditto "$APP" "$staging/Ragon.app"
+          ln -s /Applications "$staging/Applications"
+          mkdir -p dist
+          hdiutil create -volname "Ragon $RAGON_VERSION" -srcfolder "$staging" -fs HFS+ -format UDZO -ov "dist/$DMG"
+          hdiutil verify "dist/$DMG"
+          # The image's copy is what a user gets: verify it again.
+          mount="$(mktemp -d)"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "dist/$DMG"
+          codesign --verify --deep --strict "$mount/Ragon.app" && echo "the dmg's app verifies"
+          hdiutil detach "$mount"
+          ls -l dist
+          [[ "$BUNDLED" == "true" ]] || echo "::warning::$DMG has no ragon inside"
+      # The dmg itself: signed, notarised and stapled, and checked as a user's Mac would, the
+      # image and the app on it. The upload below (and so the release's SHA256SUMS) is this file.
+      - name: Sign, notarise and staple the dmg
+        if: ${{ steps.apple.outputs.sign == 'true' }}
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          codesign --force --sign "$MAC_SIGN_IDENTITY" --keychain "$MAC_SIGN_KEYCHAIN" --timestamp "dist/$DMG"
+          codesign --verify --strict -R="anchor apple generic and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\"" "dist/$DMG"
+          scripts/macos/notarize.sh "dist/$DMG"
+          xcrun stapler staple "dist/$DMG"
+          xcrun stapler validate "dist/$DMG"
+          spctl -a -t open --context context:primary-signature -vv "dist/$DMG"
+          mount="$(mktemp -d)"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "dist/$DMG"
+          xcrun stapler validate "$mount/Ragon.app"
+          spctl -a -t exec -vv "$mount/Ragon.app"
+          hdiutil detach "$mount"
+          ls -l dist
+      - name: Remove the Developer ID
+        if: ${{ always() && steps.apple.outputs.sign == 'true' }}
+        run: scripts/macos/remove_identity.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-mac-${{ matrix.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error

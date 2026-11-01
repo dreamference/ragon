@@ -1,0 +1,7 @@
+[submodule "codex"]
+	path = codex
+	url = https://github.com/dreamference/codex.git
+	shallow = true
+[submodule "ragon-engine"]
+	path = ragon-engine
+	url = https://github.com/dreamference/ragon-engine

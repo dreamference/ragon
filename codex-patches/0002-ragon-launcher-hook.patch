@@ -1,0 +1,15 @@
+diff --git a/codex-rs/cli/Cargo.toml b/codex-rs/cli/Cargo.toml
+--- a/codex-rs/cli/Cargo.toml
++++ b/codex-rs/cli/Cargo.toml
+@@ -26,2 +26,3 @@ workspace = true
+ anyhow = { workspace = true }
++ragon-launcher = { path = "../ragon" }
+ chrono = { workspace = true }
+diff --git a/codex-rs/cli/src/main.rs b/codex-rs/cli/src/main.rs
+--- a/codex-rs/cli/src/main.rs
++++ b/codex-rs/cli/src/main.rs
+@@ -1033,3 +1033,3 @@ async fn cli_main(
+         subcommand,
+-    } = MultitoolCli::parse();
++    } = ragon_launcher::parse::<MultitoolCli>().await?;
+     // Retain the launch target through TUI exit, even if a launcher changes selection.

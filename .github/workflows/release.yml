@@ -1,0 +1,322 @@
+# Cuts a product release on demand: Actions tab → "Release" → Run workflow.
+#
+# Builds the Python distribution (the `ragon-admin` command), the prebuilt `ragon` agent that
+# `ragon update` downloads, and, optionally, the Ragon desktop bundle, then publishes them as a
+# GitHub release tagged v<version> on the commit the workflow was dispatched from. The version is
+# stamped into setup.py, the desktop app's package and the ragon binary inside the runner's checkout
+# only -- nothing is committed back, so the tag is the record of the release.
+#
+# The builds and tests are release-build.yml's, shared with release-dry-run.yml, which runs them
+# every night on main so that a failing platform shows before a release, not during one. This file
+# keeps only what is the release's own: the version and notes checks, signing and publishing.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the leading v (e.g. 0.9.0)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark as a pre-release"
+        type: boolean
+        default: false
+      draft:
+        description: "Create the release as a draft (publish it by hand afterwards). Off: the run publishes it, with the notes of specs/DREAMFERENCE_RELEASE_<version>.md"
+        type: boolean
+        default: false
+      generated_notes:
+        # Set by release-on-green.yml when main has no specs/DREAMFERENCE_RELEASE_<version>.md.
+        description: "Publish with GitHub's generated notes when the version has no notes spec (a patch released automatically)"
+        type: boolean
+        default: false
+      run_tests:
+        description: "Gate the release on the test suite"
+        type: boolean
+        default: true
+      build_desktop:
+        description: "Build the Ragon desktop app (.deb; needs the ragon build, which it bundles)"
+        type: boolean
+        default: true
+      desktop_runner:
+        description: "Runner for the desktop build; GB10 is arm64"
+        type: choice
+        default: ubuntu-24.04-arm
+        options:
+          - ubuntu-24.04-arm
+          - ubuntu-24.04
+      build_ragon:
+        description: "Build the Ragon agent binaries that `ragon update` installs"
+        type: boolean
+        default: true
+      ragon_runner:
+        description: "Runner for the ragon build; its architecture names the assets (GB10 is arm64)"
+        type: choice
+        default: ubuntu-24.04-arm
+        options:
+          - ubuntu-24.04-arm
+          - ubuntu-24.04
+      build_windows:
+        # On: without it a release ships without the Windows client. The .exe files are not
+        # code-signed (a preview, WINDOWS_ARM §16.3); the release's signed SHA256SUMS covers them.
+        description: "Also build the Windows client (Arm64 and x86-64; preview: the .exe files are unsigned, the signed SHA256SUMS covers them)"
+        type: boolean
+        default: true
+      windows_x64_runner:
+        # The x86-64 Windows build on the self-hosted runner WINDOWS_X64_RUNNER names (box), or on
+        # GitHub's windows-latest (github) when that runner is offline. Signing stays on GitHub's runner.
+        description: "Runner for the x86-64 Windows build: box (self-hosted, if the WINDOWS_X64_RUNNER variable is set) or github"
+        type: choice
+        default: box
+        options:
+          - box
+          - github
+      build_clients:
+        description: "Also build the client for Intel/AMD Linux and macOS (build-clients.yml)"
+        type: boolean
+        default: false
+      macos_runner:
+        # The Apple silicon client on the self-hosted Mac mini MACOS_RUNNER names (mac), or on
+        # GitHub's macos-15 (github) when that runner is offline. Signing stays as it is.
+        description: "Runner for the Apple silicon client build: mac (self-hosted, if the MACOS_RUNNER variable is set) or github"
+        type: choice
+        default: mac
+        options:
+          - mac
+          - github
+      build_mac_preview:
+        description: "Also build the Mac desktop app (.dmg, Apple silicon and Intel; preview, unsigned). Needs build_clients, whose macOS ragon it bundles"
+        type: boolean
+        default: true
+
+# Read-only by default; only the job that publishes the release may write (security review).
+# Every action is pinned to a commit, with its tag in a comment, so a moved tag cannot
+# change what runs with that write token.
+permissions:
+  contents: read
+
+# One release at a time; a second dispatch waits rather than racing the first for the tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  VERSION: ${{ inputs.version }}
+  TAG: v${{ inputs.version }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Check version format and that the tag is free
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::'$VERSION' is not a version like 0.9.0 or 0.9.0-rc.1"
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Tag $TAG already exists"
+            exit 1
+          fi
+      # The release's description is the text between the rules of specs/DREAMFERENCE_RELEASE_<version>.md,
+      # published with no hand step after this run. Checked here, before any build, so a missing or
+      # unfinished one stops a published release in a minute, not after the builds; a draft goes out
+      # with GitHub's generated notes only.
+      - name: Check the release notes
+        run: |
+          if ! python3 scripts/release_notes.py --version "$VERSION" > /dev/null 2> notes-error.txt; then
+            if [[ "${{ inputs.draft }}" == "true" || "${{ inputs.generated_notes }}" == "true" ]]; then
+              echo "::warning::$(cat notes-error.txt). The release carries GitHub's generated notes only."
+            else
+              echo "::error::$(cat notes-error.txt). A published release needs its notes; dispatch with draft to build one without them."
+              exit 1
+            fi
+          fi
+
+      # A release's published benchmark result is docs/releases/<version>.json, recorded by
+      # `scripts/release_benchmark.py record` from the qualifying night's report (the night given by
+      # id). A release without one is allowed and shows no number; one that exists must be valid and
+      # the Benchmarks page must match the entries.
+      - name: Check the benchmark entry
+        run: |
+          python3 scripts/release_benchmark.py check
+          if [[ -f "docs/releases/$VERSION.json" ]]; then python3 scripts/release_benchmark.py check --version "$VERSION"; else echo "::notice::No benchmark entry for $VERSION; the Benchmarks page shows no number for it."; fi
+
+  # Every build and test, for every platform: release-build.yml, which release-dry-run.yml runs
+  # nightly on main as well, so what a release builds has been built and tested the night before.
+  build:
+    needs: validate
+    # The called workflow declares actions: read (mac-preview.yml reads artifacts); a caller must
+    # grant at least what it asks. Read-only, like every job here but `release`.
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/release-build.yml
+    with:
+      version: ${{ inputs.version }}
+      run_tests: ${{ inputs.run_tests }}
+      build_desktop: ${{ inputs.build_desktop }}
+      desktop_runner: ${{ inputs.desktop_runner }}
+      build_ragon: ${{ inputs.build_ragon }}
+      ragon_runner: ${{ inputs.ragon_runner }}
+      build_windows: ${{ inputs.build_windows }}
+      windows_x64_runner: ${{ inputs.windows_x64_runner }}
+      build_clients: ${{ inputs.build_clients }}
+      macos_runner: ${{ inputs.macos_runner }}
+      build_mac_preview: ${{ inputs.build_mac_preview }}
+      # The macOS binaries and the dmgs signed and notarised with the Developer ID once the Apple
+      # secrets are in the release environment; unsigned as before while they are not
+      # (docs/dev/macos-signing.md).
+      sign: true
+
+  release:
+    needs: [validate, build]
+    permissions:
+      contents: write
+      # Build provenance: the OIDC token Sigstore certifies, and the right to store the attestation.
+      id-token: write
+      attestations: write
+    # The builds whose inputs are off are skipped inside `build`, which still succeeds; the release
+    # goes out without them. Any build that ran and failed fails `build`, and nothing is published.
+    if: ${{ !failure() && !cancelled() && needs.build.result == 'success' }}
+    # The signing key lives only in this environment, which only `main` and `release/*` can use: a
+    # workflow pushed to any other branch cannot read it. No approval is asked.
+    environment: release
+    runs-on: ubuntu-latest
+    steps:
+      # Only the trusted keys and a key transition, if one is under way: the signature is checked
+      # against what `ragon update` and install.sh will check it against before anything is published.
+      # And the release notes with the script that extracts them.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: |
+            ragon-rs/release-signing.pub
+            ragon-rs/release-key-transition.pub
+            ragon-rs/release-key-transition.pub.sig
+            scripts/release_notes.py
+            specs/DREAMFERENCE_RELEASE_${{ inputs.version }}.md
+          sparse-checkout-cone-mode: false
+          path: source
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      # Every build's own checksum file (ragon-<target>.sha256sums and the like, written where the
+      # build ran, the self-hosted Windows runner among them) checked against the files downloaded
+      # here, before anything is signed.
+      - name: Check the builds' checksums
+        run: |
+          mapfile -t sums < <(find artifacts -type f -name '*.sha256sums' | sort)
+          for file in "${sums[@]}"; do
+            (cd "$(dirname "$file")" && sha256sum --strict -c "$(basename "$file")")
+          done
+          echo "checked ${#sums[@]} checksum files"
+      - name: Write and sign SHA256SUMS
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          # A key rotation ships the new key, signed by the old one, with every release until no
+          # older ragon is left to need it (specs/DREAMFERENCE_RELEASE_SIGNING.md §5).
+          if [[ -f source/ragon-rs/release-key-transition.pub ]]; then
+            cp source/ragon-rs/release-key-transition.pub source/ragon-rs/release-key-transition.pub.sig artifacts/
+          fi
+          # merge-multiple keeps each artifact's own subdirectories (deb/, appimage/), so collect the
+          # files themselves; handing gh a directory fails the upload after the release is created.
+          mapfile -t files < <(find artifacts -type f | sort)
+          # One checksum file for everything the release carries: the wheel, install.sh and the
+          # per-target sums files, which in turn list the binaries. Its signature is what
+          # `ragon update` and install.sh trust, so it covers every file transitively.
+          for file in "${files[@]}"; do
+            (cd "$(dirname "$file")" && sha256sum "$(basename "$file")")
+          done > SHA256SUMS
+          if [[ -z "$RELEASE_SIGNING_KEY" ]]; then
+            echo "::error::The RELEASE_SIGNING_KEY secret is not set; releases must be signed."
+            exit 1
+          fi
+          key="$(mktemp -d)/release-ed25519"
+          ( umask 077 && printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key" )
+          ssh-keygen -q -Y sign -f "$key" -n ragon-release SHA256SUMS
+          rm -f "$key"
+          # Check the signature the way the clients will: by a key in release-signing.pub, or by a
+          # key the transition names, endorsed by one that is. A secret that matches neither stops
+          # the release here instead of publishing one no installed ragon would accept.
+          trusted="$(mktemp)"
+          grep -v '^#' source/ragon-rs/release-signing.pub | awk 'NF {print "ragon-release " $1 " " $2}' > "$trusted"
+          if [[ -f artifacts/release-key-transition.pub ]]; then
+            cp "$trusted" endorsers
+            ssh-keygen -Y verify -f endorsers -I ragon-release -n ragon-release-key \
+              -s artifacts/release-key-transition.pub.sig < artifacts/release-key-transition.pub
+            grep -v '^#' artifacts/release-key-transition.pub | awk 'NF {print "ragon-release " $1 " " $2}' >> "$trusted"
+          fi
+          ssh-keygen -Y verify -f "$trusted" -I ragon-release -n ragon-release \
+            -s SHA256SUMS.sig < SHA256SUMS || {
+            echo "::error::SHA256SUMS.sig does not verify against ragon-rs/release-signing.pub: RELEASE_SIGNING_KEY is not a release key."
+            exit 1
+          }
+          # Everything attested: each file the release carries, SHA256SUMS and its signature.
+          { cat SHA256SUMS; sha256sum SHA256SUMS SHA256SUMS.sig; } > attested.sha256
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: attested.sha256
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # true when mac-preview signed, notarised and stapled the dmgs (the Apple secrets were set).
+          MAC_SIGNED: ${{ needs.build.outputs.mac_signed }}
+        run: |
+          # GitHub's generated notes come last (the "Full Changelog" line); --notes-file is prepended.
+          flags=(--generate-notes --target "$GITHUB_SHA" --title "Ragon $TAG")
+          [[ "${{ inputs.prerelease }}" == "true" ]] && flags+=(--prerelease)
+          [[ "${{ inputs.draft }}" == "true" ]] && flags+=(--draft)
+          # merge-multiple keeps each artifact's own subdirectories (deb/), so collect the
+          # files themselves; handing gh a directory fails the upload after the release is created.
+          mapfile -t files < <(find artifacts -type f | sort)
+          files+=(SHA256SUMS SHA256SUMS.sig)
+          : > notes.md
+          # The Mac app: signed and notarised once the Developer ID is set up, else a preview that is
+          # not; say which first. One line each, because GitHub renders every newline in a release
+          # body as a line break.
+          if [[ "$MAC_SIGNED" == "true" ]] && printf '%s\n' "${files[@]}" | grep -q -- '-preview\.dmg$'; then
+            {
+              echo "### Mac desktop app (preview)"
+              echo
+              echo "\`Ragon-${VERSION}-arm64-preview.dmg\` (Apple silicon) and \`Ragon-${VERSION}-x64-preview.dmg\` (Intel) are a preview of the desktop app for macOS 12 or later, a client of a Ragon node on your network. They are signed with an Apple Developer ID and notarised by Apple, so macOS opens the app normally: drag Ragon to Applications and open it. Check the dmg against SHA256SUMS first; steps in docs/desktop.md."
+              echo
+            } >> notes.md
+          elif printf '%s\n' "${files[@]}" | grep -q -- '-preview\.dmg$'; then
+            {
+              echo "### Mac desktop app (preview, unsigned)"
+              echo
+              echo "\`Ragon-${VERSION}-arm64-preview.dmg\` (Apple silicon) and \`Ragon-${VERSION}-x64-preview.dmg\` (Intel) are a preview of the desktop app for macOS 12 or later, a client of a Ragon node on your network. They are signed ad hoc only, with no Apple Developer ID and no notarization, so macOS refuses to open the app the first time. Drag Ragon to Applications, try to open it once, then allow it in System Settings → Privacy & Security → Open Anyway (on macOS 14 and earlier, Control-click the app and choose Open instead). Or, in Terminal: \`xattr -dr com.apple.quarantine /Applications/Ragon.app\`. Check the dmg against SHA256SUMS first; steps in docs/desktop.md."
+              echo
+            } >> notes.md
+          fi
+          # The Windows desktop app (windows.yml's desktop job) is a preview too, and unsigned.
+          if printf '%s\n' "${files[@]}" | grep -q -- 'Ragon-Setup-.*\.exe$'; then
+            {
+              echo "### Windows desktop app (preview, unsigned)"
+              echo
+              echo "\`Ragon-Setup-${VERSION}-arm64.exe\` (Windows on Arm) and \`Ragon-Setup-${VERSION}-x64.exe\` (x86-64) install a preview of the desktop app for Windows 11, with ragon.exe inside, for you alone (no administrator), with a Start menu entry; Windows' Apps list uninstalls it. They are not signed: SmartScreen warns the first time (More info, then Run anyway), and Smart App Control must be off. Check the installer against SHA256SUMS first."
+              echo
+            } >> notes.md
+          fi
+          # Then the description from specs/DREAMFERENCE_RELEASE_<version>.md (checked by `validate`
+          # already; checked again here, before the release exists, since a published release
+          # carries it with no hand step after this one).
+          if python3 source/scripts/release_notes.py source/specs/DREAMFERENCE_RELEASE_"$VERSION".md > body.md 2> notes-error.txt; then
+            cat body.md >> notes.md
+            echo >> notes.md
+          elif [[ "${{ inputs.draft }}" == "true" || "${{ inputs.generated_notes }}" == "true" ]]; then
+            echo "::warning::$(cat notes-error.txt). The release carries GitHub's generated notes only."
+          else
+            echo "::error::$(cat notes-error.txt). Nothing was published."
+            exit 1
+          fi
+          [[ -s notes.md ]] && flags+=(--notes-file notes.md)
+          printf 'Uploading %s\n' "${files[@]}"
+          gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" "${flags[@]}"

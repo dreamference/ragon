@@ -1,0 +1,143 @@
+diff --git a/codex-rs/app-server/src/extensions.rs b/codex-rs/app-server/src/extensions.rs
+--- a/codex-rs/app-server/src/extensions.rs
++++ b/codex-rs/app-server/src/extensions.rs
+@@ -95,2 +95,3 @@ pub(crate) fn thread_extensions(
+     );
++    ragon_launcher::airgapped::install(&mut builder);
+     codex_guardian_v2::install(&mut builder, auth_manager.clone(), thread_manager);
+diff --git a/codex-rs/cli/src/main.rs b/codex-rs/cli/src/main.rs
+--- a/codex-rs/cli/src/main.rs
++++ b/codex-rs/cli/src/main.rs
+@@ -2051,2 +2051,3 @@ async fn run_debug_prompt_input_command(
+     );
++    ragon_launcher::airgapped::install(&mut extensions);
+     codex_skills_extension::install(&mut extensions, |config: &Config| {
+diff --git a/codex-rs/linux-sandbox/Cargo.toml b/codex-rs/linux-sandbox/Cargo.toml
+--- a/codex-rs/linux-sandbox/Cargo.toml
++++ b/codex-rs/linux-sandbox/Cargo.toml
+@@ -21,2 +21,3 @@ clap = { workspace = true, features = ["derive"] }
+ codex-install-context = { workspace = true }
++ragon-airgapped = { path = "../ragon/airgapped" }
+ codex-network-proxy = { workspace = true }
+diff --git a/codex-rs/linux-sandbox/src/linux_run_main.rs b/codex-rs/linux-sandbox/src/linux_run_main.rs
+--- a/codex-rs/linux-sandbox/src/linux_run_main.rs
++++ b/codex-rs/linux-sandbox/src/linux_run_main.rs
+@@ -394,13 +394,26 @@
+ ) -> Result<EffectivePermissions, ResolvePermissionProfileError> {
+-    let permission_profile =
++    let mut permission_profile =
+         permission_profile.ok_or(ResolvePermissionProfileError::MissingConfiguration)?;
+-    let (file_system_sandbox_policy, network_sandbox_policy) =
++    let on = ragon_airgapped::sealed_for_command();
++    if let PermissionProfile::Managed { network, .. } | PermissionProfile::External { network } = &mut permission_profile && on {
++        *network = NetworkSandboxPolicy::Restricted;
++    }
++    let (mut file_system_sandbox_policy, network_sandbox_policy) =
+         permission_profile.to_runtime_permissions();
++    seal_file_system(&mut file_system_sandbox_policy, on, ragon_airgapped::host_sockets_at(on));
+     Ok(EffectivePermissions {
+         permission_profile,
+         file_system_sandbox_policy,
+         network_sandbox_policy,
+     })
+ }
+ 
++/// Denies the host control sockets. A full-write disk would skip bwrap, and with it the denials.
++fn seal_file_system(policy: &mut FileSystemSandboxPolicy, on: bool, sockets: Vec<std::path::PathBuf>) {
++    if on && matches!(policy.kind, codex_protocol::protocol::FileSystemSandboxKind::Unrestricted) {
++        *policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry::new(FileSystemPath::Special { value: FileSystemSpecialPath::Root }, FileSystemAccessMode::Write)]);
++    }
++    policy.entries.extend(sockets.into_iter().filter_map(|p| codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(p).ok()).map(|p| FileSystemSandboxEntry::new(p.into(), FileSystemAccessMode::Deny)));
++}
++
+ fn ensure_inner_stage_mode_is_valid(apply_seccomp_then_exec: bool, use_legacy_landlock: bool) {
+diff --git a/codex-rs/sandboxing/src/policy_transforms.rs b/codex-rs/sandboxing/src/policy_transforms.rs
+--- a/codex-rs/sandboxing/src/policy_transforms.rs
++++ b/codex-rs/sandboxing/src/policy_transforms.rs
+@@ -667,2 +667,8 @@ pub fn should_require_platform_sandbox(
+ 
++/// Whether commands under this profile run with no platform sandbox, so nothing could cut their network (Ragon's `/airgapped on` refuses it, like Full Access).
++pub fn runs_without_platform_sandbox(profile: &PermissionProfile) -> bool {
++    let (file_system_policy, network_policy) = profile.to_runtime_permissions();
++    !should_require_platform_sandbox(&file_system_policy, network_policy, /*has_managed_network_requirements*/ false)
++}
++
+ #[cfg(test)]
+diff --git a/codex-rs/sandboxing/src/policy_transforms_tests.rs b/codex-rs/sandboxing/src/policy_transforms_tests.rs
+--- a/codex-rs/sandboxing/src/policy_transforms_tests.rs
++++ b/codex-rs/sandboxing/src/policy_transforms_tests.rs
+@@ -1402 +1402,17 @@ fn effective_file_system_sandbox_policy_merges_additional_write_roots() {
+ }
++
++#[test]
++fn a_profile_writing_the_whole_disk_with_the_network_on_runs_without_a_sandbox() {
++    use codex_protocol::models::PermissionProfile as SessionProfile;
++    let root_write = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
++        path: FileSystemPath::Special { value: FileSystemSpecialPath::Root },
++        access: FileSystemAccessMode::Write,
++        missing_path_behavior: None,
++    }]);
++    let custom = |network| SessionProfile::from_runtime_permissions(&root_write, network);
++    assert_eq!(super::runs_without_platform_sandbox(&custom(NetworkSandboxPolicy::Enabled)), true);
++    assert_eq!(super::runs_without_platform_sandbox(&SessionProfile::Disabled), true);
++    assert_eq!(super::runs_without_platform_sandbox(&custom(NetworkSandboxPolicy::Restricted)), false);
++    assert_eq!(super::runs_without_platform_sandbox(&SessionProfile::workspace_write()), false);
++    assert_eq!(super::runs_without_platform_sandbox(&SessionProfile::read_only()), false);
++}
+diff --git a/codex-rs/tui/src/chatwidget/permission_popups.rs b/codex-rs/tui/src/chatwidget/permission_popups.rs
+--- a/codex-rs/tui/src/chatwidget/permission_popups.rs
++++ b/codex-rs/tui/src/chatwidget/permission_popups.rs
+@@ -93,3 +93,4 @@ impl ChatWidget {
+                 .clone()
+-                .or_else(|| guardian_disabled_reason(false));
++                .or_else(|| guardian_disabled_reason(false))
++                .or_else(|| ragon_launcher::airgapped::full_access_refusal(self.thread_id, preset.id));
+             let default_actions = self.permission_mode_actions(
+diff --git a/codex-rs/tui/src/chatwidget/permissions_menu.rs b/codex-rs/tui/src/chatwidget/permissions_menu.rs
+--- a/codex-rs/tui/src/chatwidget/permissions_menu.rs
++++ b/codex-rs/tui/src/chatwidget/permissions_menu.rs
+@@ -56,2 +56,3 @@ impl ChatWidget {
+     ) -> Option<String> {
++        if let Some(reason) = ragon_launcher::airgapped::full_access_refusal(self.thread_id, preset.id) { return Some(reason); }
+         self.config
+diff --git a/codex-rs/tui/src/chatwidget/slash_dispatch.rs b/codex-rs/tui/src/chatwidget/slash_dispatch.rs
+--- a/codex-rs/tui/src/chatwidget/slash_dispatch.rs
++++ b/codex-rs/tui/src/chatwidget/slash_dispatch.rs
+@@ -539,2 +539,3 @@ impl ChatWidget {
+             SlashCommand::Night => self.add_plain_history_lines(ragon_launcher::night::command("", &self.config.cwd).into_iter().map(ratatui::text::Line::from).collect()),
++            SlashCommand::Airgapped => self.add_plain_history_lines(ragon_launcher::airgapped::session_command(self.thread_id, "", codex_sandboxing::policy_transforms::runs_without_platform_sandbox(self.config.permissions.permission_profile())).into_iter().map(ratatui::text::Line::from).collect()),
+             SlashCommand::Ide => {
+@@ -782,2 +783,3 @@ impl ChatWidget {
+             SlashCommand::Night => self.add_plain_history_lines(ragon_launcher::night::command(trimmed, &self.config.cwd).into_iter().map(ratatui::text::Line::from).collect()),
++            SlashCommand::Airgapped => self.add_plain_history_lines(ragon_launcher::airgapped::session_command(self.thread_id, trimmed, codex_sandboxing::policy_transforms::runs_without_platform_sandbox(self.config.permissions.permission_profile())).into_iter().map(ratatui::text::Line::from).collect()),
+             SlashCommand::Voice => match trimmed.to_ascii_lowercase().as_str() {
+@@ -1208,2 +1210,3 @@ impl ChatWidget {
+             | SlashCommand::Night
++            | SlashCommand::Airgapped
+             | SlashCommand::DebugConfig
+diff --git a/codex-rs/tui/src/slash_command.rs b/codex-rs/tui/src/slash_command.rs
+--- a/codex-rs/tui/src/slash_command.rs
++++ b/codex-rs/tui/src/slash_command.rs
+@@ -17,2 +17,3 @@ pub enum SlashCommand {
+     Permissions,
++    Airgapped,
+     Keymap,
+@@ -139,2 +140,3 @@ impl SlashCommand {
+             SlashCommand::Night => "queue a task for the overnight run",
++            SlashCommand::Airgapped => "set how much of the internet this session may use",
+             SlashCommand::Agents => "open the agent command center",
+@@ -178,2 +180,3 @@ impl SlashCommand {
+                 | SlashCommand::Night
++                | SlashCommand::Airgapped
+                 | SlashCommand::Voice
+@@ -287,2 +290,3 @@ impl SlashCommand {
+             | SlashCommand::Night
++            | SlashCommand::Airgapped
+             | SlashCommand::Voice
+diff --git a/codex-rs/app-server/Cargo.toml b/codex-rs/app-server/Cargo.toml
+--- a/codex-rs/app-server/Cargo.toml
++++ b/codex-rs/app-server/Cargo.toml
+@@ -54,2 +54,3 @@ codex-goal-extension = { workspace = true }
+ codex-git-attribution = { workspace = true }
++ragon-launcher = { path = "../ragon" }
+ codex-guardian-v2 = { workspace = true }

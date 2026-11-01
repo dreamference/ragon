@@ -1,0 +1,45 @@
+# `ragon web`, the Ragon web server (specs/DREAMFERENCE_RAGON_ASK.md §4): serves the Ragon
+# UI to a browser and relays it to the user's `ragon app-server` through the bridge policy, with a
+# credential on every request, loopback included. A crate of its own so its tests run without
+# compiling the Codex workspace (`cargo test` in a copy of this folder beside `../airgapped`); the
+# launcher (`../src/lib.rs`) only routes `ragon web …` here and supplies the composed prompts.
+# Versions are the Codex workspace's, so building inside it adds no second copy of any crate.
+[package]
+name = "ragon-web-server"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "ragon_web_server"
+path = "src/lib.rs"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws", "query", "form"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
+# The `/forge/` proxy's client to the node's forge on loopback (forge.rs); axum's own hyper.
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+ragon-airgapped = { path = "../airgapped" }
+# Host-side git with the program-running config keys turned off (chat_repos.rs).
+ragon-safegit = { path = "../safegit" }
+# The pairing QR code (src/qr.rs), drawn here: no dependencies of its own, no service asked.
+qrcodegen = "1.8"
+rand = "0.9"
+# The pre-push anonymity denylist check (anonymity.rs); the Codex workspace's version.
+regex = "1"
+# The sync hub's records (sync_store.rs); the Codex workspace's version.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["handshake"] }
+# The `[chat]` table of the user's configuration (chat_settings.rs); the Codex workspace's version.
+toml = "0.9.5"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.182"
+
+[dev-dependencies]
+tower = { version = "0.5", default-features = false, features = ["util"] }

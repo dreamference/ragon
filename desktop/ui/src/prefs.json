@@ -1,0 +1,277 @@
+{
+  "comment": "The window's own preferences (DESKTOP_PARITY \u00a72.15: settings the CLI does not share). The desktop app's main process keeps them in prefs.json under its data folder (desktop/electron/src/prefs.ts) and refuses a key or a value this file does not describe; a browser keeps them in localStorage. Agent settings live in ~/.ragon/config.toml, written through config/value/write, never here.",
+  "keys": {
+    "enterBehaviour": {
+      "default": "enter",
+      "enum": [
+        "enter",
+        "ctrlEnter",
+        "multiline"
+      ]
+    },
+    "followUp": {
+      "default": "steer",
+      "enum": [
+        "steer",
+        "queue"
+      ]
+    },
+    "effort": {
+      "default": null,
+      "type": "string",
+      "nullable": true
+    },
+    "recentModels": {
+      "default": [],
+      "type": "strings"
+    },
+    "editor": {
+      "default": null,
+      "type": "string",
+      "nullable": true
+    },
+    "diffLayout": {
+      "default": "unified",
+      "enum": [
+        "unified",
+        "split"
+      ]
+    },
+    "worktreeThreads": {
+      "default": {},
+      "type": "object"
+    },
+    "projectContextSent": {
+      "default": {},
+      "type": "object"
+    },
+    "dictationWords": {
+      "default": [],
+      "type": "strings"
+    },
+    "threadOrder": {
+      "default": "projects",
+      "enum": [
+        "projects",
+        "chronological"
+      ]
+    },
+    "projectOrder": {
+      "default": [],
+      "type": "strings"
+    },
+    "agentReadsWindow": {
+      "default": true,
+      "type": "boolean"
+    },
+    "permanentWorktrees": {
+      "default": [],
+      "type": "strings"
+    },
+    "bottomPanel": {
+      "default": false,
+      "type": "boolean"
+    },
+    "fontScale": {
+      "default": 1,
+      "type": "number"
+    },
+    "keyOverrides": {
+      "default": {},
+      "type": "object"
+    },
+    "sidebarHidden": {
+      "default": false,
+      "type": "boolean"
+    },
+    "pinnedThreads": {
+      "default": [],
+      "type": "strings"
+    },
+    "pinnedProjects": {
+      "default": [],
+      "type": "strings"
+    },
+    "sections": {
+      "default": [],
+      "type": "list"
+    },
+    "unreadThreads": {
+      "default": [],
+      "type": "strings"
+    },
+    "messageVersions": {
+      "default": {},
+      "type": "object"
+    },
+    "nightThreads": {
+      "default": {},
+      "type": "object"
+    },
+    "threadSummaries": {
+      "default": {},
+      "type": "object"
+    },
+    "summarizeThreads": {
+      "default": true,
+      "type": "boolean"
+    },
+    "recentsOpen": {
+      "default": false,
+      "type": "boolean"
+    },
+    "layout": {
+      "default": "split",
+      "enum": [
+        "split",
+        "tabs",
+        "chat"
+      ]
+    },
+    "preventSleep": {
+      "default": true,
+      "type": "boolean"
+    },
+    "openArtifacts": {
+      "default": true,
+      "type": "boolean"
+    },
+    "pasteAsFile": {
+      "default": true,
+      "type": "boolean"
+    },
+    "previewSites": {
+      "default": {},
+      "type": "object"
+    },
+    "previewDevTools": {
+      "default": false,
+      "type": "boolean"
+    },
+    "petShown": {
+      "default": false,
+      "type": "boolean"
+    },
+    "recallQuestions": {
+      "default": false,
+      "type": "boolean"
+    },
+    "quickEntry": {
+      "default": false,
+      "type": "boolean"
+    },
+    "quickEntryShortcut": {
+      "default": "Ctrl+Alt+Space",
+      "type": "string"
+    },
+    "keepInTray": {
+      "default": false,
+      "type": "boolean"
+    },
+    "welcomed": {
+      "default": false,
+      "type": "boolean"
+    },
+    "petSize": {
+      "default": "medium",
+      "enum": ["small", "medium", "large"]
+    },
+    "petImage": {
+      "default": null,
+      "nullable": true,
+      "type": "string"
+    },
+    "petCorner": {
+      "default": null,
+      "nullable": true,
+      "type": "object"
+    },
+    "suggestPrompts": {
+      "default": false,
+      "type": "boolean"
+    },
+    "pullRequests": {
+      "default": false,
+      "type": "boolean"
+    },
+    "notifyTurns": {
+      "default": "unfocused",
+      "enum": [
+        "unfocused",
+        "always",
+        "never"
+      ]
+    },
+    "notifyApprovals": {
+      "default": true,
+      "type": "boolean"
+    },
+    "notifyQuestions": {
+      "default": null,
+      "type": "boolean",
+      "nullable": true
+    },
+    "appearance": {
+      "default": {},
+      "type": "object"
+    },
+    "branchPrefix": {
+      "default": "ragon/",
+      "type": "string"
+    },
+    "commitPrompt": {
+      "default": null,
+      "type": "string",
+      "nullable": true
+    },
+    "pullRequestPrompt": {
+      "default": null,
+      "type": "string",
+      "nullable": true
+    },
+    "forcePush": {
+      "default": false,
+      "type": "boolean"
+    },
+    "nightSeen": {
+      "default": null,
+      "type": "string",
+      "nullable": true
+    },
+    "nightRead": {
+      "default": [],
+      "type": "strings"
+    },
+    "reviewDelivery": {
+      "default": "inline",
+      "enum": [
+        "inline",
+        "detached"
+      ]
+    },
+    "terminalShell": {
+      "default": null,
+      "type": "string",
+      "nullable": true
+    },
+    "terminalPlace": {
+      "default": "panel",
+      "enum": [
+        "panel",
+        "tabs"
+      ]
+    },
+    "commandOutput": {
+      "default": "running",
+      "enum": [
+        "running",
+        "collapsed",
+        "hidden"
+      ]
+    },
+    "theme": {
+      "default": "system",
+      "enum": ["system", "light", "dark"]
+    }
+  }
+}

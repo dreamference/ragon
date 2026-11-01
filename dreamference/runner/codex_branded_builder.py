@@ -1,0 +1,1297 @@
+"""Ragon-Branded Codex Builder for Dreamference.
+
+This module provides the CodexBrandedBuilder class, which turns the pinned `codex/` submodule (a
+fork of openai/codex at a stable release tag) into `ragon`, the terminal agent. It is Codex with
+Ragon's branding and with the launcher in `ragon-rs/` compiled in, so it finds the local model
+server and configures itself with no Python involved.
+
+The submodule is never modified. Each build exports the pinned commit with `git archive` into a
+scratch tree, applies the patch series in `codex-patches/` there with `git apply`, and compiles that
+tree, after copying `ragon-rs/` in beside the workspace crates as `codex-rs/ragon` -- so the fork
+stays byte-identical to upstream and moving to a newer release is a submodule
+bump plus whatever patch hunks stop applying. Only `codex-rs/` is exported: it is the whole Rust
+workspace, and the rest of the repository (the npm wrapper, Bazel files, SDKs) plays no part in a
+Cargo build.
+
+The compiled output is keyed by the source commit, the patch contents and the launcher's source, so an unchanged tree is
+not rebuilt, and Cargo's target directory is kept across builds so a patch edit recompiles only the
+crates it touches rather than the several hundred dependencies beneath them.
+
+The agent's web commands, `ragon-search` and `ragon-fetch`, are built here too, from the
+standalone crate `ragon-web-rs/`: a separate Cargo build with its own lockfile, target directory
+and stamp, installed beside `ragon`, so either can be rebuilt without the other.
+
+All of that needs a checkout. A machine installed from a release (`install.sh`) has the package
+from a wheel and the binaries from the release's assets, with no `codex/`, `codex-patches/` or
+crate directories beside it; `has_source()` tells the two apart, and without source the installed
+binaries count as current, since there is nothing here they could be rebuilt from.
+"""
+
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+from typing import Final
+
+REPO_ROOT: Final[str] = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CODEX_SUBMODULE_DIR: Final[str] = os.path.join(REPO_ROOT, "codex")
+CODEX_PATCH_DIR: Final[str] = os.path.join(REPO_ROOT, "codex-patches")
+
+# The exported workspace's lockfile: upstream's own pins plus those of the crates ragon-rs/ brings in,
+# which upstream's lock cannot hold. Without it every build resolved ragon-rs's third-party crates
+# (pgp, mdns-sd and some fifty more) afresh from crates.io, so a release could ship whatever version
+# was newest that day. Cargo keeps every entry the lock has; it rewrites only the workspace crates'
+# own version, which stamp_version changes. It is made for one submodule commit and is refreshed
+# with it (docs/dev/codex-build.md).
+CODEX_LOCKFILE: Final[str] = str(Path(CODEX_PATCH_DIR) / "Cargo.lock")
+CODEX_LOCKFILE_COMMIT: Final[str] = "064c6b8c737f5b41d171fdda80bd9ef10ad06eb3"
+
+# The launcher crate. It is Dreamference's own Rust, so it lives here as source rather than inside a
+# patch, and is copied into the exported tree where patch 0002's dependency line expects it.
+RAGON_CRATE_DIR: Final[str] = os.path.join(REPO_ROOT, "ragon-rs")
+RAGON_CRATE_DEST: Final[str] = os.path.join("codex-rs", "ragon")
+
+# The release the patches are written against. The submodule is pinned to this tag's commit; the
+# constant exists so a mismatch can be reported by name rather than as a hunk that fails to apply.
+CODEX_RELEASE_TAG: Final[str] = "rust-v0.158.0"
+
+# Cargo's target directory inside it holds several hundred compiled dependencies.
+BUILD_CACHE_DIR: Final[str] = os.path.expanduser("~/.cache/dreamference/ragon-codex")
+INSTALL_DIR: Final[str] = os.path.expanduser("~/.local/share/dreamference/ragon")
+
+# Cargo still builds the binary as `codex` -- renaming the [[bin]] and `default-run` would be two
+# more patch hunks for a name the builder can simply give the file when it installs it. Codex's
+# own help and --version already say `ragon` (patch 0001 sets clap's name and bin_name).
+CARGO_BIN_NAME: Final[str] = "codex"
+BRANDED_EXECUTABLE_NAME: Final[str] = "ragon"
+
+# Where the user types `ragon`. A symlink rather than a copy, because Codex finds
+# codex-code-mode-host next to its own executable, and it resolves that through the link.
+PATH_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon")
+
+# Where `ragon-admin` and the web commands become reachable from any shell -- including the one
+# `ragon` runs the model's commands in. The prompt tells the model to use `ragon-search`,
+# `ragon-fetch` and `ragon-admin gmail` for web and mail access, but the commands only existed
+# inside the repository's virtualenv, so every such call ended in "command not found" (exit 127).
+ADMIN_PATH_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon-admin")
+SEARCH_PATH_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon-search")
+FETCH_PATH_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon-fetch")
+
+# The delegation plugin starts `ragon-delegate mcp`, not `ragon delegate mcp`: the installed `ragon` can be
+# replaced by an older pinned build (the benchmark harness does) that has no `delegate` command.
+DELEGATE_PATH_LINK: Final[str] = str(Path.home() / ".local" / "bin" / "ragon-delegate")
+
+# The agent's web commands, `ragon-search` and `ragon-fetch`: a small Rust crate of its own rather
+# than part of the launcher, so changing them never relinks Codex, and a static binary rather than
+# a console script, so they do not depend on this virtualenv. Built with its own lockfile into its
+# own target directory, installed beside `ragon`, and stamped separately from the Codex build.
+WEB_CRATE_DIR: Final[str] = os.path.join(REPO_ROOT, "ragon-web-rs")
+WEB_BUILD_CACHE_DIR: Final[str] = os.path.expanduser("~/.cache/dreamference/ragon-web")
+WEB_BUILD_STAMP_NAME: Final[str] = "web-build-key"
+WEB_BIN_NAMES: Final[tuple] = ("ragon-search", "ragon-fetch")
+
+# The code index router, `ragon-code` (specs/DREAMFERENCE_RAGON_CODE_INDEX.md §4.2): a crate of
+# its own for the same reasons as the web commands, built the same way. The prompt tells the model
+# to run it, so it is linked onto PATH beside the others.
+CODE_CRATE_DIR: Final[str] = os.path.join(REPO_ROOT, "ragon-code-rs")
+CODE_BUILD_CACHE_DIR: Final[str] = os.path.expanduser("~/.cache/dreamference/ragon-code-build")
+CODE_BUILD_STAMP_NAME: Final[str] = "code-build-key"
+CODE_BIN_NAMES: Final[tuple] = ("ragon-code",)
+CODE_PATH_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon-code")
+
+# The local file index, `ragon-docs` (specs/DREAMFERENCE_RAGON_LOCAL_INDEX.md §6): a crate of
+# its own built the same way. It loads PDFium, ONNX Runtime and its embedding model at run time;
+# `DocsIndexSetup` installs those beside it, pinned, since ragon-docs itself opens no socket. It
+# runs its indexing in systemd scopes inside bwrap, so it is built on Linux only.
+DOCS_CRATE_DIR: Final[str] = os.path.join(REPO_ROOT, "ragon-docs-rs")
+DOCS_BUILD_CACHE_DIR: Final[str] = os.path.expanduser("~/.cache/dreamference/ragon-docs-build")
+DOCS_BUILD_STAMP_NAME: Final[str] = "docs-build-key"
+DOCS_BIN_NAMES: Final[tuple] = ("ragon-docs",)
+DOCS_PATH_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon-docs")
+
+# Windows (specs/DREAMFERENCE_RAGON_WINDOWS_ARM.md §16.1). Every executable carries `.exe`, and
+# there are no `~/.local/bin` links: install.ps1 puts the install directory itself on the user's
+# PATH. The sandbox's helpers are built with `ragon`, under the names Codex looks for beside its
+# own executable (`windows-sandbox-rs/src/helper_materialization.rs`).
+IS_WINDOWS: Final[bool] = os.name == "nt"
+EXE_SUFFIX: Final[str] = ".exe" if IS_WINDOWS else ""
+WINDOWS_SANDBOX_PACKAGE: Final[str] = "codex-windows-sandbox"
+WINDOWS_SANDBOX_HELPERS: Final[tuple] = ("codex-windows-sandbox-setup", "codex-command-runner")
+
+# Code Mode runs its JavaScript in a separate host process that Codex looks for next to its own
+# executable, so the two binaries are built and installed together.
+CODE_MODE_HOST_NAME: Final[str] = "codex-code-mode-host"
+
+# Ragon over Signal's bridge (`ragon-rs/signal/`, specs/DREAMFERENCE_RAGON_SIGNAL.md): the
+# launcher links the crate for `ragon signal …`, and the crate's own small binary is what the
+# bridge's system account runs, copied there by `ragon signal setup`. Built in the same Cargo run as
+# `ragon` (the crate is a workspace member through the launcher's dependency), installed beside it
+# and never linked onto PATH. Linux only: the bridge is a system unit.
+SIGNAL_PACKAGE: Final[str] = "ragon-signal"
+SIGNAL_BIN_NAME: Final[str] = "ragon-signal"
+BUILDS_SIGNAL: Final[bool] = sys.platform.startswith("linux")
+
+# The delegation plugin's server (`ragon-rs/delegate/`, specs/DREAMFERENCE_RAGON_CLAUDE_PLUGIN.md
+# §14): the launcher links the crate for `ragon delegate …`, and the crate's own small binary runs
+# the same commands for a machine whose installed `ragon` predates it. Built in the same Cargo run as
+# `ragon` (a workspace member through the launcher's dependency), installed beside it and never
+# linked onto PATH: the plugin's `.mcp.json` starts `ragon delegate mcp`. Linux only, like the bridge.
+DELEGATE_PACKAGE: Final[str] = "ragon-delegate"
+DELEGATE_BIN_NAME: Final[str] = "ragon-delegate"
+BUILDS_DELEGATE: Final[bool] = sys.platform.startswith("linux")
+
+# Upstream's release profile keeps line tables (`debug = "line-tables-only"`, `strip = false`) so
+# its CI can archive symbols, and strips only when it packages. Built as-is, ragon-codex is 1.4 GB
+# rather than ~315 MB -- and the runner reads the whole file on every launch to recover its system
+# prompt. Overridden through Cargo's environment rather than a patch, so it touches no Codex source,
+# and applied at compile time, which also spares generating debug info that would be thrown away.
+RELEASE_PROFILE_OVERRIDES: Final[dict] = {
+    "CARGO_PROFILE_RELEASE_DEBUG": "none",
+    "CARGO_PROFILE_RELEASE_STRIP": "debuginfo",
+}
+
+# A shared compile cache (docs/dev/codex-build.md#the-compile-cache): when `sccache` is on PATH,
+# every cargo build here runs rustc through it, so a crate compiled once -- by any of the target
+# directories on the machine, the Codex export's, a launcher test's, the standalone crates' -- is
+# fetched rather than compiled again. Optional: a release install or a CI runner has none, and the
+# build is then what it always was. `DREAMFERENCE_SCCACHE=0` turns it off; a `RUSTC_WRAPPER` the
+# caller set is left as it is. The cache lives under `~/.cache/sccache`, capped at 40 GiB.
+SCCACHE_SWITCH: Final[str] = "DREAMFERENCE_SCCACHE"
+SCCACHE_OFF_VALUES: Final[frozenset] = frozenset({"0", "off", "false", "no"})
+SCCACHE_CACHE_SIZE: Final[str] = "40G"
+RUSTC_WRAPPER_VARIABLE: Final[str] = "RUSTC_WRAPPER"
+
+# Records which source commit and patch set the installed binaries were built from.
+BUILD_STAMP_NAME: Final[str] = "build-key"
+
+# `ragon web` serves the Ragon UI from its own binary (specs/DREAMFERENCE_RAGON_ASK.md
+# §4.1): `ragon-rs/web/build.rs` embeds the folder `RAGON_WEB_UI_DIST` names, which is `desktop/ui`'s
+# Vite build. Without it `/` serves a placeholder page, so every build of `ragon` builds the UI
+# first and refuses to go on without it. Its sources are part of the build key; its packages and
+# output are not.
+WEB_UI_DIR: Final[str] = os.path.join(REPO_ROOT, "desktop", "ui")
+WEB_UI_DIST: Final[str] = os.path.join(WEB_UI_DIR, "dist")
+WEB_UI_IGNORED: Final[frozenset] = frozenset({"node_modules", "dist"})
+
+# Code Mode embeds V8. The `v8` crate's own build script downloads a prebuilt library from
+# denoland/rusty_v8, but Codex builds V8 with pointer compression and the sandbox on, a flavour
+# denoland does not publish for aarch64 Linux -- the download 404s. OpenAI publishes that flavour on
+# its own releases, and the submodule carries a manifest of their checksums, which is what
+# `.github/actions/setup-rusty-v8` in the submodule verifies against before a release build.
+RUSTY_V8_RELEASE_URL: Final[str] = (
+    "https://github.com/openai/codex/releases/download/rusty-v8-v{version}"
+)
+RUSTY_V8_PROFILE: Final[str] = "ptrcomp_sandbox_release"
+
+# How long a download may wait for the next bytes before it gives up. A slow link still finishes;
+# a server that stops sending no longer hangs the build.
+DOWNLOAD_TIMEOUT_SECONDS: Final[float] = 60.0
+
+
+class CodexBrandedBuilder:
+    """Builds and installs the Ragon-branded Codex from the submodule plus the patch series."""
+
+    @classmethod
+    def executable_path(cls) -> str:
+        """Returns where the branded executable is installed.
+
+        Returns:
+            str: Absolute path to `ragon-codex`, whether or not it has been built yet.
+        """
+        return os.path.join(INSTALL_DIR, "bin", BRANDED_EXECUTABLE_NAME + EXE_SUFFIX)
+
+    @classmethod
+    def has_source(cls) -> bool:
+        """Tells a checkout from a release install.
+
+        Originally a release install was treated as a stale build: `ragon-admin run` and
+        `codex build` installed rustup and then died with FileNotFoundError on the missing
+        `ragon-web-rs/` (measured in a scratch home).
+
+        Returns:
+            bool: True if the patch series and the launcher crate are beside the package, i.e.
+            `ragon` can be built here.
+        """
+        return Path(CODEX_PATCH_DIR).is_dir() and Path(RAGON_CRATE_DIR).is_dir()
+
+    @classmethod
+    def binaries_installed(cls, names: tuple) -> bool:
+        """Checks that binaries are present in the install directory.
+
+        Args:
+            names (tuple): File names under `bin/`.
+
+        Returns:
+            bool: True if every one is an executable file.
+        """
+        return all(
+            Path(path).is_file() and os.access(path, os.X_OK)
+            for path in (os.path.join(INSTALL_DIR, "bin", name + EXE_SUFFIX) for name in names)
+        )
+
+    @classmethod
+    def patches(cls) -> list[str]:
+        """Lists the patch series in the order it is applied.
+
+        Returns:
+            List[str]: Absolute paths of the `.patch` files, sorted by their numeric prefix.
+        """
+        if not Path(CODEX_PATCH_DIR).is_dir():
+            return []
+        return [
+            os.path.join(CODEX_PATCH_DIR, name)
+            for name in sorted(os.listdir(CODEX_PATCH_DIR))
+            if name.endswith(".patch")
+        ]
+
+    @classmethod
+    def source_commit(cls) -> str | None:
+        """Resolves the commit the submodule is checked out at.
+
+        Returns:
+            Optional[str]: The full commit hash, or None if the submodule is not checked out.
+        """
+        result = subprocess.run(
+            ["git", "-C", CODEX_SUBMODULE_DIR, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if (
+            result.returncode != 0
+            or not Path(os.path.join(CODEX_SUBMODULE_DIR, "codex-rs")).is_dir()
+        ):
+            return None
+        return result.stdout.strip()
+
+    @classmethod
+    def build_key(cls) -> str | None:
+        """Identifies a build by its inputs.
+
+        the source commit, the exact bytes of every patch, of the lockfile and of every launcher
+        source file, and the profile overrides, since changing any of those changes the binary as
+        surely as a patch does.
+
+        Returns:
+            Optional[str]: A short key, or None if the submodule is not checked out.
+        """
+        commit = cls.source_commit()
+        if commit is None:
+            return None
+        digest = hashlib.sha256()
+        digest.update(repr(sorted(RELEASE_PROFILE_OVERRIDES.items())).encode())
+        digest.update(f"version={cls.ragon_version()}".encode())
+        for patch in cls.patches():
+            digest.update(os.path.basename(patch).encode())
+            with Path(patch).open("rb") as handle:
+                digest.update(handle.read())
+        digest.update(Path(CODEX_LOCKFILE).read_bytes())
+        for path in cls.launcher_files():
+            digest.update(os.path.relpath(path, RAGON_CRATE_DIR).encode())
+            with Path(path).open("rb") as handle:
+                digest.update(handle.read())
+        # `ragon web` embeds the UI, so a change to it is a change to the binary.
+        for path in cls.web_ui_files():
+            digest.update(f"ui/{os.path.relpath(path, WEB_UI_DIR)}".encode())
+            with Path(path).open("rb") as handle:
+                digest.update(handle.read())
+        return f"{commit[:12]}-{digest.hexdigest()[:12]}"
+
+    @classmethod
+    def web_ui_files(cls) -> list[str]:
+        """Lists the Ragon UI's source files (`desktop/ui`), in a stable order.
+
+        what `ragon web` embeds is built from these.
+
+        Returns:
+            List[str]: Absolute paths, without the npm packages or a previous build's output.
+        """
+        found: list[str] = []
+        for root, dirs, files in os.walk(WEB_UI_DIR):
+            dirs[:] = sorted(d for d in dirs if d not in WEB_UI_IGNORED)
+            found.extend(os.path.join(root, name) for name in sorted(files))
+        return found
+
+    @classmethod
+    def build_web_ui(cls) -> str | None:
+        """Builds the Ragon UI that `ragon web` embeds.
+
+        `npm ci` once, then the UI's own `npm run build` (a type check and Vite).
+
+        Returns:
+            Optional[str]: The build's folder, for `RAGON_WEB_UI_DIST`; None, having said why, when
+                it could not be built.
+        """
+        if not Path(os.path.join(WEB_UI_DIR, "package.json")).is_file():
+            print(f"❌ The Ragon UI's project is missing ({WEB_UI_DIR}); `ragon web` embeds it.")
+            return None
+        npm = shutil.which("npm")
+        if npm is None:
+            print(
+                "❌ npm is needed to build ragon: `ragon web` serves the Ragon UI from inside the binary."
+            )
+            print("💡 Install Node.js 20 or later, then build again.")
+            return None
+        from dreamference.chat.desktop_runner import DesktopRunner
+
+        environment = DesktopRunner._environment()
+        # Again whenever the lock file changed since the last install (DesktopRunner.packages_current).
+        if not DesktopRunner.packages_current(Path(WEB_UI_DIR)):
+            print("📦 Installing the Ragon UI's packages (desktop/ui)...")
+            if (
+                subprocess.call(
+                    [npm, "ci", "--no-audit", "--no-fund"], cwd=WEB_UI_DIR, env=environment
+                )
+                != 0
+            ):
+                print("❌ npm ci failed in desktop/ui; see its output above.")
+                return None
+            DesktopRunner.mark_installed(Path(WEB_UI_DIR))
+        print("🔨 Building the Ragon UI for ragon web...")
+        if subprocess.call([npm, "run", "build"], cwd=WEB_UI_DIR, env=environment) != 0:
+            print("❌ The Ragon UI did not build; see its output above.")
+            return None
+        if not Path(os.path.join(WEB_UI_DIST, "index.html")).is_file():
+            print(f"❌ The UI's build wrote no index.html to {WEB_UI_DIST}.")
+            return None
+        return WEB_UI_DIST
+
+    @classmethod
+    def launcher_files(cls) -> list[str]:
+        """Lists the launcher crate's source files, in a stable order.
+
+        Returns:
+            List[str]: Absolute paths under `ragon-rs/`, excluding any local build output.
+        """
+        return cls.crate_files(RAGON_CRATE_DIR)
+
+    @classmethod
+    def crate_files(cls, crate_dir: str) -> list[str]:
+        """Lists a crate's source files, in a stable order.
+
+        Args:
+            crate_dir (str): The crate's directory.
+
+        Returns:
+            List[str]: Absolute paths under `crate_dir`, excluding any local build output.
+        """
+        found: list[str] = []
+        for root, dirs, files in os.walk(crate_dir):
+            dirs[:] = sorted(d for d in dirs if d != "target")
+            found.extend(os.path.join(root, name) for name in sorted(files))
+        return found
+
+    @classmethod
+    def is_current(cls) -> bool:
+        """Checks that both binaries are installed and were built from the current inputs.
+
+        Returns:
+            bool: True if no rebuild is needed. Without a checkout, True if they are installed.
+        """
+        if not cls.has_source():
+            return cls.binaries_installed((BRANDED_EXECUTABLE_NAME, CODE_MODE_HOST_NAME))
+        key = cls.build_key()
+        stamp = os.path.join(INSTALL_DIR, BUILD_STAMP_NAME)
+        if key is None or not Path(stamp).is_file():
+            return False
+        with Path(stamp).open() as handle:
+            if handle.read().strip() != key:
+                return False
+        host = os.path.join(INSTALL_DIR, "bin", CODE_MODE_HOST_NAME + EXE_SUFFIX)
+        required = [cls.executable_path(), host]
+        if BUILDS_SIGNAL:
+            required.append(os.path.join(INSTALL_DIR, "bin", SIGNAL_BIN_NAME))
+        if BUILDS_DELEGATE:
+            required.append(str(Path(INSTALL_DIR) / "bin" / DELEGATE_BIN_NAME))
+        return all(Path(path).is_file() and os.access(path, os.X_OK) for path in required)
+
+    @classmethod
+    def prepare_source(cls, source_dir: str) -> bool:
+        """Exports the pinned commit into `source_dir`, adds the launcher crate, and applies the patch
+        series to that copy.
+
+        Args:
+            source_dir (str): Scratch directory to create; any previous contents are removed.
+
+        Returns:
+            bool: True if the export succeeded and every patch applied cleanly.
+        """
+        commit = cls.source_commit()
+        if commit is None:
+            print("❌ The codex submodule is not checked out.")
+            print("💡 Fetch it with: git submodule update --init codex")
+            return False
+
+        shutil.rmtree(source_dir, ignore_errors=True)
+        Path(source_dir).mkdir(parents=True)
+        # `core.autocrlf=false`: a Windows runner converts text to CRLF on the way out of git
+        # otherwise, and the LF patches then fail to apply.
+        archive = subprocess.Popen(
+            [
+                "git",
+                "-c",
+                "core.autocrlf=false",
+                "-C",
+                CODEX_SUBMODULE_DIR,
+                "archive",
+                commit,
+                "codex-rs",
+            ],
+            stdout=subprocess.PIPE,
+        )
+        extracted = cls.extract_archive(archive.stdout, source_dir)
+        archive.stdout.close()
+        if archive.wait() != 0 or not extracted:
+            print(f"❌ Could not export codex {commit[:12]} from the submodule.")
+            return False
+        # Before the patches, because 0002 makes the CLI depend on it.
+        # Plain copy, not copy2: Cargo decides freshness by comparing source mtimes with its last
+        # build, so a file carrying its original, older mtime can be taken as already compiled even
+        # though its content changed -- and the stale launcher gets linked in.
+        shutil.copytree(
+            RAGON_CRATE_DIR,
+            os.path.join(source_dir, RAGON_CRATE_DEST),
+            ignore=shutil.ignore_patterns("target"),
+            copy_function=shutil.copy,
+        )
+        shutil.copy(CODEX_LOCKFILE, Path(source_dir) / "codex-rs" / "Cargo.lock")
+
+        for patch in cls.patches():
+            # Checked first so a patch that does not fit leaves nothing half-applied behind it.
+            if cls.git_apply(source_dir, "--check", patch).returncode != 0:
+                print(f"❌ {os.path.basename(patch)} does not apply to codex {commit[:12]}.")
+                print(
+                    f"💡 The patches are written against {CODEX_RELEASE_TAG}; refresh them after a submodule bump."
+                )
+                return False
+            cls.git_apply(source_dir, patch).check_returncode()
+        return cls.stamp_version(
+            os.path.join(source_dir, "codex-rs", "Cargo.toml"), cls.ragon_version()
+        )
+
+    @classmethod
+    def git_apply(cls, source_dir: str, *args: str) -> subprocess.CompletedProcess:
+        """Runs `git apply` in an export, which is no repository of its own.
+
+        Git looks for one above it: in a home directory that is a git work tree (dotfiles) it
+        reads every `diff --git` path against that repository's top, skips them all and still
+        exits 0. The ceiling keeps the search in the export, and an inherited `GIT_DIR` or
+        `GIT_WORK_TREE` would outrank it.
+
+        Args:
+            source_dir (str): The export to patch.
+            *args (str): `git apply`'s arguments.
+
+        Returns:
+            subprocess.CompletedProcess: The finished `git apply`.
+        """
+        env = {
+            name: value
+            for name, value in os.environ.items()
+            if name not in ("GIT_DIR", "GIT_WORK_TREE")
+        }
+        env["GIT_CEILING_DIRECTORIES"] = str(Path(source_dir).resolve().parent)
+        return subprocess.run(["git", "apply", *args], cwd=source_dir, env=env, check=False)
+
+    @classmethod
+    def ragon_version(cls) -> str:
+        """The version `ragon` reports.
+
+        the release being built (`RAGON_VERSION`, which the release workflow sets), else this
+        package's own version.
+
+        Returns:
+            str: A version such as `0.9.0`.
+        """
+        from dreamference import __version__
+
+        return os.environ.get("RAGON_VERSION") or __version__
+
+    @classmethod
+    def stamp_version(cls, manifest: str, version: str) -> bool:
+        """Sets the exported workspace's version, so that every place the binaries read
+        `CARGO_PKG_VERSION` -- `--version`, the session header, the status card, `exec`'s banner,
+        `doctor` -- reports Ragon's release rather than the upstream tag it was forked from. The
+        export is edited, never the submodule, and no patch is needed.
+
+        Args:
+            manifest (str): The exported `codex-rs/Cargo.toml`.
+            version (str): The version to stamp.
+
+        Returns:
+            bool: True if the manifest's `[workspace.package]` version was set.
+        """
+        if not re.fullmatch(r"\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?", version):
+            print(f"❌ {version!r} is not a version Cargo accepts (for example 0.9.0).")
+            return False
+        with Path(manifest).open() as handle:
+            text = handle.read()
+        section = re.search(
+            r"^\[workspace\.package\]\n(?:(?!\[).*\n)*?version = \"[^\"]*\"", text, re.M
+        )
+        if section is None:
+            print(f"❌ No [workspace.package] version in {manifest}.")
+            return False
+        stamped = (
+            section.group(0)[: section.group(0).rindex("version = ")] + f'version = "{version}"'
+        )
+        with Path(manifest).open("w") as handle:
+            handle.write(text[: section.start()] + stamped + text[section.end() :])
+        return True
+
+    @classmethod
+    def extract_archive(cls, stream, destination: str) -> bool:
+        """Unpacks a `git archive` tar stream into `destination`.
+
+        In Python rather than `tar`, because Windows' `tar` stops at the tree's one symbolic link
+        (`codex-rs/vendor/bubblewrap/LICENSE`), which an unprivileged Windows account cannot
+        create. Links are kept elsewhere and skipped on Windows, where nothing builds from them.
+
+        Args:
+            stream: The archive's bytes, as a readable binary stream.
+            destination (str): The directory to unpack into.
+
+        Returns:
+            bool: True if the archive unpacked.
+        """
+        import tarfile
+
+        try:
+            with tarfile.open(fileobj=stream, mode="r|") as archive:
+                for member in archive:
+                    if IS_WINDOWS and (member.issym() or member.islnk()):
+                        continue
+                    archive.extract(member, destination, filter="fully_trusted")
+        except (tarfile.TarError, OSError) as error:
+            print(f"❌ Could not unpack the exported source: {error}")
+            return False
+        return True
+
+    @classmethod
+    def download(cls, url: str, path: str) -> None:
+        """Downloads `url` to `path`, giving up on a server that stops sending.
+
+        `urlretrieve` takes no timeout, and no default is set, so a stalled connection hung the
+        build for good. The timeout bounds each read, not the whole download; a TimeoutError is an
+        OSError, which the callers already report.
+
+        Args:
+            url (str): The file to fetch.
+            path (str): Where to write it.
+        """
+        import urllib.request
+
+        with (
+            urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response,
+            Path(path).open("wb") as handle,
+        ):
+            shutil.copyfileobj(response, handle)
+
+    @classmethod
+    def host_target(cls) -> str:
+        """Returns the Rust target triple of this machine, which is the one Codex is built for.
+
+        Returns:
+            str: For example `aarch64-unknown-linux-gnu` on GB10, `aarch64-pc-windows-msvc` on an
+            RTX Spark laptop, `aarch64-apple-darwin` on an Apple silicon Mac (whose `uname -m` says
+            `arm64`), `x86_64-apple-darwin` on an Intel one.
+        """
+        import platform
+
+        return cls.target_for(platform.machine(), IS_WINDOWS, darwin=platform.system() == "Darwin")
+
+    @classmethod
+    def target_for(cls, machine: str, windows: bool, darwin: bool = False) -> str:
+        """The Rust target triple for a processor name as `platform.machine()` reports it.
+
+        Args:
+            machine (str): `aarch64` or `x86_64` on Linux; `ARM64` or `AMD64` on Windows.
+            windows (bool): Whether the machine runs Windows.
+            darwin (bool): Whether it runs macOS.
+
+        Returns:
+            str: The triple, e.g. `x86_64-pc-windows-msvc`.
+        """
+        arch = {"arm64": "aarch64", "amd64": "x86_64", "x64": "x86_64"}.get(
+            machine.lower(), machine.lower()
+        )
+        if windows:
+            return f"{arch}-pc-windows-msvc"
+        return f"{arch}-apple-darwin" if darwin else f"{arch}-unknown-linux-gnu"
+
+    @classmethod
+    def v8_archive_name(cls, target: str) -> str:
+        """The prebuilt V8's file name, as upstream's `setup-rusty-v8` action names it.
+
+        Args:
+            target (str): The Rust target triple.
+
+        Returns:
+            str: `rusty_v8_<profile>_<target>.lib.gz` on Windows, `librusty_v8_…a.gz` elsewhere.
+        """
+        if target.endswith("-pc-windows-msvc"):
+            return f"rusty_v8_{RUSTY_V8_PROFILE}_{target}.lib.gz"
+        return f"librusty_v8_{RUSTY_V8_PROFILE}_{target}.a.gz"
+
+    @classmethod
+    def fetch_rusty_v8(cls, source_dir: str) -> dict | None:
+        """Downloads OpenAI's prebuilt V8 for this target and verifies it against the pinned checksums.
+
+        Trust runs in one direction: the per-target checksum file is checked against the manifest
+        committed in the submodule, and the archive and its Rust bindings are then checked against
+        that file. Nothing downloaded is used unverified, and verified files are kept, so later
+        builds do not fetch them again.
+
+        Args:
+            source_dir (str): The exported tree, read for the `v8` version Codex pins.
+
+        Returns:
+            Optional[dict]: The `RUSTY_V8_ARCHIVE` and `RUSTY_V8_SRC_BINDING_PATH` variables for
+                Cargo, or None if the files could not be fetched or failed verification.
+        """
+        import re
+
+        with Path(os.path.join(source_dir, "codex-rs", "Cargo.toml")).open() as handle:
+            pinned = re.search(r'^v8 = "=([\d.]+)"', handle.read(), re.M)
+        if pinned is None:
+            print("❌ Could not find the v8 version pinned in codex-rs/Cargo.toml.")
+            return None
+        version = pinned.group(1)
+        target = cls.host_target()
+
+        manifest = subprocess.run(
+            [
+                "git",
+                "-C",
+                CODEX_SUBMODULE_DIR,
+                "show",
+                f"HEAD:third_party/v8/rusty_v8_{version.replace('.', '_')}_release_manifests.sha256",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        checksums_name = f"rusty_v8_{RUSTY_V8_PROFILE}_{target}.sha256"
+        trusted = {
+            name: digest
+            for digest, name in (
+                line.split() for line in manifest.stdout.splitlines() if line.strip()
+            )
+        }.get(checksums_name)
+        if manifest.returncode != 0 or trusted is None:
+            print(f"❌ The submodule pins no prebuilt V8 {version} for {target}.")
+            return None
+
+        v8_dir = os.path.join(BUILD_CACHE_DIR, "rusty_v8", version)
+        Path(v8_dir).mkdir(exist_ok=True, parents=True)
+        base_url = RUSTY_V8_RELEASE_URL.format(version=version)
+
+        def sha256(path: str) -> str:
+            digest = hashlib.sha256()
+            with Path(path).open("rb") as blob:
+                for chunk in iter(lambda: blob.read(1 << 20), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+
+        def fetch(name: str, expected: str) -> str | None:
+            path = os.path.join(v8_dir, name)
+            if Path(path).is_file() and sha256(path) == expected:
+                return path
+            print(f"📥 Fetching {name}...")
+            try:
+                cls.download(f"{base_url}/{name}", path)
+            except OSError as error:
+                print(f"❌ Could not download {name}: {error}")
+                return None
+            if sha256(path) != expected:
+                Path(path).unlink()
+                print(f"❌ {name} does not match its pinned checksum; discarded.")
+                return None
+            return path
+
+        checksums_path = fetch(checksums_name, trusted)
+        if checksums_path is None:
+            return None
+        with Path(checksums_path).open() as handle:
+            # Some of OpenAI's manifests are written with CRLF line endings.
+            listed = {
+                name.lstrip("*"): digest
+                for digest, name in (
+                    line.split()
+                    for line in handle.read().replace("\r", "").splitlines()
+                    if line.strip()
+                )
+            }
+        archive_name = cls.v8_archive_name(target)
+        binding_name = f"src_binding_{RUSTY_V8_PROFILE}_{target}.rs"
+        if archive_name not in listed or binding_name not in listed:
+            print(f"❌ {checksums_name} does not list the V8 archive and bindings for {target}.")
+            return None
+        archive = fetch(archive_name, listed[archive_name])
+        binding = fetch(binding_name, listed[binding_name])
+        if archive is None or binding is None:
+            return None
+        return {"RUSTY_V8_ARCHIVE": archive, "RUSTY_V8_SRC_BINDING_PATH": binding}
+
+    @classmethod
+    def build(cls, force: bool = False) -> bool:
+        """Builds the branded Codex and installs it, unless the installed copy is already current.
+
+        Args:
+            force (bool): Rebuild even if the installed binaries match the current inputs.
+
+        Returns:
+            bool: True if an up-to-date `ragon` and its web commands are installed afterwards.
+        """
+        if not cls.has_source():
+            return cls._release_install_report()
+        # First and independently: the web commands and the code index take seconds, and a stale
+        # Codex must not keep them from updating, nor they it.
+        web_ok = cls.build_web_tools(force=force)
+        code_ok = cls.build_code_index(force=force)
+        docs_ok = cls.build_docs_index(force=force)
+        return cls._build_codex(force=force) and web_ok and code_ok and docs_ok
+
+    @classmethod
+    def _release_install_report(cls) -> bool:
+        """What `build()` does where there is nothing to build from: says so, and refreshes the links.
+
+        Returns:
+            bool: True if the release's `ragon` is installed.
+        """
+        if cls.is_current():
+            cls.link_onto_path()
+            print(
+                f"✅ ragon is installed from a release ({cls.executable_path()}); there is no "
+                "source here to build it from. `ragon update` installs a newer release."
+            )
+            return True
+        print("❌ ragon is not installed, and this is not a checkout, so it cannot be built here.")
+        print(
+            "💡 Install the release's binaries with install.sh (see the README), or clone the "
+            "repository and run `ragon-admin codex build` there."
+        )
+        return False
+
+    @classmethod
+    def _build_codex(cls, force: bool = False) -> bool:
+        """Builds and installs the branded Codex unless the installed copy is already current.
+
+        Args:
+            force (bool): Rebuild even if the installed binaries match the current inputs.
+
+        Returns:
+            bool: True if an up-to-date `ragon` is installed afterwards.
+        """
+        if not force and cls.is_current():
+            # Cheap and idempotent, so an install that predates a link still gets it.
+            cls.link_onto_path()
+            return True
+        # Every build starts by wiping the shared source tree, so two at once destroy each other
+        # mid-compile ("Could not locate working directory"). An exclusive lock makes a second
+        # build wait, and the re-check after it lets that one finish at once if the first build
+        # already produced what it needed.
+        Path(BUILD_CACHE_DIR).mkdir(exist_ok=True, parents=True)
+        with Path(os.path.join(BUILD_CACHE_DIR, ".build.lock")).open("w") as lock:
+            cls._lock_exclusive(lock)
+            if not force and cls.is_current():
+                return True
+            return cls._build_locked()
+
+    @classmethod
+    def _lock_exclusive(cls, handle) -> None:
+        """Takes an exclusive lock on an open file, waiting (and saying so) if another build holds it.
+
+        Args:
+            handle: The open lock file. The lock is released when it is closed.
+        """
+        if IS_WINDOWS:
+            import msvcrt
+            import time
+
+            waited = False
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    return
+                except OSError:
+                    if not waited:
+                        print("⏳ Another ragon build is running; waiting for it to finish...")
+                        waited = True
+                    time.sleep(2)
+        import fcntl
+
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("⏳ Another ragon build is running; waiting for it to finish...")
+            fcntl.flock(handle, fcntl.LOCK_EX)
+
+    @classmethod
+    def _build_locked(cls) -> bool:
+        """The build itself; `build()` holds the lock around it.
+
+        Returns:
+            bool: True if an up-to-date `ragon` is installed afterwards.
+        """
+        # The toolchain version itself is pinned by codex-rs/rust-toolchain.toml; rustup fetches it
+        # on the first cargo invocation, so only rustup has to exist beforehand.
+        from dreamference.chat.desktop_installer import DesktopInstaller
+
+        if not DesktopInstaller.install_rust():
+            return False
+
+        key = cls.build_key()
+        source_dir = os.path.join(BUILD_CACHE_DIR, "src")
+        if key is None or not cls.prepare_source(source_dir):
+            return False
+
+        rusty_v8 = cls.fetch_rusty_v8(source_dir)
+        if rusty_v8 is None:
+            return False
+        web_ui = cls.build_web_ui()
+        if web_ui is None:
+            return False
+
+        from dreamference.chat.desktop_runner import DesktopRunner
+
+        environment = DesktopRunner._environment()
+        environment.update(rusty_v8)
+        environment["RAGON_WEB_UI_DIST"] = web_ui
+        # The target directory as a flag, never as CARGO_TARGET_DIR: sccache hashes every CARGO_*
+        # variable rustc sees, so the variable would key the cache on the folder and no other
+        # target directory could reuse a crate (measured: 1 hit in 203 with it, 177 without).
+        environment.pop("CARGO_TARGET_DIR", None)
+        environment.update(RELEASE_PROFILE_OVERRIDES)
+        cached = cls.compiler_cache_environment(environment)
+        environment.update(cached)
+        # No --locked: the lock records the workspace crates at one version and stamp_version sets
+        # another, so Cargo rewrites those entries. Every third-party version stays as
+        # CODEX_LOCKFILE pins it, ragon-rs's crates included.
+        command = [
+            "cargo",
+            "build",
+            "--release",
+            "--target-dir",
+            os.path.join(BUILD_CACHE_DIR, "target"),
+            "-p",
+            "codex-cli",
+            "--bin",
+            CARGO_BIN_NAME,
+            "-p",
+            "codex-code-mode-host",
+            "--bin",
+            CODE_MODE_HOST_NAME,
+        ]
+        installed_names = [
+            (CARGO_BIN_NAME, BRANDED_EXECUTABLE_NAME),
+            (CODE_MODE_HOST_NAME, CODE_MODE_HOST_NAME),
+        ]
+        if BUILDS_SIGNAL:
+            command += ["-p", SIGNAL_PACKAGE, "--bin", SIGNAL_BIN_NAME]
+            installed_names.append((SIGNAL_BIN_NAME, SIGNAL_BIN_NAME))
+        if BUILDS_DELEGATE:
+            command += ["-p", DELEGATE_PACKAGE, "--bin", DELEGATE_BIN_NAME]
+            installed_names.append((DELEGATE_BIN_NAME, DELEGATE_BIN_NAME))
+        if IS_WINDOWS:
+            command += ["-p", WINDOWS_SANDBOX_PACKAGE]
+            for helper in WINDOWS_SANDBOX_HELPERS:
+                command += ["--bin", helper]
+                installed_names.append((helper, helper))
+            if cls.host_target().startswith("x86_64"):
+                # As upstream's Windows release job does for this target.
+                environment["LIBSQLITE3_FLAGS"] = "SQLITE_DISABLE_INTRINSIC"
+        print(
+            f"🔨 Building ragon (upstream {CODEX_RELEASE_TAG}, {len(cls.patches())} patches){cls._through(cached)}..."
+        )
+        if subprocess.call(command, cwd=os.path.join(source_dir, "codex-rs"), env=environment) != 0:
+            print("❌ The ragon build failed; see the cargo output above.")
+            return False
+
+        release_dir = os.path.join(BUILD_CACHE_DIR, "target", "release")
+        bin_dir = os.path.join(INSTALL_DIR, "bin")
+        Path(bin_dir).mkdir(exist_ok=True, parents=True)
+        for built, installed in installed_names:
+            # Copied to a temporary name and renamed over the old one, so a running session keeps
+            # its binary and a new one never sees a half-written file.
+            staging = os.path.join(bin_dir, f".{installed}.new")
+            shutil.copy2(os.path.join(release_dir, built + EXE_SUFFIX), staging)
+            Path(staging).replace(os.path.join(bin_dir, installed + EXE_SUFFIX))
+        with Path(os.path.join(INSTALL_DIR, BUILD_STAMP_NAME)).open("w") as handle:
+            handle.write(f"{key}\n")
+
+        cls.link_onto_path()
+        print(f"✅ Installed {cls.executable_path()}")
+        return True
+
+    @classmethod
+    def compiler_cache_environment(cls, environment: dict) -> dict:
+        """The variables that put sccache in front of rustc for a cargo build, or none.
+
+        Args:
+            environment (dict): The environment the build runs with (its PATH finds sccache).
+
+        Returns:
+            dict: `RUSTC_WRAPPER` and sccache's settings to add, or an empty dict when sccache is
+            absent, switched off with `DREAMFERENCE_SCCACHE=0`, its server cannot start, or the
+            caller set `RUSTC_WRAPPER` already.
+        """
+        if environment.get(SCCACHE_SWITCH, "").strip().lower() in SCCACHE_OFF_VALUES:
+            return {}
+        if RUSTC_WRAPPER_VARIABLE in environment:
+            return {}
+        sccache = shutil.which("sccache", path=environment.get("PATH"))
+        if sccache is None:
+            return {}
+        added = {
+            RUSTC_WRAPPER_VARIABLE: sccache,
+            # Read when the server starts: the first build of a session sets the cap for all.
+            "SCCACHE_DIR": environment.get("SCCACHE_DIR")
+            or str(Path.home() / ".cache" / "sccache"),
+            "SCCACHE_CACHE_SIZE": environment.get("SCCACHE_CACHE_SIZE") or SCCACHE_CACHE_SIZE,
+            # A server that goes away mid-build costs a cache miss, not the build.
+            "SCCACHE_IGNORE_SERVER_IO_ERROR": "1",
+            # sccache cannot cache an incremental compile; release builds are not incremental
+            # anyway, test builds of the workspace crates are.
+            "CARGO_INCREMENTAL": "0",
+        }
+        # A server that cannot start (a sandbox with no loopback, say) means a build without it; the
+        # build's own line says which it is.
+        return added if cls.sccache_server_ready(sccache, {**environment, **added}) else {}
+
+    @classmethod
+    def _through(cls, cached: dict) -> str:
+        """What a build line adds about the compile cache.
+
+        Args:
+            cached (dict): What `compiler_cache_environment` returned.
+
+        Returns:
+            str: " through sccache" when it is on, else nothing.
+        """
+        return " through sccache" if cached else ""
+
+    @classmethod
+    def sccache_server_ready(cls, sccache: str, environment: dict) -> bool:
+        """Starts sccache's local server, or finds it running.
+
+        Args:
+            sccache (str): The sccache executable.
+            environment (dict): The environment the server starts with.
+
+        Returns:
+            bool: True if the server answers.
+        """
+        try:
+            # --show-stats connects to the server, starting it if none runs (--start-server fails
+            # when one already does).
+            result = subprocess.run(
+                [sccache, "--show-stats"],
+                env=environment,
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0
+
+    @classmethod
+    def crate_key(cls, crate_dir: str) -> str:
+        """Identifies a standalone crate's build by the exact bytes of its source files.
+
+        Args:
+            crate_dir (str): The crate's directory.
+
+        Returns:
+            str: A short key.
+        """
+        digest = hashlib.sha256()
+        files = cls.crate_files(crate_dir)
+        for dependency in cls.path_dependencies(crate_dir):
+            files.extend(cls.crate_files(dependency))
+        for path in files:
+            digest.update(os.path.relpath(path, crate_dir).encode())
+            with Path(path).open("rb") as handle:
+                digest.update(handle.read())
+        return digest.hexdigest()[:12]
+
+    @classmethod
+    def path_dependencies(cls, crate_dir: str) -> list[str]:
+        """Lists the crates a crate takes by `path =`, and theirs, so that its key covers their source.
+
+        Args:
+            crate_dir (str): The crate's directory.
+
+        Returns:
+            list[str]: The existing dependency directories, normalized and in a stable order;
+            empty when `Cargo.toml` is missing or not TOML.
+        """
+        root = Path(os.path.normpath(crate_dir))
+        found: set[Path] = set()
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            for relative in cls.manifest_paths(current / "Cargo.toml"):
+                dependency = Path(os.path.normpath(current / relative))
+                if dependency.is_dir() and dependency not in found and dependency != root:
+                    found.add(dependency)
+                    pending.append(dependency)
+        return sorted(str(dependency) for dependency in found)
+
+    @classmethod
+    def manifest_paths(cls, manifest_path: Path) -> list[str]:
+        """The `path =` of every dependency a `Cargo.toml` names, for any target.
+
+        Args:
+            manifest_path (Path): The manifest.
+
+        Returns:
+            list[str]: The paths as written; empty when the file is missing or not TOML.
+        """
+        try:
+            manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return []
+        sections = [manifest, *manifest.get("target", {}).values()]
+        tables = [
+            section.get(key, {})
+            for section in sections
+            for key in ("dependencies", "build-dependencies")
+        ]
+        return [
+            spec["path"]
+            for table in tables
+            for spec in table.values()
+            if isinstance(spec, dict) and isinstance(spec.get("path"), str)
+        ]
+
+    @classmethod
+    def crate_is_current(cls, crate_dir: str, stamp_name: str, bin_names: tuple) -> bool:
+        """Checks that a standalone crate's binaries are installed and built from its current source.
+
+        Args:
+            crate_dir (str): The crate's directory.
+            stamp_name (str): The stamp file under the install directory that records its key.
+            bin_names (tuple): The binaries it installs.
+
+        Returns:
+            bool: True if no rebuild is needed. Without the crate's source, True if they are
+            installed.
+        """
+        if not Path(crate_dir).is_dir():
+            return cls.binaries_installed(bin_names)
+        stamp = os.path.join(INSTALL_DIR, stamp_name)
+        if not Path(stamp).is_file():
+            return False
+        with Path(stamp).open() as handle:
+            if handle.read().strip() != cls.crate_key(crate_dir):
+                return False
+        return cls.binaries_installed(bin_names)
+
+    @classmethod
+    def build_crate(
+        cls, crate_dir: str, cache_dir: str, stamp_name: str, bin_names: tuple, force: bool = False
+    ) -> bool:
+        """Builds a standalone crate of Ragon's commands and installs its binaries beside `ragon`.
+
+        Unlike the Codex build this compiles the crate in place, with `--locked` against its own
+        committed lockfile, into its own target directory: it is Dreamference's source, not an
+        export, and sharing Codex's target directory would make each rebuild wait on Codex's lock.
+
+        Args:
+            crate_dir (str): The crate's directory.
+            cache_dir (str): Where its Cargo target directory lives.
+            stamp_name (str): The stamp file under the install directory that records its key.
+            bin_names (tuple): The binaries to install.
+            force (bool): Rebuild even if the installed binaries match the source.
+
+        Returns:
+            bool: True if its current binaries are installed afterwards.
+        """
+        if not force and cls.crate_is_current(crate_dir, stamp_name, bin_names):
+            cls.link_onto_path()
+            return True
+        from dreamference.chat.desktop_installer import DesktopInstaller
+
+        if not DesktopInstaller.install_rust():
+            return False
+        from dreamference.chat.desktop_runner import DesktopRunner
+
+        environment = DesktopRunner._environment()
+        # A flag rather than CARGO_TARGET_DIR, which would key sccache's cache on the folder.
+        environment.pop("CARGO_TARGET_DIR", None)
+        cached = cls.compiler_cache_environment(environment)
+        environment.update(cached)
+        command = [
+            "cargo",
+            "build",
+            "--release",
+            "--locked",
+            "--target-dir",
+            os.path.join(cache_dir, "target"),
+        ]
+        for name in bin_names:
+            command += ["--bin", name]
+        # Keyed before the build, as the Codex build is: an edit made while cargo runs is not in
+        # this binary, so it must leave the crate stale.
+        key = cls.crate_key(crate_dir)
+        print(f"🔨 Building {', '.join(bin_names)}{cls._through(cached)}...")
+        if subprocess.call(command, cwd=crate_dir, env=environment) != 0:
+            print(f"❌ The {os.path.basename(crate_dir)} build failed; see the cargo output above.")
+            return False
+        bin_dir = os.path.join(INSTALL_DIR, "bin")
+        Path(bin_dir).mkdir(exist_ok=True, parents=True)
+        for name in bin_names:
+            # Renamed over the old file, so a command running now keeps its binary. The staging
+            # name is this install's own: crate builds run outside the Codex build's lock.
+            fd, staging = tempfile.mkstemp(dir=bin_dir, prefix=f".{name}.", suffix=".new")
+            os.close(fd)
+            try:
+                shutil.copy2(
+                    os.path.join(cache_dir, "target", "release", name + EXE_SUFFIX), staging
+                )
+                Path(staging).replace(os.path.join(bin_dir, name + EXE_SUFFIX))
+            except BaseException:
+                # A name of this install's own: left behind, it would stay there for good.
+                Path(staging).unlink(missing_ok=True)
+                raise
+        with Path(os.path.join(INSTALL_DIR, stamp_name)).open("w") as handle:
+            handle.write(f"{key}\n")
+        cls.link_onto_path()
+        print(f"✅ Installed {', '.join(bin_names)} in {bin_dir}")
+        return True
+
+    @classmethod
+    def web_tools_are_current(cls) -> bool:
+        """Checks that `ragon-search` and `ragon-fetch` are installed and built from current source.
+
+        Returns:
+            bool: True if no rebuild is needed.
+        """
+        return cls.crate_is_current(WEB_CRATE_DIR, WEB_BUILD_STAMP_NAME, WEB_BIN_NAMES)
+
+    @classmethod
+    def build_web_tools(cls, force: bool = False) -> bool:
+        """Builds `ragon-search` and `ragon-fetch` from `ragon-web-rs/` unless they are current.
+
+        Args:
+            force (bool): Rebuild even if the installed binaries match the source.
+
+        Returns:
+            bool: True if both are installed and current afterwards.
+        """
+        return cls.build_crate(
+            WEB_CRATE_DIR, WEB_BUILD_CACHE_DIR, WEB_BUILD_STAMP_NAME, WEB_BIN_NAMES, force=force
+        )
+
+    @classmethod
+    def build_code_index(cls, force: bool = False) -> bool:
+        """Builds `ragon-code` from `ragon-code-rs/` unless it is current.
+
+        Args:
+            force (bool): Rebuild even if the installed binary matches the source.
+
+        Returns:
+            bool: True if it is installed and current afterwards.
+        """
+        return cls.build_crate(
+            CODE_CRATE_DIR, CODE_BUILD_CACHE_DIR, CODE_BUILD_STAMP_NAME, CODE_BIN_NAMES, force=force
+        )
+
+    @classmethod
+    def build_docs_index(cls, force: bool = False) -> bool:
+        """Builds `ragon-docs` from `ragon-docs-rs/` unless it is current, then installs what it loads
+        at run time (PDFium, ONNX Runtime, the embedding model) if any of it is missing.
+
+        Linux only: elsewhere there is nothing to build and this succeeds.
+
+        Args:
+            force (bool): Rebuild even if the installed binary matches the source.
+
+        Returns:
+            bool: True if it is installed and current afterwards. A failed download of the run-time
+            files does not fail the build: `ragon-docs` then says indexing waits for them.
+        """
+        if not sys.platform.startswith("linux"):
+            return True
+        built = cls.build_crate(
+            DOCS_CRATE_DIR, DOCS_BUILD_CACHE_DIR, DOCS_BUILD_STAMP_NAME, DOCS_BIN_NAMES, force=force
+        )
+        if built:
+            from dreamference.runner.docs_index_setup import DocsIndexSetup
+
+            if not DocsIndexSetup.install():
+                print(
+                    "💡 `ragon-admin docs setup` retries the download; until then ragon-docs indexes nothing."
+                )
+        return built
+
+    @classmethod
+    def console_script_path(cls, name: str) -> str | None:
+        """Returns a console script of the Python environment running this code, if it has one.
+
+        Args:
+            name (str): The script's name, e.g. `ragon-admin`.
+
+        Returns:
+            Optional[str]: Absolute path of the console script beside this interpreter, or None.
+        """
+        candidate = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), name)
+        return candidate if Path(candidate).is_file() and os.access(candidate, os.X_OK) else None
+
+    @classmethod
+    def link_onto_path(cls) -> None:
+        """Points `~/.local/bin/ragon`, `ragon-admin`, `ragon-search`, `ragon-fetch`, `ragon-code` and
+        `ragon-docs` at their executables.
+
+        `ragon` so it works from any shell; the others so the model can run the web and mail
+        commands its prompt names from the shell `ragon` gives it. A command is linked only once
+        its binary is installed, so a link never dangles. Nothing on Windows, where the install
+        directory itself is on PATH.
+        """
+        if IS_WINDOWS:
+            return
+        if Path(cls.executable_path()).is_file():
+            cls._link(cls.executable_path(), PATH_LINK)
+        script = cls.console_script_path("ragon-admin")
+        if script:
+            cls._link(script, ADMIN_PATH_LINK)
+        for name, link in (
+            ("ragon-search", SEARCH_PATH_LINK),
+            ("ragon-fetch", FETCH_PATH_LINK),
+            ("ragon-code", CODE_PATH_LINK),
+            ("ragon-docs", DOCS_PATH_LINK),
+            (DELEGATE_BIN_NAME, DELEGATE_PATH_LINK),
+        ):
+            binary = os.path.join(INSTALL_DIR, "bin", name)
+            if os.access(binary, os.X_OK):
+                cls._link(binary, link)
+
+    @classmethod
+    def _link(cls, target: str, link: str) -> None:
+        """Makes `link` a symlink to `target`.
+
+        Only a missing file or an existing symlink is replaced; a real file of that name belongs to
+        something else and is reported instead of overwritten.
+
+        Args:
+            target (str): What the link points at.
+            link (str): Path of the link.
+        """
+        Path(os.path.dirname(link)).mkdir(exist_ok=True, parents=True)
+        if os.path.lexists(link) and not Path(link).is_symlink():
+            print(f"⚠️ {link} exists and is not a link; leaving it. Run {target} directly.")
+            return
+        # This process's own staging name: linking runs outside the build lock, and a shared name
+        # lets two processes remove or rename each other's link.
+        staging = f"{link}.{os.getpid()}.new"
+        if os.path.lexists(staging):
+            Path(staging).unlink()
+        Path(staging).symlink_to(target)
+        Path(staging).replace(link)

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The same policy the app:// scheme sends as a header (desktop/electron/app.json `csp`), and
+         that `ragon web` repeats in its own header: nothing but the bundle itself. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' app: blob: data:; connect-src 'self'; worker-src 'self' blob:; base-uri 'none'; form-action 'none'" />
+    <title>Ragon</title>
+    <!-- The app's own mark; Vite bundles it under assets/, the one folder `ragon web` serves. -->
+    <link rel="icon" type="image/png" href="../electron/icons/32x32.png" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

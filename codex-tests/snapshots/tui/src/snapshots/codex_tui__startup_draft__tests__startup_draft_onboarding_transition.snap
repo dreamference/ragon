@@ -1,0 +1,17 @@
+---
+source: tui/src/startup_draft_tests.rs
+expression: frames
+---
+before onboarding: hidden (0x0 viewport)
+---
+after onboarding:
+
+  >_ Ragon (v<VERSION>)
+     loading
+
+  Pull up a prompt.
+
+
+› Ask Ragon to do anything
+
+  ? for shortcuts

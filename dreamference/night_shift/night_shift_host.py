@@ -1,0 +1,586 @@
+"""What the night run needs to know about the machine.
+
+the model server, memory, and who else is using either (specs/DREAMFERENCE_RAGON_NIGHT_SHIFT.md
+§5.2, §5.5).
+
+Every probe reads; none starts, stops or loads anything. The model server may be SGLang (the
+default) or vLLM, so each metric is read under both engines' names.
+"""
+
+import fcntl
+import json
+import os
+import re
+import subprocess
+import urllib.request
+from pathlib import Path
+from typing import Final
+
+from dreamference.runner.codex_branded_builder import BUILD_CACHE_DIR
+from dreamference.runner.codex_installer import CodexInstaller
+
+# Environment marker on every process a night run starts, so the run never mistakes its own
+# `ragon exec` sessions for someone working interactively.
+NIGHT_RUN_ENV: Final[str] = "RAGON_NIGHT_RUN"
+
+# `ragon` subcommands that are not an interactive session. Anything else (no subcommand, a
+# prompt, `resume`, `fork`, `agents`) is the TUI. Besides Codex's own, the launcher's (ragon-rs/src/lib.rs):
+# the servers and bridges that run without a person (`apps serve`, the desktop app's Gmail search, lives as
+# long as its window; `web`, `chat`, `signal`), the hooks Codex runs inside a session (`ledger`, `notice`,
+# `refine hook`, `guard`), the delegation plugin's MCP server
+# (`delegate`) and one-shot commands.
+NON_INTERACTIVE: Final[frozenset] = frozenset(
+    {
+        "exec",
+        "e",
+        "app-server",
+        "mcp-server",
+        "mcp",
+        "sandbox",
+        "apply",
+        "a",
+        "completion",
+        "debug",
+        "features",
+        "doctor",
+        "night",
+        "node",
+        "airgapped",
+        "skill",
+        "monitor",
+        "delegate",
+        "prompt",
+        "update",
+        "app",
+        "apps",
+        "web",
+        "help",
+        "review",
+        "plugin",
+        "remote-control",
+        "exec-server",
+        "queue",
+        "archive",
+        "unarchive",
+        "delete",
+        "execpolicy",
+        "migrate-rollouts",
+        "responses-api-proxy",
+        "stdio-to-uds",
+        "tcp-tunnel",
+        "audit",
+        "docs",
+        "chat",
+        "signal",
+        "ledger",
+        "notice",
+        "refine",
+        "compat",
+        "loop-guard",
+        "guard",
+        "worktree",
+        # The sync agent's unit runs `ragon sync agent` (specs/DREAMFERENCE_RAGON_SYNC.md).
+        "sync",
+        "uninstall",
+    }
+)
+
+# Options that print and exit wherever they stand on the command line.
+PRINT_AND_EXIT: Final[frozenset] = frozenset({"--version", "-V", "--help", "-h"})
+
+# `ragon`'s options before the subcommand that take a value as the next argument (Codex's
+# `MultitoolCli`: `CliConfigOverrides`, `FeatureToggles`, `InteractiveRemoteOptions`, `TuiCli` and its
+# `SharedCliOptions`), so that a value (`-C docs`, `-m exec-model`) is never read as the subcommand.
+VALUE_OPTIONS: Final[frozenset] = frozenset(
+    {
+        "-c",
+        "--config",
+        "--enable",
+        "--disable",
+        "--remote",
+        "--remote-auth-token-env",
+        "-i",
+        "--image",
+        "-m",
+        "--model",
+        "--local-provider",
+        "-p",
+        "--profile",
+        "-s",
+        "--sandbox",
+        "-a",
+        "--ask-for-approval",
+        "-C",
+        "--cd",
+        "--add-dir",
+        # The launcher's own (ragon-rs/src/compat.rs), removed before Codex parses the rest.
+        "--compat",
+    }
+)
+
+# What `/proc/<pid>/exe` appends to a program whose file has since been removed or replaced, as a
+# `ragon` build replaces the installed binary under a running session.
+DELETED_SUFFIX: Final[str] = " (deleted)"
+
+# Where `ragon-app` marks a `ragon app-server` that is running a turn, under `$CODEX_HOME/night`
+# (specs/DREAMFERENCE_RAGON_DESKTOP.md §8.3); `desktop/electron/src/server.ts` writes it.
+BUSY_DIR_NAME: Final[str] = "busy"
+
+# The `ragon` subcommands that write busy markers: the desktop's app-server and `ragon web`.
+MARKER_SUBCOMMANDS: Final[frozenset] = frozenset({b"app-server", b"web"})
+
+GIB: Final[int] = 1024**3
+
+# The part of the KV pool a night run divides between its tasks. Codex compacts after the turn that
+# crosses its limit, so a session can overshoot by one turn's tokens; the rest of the pool absorbs
+# that instead of the server retracting a request.
+NIGHT_POOL_SHARE: Final[float] = 0.9
+
+# The launcher's limit for any session, as a percentage of the pool (`POOL_SHARE_PERCENT` in
+# ragon-rs/src/compaction.rs); a lone night task is not given more than an interactive one.
+LAUNCHER_POOL_SHARE_PERCENT: Final[int] = 60
+
+
+class NightShiftHost:
+    """Read-only probes of the model server and the host."""
+
+    # Model servers are on this machine or another node of the same network, never behind the
+    # proxy; only the local server is in NO_PROXY (EGRESS §11), so the probes skip proxies.
+    urlopen = staticmethod(urllib.request.build_opener(urllib.request.ProxyHandler({})).open)
+
+    @classmethod
+    def served_model(cls, host: str, timeout: float = 3.0) -> tuple[str, int] | None:
+        """Asks the model server what it serves.
+
+        Args:
+            host: The server's base URL.
+            timeout: Seconds to wait.
+
+        Returns:
+            Optional[Tuple[str, int]]: The model id and its context length, or None if the server
+            does not answer.
+        """
+        try:
+            with cls.urlopen(f"{host.rstrip('/')}/v1/models", timeout=timeout) as response:
+                data = json.load(response)
+            model = data["data"][0]
+            return str(model["id"]), int(model.get("max_model_len") or 0)
+        except (OSError, ValueError, KeyError, IndexError, TypeError):
+            return None
+
+    @classmethod
+    def metrics(cls, host: str, timeout: float = 3.0) -> dict[str, float] | None:
+        """Reads the engine's request gauges, a request counter and the KV pool from `/metrics`.
+
+        Args:
+            host: The server's base URL.
+            timeout: Seconds to wait.
+
+        Returns:
+            Optional[Dict[str, float]]: `running` (running plus queued requests), `served` (prompt
+            tokens processed so far, a counter any request moves) and `kv_pool` (tokens of KV
+            cache, 0 if unknown); None if `/metrics` does not answer.
+        """
+        try:
+            with cls.urlopen(f"{host.rstrip('/')}/metrics", timeout=timeout) as response:
+                text = response.read().decode("utf-8", "replace")
+        except OSError:
+            return None
+        return cls.parse_metrics(text)
+
+    @classmethod
+    def parse_metrics(cls, text: str) -> dict[str, float]:
+        """Extracts what `metrics()` returns from Prometheus text.
+
+        Args:
+            text: The `/metrics` body.
+
+        Returns:
+            Dict[str, float]: See `metrics()`.
+        """
+        sums: dict[str, float] = {}
+        kv_pool = 0.0
+        for line in text.splitlines():
+            if not line or line.startswith("#"):
+                continue
+            match = re.match(r"([a-zA-Z_:][\w:]*)(\{[^}]*\})?\s+(\S+)", line)
+            if not match:
+                continue
+            name, labels, raw = match.groups()
+            try:
+                value = float(raw)
+            except ValueError:
+                continue
+            sums[name] = sums.get(name, 0.0) + value
+            if name == "vllm:cache_config_info" and labels:
+                blocks = re.search(r'num_gpu_blocks="(\d+)"', labels)
+                size = re.search(r'block_size="(\d+)"', labels)
+                if blocks and size:
+                    kv_pool = float(int(blocks.group(1)) * int(size.group(1)))
+        running = sum(
+            sums.get(name, 0.0)
+            for name in (
+                "sglang:num_running_reqs",
+                "sglang:num_queue_reqs",
+                "vllm:num_requests_running",
+                "vllm:num_requests_waiting",
+            )
+        )
+        served = sums.get("sglang:prompt_tokens_total", 0.0) + sums.get(
+            "vllm:prompt_tokens_total", 0.0
+        )
+        kv_pool = kv_pool or sums.get("sglang:max_total_num_tokens", 0.0)
+        return {"running": running, "served": served, "kv_pool": kv_pool}
+
+    @classmethod
+    def parallelism(cls, max_parallel: int, kv_pool: float, task_context: int) -> int:
+        """How many tasks may run at once.
+
+        Args:
+            max_parallel: The configured upper bound.
+            kv_pool: Tokens of KV cache, 0 if unknown.
+            task_context: Tokens budgeted per task.
+
+        Returns:
+            int: At least 1, at most `max_parallel`.
+        """
+        by_pool = int(kv_pool // task_context) if kv_pool else max_parallel
+        return max(1, min(max_parallel, by_pool))
+
+    @classmethod
+    def task_budget(
+        cls, max_parallel: int, kv_pool: float, task_context: int, compact_at: int | None
+    ) -> tuple[int, int | None]:
+        """How many night tasks run at once, and the context each may hold, such that together they
+        fit in the KV pool: `parallel × limit ≤ 90% of the pool`. The limit is enforced by passing
+        it to every `ragon exec` of a task as its compaction limit.
+
+        Args:
+            max_parallel: The configured upper bound.
+            kv_pool: Tokens of KV cache, 0 if unknown.
+            task_context: The smallest budget a task may be given.
+            compact_at: `[night] compact_at`: None for the pool's share, 0 for no limit, or a limit.
+
+        Returns:
+            Tuple[int, Optional[int]]: Tasks at once (at least 1), and each task's compaction limit
+            in tokens (None: no limit is passed and the launcher's own applies).
+        """
+        if not kv_pool:
+            # Nothing to divide: one task at a time cannot overcommit a pool it shares with no one.
+            return 1, compact_at or None
+        usable = int(kv_pool * NIGHT_POOL_SHARE)
+        if compact_at == 0:
+            return max(1, min(max_parallel, usable // task_context)), None
+        if compact_at:
+            return max(1, min(max_parallel, usable // compact_at)), compact_at
+        parallel = max(1, min(max_parallel, usable // task_context))
+        return parallel, min(usable // parallel, int(kv_pool) * LAUNCHER_POOL_SHARE_PERCENT // 100)
+
+    @classmethod
+    def host_safety_ok(cls) -> bool:
+        """Runs the model server's own pre-load host-safety checks (swap, sysctls, earlyoom), which
+        print what is wrong and exit when anything is.
+
+        Returns:
+            bool: True when every check passes.
+        """
+        from dreamference.vllm_server import VLLMServerManager
+
+        try:
+            VLLMServerManager.check_host_safety()
+        except SystemExit:
+            return False
+        return True
+
+    @classmethod
+    def mem_available_bytes(cls) -> int:
+        """Returns:
+        int: `MemAvailable` from `/proc/meminfo`, in bytes.
+        """
+        with Path("/proc/meminfo").open() as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+        return 0
+
+    @classmethod
+    def mem_total_bytes(cls) -> int:
+        """Returns:
+        int: `MemTotal` from `/proc/meminfo`, in bytes.
+        """
+        with Path("/proc/meminfo").open() as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) * 1024
+        return 0
+
+    @classmethod
+    def parse_size(cls, size: str) -> int:
+        """Parses a systemd-style size (`8G`, `512M`, bytes).
+
+        Args:
+            size: The size.
+
+        Returns:
+            int: Bytes.
+        """
+        match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([KMGT]?)i?B?\s*", size, re.IGNORECASE)
+        if not match:
+            raise ValueError(f"not a size: {size!r}")
+        factor = {"": 1, "K": 1024, "M": 1024**2, "G": GIB, "T": 1024**4}[match.group(2).upper()]
+        return int(float(match.group(1)) * factor)
+
+    @classmethod
+    def scope_memory_current(cls, unit: str) -> int:
+        """Memory a running task's scope uses now.
+
+        Args:
+            unit: The scope's unit name.
+
+        Returns:
+            int: Bytes, 0 if unknown.
+        """
+        try:
+            output = subprocess.run(
+                ["systemctl", "--user", "show", unit, "-p", "MemoryCurrent", "--value"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout.strip()
+            return int(output)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return 0
+
+    @classmethod
+    def interactive_ragon_pids(cls, ragon_bin: str) -> list[int]:
+        """Finds `ragon` TUI sessions.
+
+        processes of the `ragon` binary that are not one of a night run's own sessions, not a
+        subcommand that runs without a user, and not one of Codex's helper re-executions (its
+        sandbox runs as the same binary under another `argv[0]`). A session started before a build
+        replaced the binary still counts (`executable_of`).
+
+        Args:
+            ragon_bin: The installed `ragon` executable.
+
+        Returns:
+            List[int]: Their process ids.
+        """
+        target = os.path.realpath(ragon_bin)
+        pids = []
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                if cls.executable_of(entry.name) != target:
+                    continue
+                argv = (entry / "cmdline").read_bytes().split(b"\0")
+                environ = (entry / "environ").read_bytes().split(b"\0")
+            except OSError:
+                continue
+            args = [arg.decode("utf-8", "replace") for arg in argv if arg]
+            if not args or os.path.basename(args[0]) not in ("ragon", "codex"):
+                continue
+            if any(item.startswith(f"{NIGHT_RUN_ENV}=".encode()) for item in environ):
+                continue
+            if cls.is_interactive(args[1:]):
+                pids.append(int(entry.name))
+        return pids + [pid for pid in cls.busy_app_server_pids(ragon_bin) if pid not in pids]
+
+    @classmethod
+    def busy_app_server_pids(cls, ragon_bin: str, codex_home: str | None = None) -> list[int]:
+        """Finds `ragon app-server` processes running a turn for the desktop app's window.
+
+        An app-server is not a session by its command line (`NON_INTERACTIVE`): an idle
+        window left open must not hold every night back. While a turn runs, `ragon-app` keeps a
+        marker named after the server's pid in `$CODEX_HOME/night/busy/`
+        (specs/DREAMFERENCE_RAGON_DESKTOP.md §8.3). A marker counts when its pid is alive and is
+        a `ragon app-server`: the installed `ragon`, or the one bundled inside the desktop app
+        (desktop/electron, `<app>/resources/ragon`), which has the same name and runs `app-server`
+        (or `web`: `ragon web serve` keeps the same marker);
+        a server started before a build replaced the binary still counts (`executable_of`).
+        Any other marker is left by a window killed hard, or names a pid since reused, and is
+        deleted.
+
+        Args:
+            ragon_bin: The installed `ragon` executable.
+            codex_home: `ragon`'s home folder; defaults to the one `ragon` resolves.
+
+        Returns:
+            list[int]: The busy servers' process ids.
+        """
+        busy_dir = Path(codex_home or CodexInstaller.home_dir()) / "night" / BUSY_DIR_NAME
+        try:
+            markers = list(busy_dir.iterdir())
+        except OSError:
+            return []
+        target = os.path.realpath(ragon_bin)
+        pids = []
+        for marker in markers:
+            pid = int(marker.name) if marker.name.isdigit() else 0
+            if pid > 0 and cls._process_alive(pid) and cls._is_app_server(pid, target):
+                pids.append(pid)
+            else:
+                marker.unlink(missing_ok=True)
+        return pids
+
+    @classmethod
+    def _is_app_server(cls, pid: int, target: str) -> bool:
+        """Whether a live pid is a `ragon app-server` or `ragon web`: the installed binary, or a copy.
+
+        Args:
+            pid: The process id.
+            target: The installed `ragon`, resolved.
+
+        Returns:
+            bool: True for the installed `ragon`, or a program of the same name running `app-server`
+                or `web`.
+        """
+        exe = cls.executable_of(str(pid))
+        if exe == target:
+            return True
+        if os.path.basename(exe) != os.path.basename(target):
+            return False
+        try:
+            args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        except OSError:
+            return False
+        return not MARKER_SUBCOMMANDS.isdisjoint(args)
+
+    @classmethod
+    def executable_of(cls, pid: str) -> str:
+        """The path a process was started from, as it was when it started.
+
+        `/proc/<pid>/exe` of a program whose file a build has since replaced (a new inode at the
+        same path) or removed reads `<path> (deleted)`: that process still runs the old `ragon`
+        from the installed path, so only that trailing suffix is dropped. A path whose name merely
+        contains the words elsewhere is kept as it is.
+
+        Args:
+            pid: The process id, as its `/proc` entry names it.
+
+        Returns:
+            str: The resolved path, without the suffix; empty when it cannot be read.
+        """
+        try:
+            exe = os.readlink(f"/proc/{pid}/exe")
+        except OSError:
+            return ""
+        return os.path.realpath(exe.removesuffix(DELETED_SUFFIX))
+
+    @classmethod
+    def _process_alive(cls, pid: int) -> bool:
+        """Signal 0: whether a process exists, without touching it.
+
+        Args:
+            pid: The process id.
+
+        Returns:
+            bool: True when it exists, including one owned by another user.
+        """
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    @classmethod
+    def subcommand(cls, args: list[str]) -> str | None:
+        """Finds the subcommand of a `ragon` command line.
+
+        its first argument that is neither an option nor an option's value. A prompt in that place
+        is returned as it is; after `--` everything is the prompt, so there is no subcommand.
+
+        Args:
+            args: The arguments after the program name.
+
+        Returns:
+            str | None: The subcommand or prompt; None when the line has no subcommand.
+        """
+        rest = iter(args)
+        for arg in rest:
+            if arg == "--":
+                return None
+            if arg in VALUE_OPTIONS:
+                next(rest, None)
+            elif not arg.startswith("-") or arg == "-":
+                return arg
+        return None
+
+    @classmethod
+    def is_interactive(cls, args: list[str]) -> bool:
+        """Tells whether a `ragon` command line opens the TUI.
+
+        Only the subcommand's place counts: a word that names a non-interactive subcommand
+        elsewhere, as an option's value (`ragon -C docs`) or in a prompt, does not.
+
+        Args:
+            args: The arguments after the program name.
+
+        Returns:
+            bool: False when the subcommand is a non-interactive one, or the line asks for help or
+                the version.
+        """
+        options = args[: args.index("--")] if "--" in args else args
+        if any(arg in PRINT_AND_EXIT for arg in options):
+            return False
+        return cls.subcommand(args) not in NON_INTERACTIVE
+
+    @classmethod
+    def heavy_jobs(cls) -> list[str]:
+        """Names the heavy work already running that a night run must not join.
+
+        a `ragon` build, a `ragon-admin index` run, a `ragon-code` index run, or a Codex test run.
+
+        Returns:
+            List[str]: One description per job found; empty when the machine is free.
+        """
+        found = []
+        lock_path = os.path.join(BUILD_CACHE_DIR, ".build.lock")
+        if Path(lock_path).exists():
+            with Path(lock_path).open("a") as handle:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+                except BlockingIOError:
+                    found.append("a ragon build holds the build lock")
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                args = [
+                    arg.decode("utf-8", "replace")
+                    for arg in (entry / "cmdline").read_bytes().split(b"\0")
+                    if arg
+                ]
+            except OSError:
+                continue
+            names = [os.path.basename(arg) for arg in args[:2]]
+            if "ragon-admin" in names and "index" in args[1:3]:
+                found.append(f"ragon-admin index is running (pid {entry.name})")
+        try:
+            units = subprocess.run(
+                [
+                    "systemctl",
+                    "--user",
+                    "list-units",
+                    "--no-legend",
+                    "--plain",
+                    "--state=active",
+                    "codex-tests-*",
+                    "ragon-index-*",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            units = ""
+        for line in units.splitlines():
+            if line.strip():
+                unit = line.split()[0]
+                kind = "an index run" if unit.startswith("ragon-index-") else "an upstream test run"
+                found.append(f"{kind} is active ({unit})")
+        return found

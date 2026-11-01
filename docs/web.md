@@ -1,0 +1,65 @@
+# Web UI
+
+**`ragon web`** is Ragon in a browser: Ask and Work, the same page as the
+[desktop app](desktop.md), served by `ragon` itself on port 3100.
+
+## `ragon web`: Ask and Work in a browser
+
+```bash
+ragon web start               # run it as a user service (loopback only)
+ragon web open                # sign this machine's browser in, with a one-time link
+ragon web status              # whether it runs, where, and how many devices are paired
+ragon web stop
+```
+
+The page opens on **Ask**, questions with no project, each in a scratch folder of its own; **Work**,
+your projects and their threads, is one click away. Every request needs a sign-in, on this machine
+too: `ragon web open` signs your browser in with a link that works once. Work behaves as in the
+desktop app: Full Access can be chosen unless `/airgapped` is on, and `!command` in the composer runs
+in your own shell on the machine running `ragon web`, with no sandbox (refused at `/airgapped on`).
+
+The page follows the browser's light or dark theme. **Settings › Appearance** can keep it on
+**Light** or **Dark** instead; a browser remembers that choice for itself, so a phone and a computer
+can differ.
+
+### A phone or another computer
+
+On a node (`ragon-admin node enable`, which also starts `ragon web` on the local network), other
+devices can use it once they are paired. Pairing happens on the Ragon machine itself:
+
+1. In Ragon on that machine, click **Pair a phone or another device** at the bottom of the
+   sidebar (the **Devices** page, `/devices`), then **Show a pairing code**.
+2. Scan the QR code with the phone's camera. It opens the pairing page on this machine with the
+   code filled in; give the device a name and press **Pair**.
+
+The QR code carries only this machine's address and an eight-digit code that works once, for ten
+minutes. The device then stays signed in until you revoke it on the same page. If the phone is on
+another network, such as your Tailscale network, open the other addresses under the QR code and scan
+the one for that network.
+
+Without a camera: `ragon web pair` in a terminal prints the code and the address to open (and the
+same QR code, drawn in the terminal), and `ragon web devices` and `ragon web revoke <device>` list and
+remove paired devices.
+
+From another device the page is text only: the microphone and the clipboard buttons need a secure
+connection, which plain HTTP on the local network is not (selecting and copying text still works).
+
+## Image search and voice
+
+Two local services add pictures and dictation to Ask, in the browser and in the app:
+
+```bash
+ragon-admin searxng start     # web search, which image search uses too
+ragon-admin images start      # image search: the agent gets an `image_search` tool
+ragon-admin voice start       # speech-to-text for the microphone button (Whisper, on the CPU)
+```
+
+- **Images.** Ask for pictures ("show me a petrel in flight") and the agent searches the web, has
+  the served model pick the best matches, and keeps them on this machine. They appear in the answer,
+  served by `ragon web` and the app from that local copy. Off at `/airgapped on`.
+- **Voice.** The microphone button in the composer records; press it again and the text appears in the
+  composer, for you to read before sending. Transcription runs on this machine, so it works at
+  `/airgapped on`. The button is shown in the app and in a browser on this machine; from another
+  device the page is text only (see above).
+
+On a node, `ragon-admin server start` starts both when they are missing, as it starts the Google service; if one fails it prints a warning naming the command to retry, and the model starts anyway. `ragon-admin images status` and `ragon-admin voice status` show whether each runs.

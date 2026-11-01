@@ -1,0 +1,931 @@
+# Ragon over Signal: `ragon signal`
+
+**Status:** implemented, off by default. §18 specifies several accounts on one node; the owner decided to build it, and it is built on branch `signal/multi-account` (§18.8) and merged into `main`, not yet run live. The bridge is built and tested (§16) end to end against a scripted signal-cli and a stand-in `ragon web`, and merged into `main` with the other messengers (§17): `ragon signal …` is a launcher subcommand, the `ragon-signal` daemon binary ships in the release, and signal-cli and its Java runtime are fetched pinned by setup. It was first run against a real Signal account, in linked mode, with the published release (§17.2), and it is not labelled a preview (the owner's decision). The user asked for this ("can I chat with ragon using signal? … write a spec for this").
+**Names:** post-rename (`ragon`, `ragon-admin`, `~/.ragon`, `ragon web` on port 3100).
+**Builds on:**
+- [RAGON_ASK](./DREAMFERENCE_RAGON_ASK.md). The bridge is one more client of `ragon web`, signed in like a paired phone (§4.3 there). It uses **Ask threads** (§3 there), the bridge policy (`ragon-rs/web/policy.json`) and `/api/upload`.
+- [RAGON_AIRGAPPED](./DREAMFERENCE_RAGON_AIRGAPPED.md): the air-gap resolver (`ragon-rs/airgapped`).
+- [RAGON_EGRESS](./DREAMFERENCE_RAGON_EGRESS.md): what `ragon-admin audit egress` promises, and what this changes.
+- [RAGON_NODE](./DREAMFERENCE_RAGON_NODE.md): the node is where the bridge runs.
+- [SECURITY_REVIEW](./DREAMFERENCE_SECURITY_REVIEW.md): the rule that a sandboxed command can read the user's home folder.
+
+---
+
+## 0. Decisions, stated first
+
+1. **Signal is one more way into the same agent, not a second chatbot.** A message from the owner's phone becomes a turn in an **Ask thread** on the node. The same thread shows up in the Ragon app and in `ragon web`, and can be continued there. Nothing is answered by anything but `ragon`.
+2. **The bridge is a client of `ragon web`, never of the app-server directly.**
+   - **What it gives:** the bridge policy, the Ask folders, upload caps and Night Shift's busy marker all apply to Signal with no second copy.
+   - **How it signs in:** the bridge pairs once, like a phone's browser (`ragon web pair`), and holds a device cookie.
+3. **The bridge runs as its own system account, `ragon-signal`, not as the user.**
+   - **Why:** Codex's sandbox limits writes, not reads, so a command the agent runs can read anything the user can (security review). Signal's identity keys are not something a prompt-injected `cat` may read. With them, an attacker could read every message sent to the bridge and send messages that look like Ragon's.
+   - **How:** a separate uid with a 0700 state folder puts them out of the agent's reach. A systemd system unit with `ProtectHome=yes` also keeps the bridge out of the user's files.
+4. **One owner.** Linked (the default), the owner is the account itself (§4.2). With a dedicated number, the owner is bound by a code, never by a phone number typed in: `ragon signal setup` shows a one-time code. The first account that sends it from Signal within ten minutes becomes the owner, and its account id (ACI) and identity key are recorded.
+   - **Strangers:** messages from anyone else are dropped without a reply, so the number does not reveal that a bot answers it.
+   - **A changed identity key:** messages from the owner stop being accepted until the owner re-trusts on the node (§5.3). This is what a SIM swap or a re-registered phone looks like.
+5. **Linked to the owner's own account is the mode (the user's decision,: no second number).**
+   - **Linked (default):** the bridge becomes a linked device of the owner's account, paired by QR code. The owner talks to it in **Note to Self**, and it answers there. It costs nothing, but the bridge then holds keys to the owner's whole account and receives every message of it. §4.2 is the risk analysis, and setup prints the warning before anything happens.
+   - **Dedicated (`--number`):** a second Signal account (prepaid SIM or landline) that the owner talks to like a contact. Built and kept for anyone who prefers it.
+6. **Signal needs the internet, so the bridge runs only at `/airgapped off`.**
+   - **Never at `on`:** at a user-level `on` the bridge acts on nothing and sends nothing, not even a read receipt. It learns the level from `ragon web` (§11), and until the first answer arrives it holds incoming messages rather than act on them. When the level drops back to `off`, it says once what was missed.
+   - **One external exception:** the bridge is the one Ragon component that talks to an outside service on its own. It talks only to Signal's servers, and only when the user turned it on. `ragon-admin audit egress` names it as an enabled exception instead of passing silently (§10).
+7. **Off by default.** No installer step turns it on. `ragon signal setup` is the only way in, and it says what it changes before any sudo.
+8. **signal-cli first, a native client later.**
+   - **Phase 1:** the bridge drives **signal-cli** (GPL-3.0, Java), the maintained command-line Signal client, over JSON-RPC on stdio.
+   - **Later:** a native Rust client (e.g. presage on libsignal, both AGPL-3.0) could remove the JVM, after an evaluation (§14).
+9. **Text first.** Phase 1:
+   - carries text both ways;
+   - takes images and files *in* through `/api/upload`;
+   - relays approvals as yes/no questions.
+
+   Voice notes (through the speech sidecar), files *out* and Work threads on repositories are Phase 2.
+10. **Where it runs:** gx10-1a2b, the node with `ragon web` and the model (the user's decision). Approvals are answered from the phone with YES or NO, as designed (§8).
+
+---
+
+## 1. What the owner sees
+
+Linked to the owner's account, in **Note to Self** (the default). Every line is "sent by me"; the bridge's start with 🐦.
+
+```
+What changed in the SGLang release notes this week?
+🐦 Three things matter for us: … [1][2]
+   Sources: [1] github.com/… [2] …
+/new
+🐦 New thread. (The last one stays in your history.)
+Here's a photo of the error  [image]
+🐦 That traceback is from …
+🐦 ⚠️ Ragon wants to run:
+   pip download torch==2.9 --no-deps -d .
+   in this question's folder. Reply YES or NO.
+YES
+🐦 Done: …
+/stop
+🐦 Stopped.
+```
+
+With a dedicated number, the same exchange happens in a conversation with that contact, without the 🐦, and the owner also sees read receipts and the typing indicator.
+
+- **Each message from the owner is one turn.** While a turn runs, a dedicated-number bridge keeps the typing indicator alive until the answer's first words show; Note to Self has none, so a linked bridge answers at once with a status line, "Working on it…", which says what the agent is doing as it changes (§19.8).
+- **The answer streams in** (§19.8): one message, edited as the answer grows, then replaced by the whole answer; parts past the first arrive as messages of their own. A long turn gets a progress note after a minute, then at most one every five minutes, unless the status line or the streaming answer already shows it.
+- **A message sent while a turn runs is queued.** The bridge says so ("Queued; I'll take it next. /stop to interrupt.") and starts it when the turn ends. At most five are queued.
+- **The thread is the conversation.** Everything since the last `/new` is one Ask thread with its own scratch folder, so "and what about the second one?" works.
+
+---
+
+## 2. Architecture
+
+```
+ Owner's Signal app ──E2E──► Signal servers ◄──E2E── signal-cli (JVM, jsonRpc on stdio)
+                                                         ▲  stdio JSON-RPC
+                                                         │
+                       system user ragon-signal      │
+                       ┌─────────────────────────────────┴───────────────────────┐
+                       │ ragon-signal (bridge daemon, Rust)                       │
+                       │  owner gate · commands · queue · formatter · approvals  │
+                       └───────────────┬─────────────────────────────────────────┘
+                                       │ HTTP + WebSocket, loopback, device cookie
+                                       ▼
+                       user (owner of the node)
+                       ragon web :3100 ──policy.json──► ragon app-server ──► model server :8000
+                                        └── /api/upload ──► ~/.ragon/ask/<thread>/
+```
+
+**Processes:**
+- **`signal-cli`:** a child of the bridge, started as `signal-cli --config /var/lib/ragon-signal/signal-cli -a <account> --trust-new-identities on-first-use jsonRpc --receive-mode on-start` with `--ignore-stories`. It speaks JSON-RPC 2.0, one object per line. Messages arrive as `receive` notifications. The bridge calls `send`, `sendTyping`, `sendReceipt`, `listIdentities` and `trust`.
+- **`ragon-signal`:** the bridge daemon, a small Rust binary (crate `ragon-rs/signal`).
+  - **What it holds:** the signal-cli child, one `ragon web` connection, and the state file (§7).
+  - **How it is written:** like `ragon-web-server` it is a crate of its own, testable without the Codex workspace. The launcher routes `ragon signal …` to the same crate's user-facing commands (§6).
+- **`ragon web`:** the user's, unchanged. The bridge is a paired device (`ragon web devices` lists it as `signal-bridge`, and `ragon web revoke` ends it).
+
+**Why not inside `ragon web`:**
+- `ragon web` runs as the user, and the Signal keys must not.
+- `ragon web` calls nothing on any network, which is the promise of its module docs (`ragon-rs/web/src/lib.rs`). A Signal client inside it would end that promise.
+
+---
+
+## 3. Install and the files it puts down
+
+`ragon signal setup` runs as the user and asks for sudo once, after listing what it will do:
+
+| What | Where | Why |
+|---|---|---|
+| System account `ragon-signal` (no login shell, no home) | `/etc/passwd` | Keys out of the agent's reach (§0.3) |
+| Java runtime | `/opt/ragon/jdk-25.0.4.1+1-jre/` | signal-cli 0.14 needs Java 25 or later. Eclipse Temurin's JRE, fetched by setup and pinned by URL and SHA-256 for arm64 and x86_64 (§17); no apt package, whose pool URL would vanish with the next security update |
+| signal-cli | `/opt/ragon/signal-cli-<version>/` | The release tarball, checked against a SHA-256 pinned in Ragon's source and against the maintainer's detached OpenPGP signature (`.asc`) with a key whose fingerprint is pinned there too; both must pass before it is unpacked (§17.1) |
+| libsignal JNI for arm64 | `/opt/ragon/signal-cli-<version>/lib/libsignal_jni.so`, put inside the `libsignal-client-<v>.jar` | signal-cli bundles it only for x86_64 Linux, Windows and macOS (its wiki, "Provide native lib for libsignal") |
+| The bridge | `/usr/local/lib/ragon/ragon-signal` (root, 0755) | Users' homes are 0750 on Ubuntu 24.04, so the system account cannot run a binary from the user's install |
+| The unit | `/etc/systemd/system/ragon-signal.service` | A system unit: no lingering needed, survives logout |
+| State | `/var/lib/ragon-signal/` (0700, `StateDirectory=`) | signal-cli's data, the bridge's state, the device cookie |
+
+**The arm64 libsignal library:**
+- **Phase 1:** use `exquo/signal-libs-build`'s `libsignal_jni.so-v<ver>-aarch64-unknown-linux-gnu.tar.gz` for the exact version the signal-cli release bundles. The version is read from the `libsignal-client-<ver>.jar` name in its `lib/`. The file is pinned by SHA-256 in `ragon-rs/signal/src/setup.rs` (`LIBSIGNAL_AARCH64_SHA256`, beside the signal-cli and JRE pins).
+- **Later:** Ragon's release workflow builds it from Signal's source (`java/build_jni.sh desktop` in signalapp/libsignal) and attaches it to each release, signed with the release key, so no third-party binary is trusted.
+
+**The unit:**
+
+```ini
+[Unit]
+Description=Ragon over Signal (ragon signal)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ragon-signal
+Group=ragon-signal
+StateDirectory=ragon-signal
+StateDirectoryMode=0700
+RuntimeDirectory=ragon-signal
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/lib/ragon/ragon-signal serve --state /var/lib/ragon-signal --runtime /run/ragon-signal
+Environment="JAVA_TOOL_OPTIONS=-Xmx256m -XX:+UseSerialGC"
+MemoryMax=768M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=78
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Further instances use the template `ragon-signal@.service` (§18). The block is pinned by `unit.rs` (`UNIT_BEFORE_SEVERAL_ACCOUNTS`).
+
+**On these settings:**
+- **Memory:** `MemoryMax=768M` with a 256 MB heap keeps the JVM inside a fixed budget. Unified memory makes a runaway JVM a host problem (`docs/dev/host-safety.md`). The real footprint is measured in Phase 0 and the cap set from it.
+- **No access to home folders:** `ProtectHome=yes` means the bridge can never open a file of the user's. Attachments reach the Ask folder through `ragon web`'s `/api/upload`, which owns that check.
+
+**Updates:**
+- **The bridge binary:** `ragon update` refreshes the user's binaries, not `/usr/local/lib/ragon/ragon-signal`. When the two versions differ, `ragon signal status` and the bridge's own `/status` say so, and `ragon signal setup --refresh` copies the new one (sudo).
+- **signal-cli:** updates are a pin change in Ragon's source, picked up by the same `--refresh`. Signal retires old clients, so an outdated signal-cli eventually stops working. `ragon signal status` warns when signal-cli reports that it is deprecated.
+
+---
+
+## 4. The two account modes
+
+### 4.1 Dedicated number (`--number`)
+
+1. **Register.** `ragon signal setup` asks for the number (E.164) and runs `register`. Signal usually asks for a CAPTCHA:
+   - the command prints `https://signalcaptchas.org/registration/generate.html`;
+   - the owner solves it in a browser and copies the `signalcaptcha://…` link it ends on;
+   - they paste it, and the command runs `register --captcha …`.
+   A landline gets `--voice`.
+2. **Verify.** The owner types the SMS or voice code, and the command runs `verify <code>`.
+3. **Lock the account.** Setup then:
+   - sets a registration-lock PIN (`setPin`), random, stored only in the bridge's state, so the number cannot be re-registered by someone else who gets the SIM;
+   - sets the profile name to "Ragon" (`updateProfile --given-name Ragon`);
+   - turns off discovery by phone number (`updateAccount --discoverable-by-number false`), so strangers cannot find the account by guessing numbers. (Option names to be confirmed in Phase 0.)
+4. **Bind the owner.** Setup prints a six-digit code: "send it from your phone to +1 555…". The first message that is exactly the code, within ten minutes, binds the owner:
+   - the bridge records its `sourceUuid` (ACI) and the identity key's fingerprint from `listIdentities`;
+   - it marks that identity verified (`trust --verified-safety-number`);
+   - it answers "Paired. Ask me anything; /help lists what else I understand.".
+
+   Other senders during that window are ignored, as always. If no code arrives in time, setup says so and leaves the bridge stopped.
+5. **Disappearing messages.** Setup sets the conversation's timer to the owner's choice (`[signal] disappearing`, default one week; `updateContact --expiration`). Code, mail snippets and file contents shown on the phone then do not stay there forever.
+
+Numbers that work: a prepaid SIM, a landline (voice code) or an eSIM data plan with a number. VoIP numbers are often refused by Signal. Setup says so before registering.
+
+### 4.2 Linked to the owner's account (the default)
+
+`ragon-signal setup`, with no `--number`, does the following:
+
+1. **Install:** it runs the install of §3, plus `qrencode` to draw the QR code.
+2. **Link:**
+   - it runs `signal-cli link -n "Ragon (<host>)"` as `ragon-signal`;
+   - it reads the `sgnl://linkdevice?…` link from its output and draws it as a QR code in the terminal. signal-cli draws one itself only when it owns a terminal, which it does not under `sudo -u` with its output read.
+3. **Scan:** the owner opens Signal → Settings → Linked devices → Link new device and scans the code. When the phone asks, they choose "Don't transfer" for message history.
+4. **Learn the account:**
+   - the number, from signal-cli's `Associated with: +…` line;
+   - the account's id (ACI), from `listAccounts -o json`;
+   - this device's number, from the `(this device)` line of `listDevices`, whose JSON leaves that mark out.
+5. **Timer:** it asks about the disappearing-message timer (below), then pairs with `ragon web`, writes `bridge.json` with `mode: linked` and starts the unit.
+6. **Talk:** the owner writes `/help` in Note to Self.
+
+**What the bridge reads.**
+- **Only Note to Self:** a Note to Self message reaches the bridge as a sync message, `syncMessage.sentMessage`, whose destination (`destinationUuid` or `destinationNumber`, as signal-cli's `JsonSyncDataMessage` writes them) is the account itself, sent from another of the owner's devices.
+- **Never anything else, never counted:** messages from others (data messages), the owner's messages to anyone else or to a group (sync messages with another destination or a group), receipts, typing, calls and stories. Their timestamps are not even remembered, and `status.json` has no count of them (`strangersIgnored: null`).
+- **Nothing on the owner's behalf:** no read receipt (it would mark the owner's own note read on every device) and no typing indicator (Note to Self shows none).
+
+**Answers.**
+- **Where:** answers go to Note to Self (`send` with `noteToSelf: true`, no recipient).
+- **The marker:** every message the bridge writes starts with `🐦 ` (`LINKED_MARKER`), because in Note to Self the owner's notes and the bridge's replies are both "sent by me". The style ranges move by the marker's three UTF-16 units.
+- **No loops:** a marked message, or one from the bridge's own device, is never a question. Signal does not echo a message to the device that sent it, but a second bridge linked to the same account would see this one's replies, and without the marker the two would answer each other forever.
+
+**The risks of linking, and what is done about each.**
+
+1. **The bridge holds keys to the owner's whole account.** A linked device gets the account's identity key pair and its own credentials at provisioning. With them, signal-cli can:
+   - read every message the account receives from the moment of linking, in every conversation;
+   - send as the owner to anyone;
+   - read the contact and group lists that the phone syncs to every linked device, and change the profile.
+
+   This is not a narrower key than the phone's; it is the same account. What is done:
+   - **What signal-cli is told to do:** it runs with `--ignore-avatars --ignore-stickers --ignore-stories`. Originally it also ran with `--ignore-attachments`, so that nothing of other conversations was downloaded; but signal-cli cannot fetch an attachment later (`getAttachment` only reads one it already downloaded), so no Note to Self image ever reached the agent. Attachments are now downloaded, and the bridge deletes every one that is not the owner's Note to Self as it arrives, and sweeps the folder every minute (§19.1): never kept, rather than never downloaded.
+   - **What the bridge does:** it acts on Note to Self alone. Everything else signal-cli decrypts is dropped in memory by the gate, and the bridge never writes message text to disk or to the journal.
+   - **What is stored anyway:** signal-cli's own store under `/var/lib/ragon-signal/signal-cli` still holds the account's keys and the synced contact and group lists. It is protected as the keys are (2 below).
+2. **The agent must never reach those keys.** Unchanged from §0.3, and in linked mode it matters more.
+   - **The keys live where the agent cannot go:** in `/var/lib/ragon-signal`, mode 0700, owned by the system account `ragon-signal`. The agent runs as the user, so no command it runs, sandboxed or not, can read them.
+   - **The bridge cannot touch the user's files:** `ProtectHome=yes` keeps it out of them, and attachments reach the Ask folder only through `ragon web`'s `/api/upload`.
+   - **The bridge holds no route back to the keys:** the only thing it shares with the user's side is a `ragon web` device cookie. That cookie gives `ragon web`'s routes, which are the bridge policy, and nothing of Signal.
+   - **The one exposure left is root:** anyone with root (sudo) on the node can read the keys, as they can read anything. The agent never gets root: `/airgapped`, Full Access and the sandbox are unchanged by this feature.
+3. **Message history sync.** When a device is linked, current Signal phones can offer to transfer recent message history, and they sync contacts, groups and settings to every linked device.
+   - **What the owner is told:** setup tells the owner to choose "Don't transfer".
+   - **Whether signal-cli 0.14.9 would take an archive at all:** not established (§12).
+   - **If history did arrive:** the bridge would not act on it. Old messages are older than the gate's 24-hour limit, and history arriving as anything other than live Note to Self sync messages is not a question.
+   - **What sync still brings:** the contact and group lists still arrive, and live in signal-cli's store.
+4. **Unlinking.** The owner can unlink the device from the phone at any time (Settings → Linked devices → Ragon → Unlink). Re-registering the account, on a new phone or by someone else, unlinks every linked device.
+   - **What signal-cli sees:** the server then refuses the device's credentials, and signal-cli logs an `AuthorizationFailedException`.
+   - **What the bridge does:** it treats that line as "unlinked". It writes `status.json` with what to do, stops signal-cli and exits with status 78, which the unit's `RestartPreventExitStatus=78` keeps from restarting in a loop. Nothing is deleted automatically: a mistaken match must not destroy a working link.
+   - **What the keys can still do:** the device credentials are dead once unlinked. The account's identity key in the state folder is not: Signal does not rotate it on unlink, and it stays until the owner's account is registered again. So `ragon-signal remove` deletes the state.
+   - **If the state was ever exposed:** the only way to retire that identity key is to register the account again, which changes the safety number for every contact.
+   - **The other way round:** `ragon-signal remove` deletes the keys but cannot unlink the device from the phone's list, so it asks the owner to do that.
+   - **Never `unregister`:** in linked mode `remove` never runs `unregister`, which would act on the owner's own registration. A test holds this, and an unknown mode is treated as linked.
+5. **Thirty days offline.** Signal removes a linked device that has not connected for about 30 days. A node switched off that long must be linked again with `ragon-signal setup`.
+6. **The account's device limit.** Signal allows a small number of linked devices per account, five at the time of writing. The bridge takes one.
+
+**Disappearing messages in Note to Self** (one week, the user's default). Signal keeps one disappearing-message timer per conversation, and a message carries its sender's timer, so the timer cannot be set for the bridge's replies alone. In Note to Self, a one-week timer therefore also applies to the owner's own notes written there from then on, on every device. Notes already there are not affected. Setup says this and asks, with yes as the default. It sets the timer with `updateContact <own number> --expiration 604800`, and if signal-cli refuses that on the account itself, it tells the owner where to set it on the phone (Note to Self → the name at the top → Disappearing messages). That this command works on one's own account is not established (§12).
+
+**Attachments:** signal-cli downloads them into its attachment folder in the bridge's state (§19.1). The owner's Note to Self attachments are read from there (`getAttachment` as a fallback, which reads the same folder) and go to the Ask folder through `/api/upload`; every other attachment is deleted as it arrives.
+
+## 5. The owner, and everyone else
+
+### 5.1 The gate
+
+Every `receive` envelope passes these checks, in order. The first that fails drops the message:
+
+1. **A direct message:**
+   - dedicated mode: a `dataMessage`, not a group, story, call, typing, receipt or reaction;
+   - linked mode: a `syncMessage.sentMessage` to the owner's own account.
+2. **From the owner:** `sourceUuid` equals the recorded ACI. A phone number is never trusted on its own, since numbers move between people.
+3. **From a trusted identity:** the owner's current identity key, from signal-cli's trust state, equals the recorded fingerprint. If it does not, §5.3.
+4. **Not stale:** the message timestamp is within 24 hours. An old message delivered late after downtime is answered with "Your message arrived N hours late, so I didn't act on it; send it again if you still want it", not acted on.
+5. **Not seen before:** the timestamp is not already in the last 1,000 handled. Signal retries can deliver a message twice.
+
+**Dropped messages are counted, never stored or answered.** `ragon signal status` shows "12 messages from strangers ignored since …". Their content is not logged.
+
+### 5.2 Commands
+
+A message that is exactly one of these is a command. Anything else is a question.
+
+| Command | What it does |
+|---|---|
+| `/new` | Starts a new Ask thread for the next message; the last one stays in the history (app, browser) |
+| `/stop` | Interrupts the running turn (`turn/interrupt`) and empties the queue |
+| `/status` | What is running and for how long, the queue, the model server's state, the air-gap level, the bridge's and signal-cli's versions |
+| `/threads` | The last eight threads started from Signal, numbered, with their first line |
+| `/use N` | Continues thread N from `/threads` (`thread/resume`; an Ask thread keeps its folder, ASK §16) |
+| `/night add <task>` / `/night status` | Queues a task for Night Shift tonight with this thread's last exchange, or shows the queue (§19.7, `ragon-rs/signal/src/command.rs`) |
+| ~~`/cavemode [level]`~~ | **Removed**. Was: how terse this thread's answers are: the level in force, or `off`, `lite`, `full`, `ultra` for this thread; `/cavemode default <level|built-in>` for new threads, on every surface. Through `ragon web`'s `/api/cavemode` (also removed) |
+| `/help` | This table |
+| `YES` / `NO` | Only while an approval is pending (§8); otherwise an ordinary message |
+
+**No command reaches the node's administration:** none starts or stops the model server, changes the air-gap level, pairs devices or changes the bridge. (`/cavemode default`, before cave mode was removed, wrote one preference of the owner's own, as the terminal's `/cavemode default` did.) Those stay with a shell on the node.
+
+### 5.3 A changed identity key
+
+When the owner's identity key changes (a new phone, a reinstall, or someone else's SIM):
+- the bridge stops accepting messages from that account;
+- it sends nothing to the new key. A reply would go to whoever now holds the account, so the bridge says nothing. That is the point.
+- it writes a line to the journal and to `ragon signal status` ("the owner's safety number changed on …; run `ragon signal trust` on the node").
+
+`ragon signal trust` shows the new safety number and asks the owner to compare it with the one their phone shows (Signal → the conversation → View safety number), then records the new fingerprint.
+
+---
+
+## 6. Commands on the node
+
+`ragon signal …` runs as the user. Anything that touches the system account goes through one sudo prompt, with the commands printed first, as `ragon-admin host setup` does.
+
+| Command | What it does |
+|---|---|
+| `ragon signal setup [--number +… [--voice]] [--dry-run]` | §3 and §4: install, then link to the owner's account by QR (the default) or register a dedicated number and bind its owner; pair with `ragon web`, start the unit |
+| `ragon signal setup --refresh [--dry-run]` | Copies the current bridge binary, fetches the pinned signal-cli and Java if they changed, points the bridge at them and restarts it |
+| `ragon signal status` | Running or not, mode, the owner's last message time, versions, messages ignored, the last error |
+| `ragon signal trust` | §5.3 |
+| `ragon signal stop` / `start` | The unit: `stop` disables it as well, so it stays off across a reboot |
+| `ragon signal remove` | Stops and disables the unit, unregisters (dedicated) or unlinks (linked), revokes the `ragon web` device, and deletes `/var/lib/ragon-signal` and the account. Asks for confirmation; the Ask threads stay |
+| `ragon-signal serve --state DIR` | The daemon itself: what the unit runs; nobody types it. `ragon signal` refuses it and the bridge account's other commands |
+
+**Pairing with `ragon web`:** setup runs `ragon web pair` as the user and hands the eight-digit code to the daemon. The daemon `POST`s it to `http://127.0.0.1:3100/pair` with the server's own `Origin`, and keeps the device cookie in its state. `ragon web` must be running; setup starts it (`ragon web start`) if it isn't.
+
+---
+
+## 7. State
+
+`/var/lib/ragon-signal/` (0700, owned by `ragon-signal`):
+
+| File | Contents |
+|---|---|
+| `signal-cli/` | signal-cli's own data: account, keys, its SQLite store |
+| `bridge.json` | Mode, account, the owner's ACI and fingerprint, `ragon web`'s port, the disappearing timer |
+| `device-cookie` (0600) | The `ragon web` device credential |
+| `conversation.json` | The current thread id, the last eight Signal threads, the queue, the last 1,000 handled timestamps, the ignored-message counter |
+| `pin` (0600) | The registration-lock PIN |
+
+`/run/ragon-signal/status.json` (0644, the unit's `RuntimeDirectory`) is the one file meant for the user: running, mode, whether the owner is paired, whether `ragon web` is connected, the air gap, the last owner message's time, the strangers counted, the identity refusals, the last error and the versions. It holds no message text and no account id. `ragon-signal status` reads it.
+
+Every file is replaced whole: written to a temporary name, then renamed, as Night Shift writes its tasks.
+
+---
+
+## 8. The agent side
+
+The bridge holds one WebSocket to `ragon web` (`/ws`) with the bridge envelope that `ragon web ask` uses:
+- `{call, message: {type: "work/start" | "work/send", …}}` out;
+- `{answer, result | error}` and `{event: {channel: "work://message", payload}}` in.
+
+**Turns:**
+- **New thread:** `thread/start {prompt: "ask"}`. The policy makes it an Ask thread in a fresh scratch folder.
+- **Continue:** `thread/resume {threadId}`. The policy keeps an Ask thread in its folder.
+- **A message:** `turn/start {threadId, input: [{type: "text", text}, …]}`. Uploaded images are added as `{type: "localImage", path}`, only when the served model has vision.
+- **The answer:** the text of `item/agentMessage/delta` for that thread, until `turn/completed`. Several agent messages in one turn are kept as paragraphs.
+- **Interrupt:** `turn/interrupt {threadId, turnId}`.
+
+**Approvals:**
+- **Which requests:** `item/commandExecution/requestApproval` and `item/fileChange/requestApproval` from the app-server.
+- **How they reach the owner:** one Signal message, "⚠️ Ragon wants to run: `<command>` in `<folder>`. Reply YES or NO."
+- **Answers:** YES answers `{decision: "accept"}` and NO answers `{decision: "decline"}`, both through `ragon web` (the policy only lets a pending request be answered).
+- **Timeout:** no reply in ten minutes is `decline`, and the owner is told.
+- **What is never offered:** "accept for session" and execpolicy amendments. A rule that outlives one question should be set at a keyboard.
+- **Permission requests** (`item/permissions/requestApproval`) are always declined from Signal, with a note to use the app.
+
+**Attachments in:**
+- **What the bridge does:** each attachment the owner sends is read from signal-cli's attachment folder (inside the bridge's state), sent to `/api/upload?thread=<id>&kind=image|file&name=…` and deleted from the state.
+- **What `ragon web` enforces:** the upload caps (20 MB images, 100 MB files) and the Ask-folder check.
+- **Order:** for a thread not created yet, the bridge first starts it, then uploads, then starts the turn.
+
+**Connection loss:** if `ragon web` is down or the socket closes, the bridge reconnects with backoff (1, 2, 5, 10, 30 s). After ten seconds down it tells the owner once: "Ragon's web server on <node> isn't answering; I'll keep trying."
+
+**Model server down:** a turn that fails with a connection error to the model server is answered with "The model server on <node> isn't answering (`ragon-admin server start` on the node)."
+
+---
+
+## 9. Formatting answers for Signal
+
+Signal shows plain text with style ranges: bold, italic, strikethrough, monospace and spoiler. signal-cli takes them as `start:length:STYLE`, in UTF-16 code units. The formatter turns the agent's Markdown into text plus ranges:
+
+| Markdown | Signal |
+|---|---|
+| ```` ``` ```` fenced block | its lines, MONOSPACE, fences dropped; a language tag dropped |
+| `` `code` `` | MONOSPACE |
+| `**bold**`, `__bold__` | BOLD |
+| `*italic*`, `_italic_` (between word boundaries) | ITALIC |
+| `~~strike~~` | STRIKETHROUGH |
+| `# Heading` … `######` | the heading text, BOLD |
+| `[text](url)` | `text (url)`; a bare URL stays as it is (Signal links it) |
+| `- item`, `* item` | `• item` |
+| `1. item` | unchanged |
+| tables | kept as text, MONOSPACE, so the columns line up |
+
+**Splitting:**
+- **Size:** a message is cut into parts of at most 2,000 UTF-16 units, at a paragraph break if there is one, else a line break, else a space.
+- **Code blocks:** a cut inside a monospace range closes it in one part and reopens it in the next.
+- **Very long answers:** an answer longer than eight parts is sent as its first part plus the whole answer as an attachment, `answer.md`, which the phone opens.
+
+**Citations:** `[n]` markers and the source list from the `ask` prompt are left as text, so the phone shows the URLs and makes them tappable.
+
+---
+
+## 10. Security and privacy, together
+
+- **What leaves the machine:**
+  - **Signal's servers** see that the bridge's account and the owner's account exchange messages, their sizes and times (less where sealed sender applies), and nothing of their content (end-to-end encryption).
+  - **The phone** holds every question and answer, until the disappearing timer clears them (§4.1).
+  - **Nothing goes to Dreamference.**
+- **The egress audit:**
+  - `ragon-admin audit egress` still traces a `ragon` session and still requires no connection beyond loopback.
+  - New: when `ragon-signal.service` is enabled, the verdict adds "Signal bridge enabled: signal-cli connects to Signal's servers". This is a declared exception, not a pass hidden behind one.
+  - `audit egress --signal` traces the unit's processes for one minute. It passes only if every connection is a Signal service host (`chat.signal.org`, `storage.signal.org`, `cdn*.signal.org`, `sfu.voip.signal.org`; the list is checked in Phase 0) or loopback port 3100.
+- **Prompt injection:**
+  - **Who can start a turn:** only the owner. A web page, mail or file the agent reads can try to steer the agent, as in any session.
+  - **Where answers go:** only to the owner's conversation, and the bridge never sends anywhere else. The agent has no tool that reaches Signal.
+  - **What a hijacked agent can do:** the same as in the app. It runs in the Ask folder's sandbox, behind approvals the owner answers from the phone.
+- **Keys:** they live only in `/var/lib/ragon-signal`, mode 0700, owned by a uid the agent does not run as. `ProtectHome=yes` cuts the other direction too.
+- **Losing the phone:** the bridge stops when the identity key changes (§5.3). The registration lock keeps the dedicated number from being taken over. `ragon signal stop` from any shell on the node stops it at once.
+- **What the bridge logs:** to the journal, it writes events ("turn started", "approval declined", "stranger ignored"), never message text.
+
+---
+
+## 11. The air gap
+
+- **When it is checked:** every five seconds the bridge asks `ragon web` for the user-level level (`GET /api/airgapped`, behind the device cookie like every route). The bridge cannot read the user's configuration itself, because `ProtectHome=yes` and its own uid keep it out of the home folder. `ragon web` resolves the level with the same crate the sandbox helper uses (`ragon-rs/airgapped`): `DREAMFERENCE_RAGON_AIRGAPPED`, then the strictest of the file `DREAMFERENCE_CONFIG_PATH` names and the user-level file. This user-level check pauses the whole bridge; a thread's own level is checked separately (below).
+- **At `on`:** it starts no turn and sends nothing. It answers nothing, because answering would itself be a send.
+- **When the level drops back to `off`:** it says once "Ragon was air-gapped for <duration>; nothing was sent or answered in that time.", adding " N message(s) from then were not read; send again what you need." when any arrived.
+- **Session-level air gap (met):** a thread at `on` is not used by the bridge. `GET /api/airgapped?thread=<id>` gives one thread's level, the strictest of its own (`$CODEX_HOME/airgapped/<id>`, written by `/airgapped on` in the app), its folder's `dreamference.toml` and the user's, through the same resolver; the answer names the thread. An answer that does not name it (an older `ragon web` gives only the user's level), or no answer, counts as `on`: the bridge fails closed.
+  - **`/use N`** asks first and refuses a thread at `on` ("Not switched: “<title>” is air-gapped (/airgapped on in Ragon), so it isn't used from the phone."), or one whose level did not come ("… did not say whether that thread is air-gapped. Try again in a moment.").
+  - **Every message relayed to a thread** (resume, a turn, a steer, an upload, a file sent back, a file search) asks the thread's level first. At `on` nothing is sent, a running turn is interrupted, the queue is dropped, the thread is left and the next message starts a new one; with no answer nothing is sent and the thread is kept. The five-second poll also asks the level of the thread whose turn is running, and stops it at `on`.
+
+**Why the check runs in the bridge:** air-gap `on` promises that nothing of the session leaves the machine. Signal is a way out, so the bridge must ask the same question the sandbox helper asks.
+
+---
+
+## 12. Phase 0: measurements before building on them
+
+Each item is answered on this machine (gx10-1a2b), not on node-b (that machine is for ragon-engine alone):
+
+1. **Does signal-cli run on arm64:** JRE 25 from apt, with the exquo `libsignal_jni.so` for the bundled libsignal version? Verified by `signal-cli --version` and by `signal-cli link` reaching the provisioning step (it prints a `sgnl://` link; nothing is linked).
+2. **The JVM's memory:** resident memory idle and while receiving, which sets `MemoryMax`.
+3. **Note to Self sync:** what the sync-message shape and loop behaviour are for the linked mode (§4.2). This needs the owner's phone.
+4. **Option names:** the exact names for discovery, PIN and disappearing timers in the pinned signal-cli (`updateAccount`, `setPin`, `updateContact --expiration`).
+5. **Long messages:** whether signal-cli sends a message over 2,000 characters as Signal's long-text attachment by itself. If it does, the splitter's limit can rise.
+6. **Identity changes:** how a changed identity key appears under `--trust-new-identities on-first-use`. Does the message still decrypt, and what does `listIdentities` say?
+7. **Signal's hosts:** what the daemon connects to in a minute of idle and a minute of traffic (strace), for the audit's allow-list.
+
+---
+
+### 12.1 Phase 0 results (gx10-1a2b)
+
+- **Item 1, arm64: works.**
+  - **What was run:** signal-cli 0.14.9 with Java 25.0.4 (Temurin, in a scratch folder; Ubuntu's `openjdk-25-jre-headless` 25.0.4 was the package setup installed then; since §17 setup fetches the pinned Temurin JRE instead) and exquo's `libsignal_jni.so` 0.103.0 for aarch64, the version the release bundles as `libsignal-client-0.103.0.jar`.
+  - **How the library is found:** `-Djava.library.path=<dir>` through `JAVA_OPTS`, with no change to the jar.
+  - **Result:** `signal-cli --version` answered, and `signal-cli link` reached Signal's provisioning service and printed a `sgnl://linkdevice?…` link. Nothing was linked; the process was stopped there.
+- **Item 2, memory: about 190 MB** resident for the JVM at the link step, with `-Xmx256m -XX:+UseSerialGC`. Idle and receiving are still to be measured with an account. `MemoryMax=768M` stays until then.
+- **Item 4, option names: confirmed** from signal-cli 0.14.9's man page:
+  - `register [--voice] [--captcha …]` and `verify CODE [--pin PIN]`;
+  - `setPin PIN`, a registration lock that, per the man page, "resets after 7 days of inactivity". An always-on bridge stays active.
+  - `updateProfile --given-name`, `updateAccount --discoverable-by-number false` and `updateContact -e/--expiration SECONDS`;
+  - `trust -v SAFETY_NUMBER`, and `listIdentities [-n RECIPIENT]`;
+  - `jsonRpc --receive-mode on-start --ignore-attachments --ignore-stories`;
+  - JSON-RPC parameter names "generally match the long CLI parameter names" in camelCase (`textStyle`, `targetTimestamp`).
+- **Item 3, the Note to Self shape: read from signal-cli 0.14.9's source.** It is not observed yet. `JsonSyncDataMessage` writes `destinationNumber`, `destinationUuid` and the message's own fields beside them. `link` prints the URI, draws a QR only when it owns a terminal, and ends with `Associated with: <number>`. `listAccounts` gives `{number, aci}`, and `listDevices` marks `(this device)` in its text output only.
+- **Items 5, 6 and 7 are open:** long messages, how a changed key appears in dedicated mode, and the hosts signal-cli connects to.
+- **Linked mode adds four open items:**
+  - whether signal-cli accepts a message-history transfer;
+  - the exact log line when the device is unlinked;
+  - whether `updateContact <own number> --expiration` sets Note to Self's timer;
+  - the shape of `getAttachment`'s answer.
+
+  All need the owner's phone.
+
+## 13. Tests
+
+All without Signal, without a network, without `ragon web` running, and without sudo:
+
+- **Gate (§5.1):**
+  - a stranger is dropped;
+  - a group message is dropped;
+  - the owner's number with a different ACI is dropped;
+  - a changed fingerprint is dropped and counted once;
+  - a stale or duplicate timestamp is handled as specified;
+  - the pairing code binds the first sender only, and only within its window.
+- **Commands (§5.2):** every command, and YES/NO only while an approval is pending.
+- **Formatter (§9):**
+  - each Markdown form;
+  - ranges in UTF-16 units, emoji and CJK included;
+  - splitting at paragraph, line and space, with monospace reopened across parts;
+  - the attachment fallback.
+- **The conversation loop, with a fake Signal side and a fake agent side:**
+  - a question becomes a thread and a turn;
+  - a second question is queued;
+  - `/stop` interrupts;
+  - `/new` starts a thread;
+  - an approval is relayed, answered and timed out;
+  - air-gap `on` stops everything and `off` resumes with the notice.
+- **signal-cli's JSON-RPC:** a scripted stand-in process (a shell script echoing recorded lines) checks the framing, the request ids and the `receive` notification parsing.
+- **The unit file:** generated text against a fixed expectation: `ProtectHome`, `User`, `MemoryMax`, no `ExecStartPre` that runs as root.
+
+---
+
+## 14. Later
+
+- **Voice notes:** Signal voice messages (AAC) go to `ragon web`'s `/api/transcribe` (ASK §7), once it exists, and are answered as text. Answering in voice (text-to-speech) is not planned. **Built** (§19.5, `ragon-rs/signal/src/bridge.rs`).
+- **Files out:** a `ragon web` route that serves a file from an Ask folder to a paired device, so the bridge can send what the agent wrote ("here is the report: report.pdf"). **Built** (§19.6, `ragon-rs/signal/src/bridge.rs` `Action::SendFile`).
+- **Work threads:** `/work <project>` starts a Work thread in a repository the owner listed in `[signal] projects`. It uses the default prompt and the workspace-write sandbox, with approvals as in §8. It never offers Full Access. **Superseded** by specs/DREAMFERENCE_RAGON_CHAT_REPOS.md: `/repo` over every forge repository, a worktree per thread, code inline on Signal, Full Access only by the node's policy and a typed confirmation.
+- **Night Shift from the phone:** `/night <task>` queues a Night Shift task (`ragon night add`), and the morning report comes back as a message. **Built** (§19.7, `ragon-rs/signal/src/command.rs`, `ragon-rs/web/src/night_phone.rs` `/api/night/add`).
+- **A native client:** evaluate presage (Rust, on Signal's libsignal; both AGPL-3.0, compatible with Ragon's licence) to replace the JVM. Ship it if it is maintained, passes the same tests and handles the same edge cases.
+- **Other messengers:** Matrix, through the same bridge shape. WhatsApp and Telegram are out of scope: their bot APIs pass messages through the company's servers in readable form. **Since built:** Matrix and Telegram ship in `ragon-rs/chat/src/matrix.rs` and `ragon-rs/chat/src/telegram.rs`.
+
+---
+
+## 15. The user's answers
+
+1. **Number:** no new number. The bridge is linked to the owner's own account and talks in Note to Self (§4.2).
+2. **Approvals:** YES or NO from the phone, as designed (§8).
+3. **Machine:** gx10-1a2b.
+4. **Disappearing messages:** one week, the default. In Note to Self that timer also covers the owner's own notes, so setup asks first (§4.2).
+
+---
+
+## 16. What was built (branch `features/signal`)
+
+The crate `ragon-rs/signal` (`ragon-signal`, library and binary). Like `ragon-web-server`, its tests run in a copy of the folder (`cargo test`), with no Codex workspace, no network beyond loopback, no Signal and no sudo: 61 unit tests and one end-to-end test.
+
+| Module | What it does |
+|---|---|
+| `envelope.rs` | Reads a `receive` notification: a direct message, Note to Self (linked mode), a group, or anything else |
+| `gate.rs` | §5.1 and §5.3. The owner by ACI and fingerprint, never by number. Strangers counted, never answered. A changed key refused. Stale and duplicate messages. The pairing code binds the first sender with a key within ten minutes |
+| `command.rs` | §5.2. YES and NO mean something only while an approval is pending |
+| `format.rs` | §9. Markdown to text plus style ranges in UTF-16 units, emoji and CJK included. Splitting at paragraph, line or space without cutting a surrogate pair, with a range across a cut closed and reopened. More than eight parts becomes `answer.md` |
+| `bridge.rs` | The conversation as a pure state machine. Questions open or resume an Ask thread; one runs at a time, five are queued. `/stop` interrupts (also before the turn id is known), and `/new`, `/threads`, `/use N`, `/status` and `/help` work as specified. Approvals are relayed one at a time and declined after ten minutes; permission requests are always declined. Typing is renewed every 10 s; a progress note comes at one minute, then every five. The model-server hint. Air gap `on` sends nothing (not even a receipt), and `off` says what was missed. A lost connection is reported once after 10 s, and a question that was opening its thread is asked again |
+| `rpc.rs` | signal-cli's JSON-RPC on stdio: request ids, `receive` notifications, `send` with `textStyle` and attachments, typing, read receipts, and the trusted fingerprint from `listIdentities` |
+| `agent.rs` | `ragon web` as a paired device. `POST /pair` for the cookie, `/ws` with the same envelope as `ragon web ask`, `/api/upload` and `/api/airgapped`. The translator from app-server messages to the conversation's events. Server requests other than approvals get a JSON-RPC error, so a turn never hangs on one |
+| `state.rs` | `bridge.json`, `conversation.json`, `device-cookie` (each 0600, replaced whole) and the public `status.json` |
+| `unit.rs` | The unit of §3, plus `RuntimeDirectory=` for the status file. A test checks that nothing in it runs as root |
+| `serve.rs` | The daemon. It carries out the state machine's actions, reconnects to `ragon web` with backoff, polls the air gap and sets the disappearing timer once the owner pairs |
+| `setup.rs`, `main.rs` | `ragon-signal setup --number +… [--voice] [--dry-run]` prints every step before any sudo: the system account, Java 25, signal-cli 0.14.9 and the arm64 libsignal 0.103.0, both checked against pinned SHA-256s before they are unpacked as root, the bridge in `/usr/local/lib/ragon`, the 0700 state folder and the unit. It then registers (CAPTCHA, SMS or voice code), sets the registration lock, the profile name and number discovery off, pairs with `ragon web pair`, writes `bridge.json`, prints the owner code and waits for it. `status`, `start`, `stop` and `unit`. `init`, `pair` and `bind` are for the bridge's own account |
+
+**`ragon web`:** new route `GET /api/airgapped` (§11), behind the same credential as every route; its test is in `tests/server.rs`. The web crate's suite passes, 22 unit and 11 server tests.
+
+**The end-to-end test** (`tests/daemon.rs`) runs the real daemon against two stand-ins:
+- **signal-cli:** a shell script that logs every request and delivers a stranger's message, then the owner's.
+- **`ragon web`:** a WebSocket server in the test that plays one Ask thread.
+
+It checks:
+- the owner's question becomes `thread/start {prompt: "ask"}` and one `turn/start` with the owner's words;
+- the answer reaches signal-cli as one `send` to the owner, with `textStyle ["14:1:BOLD"]`;
+- the owner sees a read receipt and typing;
+- nothing goes to the stranger, who is counted once;
+- `conversation.json` keeps the thread, and `status.json` names neither the stranger nor the text.
+
+**Linked mode** is built, the default:
+- `setup` links by QR code, prints the warning of §4.2 and asks about Note to Self's timer;
+- the gate reads Note to Self alone and keeps nothing of other conversations;
+- the marker and loop guard; sending with `noteToSelf`, without receipts or typing;
+- attachments with `getAttachment`;
+- unlink detection with exit 78;
+- `remove` never runs `unregister`, and `trust` has nothing to do.
+
+Its end-to-end test hands the daemon five messages:
+- a friend's message;
+- the owner's reply to the friend;
+- a group message;
+- a marked echo;
+- one Note to Self question.
+
+It checks that:
+- exactly one `send` goes out, with `noteToSelf: true`, no recipient, the marker and the style moved to `17:1:BOLD`;
+- no receipt, typing indicator, `listIdentities` or `getAttachment` call is made;
+- one turn is started, with the note's words;
+- `conversation.json` remembers only the note's timestamp;
+- no text or id of the other conversations is in any file.
+
+Tests: 69 unit tests and three end-to-end tests (dedicated, air gap on, linked).
+
+**Not built** (as of this section; §17 adds the routing, the packaging and `setup --refresh`; §19.5–19.7 add voice notes, files back and Night Shift from the phone):
+- **CI building libsignal's JNI library for arm64** (§3); exquo's build stays pinned.
+- **Egress audit:** `audit egress --signal`, the trace of the unit's own connections. The note is built: when `ragon-signal.service` is enabled, every `ragon-admin audit egress` report ends with "ℹ️ Declared exception: Signal bridge enabled …" (`EgressAudit.declared_exceptions`, tested).
+- **Phase 2:** everything in §14 (voice notes, files out, Night Shift from the phone, and Matrix/Telegram have since shipped; see §14 and §19.5–19.7).
+
+A second end-to-end test runs the daemon with `ragon web` answering `on`. The owner's message then gets no send, no receipt and no typing, and no thread or turn is requested.
+
+**Not verified:**
+- **Anything against Signal itself.** That needs a dedicated number, and the owner's phone for the code.
+- **The JSON-RPC parameter shapes beyond the man page:**
+  - `sendReceipt` with a single `recipient` string and `targetTimestamp` as an array;
+  - `sendTyping` with a `recipient` array;
+  - the field names of `listIdentities` (`uuid`, `fingerprint`, `safetyNumber`, `trustLevel` with `TRUSTED_VERIFIED`/`TRUSTED_UNVERIFIED`).
+
+  The stand-in accepts any shape. A mismatch would show up only as a logged error, or, for `listIdentities`, as the owner's messages being refused.
+
+**Verified without installing anything** (superseded by §17, which replaced the apt package with a pinned Temurin JRE): the Java home `setup` used then, `/usr/lib/jvm/java-25-openjdk-arm64`, is the directory Ubuntu 24.04's `openjdk-25-jre-headless` 25.0.4.1 (arm64) installs to. This was read from the package's contents with `apt-get download` and `dpkg -c`.
+
+## 17. Merged, off by default (branch `messengers/optional`)
+
+The user decided that the messenger bridges ship with Ragon, are off by default and are turned on per machine by a command. This section records what merging into `main` changed.
+
+**One command surface: `ragon signal …`.**
+- The launcher links the crate under `cfg(target_os = "linux")` and routes `ragon signal …` to `ragon_signal::cli::run` (`ragon-rs/src/signal.rs`), on a blocking thread so the commands' own runtimes never nest in the launcher's. Elsewhere it says the bridge runs on the Linux node only.
+- The command line moved from `main.rs` to `cli.rs`, so both ways in run the same code. `main.rs` is now the small `ragon-signal` binary, kept on purpose. The system account runs it from `/usr/local/lib/ragon` (users' homes are 0750). Running the 300 MB `ragon` as a system account would also bring its home folder and its rename migration along. The binary also accepts the bridge account's own commands (`serve`, `init`, `retool`, `pair`, `bind`, `trust-owner`, `account`), which `ragon signal` refuses.
+- Setup takes the bridge to install from beside the resolved `ragon`. Before this change it took its own executable, which from `ragon` would have installed `ragon` itself. When the bridge is not installed, setup says how to get it and changes nothing.
+- User-facing text says `ragon signal …` everywhere.
+
+**Release packaging:**
+- `ragon-signal` is built in the same Cargo run as `ragon` on Linux (`BUILDS_SIGNAL` and `SIGNAL_PACKAGE` in `codex_branded_builder.py`). It is a workspace member through the launcher's dependency, so it adds no second copy of any crate. `is_current` requires it on Linux.
+- The release workflow gzips it as `ragon-signal-<target>.gz` and lists it in `ragon-<target>.sha256sums`. It also runs `cargo test --release -p ragon-signal -p ragon-chat` in the build's export.
+- `scripts/package_ragon.sh`, `install.sh` (Linux) and `ragon update` (`update::SIGNAL_COMMAND`, an optional command) install it beside `ragon`. None of them links it onto PATH, and nothing runs it until `ragon signal setup`.
+
+**`setup --refresh`** (`setup::refresh_plan`):
+- copies the bridge again;
+- fetches whatever pinned runtime is not installed yet;
+- rewrites the settings' signal-cli path, version and environment as the bridge's account (`retool`);
+- rewrites the unit and runs `systemctl try-restart`.
+
+The account, the keys and the pairing are left alone. `status` already pointed at this command whenever the two versions differ.
+
+**Java is pinned, not installed with apt.**
+- The JRE is Eclipse Temurin 25.0.4.1+1 (`OpenJDK25U-jre_<arch>_linux_hotspot_25.0.4.1_1.tar.gz`):
+  - aarch64 SHA-256 `34828cbb93ed31c281c84ecb31ddab655d11a802f263c1fc019d42e9e0230fed`;
+  - x86_64 SHA-256 `1731a34baadec5479258ea0202e4d5d865d2efeee60cb0c7d7eb056fe96ca219`.
+- Both hashes were computed from the downloaded archives. They match the `.sha256.txt` files Adoptium publishes beside them.
+- Setup downloads the JRE and checks it as the user, then unpacks it as root to `/opt/ragon/jdk-25.0.4.1+1-jre`, as it does for signal-cli. `JAVA_HOME` points there.
+- `remove` deletes it with signal-cli.
+- Nothing is bundled. The download follows the same pattern `ragon-admin docs setup` uses for ragon-docs's runtime.
+- qrencode, which only draws the QR code in the terminal, is still an apt package. It is installed only when it is missing.
+
+**Off by default:**
+- No installer step, timer or other command creates the account, the unit or the state.
+- `stop` now disables the unit as well, so a reboot does not bring the bridge back.
+- The egress audit names the bridge only while its unit is enabled.
+
+**Verified (this machine, no Signal network):**
+- **The launcher workspace compiled in a scratch export of the pinned Codex** (`prepare_source` + the pinned V8, `nice -n 10`, `-j 8`), with `codex` and `ragon-signal` built together.
+- **Tests, on the tree merged with `main`:**
+  - `ragon-launcher`: 230 passed (1 ignored), including the routing and `update` tests for `ragon-signal`;
+  - `ragon-signal`: 73 unit tests and 3 end-to-end tests;
+  - `ragon-chat`: 47;
+  - `ragon-web-server`: 22 unit and 12 server tests;
+  - the Python suite: 954 passed, with the one failure `main` already has in `test_codex_branded_builder.py`.
+- **The built `ragon`, run with a scratch `HOME`:**
+  - `ragon signal help`, `setup --dry-run` and `setup --refresh --dry-run` printed the plans above;
+  - without `ragon-signal` beside it, setup said how to get one and changed nothing;
+  - `ragon signal serve` was refused;
+  - `ragon chat status` answered, and `ragon chat start` refused because nothing was set up.
+- **signal-cli 0.14.9 on the pinned JRE:** it starts with the arm64 JNI library on its library path, inside an empty network namespace (`unshare -rn`). `--version` and `listAccounts` both answered.
+- **The pins:** all three archives (signal-cli, libsignal for arm64, the JRE) matched their pins when downloaded.
+
+**Not verified** (as of this section; §17.2 records the first real-account run):
+- Anything against a real Signal account.
+- `ragon signal setup` and `--refresh` past `--dry-run`, which would need sudo and a phone.
+- A release build of the new asset in CI.
+
+### 17.1 The signature check on signal-cli
+
+Setup now checks the signal-cli tarball twice before anything is unpacked as root: against the pinned SHA-256, as before, and against the maintainer's detached OpenPGP signature. Both must pass, and either failing stops setup with nothing unpacked.
+
+**The steps** (`setup::runtime_steps`, so `setup` and `setup --refresh` both get them, and `--dry-run` prints them):
+1. `curl` the tarball, then `sha256sum -c` against `SIGNAL_CLI_SHA256`.
+2. `curl` `signal-cli-<version>.tar.gz.asc`, published beside the tarball on the release.
+3. `<bridge> verify-signal-cli --file <tarball> --signature <tarball>.asc`, as the user. `<bridge>` is the `ragon-signal` binary that setup is about to install. The key and its fingerprint are compiled into it, so no keyring or key file is written anywhere.
+4. Only then `sudo tar -xzf`.
+
+The plan's text says so: "Every download is checked before it is unpacked; signal-cli twice, by its pinned SHA-256 and by its maintainer's OpenPGP signature". The step itself is listed as "Check the signature with the maintainer's pinned key (FA10826A74907F9EC6BBB7FC2BA2CD21B5B09570)".
+
+**The pinned key:**
+- `release_signature::SIGNAL_CLI_KEY_FINGERPRINT` is `FA10 826A 7490 7F9E C6BB  B7FC 2BA2 CD21 B5B0 9570`: AsamK `<asamk@gmx.de>`, RSA-2048, created 2016-06-18, sign and certify, no expiry. Its one subkey (`03D1 D926 31C7 91DC 3C72  9435 C25C DEA2 A548 BC9E`) is for encryption only.
+- The armored key is `ragon-rs/signal/keys/signal-cli-AsamK.asc`, embedded with `include_str!`. It is keys.openpgp.org's export: self-signatures only, 1.8 KB.
+- The key file is data and the constant is the pin. A key file whose primary fingerprint is not the constant is refused before any signature is looked at.
+
+**Where the fingerprint came from, and how it was cross-checked:**
+- **The `.asc` itself.** `signal-cli-0.14.9.tar.gz.asc` names its issuer as `FA10826A…B5B09570` (issuer-fingerprint subpacket; RSA, SHA-512, binary document, made). This says which key to look for. It proves nothing on its own.
+- **keys.openpgp.org**, looked up by that fingerprint. It serves the key with the user id `AsamK <asamk@gmx.de>`. keys.openpgp.org publishes a user id only after its address has confirmed it by email, so this source rests on the maintainer's mailbox, not on GitHub.
+- **keyserver.ubuntu.com:** the same key, with the same user id and subkey.
+- **`github.com/AsamK.gpg`**, the key on the GitHub account that publishes the releases: the same key. This is not independent of a compromise of that GitHub account.
+- **The release tag.** GitHub reports the annotated tag `v0.14.9` (tag object `fabfcecb…`) as signed and verified. Its signature names the same issuer fingerprint.
+- **gpgv.** With only this key in a temporary keyring, `gpgv` reported a good signature on the downloaded tarball (`VALIDSIG FA10826A…B5B09570`, primary key `FA10826A…B5B09570`). That tarball also matched the existing SHA-256 pin.
+- signal-cli's README does not name a signing key; it was checked and says nothing about one. The two independent roots are therefore the keys.openpgp.org email confirmation and the GitHub account (its key list and its verified tag).
+
+**The rules** (`ragon-rs/signal/src/release_signature.rs`). Ragon sets these on top of the OpenPGP library's own checks, and anything else fails closed:
+- The embedded key's primary fingerprint equals the pin, and its self-signatures (`verify_bindings`) hold.
+- The `.asc` is one armored block with nothing after it, and the block holds exactly one signature. The parser would otherwise read the first block and ignore the rest, and "one of two signatures is good" is not accepted.
+- The signature is of a binary document and is hashed with SHA-256, SHA-384, SHA-512, SHA3-256 or SHA3-512 (the real one uses SHA-512). A SHA-1 signature is refused even when it is otherwise good.
+- The signature names its issuer by fingerprint, and that fingerprint is the pin. The library would otherwise accept a match on the 64-bit key id.
+- It verifies against the **primary key only**. A signing subkey added to the key file cannot stand in for it.
+- The tarball is streamed through the hash: 124 MB, about a second in a release build.
+
+**Why rpgp, not gpgv or Sequoia:**
+- **rpgp** (the `pgp` crate, 0.21, default features off, so no bzip2) is pure Rust and builds the same on aarch64 and x86_64 Linux. It needs no system tool at setup time.
+- A clean release build of the crate alone took 22 s on this machine (`-j 8`, `nice`, with the SWE-bench run going). In the Codex workspace it adds 39 crates the workspace did not have: RSA, DSA, the older OpenPGP ciphers, `derive_builder` and `snafu`. It adds no second version of any crate the workspace already has (the workspace `Cargo.lock` before and after, compared).
+- **gpgv** with a temporary keyring was the fallback. It is present wherever apt is, since apt depends on it, and it would add no build time. But it needs a dearmored binary keyring written at setup time and its `--status-fd` output parsed for `VALIDSIG`. It would also be one more external program whose version decides what is accepted. The crate's cost was small enough not to need it.
+- **Sequoia** (`sequoia-openpgp`) is the heaviest of the three: a larger dependency tree, and a crypto backend to choose (Nettle by default, a C library). It was not tried.
+
+**Tests:**
+- `release_signature` has six tests:
+  - a good signature by the pinned key passes, with the pin compared without spaces or case;
+  - a bad signature fails: an altered payload, a corrupted signature, an empty file and text that is not a signature;
+  - a signature by another key fails. The same goes for that key's file under the first key's pin, and for one block holding two signatures or two blocks;
+  - a SHA-1 signature fails;
+  - the embedded key has the pinned fingerprint, and the real 0.14.9 `.asc` is binary, SHA-512 and issued by the pin;
+  - missing files fail.
+- The fixtures are in `ragon-rs/signal/testdata/`: two throwaway RSA-2048 keys made with gpg for the tests (`@example.invalid`), a 28-byte payload, their signatures, and the real 488-byte `.asc`. `cli` checks that `verify-signal-cli` exits 2 without its arguments and 1 on a missing or wrong file. `setup`'s plan tests check the order: download, SHA-256 check, `.asc` download, signature check, unpack, with the check run as the user.
+
+**Verified (this machine):**
+- `ragon-signal`: 80 unit tests and 3 end-to-end tests. They passed in a standalone copy of the crate and with `cargo test --release -p ragon-signal` in a scratch export of the pinned Codex workspace with the patches applied.
+- The built binary, run with a scratch `HOME`, on the real signal-cli 0.14.9 tarball:
+  - `verify-signal-cli` passed;
+  - on a truncated copy it failed with "the signature does not verify";
+  - with a test key's `.asc` it failed with "the signature is by 9B87…, not by the pinned key".
+- `setup --dry-run` printed the new steps in that order.
+
+**When `SIGNAL_CLI_VERSION` moves**, the `.asc` comes from the new release. Setup still checks it against the same pinned key, so a release signed with another key fails closed until the pin is changed here, on the same evidence as above.
+
+### 17.2 First live test against a real account (gx10-1a2b)
+
+**What was run.** The owner tested the bridge against their own Signal account on this machine, about 21:00, with Ragon installed from the published release (`ragon update`, replacing a source build):
+1. `ragon signal remove`, clearing the attempt;
+2. `ragon signal setup`, linked mode (the default): sudo, the pinned downloads checked, the QR code scanned from the phone's **Settings → Linked devices**;
+3. a question written in Note to Self, answered in Note to Self;
+4. `/stop`.
+
+The owner reports that all of it worked. `ragon signal status` afterwards: running, mode linked, owner paired yes. The model gate was paused for the test while a benchmark night regraded.
+
+**The failure this followed.** The first attempt, stopped after linking: signal-cli writes an INFO line on stderr, and setup parsed the combined output of `listAccounts` for the account id. Fixed (setup reads the id from the JSON line alone).
+
+**What this verifies:** setup past `--dry-run` with sudo, the pinned downloads and the signature check on the real network, linking by QR code, the system account and unit, pairing with `ragon web`, the Note to Self gate and loop guard, an answer sent with `noteToSelf`, and `/stop`, all with a real account and phone.
+
+**Still not verified against a real account:** dedicated-number mode (§4.1), an approval answered YES or NO from the phone, attachments (`getAttachment`), the disappearing-messages timer, the air-gap notice, an identity-key change, `setup --refresh` past `--dry-run`, and the open Phase 0 items of §12.1 (the memory of an idle and a receiving JVM, long messages, the hosts signal-cli connects to). Matrix and Telegram (`specs/DREAMFERENCE_RAGON_CHAT.md`) have still not run against a real homeserver or bot.
+
+**The label.** The owner decided that Signal drops its preview label on the strength of this run; Matrix and Telegram keep theirs. No product text printed the label, so no code changed.
+
+### 17.3 While a benchmark run holds the model
+
+**The owner's decision:** while a SWE-bench run holds the model gate (specs/DREAMFERENCE_RAGON_SWE_BENCH.md, the model gate), a question from Signal is refused, not let through. The bridge does not pause the gate and does not suggest it.
+
+**What reaches the bridge:** the gate answers the turn's request 503 with `code: benchmark_running` and a message naming the run, its progress and the time left (`model_gate_service.py`, `message`). Codex retries it, then fails the turn with "unexpected status 503 Service Unavailable: The model is running a benchmark (a run in progress, about 9 h left). Try later or run `ragon-admin night pause`., url: …". Before this change the bridge relayed that line as "The answer failed: …", URL and pause hint included.
+
+**What the owner now gets** in Note to Self (`bridge.rs`, `benchmark_holds_model`): "The model on <node> is busy with a benchmark run (a run in progress, about 9 h left), so this question was not answered. Ask again when the run has finished." The parentheses are the gate's own words; the pause hint and the URL are dropped. The question is not queued, and the next one is taken as usual. Read-only probes (`/v1/models`) pass the gate, so `ragon web` and the bridge stay connected meanwhile. Tested with the error text as Codex words it (`a_benchmark_holding_the_model_says_when_to_ask_again`); not exercised against the live gate.
+
+---
+
+## 18. Several Signal accounts on one node (proposal; built, merged)
+
+**Status:** built on branch `signal/multi-account` (§18.8), after the single-account live test passed (§17.2); merged into `main`, and the live test of §18.6 has not been run. The owner decided to build it. The user asked, during the first real-account setup, whether several Signal accounts can be connected, and asked for this spec. Before §18.8, one node held one bridge: the names in `ragon-rs/signal/src/unit.rs` are fixed (`ragon-signal`, `/var/lib/ragon-signal`, `ragon-signal.service`), a second `ragon signal setup` finds the account already there and writes into the first bridge's state, and the `ragon web` device name is the constant `signal-bridge` (`agent.rs`), which `ragon web revoke` matches by name.
+
+### 18.1 Decisions, stated first
+
+1. **One bridge per Signal account: an *instance*.** Each instance is what §2 to §11 describe for the single bridge, with its own name, system account, state folder, unit, signal-cli child, `ragon web` pairing and owner. Nothing in the gate, the commands, the formatter or the agent side changes: a bridge still has exactly one owner (§0.4).
+2. **Both account modes, mixed freely.** An instance is linked (§4.2) or has a dedicated number (§4.1); one node can hold, say, the owner's own account linked and a dedicated number beside it.
+3. **Each instance answers with the agent of the Linux user who set it up.** Setup pairs the instance with the invoking user's `ragon web`, so its Ask threads land in that user's `~/.ragon/ask/`, under that user's air-gap level, sandbox and approvals. Two cases follow, and both are supported:
+   - **One person, several accounts** (a personal and a work number): the same Linux user sets up two instances. Both feed the same Ask history; each instance's `/threads` lists only the threads started from it (its `conversation.json`).
+   - **Several people on one node:** each person has their own Linux user and runs `ragon web` on a port of their own (`ragon web serve --port N` exists; `ragon web start` would need a `--port` too, see §18.5), then `ragon signal setup` as themselves. An instance never answers with another person's agent: an agent reads whatever its user can read (security review), so pairing one person's Signal account with another person's agent would hand them that person's files.
+4. **One system account per instance, not one shared.** Instance `<name>` runs as `ragon-signal-<name>`, with its keys in `/var/lib/ragon-signal-<name>` (0700). A bridge or signal-cli compromised through a crafted message then reaches its own keys only, not the other accounts'. The shared parts are root-owned and read-only to every instance: the JRE, signal-cli and the bridge binary under `/opt/ragon` and `/usr/local/lib/ragon`.
+5. **The existing bridge stays where it is.** The first instance keeps today's names (`ragon-signal`, `/var/lib/ragon-signal`, `ragon-signal.service`) and is called `default`; nothing is moved, so no key is ever copied. Further instances use the template unit `ragon-signal@<name>.service`. A node with one instance looks exactly as it does today.
+6. **One account, one instance.** Linking an account that another instance already holds is refused: two bridges on one account would both answer every note (the 🐦 marker stops them answering each other, §4.2, not both answering the owner).
+7. **At most four instances per node.** Each is a JVM capped at 768 MB (§3), and on unified memory the model's headroom is the host's (`docs/dev/host-safety.md`). Setup refuses a fifth, and refuses any instance while `MemAvailable` is under 2 GB above the existing instances' caps.
+
+**Alternatives not chosen:**
+- **One signal-cli serving several accounts.** signal-cli's `jsonRpc` without `-a` serves every account in its config folder from one JVM, which would save one JVM per account (about 190 MB resident at the link step, §12.1; idle and receiving not yet measured). It puts every account's keys under one uid and one process, against decision 4. Reconsider only if memory, measured, forbids four JVMs.
+- **One dedicated number with several owners** (a household bot). It needs a gate with several owners, each with their own threads and approvals, and the question of whose agent answers whom. With decision 3 the clean form is several instances anyway. Not planned.
+
+### 18.2 Names
+
+| | Instance `default` (today's) | Instance `<name>` |
+|---|---|---|
+| System account | `ragon-signal` | `ragon-signal-<name>` |
+| State | `/var/lib/ragon-signal/` | `/var/lib/ragon-signal-<name>/` |
+| Status | `/run/ragon-signal/status.json` | `/run/ragon-signal-<name>/status.json` |
+| Unit | `ragon-signal.service` | `ragon-signal@<name>.service` (`User=ragon-signal-%i`, `StateDirectory=ragon-signal-%i`, `RuntimeDirectory=ragon-signal-%i`, otherwise §3's unit) |
+| `ragon web` device | `signal-bridge` | `signal-<name>` |
+| signal-cli device name (linked) | `Ragon (<host>)` | `Ragon (<host>, <name>)` |
+
+**The name:** 1 to 12 characters, lowercase letters, digits and `-`, starting with a letter; `default` is reserved for the first instance. That keeps `ragon-signal-<name>` within `useradd`'s 32 characters and safe as a systemd instance name with no escaping.
+
+**The device name matters:** `ragon web revoke` removes every device whose id *or name* matches (`ragon-rs/web/src/auth.rs`, `revoke_device`), so two bridges both named `signal-bridge` would be revoked together by one instance's `remove`.
+
+### 18.3 Commands
+
+Every `ragon signal` command takes `--name <name>`:
+
+| Command | With several instances |
+|---|---|
+| `ragon signal setup [--name N] [--number …]` | Without `--name` on a node that already has `default`: refuses and says to pass `--name`. Installs the shared runtime only if missing; creates the instance's account, state and unit; links or registers; pairs with the invoking user's `ragon web` (its port read from that user's running server, `ragon web status`); writes `bridge.json` with the instance name and the Linux user it serves |
+| `ragon signal status` | Without `--name`: one line per instance (name, mode, the Linux user it serves, running or not, last owner message). With it: today's detail. Reads only the 0644 `status.json` files, which hold no account id and no text (§7) |
+| `ragon signal start\|stop\|trust\|remove` | `--name` required when there is more than one instance; refused otherwise, listing the names |
+| `ragon signal setup --refresh` | Refreshes the shared runtime once, then every instance's unit and `retool`, and restarts each that was running |
+| `ragon signal remove --name N` | Removes the instance's unit, state, account and its `ragon web` device; deletes the shared runtime and bridge binary only when it was the last instance |
+
+**Who may act on an instance:** `setup`, `trust` and `remove` of an instance pair or unpair a `ragon web` device, so they run as the Linux user the instance serves; another user is refused with that user's name. `start` and `stop` only need sudo, so the node's administrator can stop any instance (as with today's single one).
+
+### 18.4 Setup's extra checks
+
+In order, before anything is changed:
+1. the name is valid and unused (no account, state folder or unit of that name);
+2. fewer than four instances exist, and the memory rule of decision 7 holds;
+3. the invoking user's `ragon web` is running and answers (today's check, §6), on that user's port.
+
+After linking or registering, before pairing:
+4. the new account's ACI (`listAccounts`, the same parse as §4.2) is held by no other instance. Each instance's `bridge.json` is read through its own account (`ragon-signal account --state …`, as setup does today). If it is, setup stops, deletes the new instance's state and account, and tells the owner to unlink the new device on the phone.
+
+A failed setup leaves no half instance behind: the instance's unit, state and account are removed, and the shared runtime is kept if another instance uses it.
+
+### 18.5 What else changes
+
+- **The egress audit:** `ragon-admin audit egress` (and the Rust `ragon audit egress`) name every enabled `ragon-signal.service` and `ragon-signal@*.service`, one declared exception per instance. `audit egress --signal`, when built (§16), traces every enabled instance's processes, or one with `--signal <name>`; the Signal host list is unchanged (§10). Today both audits hold the single unit name (`dreamference/audit/egress_audit.py`, `SIGNAL_UNIT`).
+- **The air gap:** each instance asks its own `ragon web` (§11), so it follows its own Linux user's level. Nothing else changes.
+- **Host safety:** the four-instance cap and the memory rule of decision 7; each unit keeps `MemoryMax=768M`.
+- **The Signal account's device limit** (§4.2 item 6) is per account and unaffected: one instance takes one linked device of its own account.
+- **Code:** `unit.rs`'s constants become functions of the instance name (`account(name)`, `state_dir(name)`, `unit_name(name)`, `runtime_dir(name)`, `unit_text(name)`), with `default` mapping to today's values; `agent::DEVICE_NAME` becomes `device_name(name)`; `setup::install_plan` splits into the shared runtime (once) and the instance (each); `remove_plan` deletes the shared runtime only for the last instance; `cli.rs` parses `--name`, lists instances by their state folders under `/var/lib`, and applies §18.3's refusals. `serve` already takes `--state` and needs no change. `ragon web start` gains `--port`, since a second Linux user's server cannot also take 3100 (today only `serve` and `ask` take it); the bridge already takes the port it pairs on (`setup --port`).
+
+### 18.6 Tests
+
+- **Names:** `default` maps to exactly today's names, so an existing node's unit, state and account are untouched (a test pins each string); a named instance maps to §18.2's table; invalid and reserved names are refused.
+- **Plans:** a second instance's setup plan has no runtime download when the runtime exists and creates only its own account, state and unit; `remove` of one of two instances never deletes `/opt/ragon` or the bridge binary, and the last one does; `remove` revokes `signal-<name>` only, never `signal-bridge`.
+- **Refusals:** setup without `--name` beside `default`; a fifth instance; a duplicate ACI (from the fixture output of §4.2, including the stderr line signal-cli writes after a link); `remove` or `trust` by a Linux user other than the one served.
+- **Units:** the template unit's text, with `%i` in `User=`, `StateDirectory=` and `RuntimeDirectory=`, and §3's hardening lines unchanged.
+- **The audit:** two enabled instances give two declared exceptions; a disabled one gives none.
+- **Live, before it is called done:** two linked accounts (or one linked and one dedicated) on gx10-1a2b, each answering only in its own Note to Self; the memory of two JVMs read beside a resident model server; `remove` of one leaving the other running.
+
+### 18.7 For the user to confirm
+
+1. Both cases of decision 3 (one person with several accounts, and several people as separate Linux users), or only the first.
+2. The cap of four instances.
+3. Separate system accounts per instance (decision 4) at the cost of one JVM each, rather than one shared signal-cli.
+
+### 18.8 What was built (branch `signal/multi-account`)
+
+The owner decided to build this proposal once the single-account live test had passed (§17.2). Built as §18.1 to §18.6 describe, with these specifics:
+
+- **Names (`unit.rs`):** an `Instance` type: `account()`, `state_dir()`, `runtime_dir()`, `unit_name()`, `unit_file()`, `device_name()` and `link_name(host)`; `default` maps to exactly today's names, and `unit_text` is pinned byte for byte to the unit a single bridge always had, because `setup --refresh` rewrites the live unit from it. `template_unit_text` is the same unit with `%i` in `User=`, `Group=`, `StateDirectory=`, `RuntimeDirectory=`, `ExecStart=` and `Description=`; a test checks that every other line is the first unit's.
+- **Reserved names:** `default`, and also **`bridge`**, which §18.2 did not list: its device would be `signal-bridge`, the first instance's, and `ragon web revoke` matches by name.
+- **State:** `bridge.json` gains `instance` and `user` (the Linux user served); a file without them (every bridge set up before this) loads as `default`, serving nobody recorded. `status.json` gains `instance` and `user`. `ragon-signal account` prints `<number> <mode> <user|-> <aci|->`; a bridge binary from before prints two words, and both are read.
+- **Finding instances:** by their state folders under `/var/lib` (names only), the account in `/etc/passwd`, and the first unit's file or a further unit's enablement link. A trace of any of these takes the name, so a half-removed instance is never written into. Every one of these reads goes through `cli::Host`, whose root is a scratch folder in the tests: no test reads the real `/var/lib`, `/run` or `/etc`.
+- **Setup:** without `--name` beside `default`, refused with the `--name` hint; a name in use, refused with the `remove` command. With `--name` (other than `default`) on a node with no bridge at all, refused, telling the user to run plain `setup` first (fixed: it made a named first bridge and no `default`). Decision 5 says the first instance is `default` but not what a name given for it means; setting `default` up under another name the user typed, or ignoring the name, were the alternatives, and refusing was chosen as the one that cannot surprise. `--name default` sets up the first; a node whose `default` was removed while a further bridge stays is not empty, so another name is accepted there. Then the cap of four and the memory rule (below); then, on a real run only, the user's own `ragon web` must answer (`ragon web status`, whose port is used unless `--port` is given). A dedicated `--number` another instance holds is refused before registering (registering it again would take it from that instance); this and the one-user check read the other instances through sudo, so they run after the plan is shown and accepted, before its first step; a linked account is checked after linking, by number and account id (§18.4 item 4). The shared runtime is fetched only where missing (setup used to fetch signal-cli every time); the bridge binary is installed when none is there or the one installed is another build, compared by SHA-256 (`setup::installed_bridge`), because an older binary would pair a further instance as `signal-bridge`; an identical one is left alone (fixed: a second `setup` reinstalled it under the running `default`). **Replacing it replaces the binary under the bridges already running:** `install` writes a new file, so a running bridge keeps the old build in memory until it restarts (a crash, a reboot, `setup --refresh`) and runs the new one from then on, with its own unchanged `bridge.json`. The plan says so in that step, naming the bridges, and setup prints a ⚠️ line before it asks; setup itself restarts none of them.
+- **A failed setup is undone** (`abandon`): from the first failed step on, the instance's unit, state and account are removed with the same plan as `remove`, keeping the shared runtime if another instance uses it; `unregister` is never run on that path (the number may be the owner's own, or another instance's). The one exception is a dedicated bridge whose owner did not send the pairing code within ten minutes: it is set up and running, so it stays, as before.
+- **Commands:** `start`, `stop`, `trust`, `remove`, `unit` and `status --name` act on the one instance there is, or need `--name` when there are several (refused with the names, before any sudo). `start`, `stop`, `trust` and `remove` also refuse, before any sudo, an instance that is not on the node: a `--name` that names none (listing the names there are), or any of them on a node with no bridge at all; `remove --dry-run` too, so no removal plan is printed for a bridge that does not exist (fixed, after the first live checks went on to sudo). `remove` accepts any trace of the instance (§18.8, finding instances), so a half-removed one can still be cleaned up; the other three need its state folder. `status` without `--name` and several instances prints one line each: name, mode, user, running, last owner message. `setup --refresh` refreshes the runtime and binary once, retools each instance as its own account, writes each unit file once, and `try-restart`s every instance in one command. `remove` of one of several keeps the runtime and binary, deletes the template only with the last further instance, and revokes only that instance's device.
+- **Who may act:** `remove` and `trust` read the instance's `user` through its account and refuse anyone else, naming the user served; an instance from before §18 records nobody and stays open to anyone with sudo, as it was (so the live `default` can still be removed after an upgrade).
+- **`ragon web start --port N`** (`ragon-rs/web`): the user unit gets `--port N` when it is not 3100, so the default unit's text is unchanged.
+- **The egress audit** (`EgressAudit.declared_exceptions`) names each further instance with an enablement link that `systemctl is-enabled` confirms, one line each; the first instance's line is unchanged. `audit egress --signal` (tracing the bridges' own connections) is still not built (§16), and the Rust `ragon audit egress` is Windows-only and has no Signal part.
+
+**Open questions of §18.7, and the conservative choice built until the owner answers:**
+1. **Several people on one node:** built for one Linux user only. Every instance records the user it serves, and setup refuses when another instance on the node serves a different user (`setup::serves_someone_else`). Lifting it is that one check; the rest (each user's own `ragon web` port, the who-may-act refusals, `ragon web start --port`) is built.
+2. **The cap of four:** kept at four, with the memory rule.
+3. **One system account per instance:** kept (decision 4), at one JVM each.
+
+**The memory rule applies to the first instance too:** setup refuses any bridge while `MemAvailable` is under 2 GB above 768 MB times the bridges already there, so a node with no bridge needs 2 GB available. A single bridge's setup never checked memory before.
+
+**Tests:** `ragon-signal` 98 unit tests and 3 end-to-end tests (names pinned for `default`, a named instance's names, invalid and reserved names, the template, the plans for a second instance, `remove` of one of two and of the last, `refresh` over three, the account line from both binaries, duplicate number and id, the user checks, the memory rule, and the command refusals on a scratch node); `ragon-web-server`'s unit test for `--port`; the Python audit test for two enabled instances and a disabled one.
+
+**Fixes after the first live checks, none needing a phone:** `start`, `stop`, `trust` and `remove` (and `remove --dry-run`) refuse a bridge not on the node before any sudo; `setup --name N` on a node with no bridge is refused (decision 5); a second `setup` leaves an identical bridge binary alone. `ragon-signal` now has 103 unit tests; the three end-to-end tests are unchanged.
+
+**Not done:** the live test of §18.6 (two accounts on gx10-1a2b, the memory of two JVMs beside the model server, `remove` of one leaving the other running). Nothing here was run against the live bridge.
+
+## 19. After the first mornings of real use
+
+On one morning the owner's Note to Self thread gave useless answers. What the rollout and the journals show, and what each fix is (the owner's decision; `ragon chat` has the same fixes, specs/DREAMFERENCE_RAGON_CHAT.md §16):
+
+- **A screenshot reached the model as an empty message.** signal-cli ran with `--ignore-attachments`, so the image was never downloaded; `getAttachment` failed ("Could not find attachment with ID"), the bridge logged it and started the turn with the empty text alone. The model then answered about the thread's previous topic.
+- **The thread was two days old.** The screenshot was answered in the thread of the day before yesterday's questions.
+- **Fifteen minutes "hanging".** Not the command it seemed: the Python command finished at once; the model server then decoded for fifteen minutes (38,000 to 121,000 tokens of context, a repetition loop) without streaming a word, until Codex's stream idle timeout (900 s in the user's config) ended the request. Nothing in the turn could hear anything meanwhile, so only the bridge can bound it (§19.3).
+- **Ninety-two tool calls**, curl on search engines (captchas), sleep-and-retry, and quick messages queued as separate turns.
+
+### 19.1 Images and other attachments (branch `chat/images`)
+
+- **Downloaded, then deleted unless the owner's.** signal-cli runs without `--ignore-attachments` in both modes. Each `receive` notification names its attachments wherever they sit (the message's own, a quote's thumbnail, a link preview's image: `envelope::attachment_ids`); every file the gate does not accept as the owner's is deleted from `signal-cli/attachments` at once, and a sweep every minute (and at start) deletes anything not held after two minutes and anything after an hour. The owner's are held until their turn uploads them. In linked mode this means images from the owner's other conversations touch the bridge's state folder (0700, the system account's) for a moment before they are deleted; this is the trade for images in Note to Self at all.
+- **The conversation decides what the model gets** (`bridge::compose`, a pure function): the bridge uploads each attachment (`Action::Upload`) with `read=1`, and `ragon web` answers its path, the text read off an image by the offline reader, and whether the served model takes images. Then:
+  - an image goes to the model as `localImage` when the model takes images, and its text as `[Screenshot text: …]` whenever any was read;
+  - another file is saved and named, as before;
+  - **with nothing usable** (no words, no text read, a model without images), the bridge answers "I can't read this image; describe it or paste the text." and starts no turn; an attachment that never arrived gets "I couldn't receive that attachment; …". **An empty message never reaches the model**: a regression test replays the morning's message.
+- **Whether the model takes images** is asked of the model server, never assumed: the launcher reads `has_image_understanding` from SGLang's `/model_info` (`/get_model_info` on older servers) and writes `input_modalities` into the catalog (`ragon-rs/src/vision.rs`); `ragon web` reports `vision: true` only when the catalog says `image`. A server that does not say (vLLM, llama.cpp) gets the text alone. `bridge.json`'s `vision` (never set by setup) still forces it on.
+- **The offline reader** is Tesseract, the distribution's package (`tesseract-ocr`): `ragon signal setup` and `setup --refresh` install it when it is missing. `ragon web` runs it (`ragon-rs/web/src/ocr.rs`) with a 30-second limit, one thread and a 1.5 GB address space, in every installed language (`apt install tesseract-ocr-<code>` adds one), and passes at most 4,000 characters on. No cloud service, no network.
+
+### 19.2 A new thread after a long silence (branch `chat/fresh-thread`)
+
+- **The rule:** a question that arrives when the conversation has not moved for `[chat] new_thread_after_hours` (default 4; 0 switches it off) starts a new thread, and the bridge says so in one line: "New thread (the last message was 16h00m ago); /use 2 to go back." `/threads`, `/use N` and `/new` are unchanged; `/use` counts as the conversation moving, so a thread taken back is not left again by the next question.
+- **What counts as moving:** the owner's question and the end of an answer (`Bridge::last_activity_ms`, saved in `conversation.json` as `lastActivityMs`). A conversation saved before this was kept has no time, and its next question starts a new thread.
+- **Where the setting comes from:** the `[chat]` table of the user's own configuration (`~/.config/dreamference/config.toml`, never a repository's), which the bridge's system account cannot read: `ragon web` serves it at `/api/chat/settings` (`ragon-rs/web/src/chat_settings.rs`), and the bridge asks at start and every minute.
+
+### 19.3 An answer's bounds, and the phone prompt (branch `chat/bounds`)
+
+- **The fifteen minutes were a model call, not a command.** The rollout shows the Python command ending at once; then SGLang decoded from 38,000 to 121,000 tokens of context (acceptance 0.95, a repetition loop inside a tool call's argument, which its `qwen3_coder` parser buffers, so nothing streamed) until Codex's stream idle timeout (900 s) ended it. A per-command timeout would not have seen it; only the bridge's clock does.
+- **The bounds** (`limits.rs`, the same file from `Verdict` on in both bridges; `tests/test_chat_limits.py` holds them equal), from `[chat]` in the user's config through `/api/chat/settings`:
+
+| Key | Default | What happens past it |
+|---|---|---|
+| `answer_seconds` | 180 | the agent is told, by `turn/steer`, to stop and answer with what it has |
+| `tool_calls` | 25 | the same (every item that is not a message, reasoning or a plan counts) |
+| `command_seconds` | 60 | the same, for one command still running |
+
+  Thirty seconds after that "answer now", a turn still running is interrupted (`turn/interrupt`), the owner is told in one line ("This is taking too long (…), so I asked for an answer with what was found so far."), and a **final turn** asks for the answer from what was found, without tools. The final turn has 90 seconds; past them it is interrupted and the owner gets what it wrote and "No answer came in time, so I stopped it. Ask again, maybe more narrowly." `/stop` still stops everything, with no final turn. 0 switches a bound off.
+- **The phone prompt, `chat`:** the bridges open threads with `thread/start {prompt: "chat"}`, `ask` plus `ragon-rs/prompts/chat.md`: answer within minutes, `ragon-search` and `ragon-fetch` first, never a search engine's result page with curl, never sleep-and-retry, `timeout` on a command that could hang, no clarifying question (the most likely reading, typos included, said in one short line, then the whole answer; "it" with nothing to point at is what the user last named, never an earlier topic), a question only before something destructive or costly, through the approval flow, no mention of an attachment the message does not carry, and what `[Screenshot text: …]` and `[Attached and saved in this thread's folder: …]` are. `ragon web`'s policy names it (`namedPrompts`, `scratchPrompts`, a conformance case); a `ragon web` that refuses it gets `ask`.
+- **How a phone thread is recognised:** its scratch folder is `ask/chat-<hex>` instead of `ask/q-<hex>` (`ask::folder_prefix`), so the model gate's extension gives a phone's thread its own output-token cap from the folder alone; nothing extra reaches the model. The desktop app counts both as Ask threads.
+- **Cave mode (§19, item 6; removed).** On one morning ultra applied to phone threads by design (it was the user-level default). Its "answer every question first" did not make the wrong answer: the empty message did, and the model answered the thread's last question. The cave texts are not changed (they are the benchmark's, byte for byte); the phone prompt said instead to ask back about anything referred to but not visible, and says to take the most likely reading and never answer about an earlier topic in its place. Since the cave-mode study of the same day (branch `cave/default-study`) the phone started at `lite` and `/cavemode` worked from the phone until cave mode and `/cavemode` were removed across the launcher, `ragon web` and the bridges (`ragon-rs/signal/src/command.rs`, `tests/test_removed_cave_settings.py`).
+
+### 19.4 Quick follow-ups join the answer in hand (branch `chat/merge-quick`)
+
+Once a second message sent while the first was answered became a separate turn of its own, answered after sixteen minutes. Now (`Bridge::merge`) a follow-up joins the question in hand:
+- while its thread opens or its attachments upload, its text (and attachments, while opening) is added to the question;
+- while the answer runs, it is steered in with `turn/steer` (`Action::AddToTurn`), at once, or as soon as the turn's id is known; a steer the server refuses (the turn was ending) comes back as `SteerFailed` and is asked next.
+
+It waits as the next question instead when it cannot join: an attachment after the question has gone, an approval waiting for YES or NO, a stop under way, or the final turn after a time-out (§19.3). Everything that waited is then asked as **one** question, texts joined by blank lines. `/stop` stops the answer and empties the queue, as before; the queue still holds at most five.
+
+### 19.5 Voice notes (branch `chat/voice`; owner's approval, MOONSHOT §3.4)
+
+A voice note (an `audio/*` attachment) is not uploaded: the bridge sends it to `ragon web`'s `/api/transcribe`, which passes it to the speech-to-text service on the node (speaches, `ragon-admin voice start`; nothing leaves the machine). What was heard is said back first ("Heard: …"), so a mis-hearing is seen before the answer is trusted, and joins the question's text. A failure is said ("I couldn't transcribe the voice message (…); type the question instead.", with `ragon web`'s reason, which names `ragon-admin voice start` when the service is not running); a voice note alone then asks nothing.
+
+### 19.6 Files back (branch `chat/files-back`; owner's approval, MOONSHOT §3.7)
+
+After an answer, the bridge asks `ragon web` for the files the agent changed in the thread's folder during the turn (`/api/ask/files`, the folder's own regular files, never through a link, never hidden ones). One the answer names, and that is not the owner's own upload, is offered: "Ragon made report.md (2 KB). Reply YES to get it here, or NO." (at most three per answer; the phone prompt asks the agent to name what it made). Only YES sends it (`/api/ask/file`, then a Signal attachment from the bridge's outbox, deleted after); NO or ten minutes keeps it in the folder. Larger than 95 MB: named and kept. Never at `/airgapped on`: the bridge offers nothing, and `ragon web` gives out no file at a user-level `on`. The offer is the bridge's own question: answering it never answers the agent.
+
+### 19.7 Night Shift from the phone (branch `chat/night`; owner's approval, MOONSHOT §3.5)
+
+- **`/night add <task>`:** the task, followed by the thread's last question and answer as context ("Context, from the phone conversation this was asked in:"), goes to a repository the owner confirms: `ragon web`'s `/api/night/repos` names the candidates (`[chat] night_repos` in the user's config, and every repository a task was ever queued in, each an existing checkout). One: "Queue this for Night Shift tonight, in app? … Reply YES or NO." Several: a numbered list, answered by the number. Nothing is queued before that answer; then `ragon web` runs `ragon night add` in the repository (`/api/night/add`, refused for any other path) and the bridge relays its lines. None: the bridge says how to set one up.
+- **`/night status`:** the queue (`/api/night/status`: tasks not finished, and those finished in the last 36 hours).
+- **The morning report:** every five minutes the bridge asks `/api/night/reports?after=<the last sent>` and sends each new report (cut at 3,500 characters) into the conversation; the last one sent is kept in `conversation.json` (`nightSeen`), and the first look after a fresh start only notes the newest, so nothing old is repeated. Signal gets reports unless `[chat] night_report_to` leaves it out (the default is `["signal", "matrix"]`); none at `/airgapped on`.
+
+
+### 19.8 Speed and feedback (branch `signal/latency`,; streaming is the owner's decision of the same day)
+
+The owner found answers over Signal slow. What the rollouts, the journal and `ragon signal status` on gx10-1a2b showed:
+
+- **The model server was fast and idle** (a short completion through the gate: 0.35 s).
+- **The earlier question took 40.1 s of agent time**, measured from the turn's user item to its answer: the first model call 3.2 s, `ragon-search --read` 3.1 s, the second call 6.6 s (an 8,000-token prefill of what the search returned), **`image_search` 14.1 s**, and 12.8 s writing a 494-token answer that embedded `/images/…` links no phone bridge can show. In Note to Self nothing showed for all of it: no typing (Note to Self has none), no receipt, and the first progress note only after a minute. The owner asked the same question again on Telegram 57 s after the Signal answer had been written.
+- **The second thread (the Telegram one) showed the tool confusion**: a call to a `ragon_fetch` tool that does not exist, then Code Mode's `exec` with a script calling an undefined `exec()`, then `exec_command`, which worked.
+- **The receive path is not the cause**: signal-cli runs `jsonRpc --receive-mode on-start`, one persistent connection, not polling, and the bridge has no wait before acting: a message opens its thread or starts its turn at once (§19.4's merging applies only while an answer is in hand). The journal's "Connection closed unexpectedly, reconnecting in 100 ms" lines cost 100 ms each.
+- **The unit lost an option**: `Environment=JAVA_TOOL_OPTIONS=-Xmx256m -XX:+UseSerialGC` unquoted made systemd drop `-XX:+UseSerialGC` ("Invalid environment assignment") on every start. The unit now quotes it; `ragon signal setup --refresh` rewrites it.
+
+What changed:
+
+- **The answer streams in, in one message** (`bridge::StatusLine`, carried out in `serve.rs`). Dedicated mode: typing from the moment a question is taken (before, only once its thread was open) until the answer's first words, which open a message; linked mode: a status line, "🐦 Working on it…", sent at once, saying what the agent does as it changes ("searching the web", "reading a page", or the command; at most three such changes, each at least 4 s apart), then the answer as it is written. The message is edited at most every 3 s and at most eight times, and the whole answer is the last edit, so a message has at most ten versions, as Signal allows; parts past the first, and `answer.md`, come as messages of their own. While the answer streams, no progress note is sent. An edit signal-cli refuses ends the edits for that answer, and the whole answer then comes as a message of its own (`send` with `editTimestamp`; signal-cli 0.14.9 edits Note to Self). Privacy is unchanged: edits are end-to-end encrypted messages like any other, and only the final version shows.
+- **Two timing lines per question in the journal** (`timing.rs`), ids and durations only, never text: at receipt, from Signal's own timestamps (the phone's, `serverReceivedTimestamp`, `serverDeliveredTimestamp`), phone to server, held at the server, server to the bridge; after the answer is acknowledged by signal-cli, from the bridge's receipt: first shown, turn started, first output, turn ended, answer acked, the time the send took, and end to end from the phone's timestamp (two clocks, so off by their difference).
+- **A phone's thread runs without `image_search`**: `promptThreadConfig` in `ragon-rs/web/policy.json` gives a `chat` thread `mcp_servers.ragon_images.enabled = false` when it is started and when it is resumed (an existing thread is known by its folder, `chat-<hex>`); both `ragon web` and the desktop app apply it, and the conformance cases hold it. The `command = "true"` beside it only keeps the entry a valid server on a node without image search. Switching Code Mode off per thread does not work (the catalog's `tool_mode`, not `features.code_mode`, gives `exec`), so the phone prompt says instead to run commands, `ragon-search` and `ragon-fetch` included, with `exec_command`, never through `exec`.
+- **The phone prompt searches only when the answer needs it**: "always first" became current facts, what should be checked and what the user asks to look up; a greeting, a question about the conversation, arithmetic, rewording and what the model knows well are answered at once, and one `ragon-search --read` is usually enough. "The phone shows text, not pictures: never search for images."
+
+Measured with the same question through `ragon exec` and the `chat` prompt in a scratch Ask folder against the node's model server (agent time, user item to answer): before, 19.4–36.8 s (mean 28.8 s over 4), every run through Code Mode's `exec`, two of them with 3–5 tool calls; after, 18.3–33.1 s (mean 23.6 s over 5), every run one `exec_command` (`ragon-search`). "What are you doing?" takes about 2 s either way with a warm cache (the 8.2 s was a cold prefix). What remains is the model writing 300–600 output tokens. With streaming, the first words show seconds after the search returns instead of at the end.

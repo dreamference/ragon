@@ -1,0 +1,19 @@
+# Ragon's own apps (Gmail, Google Drive, Google Calendar) for Codex's `/apps` and as read-only MCP
+# tools (specs/DREAMFERENCE_RAGON_APPS.md). A crate of its own, as ragon-tools and
+# ragon-airgapped are, because patch 0022 calls it from the TUI and the app server, which the
+# launcher crate depends on: serde_json, the standard library and two std-only Ragon crates.
+[package]
+name = "ragon-apps"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "ragon_apps"
+path = "src/lib.rs"
+
+[dependencies]
+ragon-airgapped = { path = "../airgapped" }
+ragon-node-locator = { path = "../node-locator" }
+serde_json = { workspace = true }

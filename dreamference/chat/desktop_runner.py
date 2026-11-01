@@ -1,0 +1,549 @@
+"""Ragon Desktop App Runner.
+
+This module provides the DesktopRunner class, which builds and launches the Electron app in
+`desktop/electron` (specs/DREAMFERENCE_RAGON_DESKTOP_ELECTRON.md), built the way the Codex
+desktop app is built: Electron Forge, with `ragon` bundled inside as `resources/ragon`.
+
+The app's windows show the Ragon UI built from `desktop/ui` and bundled by the same Vite build
+as the main process. Each shows Ask or Work, all on the one `ragon app-server` the app starts
+(specs/DREAMFERENCE_RAGON_ASK.md §18.6; several windows: DESKTOP_ELECTRON §13). It does not need
+`ragon web`, so nothing is checked before a window opens: it says on its own start-up screen what it is waiting for.
+
+It follows the same shape as the agent runners: provision the tooling if it is missing, then hand
+off to a subprocess.
+"""
+
+import hashlib
+import json
+import os
+import platform
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Final
+
+from dreamference.chat.desktop_installer import APPARMOR_PROFILE_NAME, CARGO_BIN, DesktopInstaller
+
+# Left in `node_modules` by a successful `npm ci`: the hash of the lock file it installed from.
+LOCK_STAMP: Final[str] = ".ragon-lock-sha256"
+
+# The project lives beside the Python package rather than inside it: it has its own build system,
+# and `pip install -e .` has no business copying it around.
+DESKTOP_PROJECT_DIR: Final[str] = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "desktop"
+)
+
+# The Electron project and Work's UI.
+ELECTRON_DIR: Final[Path] = Path(DESKTOP_PROJECT_DIR) / "electron"
+UI_DIR: Final[Path] = Path(DESKTOP_PROJECT_DIR) / "ui"
+
+# `app.json`: the product name, identifier, scheme and window settings the app and these tests read.
+APP_CONFIG: Final[Path] = ELECTRON_DIR / "app.json"
+
+# The binaries bundled into the app, copied here from the installed `ragon` build before packaging.
+RESOURCES_DIR: Final[Path] = ELECTRON_DIR / "resources"
+# The app's own 256x256 mark, the size the XDG icon folder below names; the same file the package
+# and the window use, so the launcher entry cannot drift from them.
+APP_ICON_SOURCE: Final[Path] = ELECTRON_DIR / "icons" / "128x128@2x.png"
+BUNDLED_BINARIES: Final[tuple] = ("ragon", "codex-code-mode-host")
+
+# Where a desktop entry and its icon go for the current user. A deb puts these under /usr;
+# running from a source checkout, they belong in the XDG user directories instead.
+DESKTOP_ENTRY_DIR: Final[str] = os.path.expanduser("~/.local/share/applications")
+ICON_DIR: Final[str] = os.path.expanduser("~/.local/share/icons/hicolor/256x256/apps")
+DESKTOP_ENTRY_NAME: Final[str] = "ragon-app.desktop"
+ICON_NAME: Final[str] = "ragon-app"
+
+# GNOME matches a running window to its desktop entry by `WM_CLASS`, and shows a generic icon when
+# nothing matches. Electron sets the class from the app's name (`app.setName`), `Ragon`.
+WINDOW_CLASS: Final[str] = "Ragon"
+
+# Characters that oblige an argument of a desktop entry's Exec key to be quoted (Desktop Entry
+# Specification, "The Exec key"); a checkout path with a space would otherwise run its first word.
+EXEC_RESERVED: Final[frozenset] = frozenset(" \t\n\"'\\><~|&;$*?#()`")
+# Those escaped with a backslash inside the quotes.
+EXEC_ESCAPED: Final[frozenset] = frozenset('"`$\\')
+
+# The architecture names Electron's packager puts in `out/<name>-linux-<arch>/` (Node's
+# `process.arch`), by what `platform.machine()` says.
+PACKAGER_ARCH: Final[dict] = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "x64", "amd64": "x64"}
+
+# Chromium's HTTP cache, inside the app's data directory, emptied on launch so a window never
+# shows a page from before an upgrade. Emptying it costs little: the UI is bundled in the app.
+# The `Cookies` file beside it is left alone.
+WEBVIEW_CACHE_DIR_NAME: Final[str] = "Cache"
+
+
+class DesktopRunner:
+    """Builds and runs the Ragon desktop app."""
+
+    @classmethod
+    def _environment(cls) -> dict:
+        """Returns the environment the build tools and the app run with.
+
+        `~/.cargo/bin` is put on PATH for the Codex build, which shares this helper; a rustup
+        installed during the same run is on disk but absent from the inherited PATH.
+
+        Returns:
+            dict: A copy of the current environment.
+        """
+        environment = dict(os.environ)
+        if os.path.isdir(CARGO_BIN) and CARGO_BIN not in environment.get("PATH", ""):
+            environment["PATH"] = f"{CARGO_BIN}{os.pathsep}{environment.get('PATH', '')}"
+        return environment
+
+    @classmethod
+    def _ensure_toolchain(cls, build: bool = False) -> bool:
+        """Checks Node and npm are present (and, for the `.deb`, dpkg).
+
+        Nothing is installed, since all of them come from the system.
+
+        Args:
+            build (bool): Whether the `.deb` is to be made.
+
+        Returns:
+            bool: True if the toolchain is complete.
+        """
+        complete, _ = DesktopInstaller.report(build)
+        return complete
+
+    @classmethod
+    def _npm(cls, args: list[str], cwd: Path) -> bool:
+        npm = shutil.which("npm")
+        if npm is None:
+            print("❌ npm is needed to build the desktop app: install Node.js 22.13 or later.")
+            return False
+        return subprocess.call([npm, *args], cwd=cwd, env=cls._environment()) == 0
+
+    @classmethod
+    def lock_hash(cls, directory: Path) -> str:
+        """The SHA-256 of a project's `package-lock.json`, which names every package `npm ci` installs.
+
+        Args:
+            directory (Path): The npm project.
+
+        Returns:
+            str: The hash, or "" when the project has no lock file.
+        """
+        lock = Path(directory) / "package-lock.json"
+        return hashlib.sha256(lock.read_bytes()).hexdigest() if lock.is_file() else ""
+
+    @classmethod
+    def packages_current(cls, directory: Path) -> bool:
+        """Whether a project's `node_modules` was installed from its lock file as it is now.
+
+        a stamp `npm ci` left there holds the lock file's hash. A dependency added since (smol-toml
+        was, and Rolldown then could not resolve it) changes the hash, so the packages are installed
+        again.
+
+        Args:
+            directory (Path): The npm project.
+
+        Returns:
+            bool: True when `node_modules` exists and its stamp matches the lock file.
+        """
+        stamp = Path(directory) / "node_modules" / LOCK_STAMP
+        return stamp.is_file() and stamp.read_text().strip() == cls.lock_hash(directory)
+
+    @classmethod
+    def mark_installed(cls, directory: Path) -> None:
+        """Records, after a successful `npm ci`, which lock file `node_modules` was installed from.
+
+        Args:
+            directory (Path): The npm project.
+        """
+        modules = os.path.join(directory, "node_modules")
+        if os.path.isdir(modules):
+            with open(os.path.join(modules, LOCK_STAMP), "w") as stamp:
+                stamp.write(cls.lock_hash(directory) + "\n")
+
+    @classmethod
+    def install_packages(cls) -> bool:
+        """Installs the two projects' npm packages from their lock files, again whenever a lock file changed.
+
+        Returns:
+            bool: True when both have their `node_modules`, as their lock files say.
+        """
+        for directory, what in (
+            (UI_DIR, "the app window's packages (desktop/ui)"),
+            (ELECTRON_DIR, "the app's packages (desktop/electron: Electron, Forge, Vite)"),
+        ):
+            if cls.packages_current(directory):
+                continue
+            print(f"📦 Installing {what}...")
+            if not cls._npm(["ci", "--no-audit", "--no-fund"], directory):
+                return False
+            cls.mark_installed(directory)
+        return True
+
+    @classmethod
+    def has_source(cls) -> bool:
+        """Tells a checkout from a release install, which has the package but no `desktop/` project.
+
+        Returns:
+            bool: True if the Electron project is beside the package, i.e. the app can be built here.
+        """
+        return ELECTRON_DIR.is_dir() and (ELECTRON_DIR / "package.json").is_file()
+
+    @classmethod
+    def _no_source(cls) -> int:
+        """Says why the desktop app cannot be built on a machine installed from a release.
+
+        Returns:
+            int: 1.
+        """
+        print(
+            "❌ The desktop app is built from the repository's desktop/ project, which a release "
+            "install does not have."
+        )
+        print(
+            "💡 Install the app from the release instead: the Ragon .deb on the release page "
+            "puts `ragon-app` in your launcher."
+        )
+        print(
+            "💡 Running an unpacked build (a zip) instead: run `./install-sandbox-profile.sh` beside its "
+            'binary once, or Chromium\'s sandbox is refused ("No usable sandbox!").'
+        )
+        return 1
+
+    @classmethod
+    def _run_installed(cls) -> int:
+        """Opens the desktop app a release's `.deb` installed, where there is no project to run.
+
+        Returns:
+            int: The app's exit code, or 1 if it is not installed.
+        """
+        installed = shutil.which("ragon-app")
+        if installed is None:
+            return cls._no_source()
+        print("🚀 Opening the Ragon desktop window...")
+        return subprocess.call([installed], env=cls._environment())
+
+    @classmethod
+    def copy_bundled_binaries(cls) -> bool:
+        """Copies `ragon` and `codex-code-mode-host` from the installed build into `resources/`, where
+        Forge packages them beside the app (the Codex app bundles its agent the same way). A
+        `rg` on PATH rides along too, for the agent's fuzzy file search.
+
+        Returns:
+            bool: True when `ragon` was copied.
+        """
+        from dreamference.runner.codex_branded_builder import CodexBrandedBuilder
+
+        bin_dir = Path(CodexBrandedBuilder.executable_path()).parent
+        RESOURCES_DIR.mkdir(parents=True, exist_ok=True)
+        for name in BUNDLED_BINARIES:
+            source = bin_dir / name
+            if not source.is_file():
+                print(f"❌ {source} is not built: run `ragon-admin codex build` first.")
+                return False
+            shutil.copy2(source, RESOURCES_DIR / name)
+        rg = shutil.which("rg")
+        if rg:
+            shutil.copy2(rg, RESOURCES_DIR / "rg")
+        return True
+
+    @classmethod
+    def run(cls) -> int:
+        """Opens the Ragon desktop window from the checkout.
+
+        packages the app (`electron-forge package`: Vite builds the main process, the preload and
+        Work's page; `ragon` is bundled) and runs the packaged binary, so what opens is what the
+        `.deb` ships. Not `electron-forge start`, whose dev server Work's `app://` page does not
+        use.
+
+        Returns:
+            int: 0 on success, non-zero on failure.
+        """
+        if not cls.has_source():
+            return cls._run_installed()
+        if not cls._ensure_toolchain() or not cls.install_packages():
+            return 1
+        if not cls.copy_bundled_binaries():
+            return 1
+        print("🔨 Building the desktop app (Vite, then Forge's package)...")
+        if not cls._npm(["run", "package"], ELECTRON_DIR):
+            return 1
+        binary = cls.binary_path()
+        if binary is None:
+            print(f"❌ The package step wrote no app under {ELECTRON_DIR / 'out'}.")
+            return 1
+        cls.install_desktop_entry()
+        cls.warn_uncovered([binary])
+
+        cls.clear_webview_cache()
+        print("🚀 Opening the Ragon desktop window...")
+        return subprocess.call([binary], env=cls._environment())
+
+    @classmethod
+    def build(cls) -> int:
+        """Builds the distributable `.deb` (and a zip) with Electron Forge.
+
+        `ragon` must be built, because it is bundled into the app: the app-server Ask and Work
+        share is that binary.
+
+        Returns:
+            int: 0 on success, non-zero on failure.
+        """
+        if not cls.has_source():
+            return cls._no_source()
+        if not cls._ensure_toolchain(build=True) or not cls.install_packages():
+            return 1
+        if not cls.copy_bundled_binaries():
+            return 1
+
+        print("🔨 Building the Ragon desktop app (Vite, then Forge's .deb)...")
+        if not cls._npm(["run", "make"], ELECTRON_DIR):
+            return 1
+        cls.install_desktop_entry()
+        bundle = ELECTRON_DIR / "out" / "make"
+        print(f"✅ Bundles written to {bundle}")
+        return 0
+
+    @classmethod
+    def _app_config(cls) -> dict:
+        try:
+            with open(APP_CONFIG) as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            return {}
+
+    @classmethod
+    def _app_identifier(cls) -> str | None:
+        """Reads the app's identifier out of `app.json`.
+
+        Taken from the config rather than repeated here, so the data directory this points at
+        cannot drift away from the one the app actually uses.
+
+        Returns:
+            Optional[str]: The identifier, or None if the config cannot be read.
+        """
+        return cls._app_config().get("identifier")
+
+    @classmethod
+    def clear_webview_cache(cls) -> bool:
+        """Empties Chromium's HTTP cache, leaving cookies and local storage in place.
+
+        Returns:
+            bool: True if there was a cache and it was removed.
+        """
+        identifier = cls._app_identifier()
+        if not identifier:
+            return False
+        cache = os.path.join(
+            os.path.expanduser("~/.local/share"), identifier, WEBVIEW_CACHE_DIR_NAME
+        )
+        if not os.path.isdir(cache):
+            return False
+        shutil.rmtree(cache, ignore_errors=True)
+        return True
+
+    @classmethod
+    def binary_path(cls) -> str | None:
+        """Locates the packaged desktop binary (`electron-forge package` or `make` output).
+
+        Returns:
+            Optional[str]: Path to the binary, or None if it has not been built.
+        """
+        config = cls._app_config()
+        name = config.get("productName", "Ragon")
+        executable = config.get("executable", "Ragon")
+        out = ELECTRON_DIR / "out"
+        if not out.is_dir():
+            return None
+        for folder in sorted(out.glob(f"{name}-*")):
+            candidate = folder / executable
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        return None
+
+    @classmethod
+    def packaged_binary_path(cls) -> str:
+        """Where `electron-forge package` writes the app's binary on this machine, whether or not it
+        has been written yet: `out/<productName>-linux-<arch>/<executable>`.
+
+        Returns:
+            str: The absolute path.
+        """
+        config = cls._app_config()
+        name = config.get("productName", "Ragon")
+        executable = config.get("executable", "Ragon")
+        machine = platform.machine().lower()
+        arch = PACKAGER_ARCH.get(machine, machine)
+        return str(ELECTRON_DIR / "out" / f"{name}-linux-{arch}" / executable)
+
+    @classmethod
+    def dev_binaries(cls) -> list[str]:
+        """The Electron binaries a checkout runs.
+
+        npm's prebuilt `electron`, and the packaged app `desktop run` and the launcher entry start.
+        All need the AppArmor profile. The packaged path is included before it exists: `desktop
+        install` runs before the first `desktop run` packages the app, and a profile written then
+        without it left the app the launcher starts refused its sandbox ("No usable sandbox!",
+        ).
+
+        Returns:
+            List[str]: Absolute paths: npm's `electron` if it is installed, the packaged binary's
+                path always, and another packaged binary found under `out/` (if any).
+        """
+        electron = str(ELECTRON_DIR / "node_modules" / "electron" / "dist" / "electron")
+        binaries = [electron] if os.path.isfile(electron) else []
+        for packaged in (cls.packaged_binary_path(), cls.binary_path()):
+            if packaged and packaged not in binaries:
+                binaries.append(packaged)
+        return binaries
+
+    @classmethod
+    def warn_uncovered(cls, binaries: list[str]) -> bool:
+        """Says, with the fix, when a binary about to be started has no AppArmor profile on a machine
+        that needs one. From PyCharm's terminal (a permissive profile) it still starts; from the
+        launcher or a plain terminal Chromium aborts with "No usable sandbox!".
+
+        Args:
+            binaries (List[str]): The binaries to check.
+
+        Returns:
+            bool: True if every binary is covered (or none needs to be).
+        """
+        missing = DesktopInstaller.uncovered(binaries)
+        if not missing:
+            return True
+        print(
+            "⚠️  Chromium's sandbox needs a user namespace, which this machine refuses to a program without an"
+        )
+        print(
+            f"   AppArmor profile, and none names {', '.join(missing)}: from the launcher or a plain"
+        )
+        print('   terminal the app would abort at start with "No usable sandbox!".')
+        print("💡 `ragon-admin desktop install` writes the profile (sudo once).")
+        return False
+
+    @classmethod
+    def exec_argument(cls, path: str) -> str:
+        """Quotes a path for a desktop entry's Exec key (Desktop Entry Specification, "The Exec key").
+
+        Args:
+            path (str): The program's path.
+
+        Returns:
+            str: The path as it stands unchanged, or in double quotes when it holds a reserved
+                character such as a space; `%` doubled and backslashes escaped as the key is a string.
+        """
+        if any(char in EXEC_RESERVED for char in path):
+            path = (
+                '"' + "".join("\\" + char if char in EXEC_ESCAPED else char for char in path) + '"'
+            )
+        return path.replace("\\", "\\\\").replace("%", "%%")
+
+    @classmethod
+    def install_desktop_entry(cls) -> bool:
+        """Registers the app with the desktop environment: an icon and a `.desktop` entry.
+
+        Without this the running window has no entry to match, so the dock shows an unnamed generic
+        icon and there is nothing in the applications grid to launch. A deb ships these under
+        `/usr`; from a source checkout they go in the user's XDG directories.
+
+        Returns:
+            bool: True if the entry was written.
+        """
+        binary = cls.binary_path()
+        if not binary:
+            print("❌ The desktop app has not been built yet — nothing to register.")
+            return False
+
+        icon = os.path.join(ICON_DIR, f"{ICON_NAME}.png")
+        try:
+            os.makedirs(DESKTOP_ENTRY_DIR, exist_ok=True)
+            os.makedirs(ICON_DIR, exist_ok=True)
+        except OSError as exc:
+            print(f"⚠️  Could not create the XDG directories: {exc}")
+            return False
+
+        try:
+            shutil.copyfile(APP_ICON_SOURCE, icon)
+        except OSError as exc:
+            print(f"⚠️  Could not install the app icon: {exc}")
+
+        config = cls._app_config()
+        # `ragon://` links (DESKTOP_PARITY §2.20).
+        scheme = config.get("scheme", "ragon")
+        entry = (
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            "Name=Ragon\n"
+            "Comment=Local AI assistant served from this machine\n"
+            f"Exec={cls.exec_argument(binary)} %U\n"
+            f"Icon={ICON_NAME}\n"
+            "Terminal=false\n"
+            "StartupNotify=true\n"
+            "Categories=Utility;Development;\n"
+            f"MimeType=x-scheme-handler/{scheme};\n"
+            f"StartupWMClass={WINDOW_CLASS}\n"
+        )
+        try:
+            with open(os.path.join(DESKTOP_ENTRY_DIR, DESKTOP_ENTRY_NAME), "w") as handle:
+                handle.write(entry)
+        except OSError as exc:
+            print(f"⚠️  Could not write the desktop entry: {exc}")
+            return False
+
+        subprocess.run(
+            ["update-desktop-database", DESKTOP_ENTRY_DIR],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        print(f"🖥️  Registered Ragon with the desktop environment ({DESKTOP_ENTRY_NAME}).")
+        return True
+
+    @classmethod
+    def install(cls) -> int:
+        """Installs what the desktop app is built and run from, without building it.
+
+        npm's packages (Electron among them), and the AppArmor profile Chromium's sandbox needs on
+        this machine.
+
+        Returns:
+            int: 0 if the toolchain is complete afterwards and every binary has its profile.
+        """
+        if not cls.has_source():
+            return cls._no_source()
+        if not cls._ensure_toolchain() or not cls.install_packages():
+            return 1
+        binaries = cls.dev_binaries()
+        if DesktopInstaller.uncovered(binaries):
+            # The checkout's one file, rewritten with every binary it covered or should: a profile
+            # from before that named fewer is replaced, not joined by a second. A binary another
+            # profile names (an unpacked build's) is left to it: two attachments would conflict.
+            ours = [
+                binary
+                for binary in binaries
+                if os.path.basename(
+                    DesktopInstaller.covering_profile(binary) or APPARMOR_PROFILE_NAME
+                )
+                == APPARMOR_PROFILE_NAME
+            ]
+            if not DesktopInstaller.install_apparmor_profile(ours):
+                return 1
+        if cls.binary_path():
+            cls.install_desktop_entry()
+        return 0
+
+    @classmethod
+    def status(cls) -> int:
+        """Reports whether the desktop app can be built, and whether the `ragon` it bundles is built.
+
+        Returns:
+            int: 0 if the app could be built and launched right now, 1 otherwise.
+        """
+        from dreamference.runner.codex_branded_builder import CodexBrandedBuilder
+
+        ragon = CodexBrandedBuilder.executable_path()
+        built = os.path.isfile(ragon)
+        print(
+            f"{'✅' if built else '❌'} ragon, which the app bundles for Work and Ask"
+            f"{f' ({ragon})' if built else ' — build it with: ragon-admin codex build'}"
+        )
+        complete, _ = DesktopInstaller.report()
+        covered = cls.warn_uncovered(cls.dev_binaries()) if cls.has_source() else True
+        return 0 if built and complete and covered else 1

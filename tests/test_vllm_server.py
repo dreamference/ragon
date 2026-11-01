@@ -1,0 +1,1659 @@
+import contextlib
+import signal
+import subprocess
+import threading
+import time
+from pathlib import Path
+
+import pytest
+import requests
+
+from dreamference.vllm_server import VLLMServerManager, VLLMStartupMonitor
+from dreamference.vllm_server.vllm_server_manager import DEFAULT_VLLM_IMAGE
+
+
+def test_vllm_build_launch_command_default():
+    mgr = VLLMServerManager(host="http://localhost:8000")
+    cmd = mgr.build_launch_command(
+        model="qwen2.5-coder-32b", port=8000, max_model_len=16384, gpu_memory_utilization=0.5
+    )
+    assert "--host" in cmd
+    assert "0.0.0.0" in cmd
+    assert "--port" in cmd
+    assert "8000" in cmd
+    assert "--max-model-len" in cmd
+    assert "16384" in cmd
+    assert "--gpu-memory-utilization" in cmd
+    assert "0.5" in cmd
+    assert "--enable-prefix-caching" in cmd
+    assert "--enable-chunked-prefill" in cmd
+    assert "--tool-call-parser" in cmd
+    idx = cmd.index("--tool-call-parser")
+    assert cmd[idx + 1] == "hermes"
+
+
+def test_nvfp4_model_applies_registry_launch_recipe(vllm_recipes):
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(model="test-vllm-nvfp4")
+    assert cmd[cmd.index("--max-model-len") + 1] == "32768"
+    assert cmd[cmd.index("--gpu-memory-utilization") + 1] == "0.3"
+    assert cmd[cmd.index("--kv-cache-dtype") + 1] == "fp8"
+    assert cmd[cmd.index("--attention-backend") + 1] == "flashinfer"
+    assert cmd[cmd.index("--tool-call-parser") + 1] == "qwen3_xml"
+    assert cmd[cmd.index("--reasoning-parser") + 1] == "qwen3"
+
+    import json
+
+    spec_config_json = cmd[cmd.index("--speculative-config") + 1]
+    spec_config = json.loads(spec_config_json)
+    assert spec_config["num_speculative_tokens"] == 3
+
+
+def test_nvfp4_recipe_env_crosses_container_boundary(vllm_recipes):
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(model="test-vllm-nvfp4")
+    assert "VLLM_MARLIN_USE_ATOMIC_ADD=1" in cmd
+    # -e must precede the image name, or docker treats it as a container argument
+    for var in ("VLLM_MARLIN_USE_ATOMIC_ADD=1",):
+        assert cmd[cmd.index(var) - 1] == "-e"
+        assert cmd.index(var) < cmd.index(DEFAULT_VLLM_IMAGE)
+
+
+def test_nvfp4_recipe_emits_self_speculation_and_extra_args(vllm_recipes):
+    import json
+
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(model="test-vllm-nvfp4")
+    spec = json.loads(cmd[cmd.index("--speculative-config") + 1])
+    assert spec["method"] == "mtp"
+    assert spec["moe_backend"] == "triton"
+    assert "--speculative-model" not in cmd
+    assert cmd[cmd.index("--max-num-seqs") + 1] == "4"
+
+
+def test_dflash_recipe_emits_drafter_speculative_config(vllm_recipes):
+    import json
+
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(model="test-vllm-dflash")
+    assert cmd[cmd.index("--max-model-len") + 1] == "32768"
+    assert cmd[cmd.index("--gpu-memory-utilization") + 1] == "0.7"
+    assert cmd[cmd.index("--attention-backend") + 1] == "flash_attn"
+    assert cmd[cmd.index("--tool-call-parser") + 1] == "qwen3_xml"
+    assert cmd[cmd.index("--reasoning-parser") + 1] == "qwen3"
+    assert cmd[cmd.index("--max-num-seqs") + 1] == "8"
+    # The prefill chunk carries the draft-token reservation vLLM takes out of it:
+    # max_num_seqs * (num_speculative_tokens - 1) on top of the 8960 the recipe wants prefill to
+    # actually get. If either of those is retuned, this number moves with them.
+    spec_slots = 8 * (12 - 1)
+    assert cmd[cmd.index("--max-num-batched-tokens") + 1] == str(8960 + spec_slots)
+
+    # A drafter that lives in the recipe still goes out as --speculative-config, not as the
+    # --speculative-model pair, which is reserved for a drafter the caller named.
+    spec = json.loads(cmd[cmd.index("--speculative-config") + 1])
+    assert spec["method"] == "dflash"
+    assert spec["model"] == "example/vllm-dflash-drafter"
+    assert spec["num_speculative_tokens"] == 12
+    assert spec["attention_backend"] == "FLASH_ATTN"
+    assert "--speculative-model" not in cmd
+
+
+def test_dflash_recipe_disables_thinking(vllm_recipes):
+    # Not cosmetic: this checkpoint's chat_template.jinja prefills '<think>\n' into every
+    # assistant turn unless enable_thinking is explicitly false, so leaving the flag off makes the
+    # model reason before every tool call. The JSON has to survive as one argv element.
+    import json
+
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(model="test-vllm-dflash")
+    payload = cmd[cmd.index("--default-chat-template-kwargs") + 1]
+    assert json.loads(payload) == {"enable_thinking": False}
+
+
+def test_dflash_recipes_state_prefix_caching_explicitly(vllm_recipes):
+    # Stating it matters as much as the value. vLLM's own default for this model is OFF --
+    # ModelConfig.is_prefix_caching_supported() returns False for hybrid attention -- and that
+    # default is consulted only when the flag is absent. Both recipes turn it ON, and both can:
+    # the int4-dflash fallback was OFF while it ran the untouched kvfix2 image,
+    # whose align-mode splitter served STALE mamba states on the rare hits, and was flipped back
+    # when it moved to the dense9 image that carries the fix
+    # (specs/DREAMFERENCE_PREFIX_CACHE.md). Pointing it back at an unpatched image must turn it
+    # off again.
+    mgr = VLLMServerManager()
+
+    for model in ("test-vllm-dflash",):
+        cmd = mgr.build_launch_command(model=model)
+        assert "--enable-prefix-caching" in cmd, model
+        assert "--no-enable-prefix-caching" not in cmd, model
+
+
+def test_a_recipe_can_still_veto_prefix_caching(monkeypatch):
+    # The veto path is still load-bearing for any checkpoint whose KV geometry cannot support
+    # prefix caching, so it keeps its own coverage now that the DFlash recipe no longer uses it.
+    from dreamference.hardware import model_matrix_registry
+
+    mgr = VLLMServerManager()
+    real = model_matrix_registry.ModelMatrixRegistry.get_launch_overrides
+
+    def vetoing(cls, model_key, engine=None):
+        recipe = dict(real(model_key, engine))
+        if model_key == "qwen2.5-coder-32b":
+            recipe["enable_prefix_caching"] = False
+        return recipe
+
+    monkeypatch.setattr(
+        model_matrix_registry.ModelMatrixRegistry, "get_launch_overrides", classmethod(vetoing)
+    )
+    cmd = mgr.build_launch_command(model="qwen2.5-coder-32b", enable_prefix_caching=True)
+    assert "--no-enable-prefix-caching" in cmd
+    assert "--enable-prefix-caching" not in cmd
+
+
+def test_prefix_caching_off_is_stated_not_omitted():
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(model="qwen2.5-coder-32b", enable_prefix_caching=False)
+    assert "--no-enable-prefix-caching" in cmd
+    # A model whose recipe says nothing still honours the caller in both directions.
+    on = mgr.build_launch_command(model="qwen2.5-coder-32b", enable_prefix_caching=True)
+    assert "--enable-prefix-caching" in on
+    assert "--no-enable-prefix-caching" not in on
+
+
+def test_optional_arguments_default_to_unset_not_to_a_value():
+    # A literal default on an optional argument satisfies the recipe resolver before the recipe is
+    # read, so the model's own value never lands. max_num_batched_tokens carried 8192 as a
+    # signature default and was pinned there for every model; it only went unnoticed because the
+    # one recipe that set it asked for 8192 too.
+    import inspect
+
+    sig = inspect.signature(VLLMServerManager.build_launch_command)
+    for name in (
+        "max_model_len",
+        "gpu_memory_utilization",
+        "kv_cache_dtype",
+        "attention_backend",
+        "moe_backend",
+        "max_num_batched_tokens",
+        "tool_call_parser",
+        "reasoning_parser",
+        "use_tensorizer",
+    ):
+        assert sig.parameters[name].default is None, f"{name} shadows the registry recipe"
+
+    mgr = VLLMServerManager()
+    # A model without a recipe still gets the module fallback.
+    cmd = mgr.build_launch_command(model="qwen2.5-coder-32b")
+    assert cmd[cmd.index("--max-num-batched-tokens") + 1] == "8192"
+
+
+def test_vllm_cache_root_is_mounted_for_every_model(vllm_recipes):
+    # Without this the torch.compile cache lives in the container's own layer and dies with it, so
+    # every restart pays the full compile again. It has to land inside a mounted volume, and no
+    # model's recipe env may take it over -- a per-model cache root would defeat the sharing.
+    from dreamference.vllm_server.vllm_server_manager import CONTAINER_VLLM_CACHE_ROOT
+
+    mgr = VLLMServerManager()
+    for model in ("test-vllm-dflash", "test-vllm-nvfp4", "qwen2.5-coder-32b"):
+        cmd = mgr.build_launch_command(model=model)
+        var = f"VLLM_CACHE_ROOT={CONTAINER_VLLM_CACHE_ROOT}"
+        assert var in cmd, model
+        assert cmd[cmd.index(var) - 1] == "-e"
+        # The image is whatever this model resolved to, which is no longer one global constant.
+        image = cmd[cmd.index("--entrypoint") + 2]
+        assert cmd.index(var) < cmd.index(image)
+        # The cache root must sit under a path the -v flags actually bind, or it is container-local
+        # again and the flag is a lie.
+        mounts = [cmd[i + 1].split(":")[1] for i, a in enumerate(cmd) if a == "-v"]
+        assert any(CONTAINER_VLLM_CACHE_ROOT.startswith(m) for m in mounts), mounts
+
+
+def test_compile_cache_signature_tracks_speculative_depth(vllm_recipes):
+    # vLLM's own compile cache key omits num_speculative_tokens, so this signature is the only
+    # thing standing between a retuned n and a stale compiled graph.
+    import copy
+
+    from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
+    from dreamference.hardware.model_spec import ModelSpec
+
+    sig = VLLMServerManager._compile_cache_signature
+    baseline = sig("test-vllm-dflash")
+    assert "dflash" in baseline and baseline.endswith("|12")
+
+    spec = ModelMatrixRegistry.MATRIX["test-vllm-dflash"]
+    retuned = copy.deepcopy(spec.launch_overrides)
+    retuned["speculative_config"]["num_speculative_tokens"] = 8
+    patched = ModelSpec(
+        name=spec.name,
+        params_b=spec.params_b,
+        supported_precisions=list(spec.supported_precisions),
+        min_memory_gb=spec.min_memory_gb,
+        max_memory_gb=spec.max_memory_gb,
+        compatible_gb10=spec.compatible_gb10,
+        notes=spec.notes,
+        hf_repo_id=spec.hf_repo_id,
+        launch_overrides=retuned,
+    )
+    original = ModelMatrixRegistry.MATRIX["test-vllm-dflash"]
+    try:
+        ModelMatrixRegistry.MATRIX["test-vllm-dflash"] = patched
+        assert sig("test-vllm-dflash") != baseline
+    finally:
+        ModelMatrixRegistry.MATRIX["test-vllm-dflash"] = original
+
+    # A model that does not speculate still gets a stable, non-empty signature.
+    assert sig("qwen2.5-coder-32b") == sig("qwen2.5-coder-32b")
+
+
+def test_preflight_gate_scores_the_utilization_that_will_actually_launch():
+    # The gate in start_server and the arena in build_launch_command have to come from one number.
+    # They did not: 0.9 against 0.50, so every model without a recipe was judged against an arena
+    # roughly twice the one it would be given, and aborted on a load that fits.
+    import inspect
+
+    from dreamference.vllm_server import vllm_server_manager as vsm
+
+    source = inspect.getsource(vsm.VLLMServerManager.start_server)
+    assert 'overrides.get("gpu_memory_utilization", 0.9)' not in source
+    assert "DEFAULT_GPU_MEMORY_UTILIZATION" in source
+
+    mgr = VLLMServerManager()
+    for model in ("qwen2.5-coder-32b", "starcoder2-15b"):
+        cmd = mgr.build_launch_command(model=model)
+        launched = float(cmd[cmd.index("--gpu-memory-utilization") + 1])
+        from dreamference.hardware import get_model_launch_overrides
+
+        gated = get_model_launch_overrides(model).get(
+            "gpu_memory_utilization", vsm.DEFAULT_GPU_MEMORY_UTILIZATION
+        )
+        assert launched == gated, model
+
+
+def test_config_defaults_do_not_outrank_the_model_recipe(vllm_recipes):
+    # The CLI hands config values to start_server as explicit caller arguments, which by design
+    # outrank the registry recipe. Any concrete default in the config layer is therefore an
+    # override of every model's recipe, not a fallback. kv_cache_dtype defaulted to 'fp8' and so
+    # made every recipe's entry unreachable -- invisibly, because the NVFP4 recipes ask for fp8
+    # too. The first model that wanted 'auto' got fp8 and failed to start: FlashAttention rejects
+    # an fp8 KV cache.
+    from dreamference.config import DreamferenceConfig
+    from dreamference.config.dreamference_config import DEFAULT_KV_CACHE_DTYPE
+
+    assert DEFAULT_KV_CACHE_DTYPE is None
+    config_value = DreamferenceConfig().kv_cache_dtype
+    assert config_value is None
+
+    mgr = VLLMServerManager()
+    expected = {
+        "test-vllm-dflash": "auto",
+        "test-vllm-nvfp4": "fp8",
+    }
+    for model, dtype in expected.items():
+        cmd = mgr.build_launch_command(model=model, kv_cache_dtype=config_value)
+        assert cmd[cmd.index("--kv-cache-dtype") + 1] == dtype, model
+
+
+def test_flash_attn_is_never_paired_with_fp8_kv_cache():
+    # vLLM refuses this combination outright, so a recipe that asks for both cannot start:
+    #   "Selected backend FLASH_ATTN is not valid ... Reason: ['kv_cache_dtype not supported']"
+    from dreamference.hardware import MODEL_MATRIX
+
+    for alias, spec in MODEL_MATRIX.items():
+        recipe = spec.launch_overrides
+        backend = str(recipe.get("attention_backend", "")).upper()
+        if backend == "FLASH_ATTN":
+            assert recipe.get("kv_cache_dtype", "auto") != "fp8", alias
+
+
+def test_each_model_may_pin_its_own_vllm_image(vllm_recipes):
+    # The engine is part of a recipe, not a global: a checkpoint whose KV geometry needs a patch
+    # its own upstream ships cannot run on the image the rest of the matrix uses.
+    import inspect
+
+    from dreamference.hardware import MODEL_MATRIX
+    from dreamference.vllm_server.vllm_server_manager import DEFAULT_VLLM_IMAGE
+
+    # Same shadowing rule as every other optional argument.
+    sig = inspect.signature(VLLMServerManager.build_launch_command)
+    assert sig.parameters["docker_image"].default is None
+
+    mgr = VLLMServerManager()
+    pinned = MODEL_MATRIX["test-vllm-dflash"].launch_overrides["docker_image"]
+    cmd = mgr.build_launch_command(model="test-vllm-dflash")
+    assert cmd[cmd.index("--entrypoint") + 2] == pinned
+
+    # A model with no pin still gets the project default...
+    cmd = mgr.build_launch_command(model="test-vllm-nvfp4")
+    assert cmd[cmd.index("--entrypoint") + 2] == DEFAULT_VLLM_IMAGE
+
+    # ...and an explicit caller argument still outranks the recipe.
+    cmd = mgr.build_launch_command(model="test-vllm-dflash", docker_image="someone/else:tag")
+    assert cmd[cmd.index("--entrypoint") + 2] == "someone/else:tag"
+
+
+def test_registry_images_are_pulled_not_built(monkeypatch):
+    # ensure_docker_image builds from the project Dockerfile, which is right for the project's own
+    # image and catastrophic for anyone else's: it would tag this repo's build with a third-party
+    # name and launch it believing it was theirs.
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "is_image_present", lambda img: False)
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    mgr.ensure_docker_image("ghcr.io/example/vllm:1")
+    assert calls and calls[0][:2] == ["docker", "pull"]
+    assert not any("build" in c for c in calls[0])
+
+
+def test_building_a_command_never_fetches_an_image(monkeypatch, vllm_recipes):
+    # probe_image used to call ensure_docker_image, so once recipes could pin a registry image and
+    # ensure_docker_image learned to pull, merely building a command for a model whose image was
+    # not on disk started a multi-gigabyte download -- in tests, too.
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "is_image_present", lambda img: False)
+    monkeypatch.setattr(
+        mgr,
+        "ensure_docker_image",
+        lambda img: pytest.fail(f"build_launch_command tried to fetch {img}"),
+    )
+    mgr.build_launch_command(model="test-vllm-dflash")
+
+
+def test_every_model_serves_deterministic_sampling_by_default(vllm_recipes):
+    # An OpenAI-compatible request that omits `temperature` asks for the *server's* default, and
+    # the served checkpoint ships 0.6 / top_p 0.95 / top_k 20. Codex has no sampling setting at
+    # all, so it can never ask for zero -- 52 of its requests were measured at 0.6 before this.
+    import json
+
+    from dreamference.vllm_server.vllm_server_manager import DEFAULT_GENERATION_OVERRIDES
+
+    mgr = VLLMServerManager()
+    for model in ("test-vllm-dflash", "test-vllm-nvfp4", "qwen2.5-coder-32b"):
+        cmd = mgr.build_launch_command(model=model)
+        payload = json.loads(cmd[cmd.index("--override-generation-config") + 1])
+        assert payload == DEFAULT_GENERATION_OVERRIDES, model
+        assert payload["temperature"] == 0.0
+        # top_k must be disabled too, or zero-temperature still samples from a truncated set.
+        assert payload["top_k"] == 0
+
+
+def test_a_recipe_can_opt_out_of_the_sampling_override(monkeypatch):
+    # The override is a default, not a clamp: a model whose checkpoint sampling is deliberate can
+    # set generation_overrides to None and keep it.
+    from dreamference.hardware import model_matrix_registry
+
+    real = model_matrix_registry.ModelMatrixRegistry.get_launch_overrides
+
+    def opting_out(cls, model_key, engine=None):
+        recipe = dict(real(model_key, engine))
+        if model_key == "qwen2.5-coder-32b":
+            recipe["generation_overrides"] = None
+        return recipe
+
+    monkeypatch.setattr(
+        model_matrix_registry.ModelMatrixRegistry, "get_launch_overrides", classmethod(opting_out)
+    )
+    cmd = VLLMServerManager().build_launch_command(model="qwen2.5-coder-32b")
+    assert "--override-generation-config" not in cmd
+
+
+def test_autoround_checkpoint_gets_no_quantization_flag(vllm_recipes):
+    # AutoRound declares quant_method in its own config.json, so an inferred --quantization would
+    # override vLLM's detection with a guess derived from the model name.
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(model="test-vllm-dflash")
+    assert "--quantization" not in cmd
+
+
+def test_explicit_arguments_win_over_registry_recipe(vllm_recipes):
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(
+        model="test-vllm-nvfp4",
+        max_model_len=8192,
+        tool_call_parser="hermes",
+        moe_backend="marlin",
+        kv_cache_dtype="auto",
+    )
+    assert cmd[cmd.index("--max-model-len") + 1] == "8192"
+    assert cmd[cmd.index("--tool-call-parser") + 1] == "hermes"
+    assert cmd[cmd.index("--moe-backend") + 1] == "marlin"
+    assert cmd[cmd.index("--kv-cache-dtype") + 1] == "auto"
+
+
+def test_model_without_recipe_keeps_global_defaults():
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(model="qwen2.5-coder-32b")
+    assert cmd[cmd.index("--max-model-len") + 1] == "16384"
+    assert cmd[cmd.index("--gpu-memory-utilization") + 1] == "0.5"
+    assert "--moe-backend" not in cmd
+    assert "--reasoning-parser" not in cmd
+    assert "--speculative-config" not in cmd
+    assert "CUTE_DSL_ARCH=sm_121a" in cmd
+
+
+def test_self_declaring_quantization_is_not_overridden(vllm_recipes):
+    mgr = VLLMServerManager()
+    # The name contains no 70b/72b marker, but the guard must hold for any self-declaring checkpoint.
+    assert "--quantization" not in mgr.build_launch_command(model="test-vllm-nvfp4")
+
+
+def test_nvfp4_model_opts_out_of_tensorizer(monkeypatch, vllm_recipes):
+    from dreamference.hardware.model_downloader import ModelDownloader
+
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "image_has_tensorizer", lambda img: True)
+    monkeypatch.setattr(ModelDownloader, "is_model_tensorized", lambda key: True)
+    monkeypatch.setattr(ModelDownloader, "get_tensorized_path", lambda key: "/tmp/model.tensors")
+    cmd = mgr.build_launch_command(model="test-vllm-nvfp4")
+    assert "--load-format" not in cmd
+
+
+def test_vllm_build_launch_command_auto_tool_call_parser_llama():
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(model="llama-3.3-70b")
+    assert "--tool-call-parser" in cmd
+    idx = cmd.index("--tool-call-parser")
+    assert cmd[idx + 1] == "hermes"
+
+
+def test_vllm_build_launch_command_speculative(vllm_recipes):
+
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(
+        model="test-vllm-nvfp4", draft_model="test-vllm-dflash-draft", num_speculative_tokens=5
+    )
+    # vLLM 0.2x has no --speculative-model / --num-speculative-tokens flags; only the JSON config.
+    import json
+
+    assert "--speculative-model" not in cmd and "--num-speculative-tokens" not in cmd
+    spec = json.loads(cmd[cmd.index("--speculative-config") + 1])
+    assert spec["model"] == "example/vllm-dflash-drafter"
+    assert spec["num_speculative_tokens"] == 5
+
+
+def test_an_unknown_speculative_depth_is_omitted_not_stringified(vllm_recipes):
+    # `server start --draft-model X` without `--num-speculative-tokens` used to launch vLLM with
+    # "--num-speculative-tokens None".
+    import json
+
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(
+        model="test-vllm-nvfp4",
+        draft_model="test-vllm-dflash-draft",
+        num_speculative_tokens=None,
+    )
+    assert "None" not in cmd
+    spec = json.loads(cmd[cmd.index("--speculative-config") + 1])
+    assert spec["model"] == "example/vllm-dflash-drafter" and "num_speculative_tokens" not in spec
+
+
+def test_a_draft_model_keeps_the_recipes_speculative_settings(vllm_recipes):
+    # --draft-model used to replace the recipe's config wholesale, dropping its method and the
+    # drafter's attention backend.
+    import json
+
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(
+        model="test-vllm-dflash", draft_model="test-vllm-dflash-draft", num_speculative_tokens=8
+    )
+    spec = json.loads(cmd[cmd.index("--speculative-config") + 1])
+    assert spec["method"] == "dflash" and spec["attention_backend"] == "FLASH_ATTN"
+    assert spec["num_speculative_tokens"] == 8
+    # and the compile-cache signature follows the launched depth, not the recipe's 12
+    assert VLLMServerManager._compile_cache_signature(
+        "test-vllm-dflash", "test-vllm-dflash-draft", 8
+    ).endswith("|8")
+
+
+def test_vllm_build_launch_command_auto_fp8_for_70b():
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(model="qwen2.5-coder-72b")
+    assert "--quantization" in cmd
+    idx = cmd.index("--quantization")
+    assert cmd[idx + 1] == "fp8"
+
+
+def test_vllm_build_launch_command_attention_and_kv_cache():
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(
+        model="qwen2.5-coder-32b", attention_backend="FLASHINFER", kv_cache_dtype="fp8"
+    )
+    assert "--attention-backend" in cmd
+    att_idx = cmd.index("--attention-backend")
+    assert cmd[att_idx + 1] == "FLASHINFER"
+    assert "--kv-cache-dtype" in cmd
+    kv_idx = cmd.index("--kv-cache-dtype")
+    assert cmd[kv_idx + 1] == "fp8"
+
+
+def test_vllm_build_launch_command_docker(monkeypatch, vllm_recipes):
+    mgr = VLLMServerManager()
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr(mgr, "is_vllm_installed", lambda: False)
+    monkeypatch.setattr(mgr, "is_docker_available", lambda: True)
+    cmd = mgr.build_launch_command(model="test-vllm-nvfp4", port=8000)
+    assert "docker" in cmd
+    assert DEFAULT_VLLM_IMAGE in cmd
+    img_idx = cmd.index(DEFAULT_VLLM_IMAGE)
+    assert cmd[img_idx + 1] == "serve"
+    assert cmd[img_idx + 2] == "example/vllm-moe-NVFP4"
+
+
+def test_vllm_environment_checks_real():
+    mgr = VLLMServerManager()
+    is_installed = mgr.is_vllm_installed()
+    docker_available = mgr.is_docker_available()
+    assert isinstance(is_installed, bool)
+    assert isinstance(docker_available, bool)
+
+
+def test_vllm_real_health_check():
+    mgr = VLLMServerManager(host="http://localhost:8000")
+    health = mgr.check_health(timeout=0.2)
+    assert isinstance(health, bool)
+
+
+def test_vllm_server_status_reporting_real():
+    mgr = VLLMServerManager(host="http://localhost:8000")
+    status = mgr.get_server_status()
+    assert "host" in status
+    assert "healthy" in status
+    assert "models" in status
+    assert "pid" in status
+
+
+def test_vllm_startup_monitor():
+    logs = []
+    monitor = VLLMStartupMonitor(
+        warn_timeout_sec=0.05,
+        stuck_threshold_sec=0.1,
+        check_interval_sec=0.02,
+        progress_interval_sec=10.0,
+        log_callback=lambda m: logs.append(m),
+    )
+    monitor.start()
+    time.sleep(0.15)
+    monitor.stop()
+    assert len(logs) > 0
+    assert "vLLM Monitor" in logs[0]
+
+
+def test_vllm_startup_monitor_reset_on_log():
+    logs = []
+    monitor = VLLMStartupMonitor(
+        warn_timeout_sec=0.1,
+        stuck_threshold_sec=0.2,
+        check_interval_sec=0.02,
+        progress_interval_sec=10.0,
+        log_callback=lambda m: logs.append(m),
+    )
+    monitor.start()
+    time.sleep(0.05)
+    monitor.notify_log_received()
+    assert monitor.warned is False
+    monitor.stop()
+
+
+def test_vllm_startup_monitor_memory_progress_percent():
+    logs = []
+    used = {"gb": 0.0}
+    monitor = VLLMStartupMonitor(
+        warn_timeout_sec=60.0,
+        stuck_threshold_sec=120.0,
+        check_interval_sec=0.02,
+        progress_interval_sec=0.05,
+        expected_memory_gb=10.0,
+        log_callback=lambda m: logs.append(m),
+    )
+    monitor._read_used_memory_gb = lambda: used["gb"]  # type: ignore[method-assign]
+    used["gb"] = 0.0
+    monitor.start()
+    used["gb"] = 4.0
+    pct, delta, expected = monitor.estimate_progress()
+    assert pct == 40
+    assert delta == 4.0
+    assert expected == 10.0
+    assert "~40%" in monitor._format_progress_suffix()
+    time.sleep(0.15)
+    monitor.stop()
+    assert any("~40%" in line for line in logs)
+
+
+def test_vllm_build_launch_command_tensorizer(monkeypatch, tmp_path):
+    from dreamference.hardware.model_downloader import ModelDownloader
+
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "image_has_tensorizer", lambda img: True)
+
+    # Mock tensorized file
+    tfile = tmp_path / "model.tensors"
+    tfile.write_text("dummy tensors content")
+    monkeypatch.setattr(ModelDownloader, "is_model_tensorized", lambda key: True)
+    monkeypatch.setattr(ModelDownloader, "get_tensorized_path", lambda key: tfile)
+
+    cmd = mgr.build_launch_command(model="qwen2.5-coder-32b", use_tensorizer=True)
+    assert "--load-format" in cmd
+    fmt_idx = cmd.index("--load-format")
+    assert cmd[fmt_idx + 1] == "tensorizer"
+    assert "--model-loader-extra-config" in cmd
+    cfg_idx = cmd.index("--model-loader-extra-config")
+    assert "tensorizer_uri" in cmd[cfg_idx + 1]
+    assert str(tfile) in cmd[cfg_idx + 1]
+
+
+def test_vllm_build_launch_command_tensorizer_docker(monkeypatch, tmp_path):
+    import os
+
+    from dreamference.hardware.model_downloader import ModelDownloader
+
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "image_has_tensorizer", lambda img: True)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    monkeypatch.setattr(mgr, "is_vllm_installed", lambda: False)
+    monkeypatch.setattr(mgr, "is_docker_available", lambda: True)
+
+    tpath = os.path.expanduser("~/.cache/dreamference/tensorizer/test/model.tensors")
+    monkeypatch.setattr(ModelDownloader, "is_model_tensorized", lambda key: True)
+    monkeypatch.setattr(ModelDownloader, "get_tensorized_path", lambda key: tpath)
+
+    cmd = mgr.build_launch_command(model="qwen2.5-coder-32b", use_tensorizer=True)
+    assert DEFAULT_VLLM_IMAGE in cmd
+    assert "--load-format" in cmd
+    assert "--model-loader-extra-config" in cmd
+    cfg_idx = cmd.index("--model-loader-extra-config")
+    assert "/root/.cache/dreamference/tensorizer/test/model.tensors" in cmd[cfg_idx + 1]
+
+
+def test_guided_decoding_default_backend(monkeypatch):
+    from dreamference.config.dreamference_config import DEFAULT_GUIDED_DECODING_BACKEND
+
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "detect_image_vllm_version", lambda image: (0, 12))
+    cmd = mgr.build_launch_command(model="qwen2.5-coder-32b")
+    assert "--guided-decoding-backend" not in cmd
+    assert "--structured-outputs-config.backend" in cmd
+    idx = cmd.index("--structured-outputs-config.backend")
+    assert cmd[idx + 1] == DEFAULT_GUIDED_DECODING_BACKEND
+
+
+def test_guided_decoding_modern_flag(monkeypatch):
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "detect_image_vllm_version", lambda image: (0, 12))
+    cmd = mgr.build_launch_command(model="qwen2.5-coder-32b", guided_decoding_backend="xgrammar")
+    assert "--structured-outputs-config.backend" in cmd
+    idx = cmd.index("--structured-outputs-config.backend")
+    assert cmd[idx + 1] == "xgrammar"
+    assert "--guided-decoding-backend" not in cmd
+
+
+def test_guided_decoding_legacy_flag_for_old_vllm(monkeypatch):
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "detect_image_vllm_version", lambda image: (0, 11))
+    cmd = mgr.build_launch_command(model="qwen2.5-coder-32b", guided_decoding_backend="outlines")
+    assert "--guided-decoding-backend" in cmd
+    idx = cmd.index("--guided-decoding-backend")
+    assert cmd[idx + 1] == "outlines"
+    assert "--structured-outputs-config.backend" not in cmd
+
+
+def test_guided_decoding_undetectable_version_uses_modern_flag(monkeypatch):
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "detect_image_vllm_version", lambda image: None)
+    cmd = mgr.build_launch_command(model="qwen2.5-coder-32b", guided_decoding_backend="auto")
+    assert "--structured-outputs-config.backend" in cmd
+
+
+def test_start_server_forwards_guided_decoding_backend(monkeypatch):
+    mgr = VLLMServerManager()
+    captured = {}
+    monkeypatch.setattr(mgr, "is_docker_available", lambda: True)
+    monkeypatch.setattr(mgr, "ensure_docker_image", lambda img=DEFAULT_VLLM_IMAGE: True)
+    monkeypatch.setattr("dreamference.hardware.download_model", lambda *a, **k: None)
+    # Host-safety and memory gates depend on machine state (sysstat, OOM handler, page cache, and
+    # how much RAM happens to be free right now) that says nothing about argument forwarding, so
+    # pin them rather than letting the test track whichever box it runs on.
+    from dreamference.hardware.hardware_telemetry import HardwareTelemetry
+
+    monkeypatch.setattr(VLLMServerManager, "check_host_safety", classmethod(lambda cls: None))
+    monkeypatch.setattr(mgr, "_evict_model_page_cache", lambda model: 0.0)
+    monkeypatch.setattr(
+        "dreamference.hardware.hardware_manager.HardwareManager.detect_gb10_hardware",
+        classmethod(
+            lambda cls: HardwareTelemetry(
+                is_gb10=True,
+                gpu_name="NVIDIA GB10",
+                driver_version="0",
+                arch="aarch64",
+                total_unified_memory_gb=128.0,
+                available_memory_gb=128.0,
+                used_memory_gb=0.0,
+                vram_gb=0.0,
+            )
+        ),
+    )
+
+    def fake_build(**kwargs):
+        captured.update(kwargs)
+        return ["docker", "run", DEFAULT_VLLM_IMAGE]
+
+    class FakeProc:
+        stdout = None
+        pid = 1234
+
+    monkeypatch.setattr(mgr, "build_launch_command", fake_build)
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: None)
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(mgr.streamer, "start_streaming", lambda stream: None)
+    # A background start keeps the PSI watchdog running after it returns. With the real
+    # /proc/pressure/memory it watched this machine for the rest of the session and its
+    # `docker inspect` calls landed in later tests' fakes; with no PSI it is never started.
+    from dreamference.vllm_server import psi_watchdog
+
+    monkeypatch.setattr(psi_watchdog, "read_memory_pressure_full", lambda: None)
+
+    mgr.start_server(model="qwen2.5-coder-32b", guided_decoding_backend="guidance", background=True)
+    assert captured["guided_decoding_backend"] == "guidance"
+
+
+def test_detect_image_vllm_version_parses_and_caches(monkeypatch):
+    mgr = VLLMServerManager()
+    VLLMServerManager._image_probe_cache.clear()
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = "vllm=0.12.1+cu129\ntensorizer=True\n"
+
+    def fake_run(*a, **k):
+        calls.append(a)
+        return Result()
+
+    # probe_image reports on an image, it does not fetch one, so presence is what it checks.
+    monkeypatch.setattr(mgr, "is_image_present", lambda img: True)
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert mgr.detect_image_vllm_version("some-image:tag") == (0, 12)
+    assert mgr.detect_image_vllm_version("some-image:tag") == (0, 12)
+    assert len(calls) == 1  # cached, probed only once
+    VLLMServerManager._image_probe_cache.clear()
+
+
+def test_default_image_is_pinned_not_latest():
+    assert DEFAULT_VLLM_IMAGE == "dreamference-vllm-tensorizer:26.07-py3"
+    assert not DEFAULT_VLLM_IMAGE.endswith(":latest")
+
+
+def test_probe_image_reports_tensorizer(monkeypatch):
+    mgr = VLLMServerManager()
+    VLLMServerManager._image_probe_cache.clear()
+
+    class Result:
+        returncode = 0
+        stdout = "vllm=0.13.0\ntensorizer=False\n"
+
+    # probe_image reports on an image, it does not fetch one, so presence is what it checks.
+    monkeypatch.setattr(mgr, "is_image_present", lambda img: True)
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: Result())
+    assert mgr.image_has_tensorizer("img:tag") is False
+    assert mgr.detect_image_vllm_version("img:tag") == (0, 13)
+    VLLMServerManager._image_probe_cache.clear()
+
+
+def test_probe_image_failure_is_conservative(monkeypatch):
+    mgr = VLLMServerManager()
+    VLLMServerManager._image_probe_cache.clear()
+
+    def boom(*a, **k):
+        raise OSError("docker missing")
+
+    # probe_image reports on an image, it does not fetch one, so presence is what it checks.
+    monkeypatch.setattr(mgr, "is_image_present", lambda img: True)
+    monkeypatch.setattr("subprocess.run", boom)
+    assert mgr.image_has_tensorizer("img:tag") is False
+    assert mgr.detect_image_vllm_version("img:tag") is None
+    VLLMServerManager._image_probe_cache.clear()
+
+
+def test_ensure_docker_image_present(monkeypatch):
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "is_image_present", lambda img: True)
+    assert mgr.ensure_docker_image("dreamference-vllm-tensorizer:26.07-py3") is True
+
+
+def test_ensure_docker_image_builds_if_missing(monkeypatch):
+    mgr = VLLMServerManager()
+    present_state = {"present": False}
+    build_calls = []
+
+    def mock_is_image_present(img):
+        return present_state["present"]
+
+    def mock_run(cmd, check=False, **kwargs):
+        if cmd[0] == "docker" and cmd[1] == "build":
+            build_calls.append(cmd)
+            present_state["present"] = True
+
+            class Proc:
+                returncode = 0
+
+            return Proc()
+        raise RuntimeError("Unexpected command")
+
+    monkeypatch.setattr(mgr, "is_image_present", mock_is_image_present)
+    monkeypatch.setattr("subprocess.run", mock_run)
+
+    assert mgr.ensure_docker_image("dreamference-vllm-tensorizer:26.07-py3") is True
+    assert len(build_calls) == 1
+    assert "docker" in build_calls[0]
+    assert "build" in build_calls[0]
+    assert "dreamference-vllm-tensorizer:26.07-py3" in build_calls[0]
+
+
+def test_a_missing_recipe_image_is_not_built_from_the_wrong_dockerfile(monkeypatch):
+    # The plain Dockerfile builds DEFAULT_VLLM_IMAGE only. A recipe pinning a local DFlash tag
+    # used to get the plain image built under its name -- the wrong engine, correctly labelled.
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "is_image_present", lambda img: False)
+    calls = []
+    monkeypatch.setattr("subprocess.run", lambda cmd, **k: calls.append(cmd))
+    assert mgr.ensure_docker_image("example-vllm-dflash:1") is False
+    assert calls == []
+
+
+# --- memory pressure watchdog ---
+
+
+def _watchdog_with_readings(monkeypatch, readings):
+    """Builds a watchdog whose pressure samples come from `readings`, and records docker calls.
+
+    `readings` are (avg10, avg60) pairs. Once exhausted the host reads as healthy, so a watchdog
+    that has not tripped by then simply keeps idling rather than replaying the last sample.
+    """
+    from dreamference.vllm_server import psi_watchdog
+
+    seq = list(readings)
+    monkeypatch.setattr(
+        psi_watchdog,
+        "read_memory_pressure_full",
+        lambda: seq.pop(0) if seq else (0.0, 0.0),
+    )
+    docker_calls = []
+
+    def _fake_run(cmd, **kw):
+        docker_calls.append(cmd)
+        # Stand in for `docker inspect`: no such container, so the cgroup never resolves and the
+        # watchdog falls back through to the CLI. Cgroup resolution is covered separately.
+        # `docker kill` succeeds, because a kill that reports failure now suppresses the trip
+        # callback -- see test_watchdog_does_not_claim_a_kill_that_failed.
+        rc = 0 if cmd[:2] == ["docker", "kill"] else 1
+        return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+
+    monkeypatch.setattr(psi_watchdog.subprocess, "run", _fake_run)
+    # The socket path would otherwise reach the real dockerd during tests. Default it to "did not
+    # work" so these cases exercise the CLI fallback exactly as they did before.
+    socket_calls = []
+
+    def _fake_socket_kill(self):
+        socket_calls.append(self._container_id or self.container_name)
+        return False
+
+    monkeypatch.setattr(
+        psi_watchdog.MemoryPressureWatchdog, "_kill_via_docker_socket", _fake_socket_kill
+    )
+    # `_keep_down` speaks to the socket itself, after a direct kill; that must not reach it either.
+    monkeypatch.setattr(
+        psi_watchdog.MemoryPressureWatchdog, "_docker_api", lambda self, action, body=b"": False
+    )
+    wd = psi_watchdog.MemoryPressureWatchdog(
+        "test-container",
+        limit_pct=60.0,
+        trip_duration_s=0.05,
+        sustained_pct=25.0,
+        sample_interval_s=0.01,
+    )
+    wd._socket_calls = socket_calls
+    return wd, docker_calls
+
+
+def test_watchdog_kills_container_on_sustained_pressure(monkeypatch):
+    wd, docker_calls = _watchdog_with_readings(monkeypatch, [(90.0, 0.0)] * 40)
+    assert wd.start() is True
+    wd._thread.join(timeout=5)
+    assert wd.tripped is True
+    assert ["docker", "kill", "test-container"] in docker_calls
+
+
+def test_watchdog_ignores_pressure_that_does_not_persist(monkeypatch):
+    # Alternating spikes with a calm minute behind them: never stays above the limit long enough
+    # to trip the fast rule, and avg60 stays clear of the sustained rule.
+    wd, docker_calls = _watchdog_with_readings(monkeypatch, [(90.0, 0.0), (0.0, 0.0)] * 40)
+    assert wd.start() is True
+    wd._thread.join(timeout=1)
+    wd.stop()
+    assert wd.tripped is False
+    assert ["docker", "kill", "test-container"] not in docker_calls
+
+
+def test_watchdog_trips_on_sustained_avg60_that_never_spikes(monkeypatch):
+    # The shape the fast rule cannot see: avg10 dips below the limit on every other sample, so its
+    # clock resets forever, while avg60 shows a minute of the machine getting nothing done. This
+    # is the case that made a second rule necessary rather than just a shorter timer.
+    wd, docker_calls = _watchdog_with_readings(monkeypatch, [(70.0, 30.0), (10.0, 30.0)] * 40)
+    assert wd.start() is True
+    wd._thread.join(timeout=5)
+    assert wd.tripped is True
+    assert ["docker", "kill", "test-container"] in docker_calls
+
+
+def test_watchdog_reports_which_rule_fired(monkeypatch):
+    from dreamference.vllm_server import psi_watchdog
+
+    wd, _ = _watchdog_with_readings(monkeypatch, [(75.0, 0.0)] * 40)
+    seen = []
+    wd._on_trip = lambda reason, pressure, window: seen.append((reason, pressure, window))
+    wd.start()
+    wd._thread.join(timeout=5)
+    assert wd.tripped is True
+    assert seen and seen[0][0] == psi_watchdog.TRIP_REASON_SPIKE
+    assert seen[0][1] == 75.0
+    assert seen[0][2] >= wd.trip_duration_s
+
+
+def test_watchdog_kills_cgroup_pids_without_forking(monkeypatch, tmp_path):
+    # The point of resolving the cgroup ahead of time: the trip path must not need docker, which
+    # under a reclaim stall may never get scheduled. Only available when this process may actually
+    # signal the container -- i.e. running as root -- which _direct_kill_ok records.
+    from dreamference.vllm_server import psi_watchdog
+
+    procs = tmp_path / "cgroup.procs"
+    procs.write_text("4242\n4243\n")
+
+    wd, docker_calls = _watchdog_with_readings(monkeypatch, [(90.0, 0.0)] * 40)
+    wd._cgroup_procs = str(procs)
+    wd._direct_kill_ok = True
+    signalled = []
+    monkeypatch.setattr(psi_watchdog.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+
+    assert wd.start() is True
+    wd._thread.join(timeout=5)
+    assert wd.tripped is True
+    assert wd.killed is True
+    assert signalled == [(4242, signal.SIGKILL), (4243, signal.SIGKILL)]
+    assert ["docker", "kill", "test-container"] not in docker_calls
+    assert wd._socket_calls == []
+
+
+def test_watchdog_probes_whether_it_may_signal_before_relying_on_it(monkeypatch, tmp_path):
+    # `ragon-admin` runs as an ordinary user and the container's processes run as root, so reading
+    # cgroup.procs succeeds while signalling those PIDs raises EPERM. The probe uses signal 0,
+    # which asks the permission question without delivering anything.
+    from dreamference.vllm_server import psi_watchdog
+
+    wd, _ = _watchdog_with_readings(monkeypatch, [(0.0, 0.0)] * 5)
+
+    monkeypatch.setattr(psi_watchdog.os, "kill", lambda pid, sig: None)
+    wd._probe_direct_kill([4242])
+    assert wd._direct_kill_ok is True
+
+    def _eperm(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(psi_watchdog.os, "kill", _eperm)
+    wd._direct_kill_ok = None
+    wd._probe_direct_kill([4242])
+    assert wd._direct_kill_ok is False
+
+
+def test_watchdog_uses_docker_socket_when_it_cannot_signal(monkeypatch, tmp_path):
+    # The normal case. Signalling is not permitted, so the kill has to go through dockerd -- but
+    # over its socket, which costs a connect and a write, not a fork and exec of the CLI.
+    from dreamference.vllm_server import psi_watchdog
+
+    procs = tmp_path / "cgroup.procs"
+    procs.write_text("4242\n")
+
+    wd, docker_calls = _watchdog_with_readings(monkeypatch, [(90.0, 0.0)] * 40)
+    wd._cgroup_procs = str(procs)
+    wd._direct_kill_ok = False
+    wd._container_id = "deadbeef"
+    monkeypatch.setattr(
+        psi_watchdog.MemoryPressureWatchdog,
+        "_kill_via_docker_socket",
+        lambda self: wd._socket_calls.append(self._container_id) or True,
+    )
+
+    assert wd.start() is True
+    wd._thread.join(timeout=5)
+    assert wd.tripped is True
+    assert wd.killed is True
+    assert wd._socket_calls == ["deadbeef"]
+    # The CLI is the last resort and must not be reached once the socket has done the job.
+    assert ["docker", "kill", "test-container"] not in docker_calls
+
+
+def test_watchdog_does_not_claim_a_kill_that_failed(monkeypatch, tmp_path):
+    # The regression that mattered: EPERM was swallowed by the same handler that ignores
+    # already-dead PIDs, so an unprivileged watchdog killed nothing, ran the on_trip callback --
+    # whose message says the container "has been killed to give the memory back" -- and left the
+    # host to freeze while the operator went looking elsewhere.
+    from dreamference.vllm_server import psi_watchdog
+
+    procs = tmp_path / "cgroup.procs"
+    procs.write_text("4242\n")
+
+    wd, _ = _watchdog_with_readings(monkeypatch, [(90.0, 0.0)] * 40)
+    wd._cgroup_procs = str(procs)
+    wd._direct_kill_ok = True
+
+    def _eperm(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(psi_watchdog.os, "kill", _eperm)
+    # Socket and CLI both unavailable too, so nothing can kill it.
+    monkeypatch.setattr(
+        psi_watchdog.MemoryPressureWatchdog, "_kill_via_docker_socket", lambda self: False
+    )
+    monkeypatch.setattr(
+        psi_watchdog.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr=""),
+    )
+
+    reported = []
+    wd._on_trip = lambda reason, pressure, window: reported.append(reason)
+
+    assert wd.start() is True
+    wd._thread.join(timeout=5)
+    assert wd.tripped is True
+    assert wd.killed is False
+    assert reported == []
+
+
+def test_watchdog_stops_retrying_cgroup_resolution(monkeypatch):
+    # Resolution costs a fork and the loop runs for the life of the server, so a container whose
+    # cgroup never appears must not mean `docker inspect` once a second for hours.
+    from dreamference.vllm_server import psi_watchdog
+
+    wd, _docker_calls = _watchdog_with_readings(monkeypatch, [(0.0, 0.0)] * 500)
+    # The helper patches `subprocess.run` for the whole process, so a watchdog thread an earlier
+    # test left running also lands in `docker_calls`; only this watchdog's own calls count.
+    ours = []
+    fake_run = psi_watchdog.subprocess.run
+
+    def _run_recording_ours(cmd, **kw):
+        if threading.current_thread() is wd._thread:
+            ours.append(cmd)
+        return fake_run(cmd, **kw)
+
+    monkeypatch.setattr(psi_watchdog.subprocess, "run", _run_recording_ours)
+
+    def count():
+        return sum(1 for c in ours if "inspect" in c)
+
+    assert wd.start() is True
+    # Wait for the cap rather than a fixed time: on a loaded machine (the full suite beside a
+    # build) half a second was not always enough samples to reach it. Then let the loop run on
+    # for as many samples again, so a retry past the cap would show.
+    deadline = time.monotonic() + 15
+    while count() < psi_watchdog.MAX_CGROUP_RESOLVE_ATTEMPTS and time.monotonic() < deadline:
+        time.sleep(0.02)
+    reached = time.monotonic()
+    while time.monotonic() - reached < 0.5:
+        time.sleep(0.02)
+    wd.stop()
+    assert count() == psi_watchdog.MAX_CGROUP_RESOLVE_ATTEMPTS
+
+
+def test_watchdog_survives_a_raising_sample(monkeypatch):
+    # An exception must cost one reading, not the whole guard: a watchdog that has silently
+    # stopped watching is worse than one that never started, because nothing reports its absence.
+    from dreamference.vllm_server import psi_watchdog
+
+    calls = {"n": 0}
+
+    def _flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise OSError("transient")
+        return (90.0, 0.0)
+
+    monkeypatch.setattr(psi_watchdog, "read_memory_pressure_full", lambda: (0.0, 0.0))
+    wd = psi_watchdog.MemoryPressureWatchdog(
+        "test-container",
+        limit_pct=60.0,
+        trip_duration_s=0.05,
+        sustained_pct=25.0,
+        sample_interval_s=0.01,
+    )
+    monkeypatch.setattr(
+        psi_watchdog.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        psi_watchdog.MemoryPressureWatchdog, "_docker_api", lambda self, action, body=b"": False
+    )
+    assert wd.start() is True
+    monkeypatch.setattr(psi_watchdog, "read_memory_pressure_full", _flaky)
+    wd._thread.join(timeout=5)
+    assert wd.tripped is True
+
+
+def test_watchdog_trip_deadline_fits_inside_the_freeze_window(monkeypatch):
+    # The earlier reset came 20s after the first stalled frame. avg10 is itself a 10s decaying
+    # average and needs ~10s to climb to the limit, so anything but a short hold cannot act in
+    # time — which is exactly why the previous 15s hold never fired.
+    from dreamference.vllm_server import psi_watchdog
+
+    # The hold is only checked once a sample, so the last interval counts against the window too.
+    assert 10.0 + psi_watchdog.PSI_TRIP_DURATION_S + psi_watchdog.PSI_SAMPLE_INTERVAL_S <= 20.0
+
+
+def test_watchdog_thread_does_not_keep_the_process_alive(monkeypatch):
+    # A watchdog nobody stopped must not hang the launcher's exit.
+    wd, _ = _watchdog_with_readings(monkeypatch, [])
+    assert wd.start() is True
+    try:
+        assert wd._thread.daemon is True
+    finally:
+        wd.stop()
+
+
+def test_watchdog_declines_to_start_without_psi(monkeypatch):
+    from dreamference.vllm_server import psi_watchdog
+
+    monkeypatch.setattr(psi_watchdog, "read_memory_pressure_full", lambda: None)
+    wd = psi_watchdog.MemoryPressureWatchdog("test-container")
+    assert wd.start() is False
+    assert wd.tripped is False
+
+
+# --- host safety gate ---
+
+
+def _pass_all_host_checks(monkeypatch):
+    """Makes every host safety check pass, so individual tests can fail exactly one."""
+    from dreamference.vllm_server import vllm_server_manager as vsm
+
+    monkeypatch.setattr(vsm.shutil, "which", lambda name: "/usr/bin/sar")
+    monkeypatch.setattr(VLLMServerManager, "_oom_handler_problem", classmethod(lambda cls: None))
+    monkeypatch.setattr(VLLMServerManager, "_swap_total_gb", staticmethod(lambda: vsm.MIN_SWAP_GB))
+    monkeypatch.setattr(
+        VLLMServerManager,
+        "_sysctl_int",
+        staticmethod(
+            lambda name: {
+                "vm.min_free_kbytes": vsm.MIN_FREE_KBYTES,
+                "vm.watermark_scale_factor": vsm.WATERMARK_SCALE_FACTOR,
+            }[name]
+        ),
+    )
+    return vsm
+
+
+def test_host_safety_passes_when_everything_is_configured(monkeypatch):
+    _pass_all_host_checks(monkeypatch)
+    VLLMServerManager.check_host_safety()  # must not raise
+
+
+def test_host_safety_tolerates_mkswap_header_shortfall(monkeypatch):
+    # `fallocate -l 64G` + mkswap reports a hair under the nominal size; that must still pass,
+    # or the check can never be satisfied however large the swapfile is made.
+    vsm = _pass_all_host_checks(monkeypatch)
+    monkeypatch.setattr(
+        VLLMServerManager, "_swap_total_gb", staticmethod(lambda: vsm.MIN_SWAP_GB - 0.001)
+    )
+    VLLMServerManager.check_host_safety()  # must not raise
+
+
+def test_host_safety_blocks_on_genuinely_small_swap(monkeypatch):
+    _pass_all_host_checks(monkeypatch)
+    monkeypatch.setattr(VLLMServerManager, "_swap_total_gb", staticmethod(lambda: 16.0))
+    with pytest.raises(SystemExit) as exc:
+        VLLMServerManager.check_host_safety()
+    assert exc.value.code == 1
+
+
+def test_host_safety_allows_only_a_one_percent_shortfall(monkeypatch):
+    # The mkswap tolerance covers a header, not a swapfile a few gigabytes short.
+    vsm = _pass_all_host_checks(monkeypatch)
+    monkeypatch.setattr(
+        VLLMServerManager, "_swap_total_gb", staticmethod(lambda: vsm.MIN_SWAP_GB * 0.98)
+    )
+    with pytest.raises(SystemExit):
+        VLLMServerManager.check_host_safety()
+
+
+def test_host_safety_blocks_without_oom_handler(monkeypatch):
+    _pass_all_host_checks(monkeypatch)
+    monkeypatch.setattr(
+        VLLMServerManager, "_oom_handler_problem", classmethod(lambda cls: "no handler")
+    )
+    with pytest.raises(SystemExit):
+        VLLMServerManager.check_host_safety()
+
+
+def test_host_safety_reports_every_failure_at_once(monkeypatch, capsys):
+    vsm = _pass_all_host_checks(monkeypatch)
+    monkeypatch.setattr(vsm.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        VLLMServerManager,
+        "_oom_handler_problem",
+        classmethod(lambda cls: "No userspace OOM handler is running."),
+    )
+    monkeypatch.setattr(VLLMServerManager, "_swap_total_gb", staticmethod(lambda: 1.0))
+    monkeypatch.setattr(VLLMServerManager, "_sysctl_int", staticmethod(lambda name: 1))
+    with pytest.raises(SystemExit):
+        VLLMServerManager.check_host_safety()
+    out = capsys.readouterr().out
+    assert "5 host safety checks failed" in out
+    for expected in (
+        "sysstat",
+        "OOM handler",
+        "Swap",
+        "vm.min_free_kbytes",
+        "vm.watermark_scale_factor",
+    ):
+        assert expected in out
+
+
+# --- earlyoom arming ---
+#
+# earlyoom was active and silent through the earlier freeze: it acts only when available
+# memory AND free swap are both low, and driver-pinned pages never reach swap. A running unit is
+# therefore not evidence of an armed one, and only the swap gate distinguishes them.
+
+
+@pytest.mark.parametrize(
+    "argv, fault",
+    [
+        (["/usr/bin/earlyoom", "-r", "3600"], "swap"),  # the config that froze the host
+        (["/usr/bin/earlyoom"], "swap"),  # no flags: defaults to -s 10
+        (["/usr/bin/earlyoom", "-m", "5", "-s", "10"], "swap"),  # explicitly gated
+        (["/usr/bin/earlyoom", "-s", "50,100"], "swap"),  # SIGTERM point still gated
+        (["/usr/bin/earlyoom", "-s", "wat"], "swap"),  # unparseable: assume gated
+        (["/usr/bin/earlyoom", "-m", "5", "-s", "100", "-s", "wat"], "swap"),  # the last one counts
+        # Swap gate open, but the memory threshold kills healthy loads. This is the configuration
+        # that SIGTERMed EngineCore three times at 9.82%, 9.79% and 9.90% available.
+        (["/usr/bin/earlyoom", "-m", "10", "-s", "100"], "memory"),
+        (["/usr/bin/earlyoom", "-s", "100"], "memory"),  # -m absent: defaults to 10
+        # Both right.
+        (["/usr/bin/earlyoom", "-m", "5,2", "-s", "100", "-r", "60"], None),
+        (["/usr/bin/earlyoom", "-m5,2", "-s100"], None),  # attached-value form
+        (["/usr/bin/earlyoom", "-m", "5", "-s", "100,100"], None),  # SIGTERM point governs
+        (["/usr/bin/earlyoom", "-m", "6", "-s", "100"], None),  # the ceiling itself is allowed
+    ],
+)
+def test_earlyoom_faults_cover_both_thresholds(argv, fault):
+    result = VLLMServerManager._earlyoom_fault(argv)
+    if fault is None:
+        assert result is None
+    else:
+        assert result is not None and fault in result
+
+
+def test_earlyoom_absolute_swap_floor_counts_as_ungated(monkeypatch):
+    # -S is an absolute KiB floor rather than a percentage; it opens the gate once it exceeds
+    # total swap, since free swap can then never be above it.
+    monkeypatch.setattr(VLLMServerManager, "_swap_total_gb", staticmethod(lambda: 64.0))
+    opened = VLLMServerManager._earlyoom_fault(["earlyoom", "-m", "5", "-S", str(65 * 1024**2)])
+    gated = VLLMServerManager._earlyoom_fault(["earlyoom", "-m", "5", "-S", str(1024**2)])
+    assert opened is None
+    assert gated is not None and "swap" in gated
+
+
+def test_earlyoom_absolute_swap_floor_at_total_swap_counts_as_ungated(monkeypatch):
+    # earlyoom acts once free swap is at or below the floor, so a floor equal to total swap is
+    # `-s 100` in absolute form.
+    monkeypatch.setattr(VLLMServerManager, "_swap_total_gb", staticmethod(lambda: 64.0))
+    assert (
+        VLLMServerManager._earlyoom_fault(["earlyoom", "-m", "5", "-S", str(64 * 1024**2)]) is None
+    )
+
+
+def test_shipped_earlyoom_args_pass_the_check():
+    # The arguments the hint tells the operator to install must themselves satisfy the check, or
+    # following the instructions leaves the gate failing.
+    import shlex
+
+    from dreamference.vllm_server.vllm_server_manager import EARLYOOM_ARGS
+
+    assert VLLMServerManager._earlyoom_fault(["earlyoom", *shlex.split(EARLYOOM_ARGS)]) is None
+
+
+def test_earlyoom_threshold_clears_the_measured_load_trough():
+    # Three consecutive loads troughed at 9.82%, 9.79% and 9.90% available while
+    # perfectly healthy. The threshold has to sit below all of them with room to spare, or the
+    # handler kills what it is meant to protect.
+    from dreamference.vllm_server.vllm_server_manager import MAX_EARLYOOM_MEM_PCT
+
+    assert MAX_EARLYOOM_MEM_PCT < 9.79
+
+
+def test_running_but_gated_earlyoom_is_reported_as_a_problem(monkeypatch):
+    monkeypatch.setattr(VLLMServerManager, "_unit_is_active", staticmethod(lambda unit: False))
+    monkeypatch.setattr(
+        VLLMServerManager,
+        "_process_argv",
+        staticmethod(lambda name: ["/usr/bin/earlyoom", "-r", "3600"]),
+    )
+    problem = VLLMServerManager._oom_handler_problem()
+    assert problem is not None
+    assert "misconfigured" in problem
+    # The operator has to be able to see what it is running with, or the claim is unfalsifiable.
+    assert "-r 3600" in problem
+
+
+def test_armed_earlyoom_satisfies_the_gate(monkeypatch):
+    monkeypatch.setattr(VLLMServerManager, "_unit_is_active", staticmethod(lambda unit: False))
+    monkeypatch.setattr(
+        VLLMServerManager,
+        "_process_argv",
+        staticmethod(lambda name: ["/usr/bin/earlyoom", "-m", "5,2", "-s", "100"]),
+    )
+    assert VLLMServerManager._oom_handler_problem() is None
+
+
+def test_systemd_oomd_satisfies_the_gate_without_earlyoom(monkeypatch):
+    monkeypatch.setattr(
+        VLLMServerManager, "_unit_is_active", staticmethod(lambda unit: unit == "systemd-oomd")
+    )
+    monkeypatch.setattr(VLLMServerManager, "_process_argv", staticmethod(lambda name: None))
+    assert VLLMServerManager._oom_handler_problem() is None
+
+
+def test_earlyoom_configure_command_is_valid_shell():
+    # The first version of this hint was `sed -i 's|^EARLYOOM_ARGS=.*|...--prefer \x27(a|b)$\x27...|'`,
+    # which fails two ways at once: `|` is both the sed delimiter and the regex alternation, and
+    # `\x27` is not a quote escape in sed or in bash. It looked right and errored on paste. Parse
+    # it the way a shell would, and check it survives a round trip through the file it writes.
+    import shlex
+
+    from dreamference.vllm_server.vllm_server_manager import (
+        EARLYOOM_ARGS,
+        EARLYOOM_CONFIGURE_CMD,
+    )
+
+    tokens = shlex.split(EARLYOOM_CONFIGURE_CMD)  # raises ValueError on unbalanced quotes
+    assert tokens[0] == "printf"
+    assert "sudo" in tokens and "tee" in tokens
+    assert tokens[-1] == "/etc/default/earlyoom"
+
+    # The line printf writes must be exactly what /etc/default/earlyoom is sourced for.
+    written = next(t for t in tokens if t.startswith("EARLYOOM_ARGS="))
+    assert written == f'EARLYOOM_ARGS="{EARLYOOM_ARGS}"'
+    # And those args must be the ones that actually arm it, or the hint is cosmetic.
+    assert VLLMServerManager._earlyoom_fault(["earlyoom", *shlex.split(EARLYOOM_ARGS)]) is None
+
+
+def test_no_handler_at_all_is_reported(monkeypatch):
+    monkeypatch.setattr(VLLMServerManager, "_unit_is_active", staticmethod(lambda unit: False))
+    monkeypatch.setattr(VLLMServerManager, "_process_argv", staticmethod(lambda name: None))
+    problem = VLLMServerManager._oom_handler_problem()
+    assert problem is not None
+    assert "No userspace OOM handler" in problem
+
+
+def test_host_safety_ignores_sysctls_the_kernel_does_not_expose(monkeypatch):
+    _pass_all_host_checks(monkeypatch)
+    monkeypatch.setattr(VLLMServerManager, "_sysctl_int", staticmethod(lambda name: None))
+    VLLMServerManager.check_host_safety()  # must not raise
+
+
+def test_an_sglang_recipe_launches_sglang_inside_the_same_guarded_container():
+    # Qwen3.8-27B is served by SGLang for its DFlash2 drafter. The engine changes; the container
+    # around it -- name, cgroup cap, CPU limit, OOM score, mounts -- must not, since the watchdog
+    # and every client address it by name and port.
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(model="qwen3.8-27b-nvfp4-dflash2", engine="sglang")
+    image = next(a for a in cmd if a.startswith("lmsysorg/sglang@sha256:"))
+    prefix, server = cmd[: cmd.index(image)], cmd[cmd.index(image) + 1 :]
+
+    assert "--name" in prefix and prefix[prefix.index("--name") + 1] == "dreamference-vllm-8000"
+    assert any(a.startswith("--memory=") for a in prefix) and "--oom-score-adj=800" in prefix
+    assert "HF_HUB_OFFLINE=1" in prefix
+    assert "vllm" not in prefix and "--entrypoint" not in prefix
+
+    assert server[:3] == ["python3", "-m", "sglang.launch_server"]
+
+    def flag(name):
+        return server[server.index(name) + 1]
+
+    assert flag("--served-model-name") == "RadixArk/Qwen3.8-27B-NVFP4"
+    assert flag("--mem-fraction-static") == "0.5"
+    # Pinned commits go in as snapshot directories: SGLang dropped --revision on some lookups,
+    # which offline resolved through a refs/main the pinned download never wrote.
+    assert flag("--model-path").endswith(
+        "models--RadixArk--Qwen3.8-27B-NVFP4/snapshots/52d1adc5f38aa5ebf099c29ed7025ba34cfbb854"
+    )
+    assert flag("--served-model-name") == "RadixArk/Qwen3.8-27B-NVFP4"
+    assert "--revision" not in server
+    assert flag("--speculative-algorithm") == "DFLASH"
+    import dreamference.hardware.model_matrix_registry as registry
+
+    assert flag("--speculative-draft-model-path").endswith(
+        "models--"
+        + registry.QWEN38_DRAFTER_REPO.replace("/", "--")
+        + "/snapshots/"
+        + registry.QWEN38_DRAFTER_REVISION
+    )
+    assert flag("--speculative-num-draft-tokens") == "12"
+    assert flag("--tool-call-parser") == "qwen3_coder"
+    assert "--speculative-config" not in server and "--max-model-len" not in server
+
+
+def test_a_custom_hf_home_is_what_the_model_container_mounts(tmp_path, monkeypatch):
+    # The host downloads into $HF_HOME/hub, and SGLang is handed snapshot directories under the
+    # container's hub. The container used to mount ~/.cache/huggingface whatever HF_HOME said, so
+    # on such a host the engine was pointed at a path the container could not see.
+    hf_home = tmp_path / "hf"
+    monkeypatch.setenv("HF_HOME", str(hf_home))
+    cmd = VLLMServerManager().build_launch_command(
+        model="qwen3.8-27b-nvfp4-dflash2", engine="sglang"
+    )
+    mounts = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-v"]
+
+    assert f"{hf_home}:/root/.cache/huggingface" in mounts
+    assert not any(
+        m.endswith(":/root/.cache/huggingface") and m != f"{hf_home}:/root/.cache/huggingface"
+        for m in mounts
+    )
+    assert cmd[cmd.index("--model-path") + 1].startswith("/root/.cache/huggingface/hub/models--")
+
+
+def test_a_hub_moved_out_of_the_home_gets_its_own_mount(tmp_path, monkeypatch):
+    from dreamference.hardware.model_downloader import ModelDownloader
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "weights"))
+    assert ModelDownloader.get_hf_cache_dir() == tmp_path / "weights"
+    assert ModelDownloader.container_volume_args() == [
+        "-v",
+        f"{tmp_path / 'hf'}:/root/.cache/huggingface",
+        "-v",
+        f"{tmp_path / 'weights'}:/root/.cache/huggingface/hub",
+    ]
+
+
+def test_the_diffusion_sidecar_mounts_the_same_hf_home(tmp_path, monkeypatch):
+    from dreamference.hardware.model_matrix_registry import (
+        DEFAULT_DIFFUSION_MODEL_ALIAS,
+        DEFAULT_MODEL_ALIAS,
+    )
+    from dreamference.vllm_server import DiffusionServerManager
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    cmd = DiffusionServerManager().build_launch_command(
+        DEFAULT_DIFFUSION_MODEL_ALIAS, DEFAULT_MODEL_ALIAS, port=8001
+    )
+    assert f"{tmp_path / 'hf'}:/root/.cache/huggingface" in cmd
+
+
+def test_an_sglang_model_leaves_the_vllm_compile_cache_alone(monkeypatch):
+    # The reset keys on the model, so running it for the SGLang model would re-stamp the
+    # signature and cost vLLM its compiled graph when the default model comes back.
+    from dreamference.hardware.hardware_telemetry import HardwareTelemetry
+
+    mgr = VLLMServerManager()
+    resets, downloads = [], []
+    monkeypatch.setattr(mgr, "is_docker_available", lambda: True)
+    monkeypatch.setattr(mgr, "ensure_docker_image", lambda image: True)
+    monkeypatch.setattr(mgr, "check_host_safety", lambda: None)
+    monkeypatch.setattr(mgr, "_evict_model_page_cache", lambda model: 0.0)
+    monkeypatch.setattr(mgr, "_reset_stale_compile_cache", lambda *a, **k: resets.append(a))
+    monkeypatch.setattr(
+        "dreamference.hardware.download_model",
+        lambda *a, **k: downloads.append((a[0], k.get("revision"))) or True,
+    )
+    monkeypatch.setattr(
+        "dreamference.hardware.model_downloader.ModelDownloader.download_model",
+        classmethod(lambda cls, *a, **k: downloads.append((a[0], k.get("revision"))) or True),
+    )
+    monkeypatch.setattr(
+        "dreamference.hardware.hardware_manager.HardwareManager.detect_gb10_hardware",
+        classmethod(
+            lambda cls: HardwareTelemetry(
+                is_gb10=True,
+                gpu_name="NVIDIA GB10",
+                driver_version="0",
+                arch="aarch64",
+                total_unified_memory_gb=121.0,
+                available_memory_gb=110.0,
+                used_memory_gb=11.0,
+                vram_gb=0.0,
+            )
+        ),
+    )
+    monkeypatch.setattr(mgr, "build_launch_command", lambda **kwargs: None)
+    # The template is read from the checkpoint in the HuggingFace cache, which the test's home
+    # does not have (this test used to pass by reading the real one).
+    monkeypatch.setattr(
+        "dreamference.vllm_server.chat_template_patcher.ChatTemplatePatcher.prepare",
+        classmethod(lambda cls, *a: Path("/nonexistent/chat_template.jinja")),
+    )
+    monkeypatch.setattr(
+        "dreamference.vllm_server.sglang_runtime_patcher.SGLangRuntimePatcher.prepare",
+        classmethod(lambda cls, image, patches: None),
+    )
+    with contextlib.suppress(
+        Exception
+    ):  # the launch itself is stubbed out; what happened before it is the point
+        mgr.start_server(model="qwen3.8-27b-nvfp4-dflash2", background=True, engine="sglang")
+    assert resets == []
+    assert ("qwen3.8-27b-nvfp4-dflash2", "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854") in downloads
+    import dreamference.hardware.model_matrix_registry as registry
+
+    assert (registry.QWEN38_DRAFTER_REPO, registry.QWEN38_DRAFTER_REVISION) in downloads
+    # The sparse head is ragon-engine's: SGLang's launch never fetches it.
+    assert not any(repo == "dreamference/qwen3.8-27b-sparse-head" for repo, _ in downloads)
+
+
+def test_both_engines_run_with_usage_statistics_off(monkeypatch):
+    # vLLM reported hardware, model and settings to stats.vllm.ai every ten minutes (found).
+    # The opt-out sits in the shared docker prefix, so SGLang gets it too.
+    from dreamference.vllm_server.vllm_server_manager import CONTAINER_TELEMETRY_OPT_OUT
+
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "is_docker_available", lambda: True)
+    for model in ("qwen2.5-coder-32b", "qwen3.8-27b-nvfp4-dflash2"):
+        cmd = mgr.build_launch_command(model=model)
+        for key, value in CONTAINER_TELEMETRY_OPT_OUT.items():
+            assert f"{key}={value}" in cmd, (model, key)
+
+
+def test_warm_up_sends_one_discarded_chat_request(monkeypatch):
+    # The first batch after a boot runs at about two-thirds speed; `server start` sends one
+    # throwaway request so the user's first request is not the slow one.
+    from dreamference.vllm_server.vllm_server_manager import WARM_UP_MAX_TOKENS
+
+    mgr = VLLMServerManager(host="http://localhost:8000")
+    monkeypatch.setattr(mgr, "get_models", lambda *a, **k: ["served/model"])
+    sent = []
+
+    class Response:
+        status_code = 200
+
+    monkeypatch.setattr(
+        "requests.post", lambda url, json=None, timeout=None: sent.append((url, json)) or Response()
+    )
+    assert mgr.warm_up() is not None
+    url, body = sent[0]
+    assert url == "http://localhost:8000/v1/chat/completions"
+    assert body["model"] == "served/model" and body["max_tokens"] == WARM_UP_MAX_TOKENS
+
+    monkeypatch.setattr(
+        "requests.post", lambda *a, **k: (_ for _ in ()).throw(requests.ConnectionError())
+    )
+    assert mgr.warm_up() is None  # never fails the start
+
+    monkeypatch.setattr(mgr, "get_models", lambda *a, **k: [])
+    assert mgr.warm_up() is None
+
+
+def test_server_start_warms_up_before_reporting_ready():
+    import inspect
+
+    from dreamference.cli.dreamference_cli_controller import DreamferenceCLIController
+
+    source = inspect.getsource(DreamferenceCLIController.run_cli)
+    assert source.index("vllm_mgr.warm_up()") < source.index("✅ Server Ready!")
+
+
+def test_the_chat_template_is_patched_for_efforts_and_late_system_messages(tmp_path, monkeypatch):
+    # Qwen3.8's template answered HTTP 400 to Codex's `high`/`minimal` efforts and refused a
+    # system message after the first; the recipe patches a copy, and a patch that no longer
+    # matches must stop the launch rather than serve the refusals.
+    import jinja2
+
+    from dreamference.hardware import get_model_launch_overrides
+    from dreamference.hardware.model_downloader import ModelDownloader
+    from dreamference.vllm_server.chat_template_patcher import ChatTemplatePatcher
+
+    patches = get_model_launch_overrides("qwen3.8-27b-nvfp4-dflash2", "sglang")[
+        "chat_template_patches"
+    ]
+    stock = (
+        "{%- if enable_thinking is undefined or enable_thinking is true %}\n" + patches[0][0] + "\n"
+        "        {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort) }}\n"
+        "    {%- endif %}\n{{- resolved_reasoning_effort }}\n{%- endif %}\n"
+        "{%- for message in messages %}{%- set content = message.content %}\n"
+        '    {%- if message.role == "system" %}\n'
+        + patches[1][0]
+        + "\n    {%- endif %}\n{%- endfor %}"
+    )
+    monkeypatch.setattr(ModelDownloader, "get_hf_cache_dir", classmethod(lambda cls: tmp_path))
+    snapshot = tmp_path / "models--RadixArk--Qwen3.8-27B-NVFP4" / "snapshots" / "abc"
+    snapshot.mkdir(parents=True)
+    (snapshot / "chat_template.jinja").write_text(stock)
+
+    written = ChatTemplatePatcher.prepare("RadixArk/Qwen3.8-27B-NVFP4", "abc", patches)
+    env = jinja2.Environment()
+    env.globals["raise_exception"] = lambda message: (_ for _ in ()).throw(ValueError(message))
+    template = env.from_string(written.read_text())
+    late_system = [{"role": "system", "content": "a"}, {"role": "system", "content": "late"}]
+    assert template.render(messages=late_system, reasoning_effort="high").startswith("xhigh")
+    assert template.render(messages=late_system, reasoning_effort="minimal").startswith("low")
+    assert template.render(messages=late_system).startswith("medium")
+    assert "<system-reminder>\nlate" in template.render(messages=late_system)
+
+    (snapshot / "chat_template.jinja").write_text("an unrelated template")
+    assert ChatTemplatePatcher.prepare("RadixArk/Qwen3.8-27B-NVFP4", "abc", patches) is None
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "is_docker_available", lambda: True)
+    cmd = mgr.build_launch_command(model="qwen3.8-27b-nvfp4-dflash2", engine="sglang")
+    assert cmd[cmd.index("--chat-template") + 1].endswith(
+        ChatTemplatePatcher.file_name(
+            "RadixArk/Qwen3.8-27B-NVFP4", "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854", patches
+        )
+    )
+
+
+def test_the_sglang_recipe_samples_with_pytorch_not_flashinfer(monkeypatch):
+    # FlashInfer's untruncated sampling kernel returned token 0 ('!') for every sampled
+    # completions request on the GB10; the recipe must keep PyTorch's sampler.
+    mgr = VLLMServerManager()
+    monkeypatch.setattr(mgr, "is_docker_available", lambda: True)
+    cmd = mgr.build_launch_command(model="qwen3.8-27b-nvfp4-dflash2", engine="sglang")
+    assert cmd[cmd.index("--sampling-backend") + 1] == "pytorch"

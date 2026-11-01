@@ -1,0 +1,113 @@
+"""Model Server Readiness Waiter.
+
+This module provides the VLLMReadinessWaiter class, which the IDE and container agent runners use
+to wait for the local model server to answer before they start their agent.
+"""
+
+import json
+import sys
+import time
+import urllib.request
+
+from dreamference.config import DreamferenceConfig
+from dreamference.vllm_server import VLLMServerManager
+
+
+class VLLMReadinessWaiter:
+    """Polls the configured model server until it is healthy and able to complete a chat request."""
+
+    def __init__(self, config: DreamferenceConfig | None = None):
+        """Initializes the waiter with a configuration and a server manager for its host.
+
+        Args:
+            config (Optional[DreamferenceConfig]): Configuration instance (defaults to DreamferenceConfig()).
+        """
+        self.config: DreamferenceConfig = config or DreamferenceConfig()
+        self.vllm_manager: VLLMServerManager = VLLMServerManager(host=self.config.vllm_host)
+
+    def wait_for_vllm(self, poll_interval: float = 1.0, max_wait: float | None = 600.0) -> bool:
+        """Polls the model server's health endpoint, printing progress dots, until it can serve.
+
+        Args:
+            poll_interval (float): Seconds between polls.
+            max_wait (Optional[float]): Seconds to wait before giving up, or None to wait forever.
+
+        Returns:
+            bool: True once the server is healthy and answers a completion, False on timeout or
+                cancellation.
+        """
+        start_time = time.monotonic()
+        print(f"⏳ Waiting for local vLLM server at {self.config.vllm_host} to become available...")
+
+        while True:
+            try:
+                if self.vllm_manager.check_health(timeout=1.0) and self._pre_warm():
+                    print("\n✅ vLLM server is online and ready!")
+                    return True
+            except (KeyboardInterrupt, SystemExit):
+                print("\n🛑 Cancelled checking vLLM server.")
+                return False
+
+            # The server is up but its gate refuses everyone but a benchmark run: waiting would
+            # last the whole run, so say why instead (specs/DREAMFERENCE_RAGON_SWE_BENCH.md §18).
+            from dreamference.vllm_server.model_gate import ModelGate
+
+            gate = ModelGate.probe(self.config.vllm_host, timeout=1.0) or {}
+            if gate.get("state") == "closed":
+                print(f"\n⛔ {gate.get('message')}")
+                return False
+
+            if max_wait is not None and (time.monotonic() - start_time) > max_wait:
+                print(f"\n❌ Timed out waiting for vLLM server after {max_wait} seconds.")
+                print("💡 Start vLLM in another terminal via: `ragon-admin server start`")
+                return False
+
+            sys.stdout.write(".")
+            sys.stdout.flush()
+            time.sleep(poll_interval)
+
+    @staticmethod
+    def served_model(vllm_manager: VLLMServerManager, model: str) -> str:
+        """Names the model the server runs, as an agent's requests must.
+
+        Not the one the config names (AGENTS.md: ask the server): a request for any other id
+        answers 404. Without an answer, the configured model's repo ID, not its alias, which the
+        server never names itself after.
+
+        Args:
+            vllm_manager (VLLMServerManager): The manager of the server the agent talks to.
+            model (str): The configured model key.
+
+        Returns:
+            str: The first id in `/v1/models`, or the configured model's repo ID.
+        """
+        from dreamference.hardware import resolve_model_hf_repo
+
+        served = vllm_manager.get_models(timeout=2.0)
+        return served[0] if served else resolve_model_hf_repo(model)
+
+    def _pre_warm(self) -> bool:
+        """Sends a one-token chat completion, which succeeds only once the model can generate.
+
+        A healthy `/health` answer arrives before the engine is ready to serve, so this is the
+        check that the agent's first request will not fail.
+
+        Returns:
+            bool: True if the completion returned HTTP 200, False otherwise.
+        """
+        try:
+            payload = {
+                "model": self.served_model(self.vllm_manager, self.config.model),
+                "messages": [{"role": "user", "content": "Ready?"}],
+                "max_tokens": 1,
+                "temperature": 0.0,
+            }
+            req = urllib.request.Request(
+                f"{self.config.vllm_host}/v1/chat/completions",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status == 200
+        except Exception:
+            return False

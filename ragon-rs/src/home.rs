@@ -1,0 +1,285 @@
+//! Ragon's own configuration folder, `~/.ragon`.
+//!
+//! Codex keeps its login, settings and session history in `$CODEX_HOME`, which defaults to
+//! `~/.codex`, and upstream Codex writes a ChatGPT login there (`auth.json`). A Ragon sharing that
+//! folder inherited the login, and with it every channel Codex opens to OpenAI when one is present:
+//! usage analytics, token refresh, the hosted apps connectors, the remote plugin catalogue. Ragon
+//! uses its own folder instead, so none of them has anything to authenticate with. The keyring is
+//! covered too: Codex keys stored credentials by a hash of the home folder's path, so a new folder
+//! has no entry.
+//!
+//! [`use_ragon_home`] runs first thing in Codex's `main()` (patch 0014). It has to: `arg0` reads
+//! `.env` from the home folder and creates helper files there before the CLI parses anything, and
+//! setting an environment variable is only sound before any other thread exists.
+
+use std::io;
+use std::path::Path;
+use std::path::PathBuf;
+
+/// Ragon's configuration folder, relative to `$HOME`.
+pub const RAGON_HOME_DIR: &str = ".ragon";
+
+/// Written into `~/.ragon` after the first-run copy, listing what was carried over.
+pub const MIGRATION_MARKER: &str = ".migrated-from-codex";
+
+/// Entries carried over from `~/.codex` on first run. An allow-list, so that `auth.json`, and
+/// anything a later Codex adds, is left behind unless named here.
+const CARRY_OVER: &[&str] = &[
+    "sessions",
+    "archived_sessions",
+    "history.jsonl",
+    "config.toml",
+    "AGENTS.md",
+    "rules",
+    "skills",
+    "prompts",
+    "plugins",
+];
+
+/// Session-state databases, matched by prefix so a Codex schema bump (`state_5` to `state_6`)
+/// still carries over; each is copied with its `-wal` and `-shm` files. Debug logs (`logs_*`) are
+/// not session state and stay behind.
+const CARRY_OVER_DB_PREFIXES: &[&str] =
+    &["state_", "thread_history_", "memories_", "goals_", "queue_"];
+
+/// Points Codex at `~/.ragon`, creating it and carrying over session history on first run.
+///
+/// An explicit `CODEX_HOME` is respected, so tests and users can still choose a folder.
+pub fn use_ragon_home() {
+    // Refine mode's `--refine`/`--no-refine` become its variable here, for the same reason.
+    crate::refine::export_flag();
+    // The compatibility mode's `--compat` becomes its variable here too (compat.rs).
+    crate::compat::export_flag();
+    // Loopback and the model server never go through a proxy a shell left set (proxy.rs).
+    crate::proxy::export();
+    // A Windows update moved the binaries it replaced aside; this start is the first moment they
+    // can be deleted.
+    #[cfg(windows)]
+    crate::update::sweep_replaced_binaries();
+    set_codex_home();
+    // Once `CODEX_HOME` is settled, since its `config.toml` is read: a "no network" the user chose
+    // for the workspace-write sandbox holds for the read-only one too (airgapped.rs).
+    crate::airgapped::export_read_only_network_choice();
+}
+
+/// The part of [`use_ragon_home`] that settles `CODEX_HOME`.
+fn set_codex_home() {
+    let Some(home) = ragon_node_locator::home_dir() else {
+        return;
+    };
+    let Some(ragon_home) = resolve(std::env::var_os("CODEX_HOME").as_deref(), &home) else {
+        return;
+    };
+    if !ragon_home.exists() && create_private_dir(&ragon_home).is_ok() {
+        let upstream = home.join(".codex");
+        if upstream.is_dir()
+            && let Ok(carried) = migrate(&upstream, &ragon_home)
+            && carried > 0
+        {
+            eprintln!(
+                "ragon: copied your session history from {} to {} ({carried} items). \
+                 No cloud sign-in was copied: Ragon has no account to sign in to.",
+                upstream.display(),
+                ragon_home.display()
+            );
+        }
+    }
+    // SAFETY: called first thing in Codex's `main()`, before the async runtime or any other thread
+    // exists, so nothing can be reading the environment concurrently.
+    unsafe {
+        std::env::set_var("CODEX_HOME", &ragon_home);
+    }
+}
+
+/// The folder Codex should use: `None` when `CODEX_HOME` is already set (leave it alone).
+pub fn resolve(codex_home_env: Option<&std::ffi::OsStr>, home: &Path) -> Option<PathBuf> {
+    match codex_home_env {
+        Some(value) if !value.is_empty() => None,
+        _ => Some(home.join(RAGON_HOME_DIR)),
+    }
+}
+
+#[cfg(unix)]
+fn create_private_dir(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
+}
+
+/// On Windows the profile folder's ACLs already keep other users out.
+#[cfg(not(unix))]
+fn create_private_dir(path: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
+/// Copies the allow-listed entries of `from` into `to` and records them in the marker file.
+///
+/// Returns how many top-level entries were copied. A failure on one entry skips it, not the rest.
+pub fn migrate(from: &Path, to: &Path) -> io::Result<usize> {
+    let mut carried = Vec::new();
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !should_carry_over(&name) {
+            continue;
+        }
+        if copy_tree(&entry.path(), &to.join(&name)).is_ok() {
+            carried.push(name);
+        }
+    }
+    carried.sort();
+    std::fs::write(
+        to.join(MIGRATION_MARKER),
+        format!("from {}\n{}\n", from.display(), carried.join("\n")),
+    )?;
+    Ok(carried.len())
+}
+
+/// Whether a top-level entry of `~/.codex` is carried over.
+pub fn should_carry_over(name: &str) -> bool {
+    if CARRY_OVER.contains(&name) {
+        return true;
+    }
+    let base = name
+        .strip_suffix("-wal")
+        .or_else(|| name.strip_suffix("-shm"))
+        .unwrap_or(name);
+    base.ends_with(".sqlite")
+        && CARRY_OVER_DB_PREFIXES
+            .iter()
+            .any(|prefix| base.starts_with(prefix))
+}
+
+fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+    let metadata = std::fs::symlink_metadata(from)?;
+    if metadata.file_type().is_symlink() {
+        copy_link(from, to)
+    } else if metadata.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(from, to).map(|_| ())
+    }
+}
+
+#[cfg(unix)]
+fn copy_link(from: &Path, to: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(std::fs::read_link(from)?, to)
+}
+
+/// A link cannot be made without a privilege on Windows; it is left behind, as the allow-list's
+/// other misses are.
+#[cfg(not(unix))]
+fn copy_link(_from: &Path, _to: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ragon-home-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap_or_default();
+        dir
+    }
+
+    #[test]
+    fn an_explicit_codex_home_is_left_alone() {
+        let home = Path::new("/home/u");
+        assert_eq!(resolve(Some(std::ffi::OsStr::new("/elsewhere")), home), None);
+        assert_eq!(resolve(None, home), Some(PathBuf::from("/home/u/.ragon")));
+        assert_eq!(resolve(Some(std::ffi::OsStr::new("")), home), Some(PathBuf::from("/home/u/.ragon")));
+    }
+
+    #[test]
+    fn the_chatgpt_login_and_openai_state_are_never_carried_over() {
+        for name in ["auth.json", "installation_id", "packages", "cache", "logs_2.sqlite", "logs_2.sqlite-wal", "version.json", "log"] {
+            assert!(!should_carry_over(name), "{name} must stay behind");
+        }
+        for name in ["sessions", "history.jsonl", "config.toml", "state_5.sqlite", "state_5.sqlite-wal", "thread_history_1.sqlite-shm", "memories_1.sqlite"] {
+            assert!(should_carry_over(name), "{name} should be carried over");
+        }
+    }
+
+    #[test]
+    fn migration_copies_history_but_not_the_login() {
+        let from = scratch("from");
+        let to = scratch("to");
+        std::fs::write(from.join("auth.json"), "{\"tokens\":\"secret\"}").unwrap_or_default();
+        std::fs::write(from.join("history.jsonl"), "{}\n").unwrap_or_default();
+        std::fs::create_dir_all(from.join("sessions/2015/09")).unwrap_or_default();
+        std::fs::write(from.join("sessions/2015/09/a.jsonl"), "x").unwrap_or_default();
+
+        assert_eq!(migrate(&from, &to).ok(), Some(2));
+        assert!(to.join("history.jsonl").is_file());
+        assert!(to.join("sessions/2015/09/a.jsonl").is_file());
+        assert!(!to.join("auth.json").exists());
+        let marker = std::fs::read_to_string(to.join(MIGRATION_MARKER)).unwrap_or_default();
+        assert!(marker.contains("sessions") && !marker.contains("auth.json"));
+
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[test]
+    fn a_database_moves_with_its_journal_and_the_logs_stay_behind() {
+        let from = scratch("db-from");
+        let to = scratch("db-to");
+        for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm", "logs_2.sqlite", "logs_2.sqlite-wal"] {
+            std::fs::write(from.join(name), name).unwrap_or_default();
+        }
+
+        assert_eq!(migrate(&from, &to).ok(), Some(3));
+        for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+            assert_eq!(std::fs::read_to_string(to.join(name)).unwrap_or_default(), name);
+        }
+        assert!(!to.join("logs_2.sqlite").exists() && !to.join("logs_2.sqlite-wal").exists());
+
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_the_history_is_copied_as_a_link_never_as_what_it_points_at() {
+        let from = scratch("link-from");
+        let to = scratch("link-to");
+        std::fs::write(from.join("auth.json"), "{\"tokens\":\"secret\"}").unwrap_or_default();
+        std::fs::create_dir_all(from.join("sessions")).unwrap_or_default();
+        std::os::unix::fs::symlink(from.join("auth.json"), from.join("sessions/login.jsonl")).unwrap_or_default();
+
+        assert_eq!(migrate(&from, &to).ok(), Some(1));
+        let copied = to.join("sessions/login.jsonl");
+        assert!(std::fs::symlink_metadata(&copied).is_ok_and(|metadata| metadata.file_type().is_symlink()));
+        assert_eq!(std::fs::read_link(&copied).ok(), Some(from.join("auth.json")));
+        assert!(!to.join("auth.json").exists());
+
+        let _ = std::fs::remove_dir_all(&from);
+        let _ = std::fs::remove_dir_all(&to);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_new_home_and_its_parents_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("private");
+        let home = root.join("a/.ragon");
+        create_private_dir(&home).unwrap_or_default();
+        for dir in [root.join("a"), home.clone()] {
+            let mode = std::fs::metadata(&dir).map(|metadata| metadata.permissions().mode() & 0o777).unwrap_or_default();
+            assert_eq!(mode, 0o700, "{}", dir.display());
+        }
+        // An existing folder is used as it is.
+        assert!(create_private_dir(&home).is_ok());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

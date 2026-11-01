@@ -1,0 +1,3197 @@
+"""Night Shift's runner (specs/DREAMFERENCE_RAGON_NIGHT_SHIFT.md §5, §8).
+
+A scripted stand-in for `ragon` plays the agent: it changes files, stalls, stalls and then acts
+after a nudge, hangs, or fails. Nothing here starts a systemd scope or unit, talks to the model
+server or opens the user's queue: every test has its own queue directory and repository.
+"""
+
+import json
+import os
+import re
+import shlex
+import stat
+import subprocess
+import sys
+import textwrap
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from dreamference.night_shift import (
+    NightShiftHost,
+    NightShiftIndex,
+    NightShiftQueue,
+    NightShiftReport,
+    NightShiftRunner,
+    NightShiftScheduler,
+    NightShiftSettings,
+    NightShiftTaskRun,
+    night_shift_settings,
+)
+from dreamference.night_shift.night_shift_task_run import NUDGE
+from dreamference.night_shift.refine_prompt import FIX_RULES_V2, STUDY_SECTIONS_V2, RefinePrompt
+
+FAKE_RAGON = textwrap.dedent("""\
+    #!{python}
+    # A stand-in for `ragon exec`: behaviour from $FAKE_RAGON_MODE, every call logged.
+    # `ragon sandbox … -- <command>` is logged apart, with what the runner set for it, and the
+    # command is run as it is: the suite never starts the real sandbox.
+    import json, os, sys, time, uuid
+    args = sys.argv[1:]
+    if args[0] == "sandbox":
+        with open(os.environ["FAKE_RAGON_CALLS"] + ".sandbox", "a") as log:
+            seen = {{name: os.environ.get(name) for name in ("CODEX_THREAD_ID", "DREAMFERENCE_RAGON_AIRGAPPED")}}
+            log.write(json.dumps({{"args": args, "env": seen, "cwd": os.getcwd()}}) + "\\n")
+        command = args[args.index("--") + 1:]
+        # What runs here is inside the sandbox: a planted hook tells by this whether it escaped.
+        os.environ["FAKE_RAGON_SANDBOXED"] = "1"
+        os.execvp(command[0], command)
+    with open(os.environ["FAKE_RAGON_CALLS"], "a") as log:
+        log.write(json.dumps(args) + "\\n")
+    with open(os.environ["FAKE_RAGON_CALLS"] + ".env", "a") as log:
+        log.write(json.dumps({{name: os.environ.get(name) for name in
+                               ("DREAMFERENCE_RAGON_PROMPT", "DREAMFERENCE_RAGON_REFINE",
+                                "DREAMFERENCE_RAGON_ADAPTER", "NO_PROXY", "no_proxy")}}) + "\\n")
+    cwd = args[args.index("-C") + 1]
+    out = args[args.index("-o") + 1]
+    resume = "resume" in args
+    session = args[args.index("resume") + 1] if resume else str(uuid.uuid4())
+    prompt = args[-1]
+    mode = os.environ.get("FAKE_RAGON_MODE", "change")
+    print(json.dumps({{"type": "thread.started", "thread_id": session}}), flush=True)
+    def say(text):
+        with open(out, "w") as handle:
+            handle.write(text)
+    if mode == "hang":
+        time.sleep(600)
+    if mode == "error":
+        sys.exit(1)
+    if mode == "change_then_error":
+        with open(os.path.join(cwd, "hello.txt"), "w") as handle:
+            handle.write("hi\\n")
+        sys.exit(1)
+    if mode == "refine" and prompt.startswith("This is the first of two steps"):
+        # Refine mode's study step: leaves a scratch file it was told not to, and answers.
+        with open(os.path.join(cwd, "scratch.txt"), "w") as handle:
+            handle.write("notes\\n")
+        say("1. Intent: greet.\\n6. Acceptance checks: test -f hello.txt")
+        print(json.dumps({{"type": "turn.completed"}}), flush=True)
+        sys.exit(0)
+    if mode == "plant_hooks":
+        # A hostile task: hooks where the checkout's git will look for them (FAKE_HOOK_DIR,
+        # relative to the worktree or absolute), optionally through the worktree's own config.
+        hooks = os.path.join(cwd, os.environ["FAKE_HOOK_DIR"])
+        os.makedirs(hooks, exist_ok=True)
+        for name in ("pre-commit", "reference-transaction", "post-checkout"):
+            with open(os.path.join(hooks, name), "w") as handle:
+                handle.write(os.environ["FAKE_HOOK_SCRIPT"])
+            os.chmod(os.path.join(hooks, name), 0o755)
+        if os.environ.get("FAKE_HOOK_WORKTREE_CONFIG"):
+            import subprocess
+            subprocess.run(["git", "-C", cwd, "config", "--worktree", "core.hooksPath",
+                            os.environ["FAKE_HOOK_DIR"]], check=True)
+        mode = "change"
+    if mode == "loosen":
+        with open(os.path.join(cwd, "dreamference.toml"), "w") as handle:
+            handle.write('ragon_airgapped = "off"\\n')
+        say("Loosened the level.")
+    acts = mode in ("change", "refine") or (mode == "stall_then_act" and prompt == {nudge!r}) \\
+        or (mode == "act_on_resume" and resume)
+    if acts:
+        with open(os.path.join(cwd, "hello.txt"), "w") as handle:
+            handle.write("hi\\n")
+        say("Created hello.txt.\\n\\nFiles changed: hello.txt")
+    elif mode in ("stall", "stall_then_act"):
+        say("I'll now create hello.txt with the greeting.")
+    else:
+        say("Nothing needed changing.")
+    print(json.dumps({{"type": "turn.completed"}}), flush=True)
+""")
+
+
+def git(cwd, *args):
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False
+    )
+
+
+@pytest.fixture
+def setup(tmp_path, monkeypatch):
+    """A repository with one commit, a queue directory and the fake `ragon`."""
+    monkeypatch.setattr(NightShiftTaskRun, "USE_SCOPE", False)
+    # These tests are about one attempt (the default, pinned here); best-of-N has its own, in
+    # test_night_shift_best_of_n.py, with a stand-in judge.
+    monkeypatch.setattr(night_shift_settings, "DEFAULT_BEST_OF", 1)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "night@test")
+    git(repo, "config", "user.name", "Night Test")
+    (repo / "README.md").write_text("readme\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "init")
+    ragon = tmp_path / "ragon"
+    ragon.write_text(FAKE_RAGON.format(python=sys.executable, nudge=NUDGE))
+    ragon.chmod(ragon.stat().st_mode | stat.S_IEXEC)
+    calls = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("FAKE_RAGON_CALLS", str(calls))
+    night = tmp_path / "night"
+    return {"repo": repo, "night": night, "ragon": str(ragon), "calls": calls}
+
+
+def queue(
+    night: Path,
+    repo: Path,
+    task_text: str = "Add hello.txt",
+    test=None,
+    task_id="20151001-0100-abc",
+) -> dict:
+    """Writes a task as the launcher does (ragon-rs/src/night.rs)."""
+    base = git(repo, "rev-parse", "HEAD").stdout.strip()
+    record = {
+        "id": task_id,
+        "repo": str(repo),
+        "base": base,
+        "branch": f"night/{task_id}",
+        "task": task_text,
+        "test": test,
+        "model_at_add": "test-model",
+        "status": "queued",
+        "history": [{"at": "2020-10-01T21:00:00+01:00", "status": "queued"}],
+        "attempts": 0,
+        "nudges": 0,
+        "session": None,
+        "result": None,
+    }
+    (night / "tasks").mkdir(parents=True, exist_ok=True)
+    (night / "tasks" / f"{task_id}.json").write_text(json.dumps(record))
+    return record
+
+
+def run_task(setup, monkeypatch, mode, deadline_s=60, **queue_args):
+    monkeypatch.setenv("FAKE_RAGON_MODE", mode)
+    record = queue(setup["night"], setup["repo"], **queue_args)
+    run = NightShiftTaskRun(
+        setup["night"],
+        record,
+        NightShiftSettings({}),
+        setup["ragon"],
+        deadline=time.time() + deadline_s,
+    )
+    status = run.run()
+    return status, NightShiftQueue.read(setup["night"], record["id"]), run
+
+
+def calls(setup):
+    return [json.loads(line) for line in setup["calls"].read_text().splitlines()]
+
+
+def sandbox_calls(setup, kind="test"):
+    """The test runs (`kind="test"`) or the commit's git commands (`"git"`) sent through `ragon sandbox`.
+
+    Each with its arguments, the environment the runner set and the working directory.
+    """
+    log = Path(str(setup["calls"]) + ".sandbox")
+    every = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    program = {"test": "bash", "git": "git"}[kind]
+    return [call for call in every if call["args"][call["args"].index("--") + 1] == program]
+
+
+# -- one task -------------------------------------------------------------------------------------
+
+
+def test_a_change_is_committed_on_its_branch_and_the_checkout_is_untouched(setup, monkeypatch):
+    head = git(setup["repo"], "rev-parse", "HEAD").stdout
+    status, record, run = run_task(setup, monkeypatch, "change", test="test -f hello.txt")
+    assert status == "done"
+    assert record["result"]["test_result"] == "passed"
+    assert record["result"]["test_source"] == "--test"
+    assert "1 file changed" in record["result"]["diff_stat"]
+    log = git(setup["repo"], "log", "-1", "--format=%s%n%an", "night/20151001-0100-abc").stdout
+    assert log.splitlines() == ["night: Add hello.txt", "Night Test"]
+    # The user's checkout, branch and HEAD are as they were; the worktree is gone.
+    assert git(setup["repo"], "rev-parse", "HEAD").stdout == head
+    assert git(setup["repo"], "status", "--porcelain").stdout == ""
+    assert git(setup["repo"], "branch", "--show-current").stdout.strip() in ("master", "main")
+    assert not run.worktree.exists()
+    # The agent ran unattended, in the worktree, under the workspace-write sandbox.
+    first = calls(setup)[0]
+    assert first[:2] == ["exec", "--json"] and "workspace-write" in first
+    assert first[first.index("-C") + 1] == str(run.worktree)
+    assert "Do not commit, push" in first[-1] and first[-1].endswith("Add hello.txt")
+    assert "run `test -f hello.txt`" in first[-1]
+    assert record["session"]
+
+
+def test_a_task_whose_branch_is_left_from_an_earlier_night_carries_on_from_it(setup, monkeypatch):
+    git(setup["repo"], "branch", "night/20151001-0100-abc")
+    other = setup["repo"].parent / "earlier"
+    git(setup["repo"], "worktree", "add", "-q", str(other), "night/20151001-0100-abc")
+    (other / "earlier.txt").write_text("from the first night\n")
+    git(other, "add", "earlier.txt")
+    git(other, "commit", "-qm", "earlier")
+    git(setup["repo"], "worktree", "remove", "--force", str(other))
+    status, _, _ = run_task(setup, monkeypatch, "change", test="test -f hello.txt")
+    assert status == "done"
+    assert (
+        git(setup["repo"], "show", "night/20151001-0100-abc:earlier.txt").stdout
+        == "from the first night\n"
+    )
+
+
+def test_a_worktree_that_cannot_be_added_fails_the_task_and_says_why(setup, monkeypatch):
+    (setup["night"] / "worktrees").mkdir(parents=True, exist_ok=True)
+    (setup["night"] / "worktrees" / "20151001-0100-abc").write_text("in the way\n")
+    status, record, _ = run_task(setup, monkeypatch, "change", test="test -f hello.txt")
+    assert status == "failed"
+    assert record["result"]["last_message"].startswith("git worktree add failed: ")
+
+
+def test_a_worktree_git_cannot_read_has_no_changes(setup, tmp_path):
+    record = queue(setup["night"], setup["repo"])
+    run = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], time.time() + 60
+    )
+    run.worktree = tmp_path / "not-a-repository"
+    run.worktree.mkdir()
+    assert run._git(run.worktree, "status", "--porcelain")[1].strip()  # git says why, and fails
+    assert run._has_changes() is False
+
+
+def test_a_task_from_another_machine_never_gets_the_owners_test(setup, monkeypatch):
+    seen = []
+
+    def detect(cls, worktree, override, configured, repo, base=None):
+        seen.append(configured)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(NightShiftTaskRun, "detect_test_command", classmethod(detect))
+    monkeypatch.setattr(NightShiftTaskRun, "_prepare_worktree", lambda self: None)
+    record = queue(setup["night"], setup["repo"])
+    settings = NightShiftSettings({"test": "the-owners-test"})
+    for task in (record, dict(record, remote={"sender": "x"})):
+        with pytest.raises(RuntimeError):
+            NightShiftTaskRun(
+                setup["night"], task, settings, setup["ragon"], time.time() + 60
+            )._run()
+    assert seen == ["the-owners-test", None]
+
+
+def test_tests_the_window_cut_off_leave_the_task_interrupted_not_committed(setup, monkeypatch):
+    status, _record, run = run_task(setup, monkeypatch, "change", deadline_s=3, test="sleep 30")
+    assert status == "interrupted" and run.worktree.is_dir()
+    assert (
+        "night:" not in git(setup["repo"], "log", "--format=%s", "night/20151001-0100-abc").stdout
+    )
+
+
+def test_a_task_runs_in_a_scope_with_a_hard_memory_cap_and_no_swap(setup, monkeypatch):
+    import dreamference.night_shift.night_shift_task_run as task_run_module
+
+    started = []
+
+    def popen(argv, **kwargs):
+        started.append(argv)
+        raise RuntimeError("not started")
+
+    record = queue(setup["night"], setup["repo"])
+    run = NightShiftTaskRun(
+        setup["night"],
+        record,
+        NightShiftSettings({"task_memory": "8G"}),
+        setup["ragon"],
+        time.time() + 60,
+    )
+    run.USE_SCOPE = True
+    monkeypatch.setattr(task_run_module.subprocess, "Popen", popen)
+    with pytest.raises(RuntimeError):
+        run._run_capped(["true"], setup["repo"], setup["night"] / "out.log", None)
+    argv = started[0]
+    assert argv[: argv.index("true")] == [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "--unit=ragon-night-20151001-0100-abc-1",
+        "-p",
+        "MemoryMax=8G",
+        "-p",
+        "MemorySwapMax=0",
+        "-p",
+        "CPUQuota=400%",
+        "--",
+        "choom",
+        "-n",
+        "500",
+        "--",
+    ]
+
+
+def capped(setup, monkeypatch, deadline, waits=5, scope=False):
+    """A task run whose commands never start: each `wait` times out `waits` times, then exits 0."""
+    import dreamference.night_shift.night_shift_task_run as task_run_module
+
+    record = queue(setup["night"], setup["repo"])
+    run = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], deadline
+    )
+    run.USE_SCOPE = scope
+    run.seen_units, run.stopped = [], []
+
+    class Process:
+        pid = -1
+
+        def __init__(self):
+            self.left = waits
+
+        def wait(self, timeout=None):
+            run.seen_units.append(run.current_unit)
+            if self.left <= 0:
+                return 0
+            self.left -= 1
+            raise subprocess.TimeoutExpired("fake", timeout)
+
+    monkeypatch.setattr(task_run_module.subprocess, "Popen", lambda argv, **kwargs: Process())
+    monkeypatch.setattr(run, "_terminate", lambda process, unit: run.stopped.append(unit))
+    return run
+
+
+def test_the_scope_a_command_runs_in_is_known_while_it_runs_and_forgotten_after(setup, monkeypatch):
+    run = capped(setup, monkeypatch, time.time() + 60, waits=0, scope=True)
+    assert run._run_capped(["true"], setup["repo"], setup["night"] / "out.log", None) == 0
+    assert run.seen_units == ["ragon-night-20151001-0100-abc-1"] and run.current_unit is None
+
+
+def test_stopping_the_run_stops_the_command_that_is_running(setup, monkeypatch):
+    run = capped(setup, monkeypatch, time.time() + 60)
+    run.stop_event.set()
+    assert run._run_capped(["true"], setup["repo"], setup["night"] / "out.log", None) == "timeout"
+    assert run.stopped == ["ragon-night-20151001-0100-abc-1"]
+
+
+def test_a_command_stops_at_the_earlier_of_its_timeout_and_the_deadline(setup, monkeypatch):
+    run = capped(setup, monkeypatch, time.time() - 1)
+    assert run._run_capped(["true"], setup["repo"], setup["night"] / "out.log", 600) == "timeout"
+    run.deadline = time.time() + 600
+    assert run._run_capped(["true"], setup["repo"], setup["night"] / "out.log", 0) == "timeout"
+
+
+def test_a_command_never_waits_for_a_git_password_and_knows_it_is_the_night_run(setup):
+    from dreamference.night_shift.night_shift_host import NIGHT_RUN_ENV
+
+    record = queue(setup["night"], setup["repo"])
+    run = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], time.time() + 60
+    )
+    out = setup["night"] / "env.log"
+    assert run._run_capped(["env"], setup["repo"], out, 30) == 0
+    lines = out.read_text().splitlines()
+    assert "GIT_TERMINAL_PROMPT=0" in lines and f"{NIGHT_RUN_ENV}=1" in lines
+
+
+def test_a_commands_output_replaces_the_last_unless_appended(setup):
+    record = queue(setup["night"], setup["repo"])
+    run = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], time.time() + 60
+    )
+    out = setup["night"] / "out.log"
+    run._run_capped(["echo", "one"], setup["repo"], out, 30)
+    run._run_capped(["echo", "two"], setup["repo"], out, 30, append=False)
+    assert out.read_text() == "two\n"
+    run._run_capped(["echo", "three"], setup["repo"], out, 30)
+    assert out.read_text() == "two\nthree\n"
+
+
+def test_a_command_that_ignores_the_stop_is_killed(setup, monkeypatch):
+    import contextlib
+    import signal
+
+    import dreamference.night_shift.night_shift_task_run as task_run_module
+
+    monkeypatch.setattr(task_run_module, "KILL_GRACE_S", 1)
+    record = queue(setup["night"], setup["repo"])
+    run = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], time.time() - 1
+    )
+    pid_file = setup["night"] / "pid"
+    command = ["sh", "-c", f"trap '' TERM; echo $$ > {pid_file}; while :; do sleep 1; done"]
+    assert run._run_capped(command, setup["repo"], setup["night"] / "out.log", None) == "timeout"
+    pid = int(pid_file.read_text())
+    try:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+
+
+def test_stopping_a_command_stops_the_processes_it_started(setup):
+    import contextlib
+    import signal
+
+    record = queue(setup["night"], setup["repo"])
+    run = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], time.time() - 1
+    )
+    pid_file = setup["night"] / "pid"
+    command = ["sh", "-c", f"sleep 60 & echo $! > {pid_file}; wait"]
+    assert run._run_capped(command, setup["repo"], setup["night"] / "out.log", None) == "timeout"
+    pid = int(pid_file.read_text())
+    try:
+        for _ in range(50):  # the child is reaped by whoever adopted it
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+
+
+def test_a_running_task_keeps_only_what_is_left_of_its_memory_allowance(fake_host, monkeypatch):
+    class Running:
+        in_model = False
+        lane_host = "http://x"
+        current_unit = "night-t"
+
+    gib = 1024**3
+    asked = []
+    monkeypatch.setattr(
+        FakeHost,
+        "scope_memory_current",
+        classmethod(lambda cls, unit: asked.append(unit) or 4 * gib),
+    )
+    # 8 GiB allowed, 4 used: 4 more held back, and one more task needs 8 GiB plus the 8 GiB reserve.
+    monkeypatch.setattr(FakeHost, "available", 20 * gib)
+    settings = NightShiftSettings({"task_memory": "8G"})
+    assert NightShiftRunner.start_blocker("http://x", "p", [(None, Running())], settings) is None
+    assert asked == ["night-t.scope"]
+
+
+def test_a_task_cannot_write_the_skills_the_users_next_session_reads(setup, monkeypatch):
+    # A local task runs with the user's CODEX_HOME, and the launcher makes `$CODEX_HOME/skills`
+    # writable unless the config names `writable_roots`: a hostile task could plant a skill there
+    # that every later session of the user's is told about. Every `exec` names no extra root.
+    run_task(setup, monkeypatch, "stall_then_act")
+    execs = [call for call in calls(setup) if call[0] == "exec"]
+    assert len(execs) >= 2
+    for call in execs:
+        pairs = [call[index + 1] for index, arg in enumerate(call[:-1]) if arg == "-c"]
+        assert "sandbox_workspace_write.writable_roots=[]" in pairs, call
+        tail = call.index("resume") if "resume" in call else len(call) - 1
+        assert call.index("sandbox_workspace_write.writable_roots=[]") < tail
+
+
+# A hook planted by the task. Inside the sandbox it adds a line to the commit, as a formatter would;
+# run anywhere else it has escaped, and says so in a file outside the worktree.
+HOSTILE_HOOK = """#!/bin/sh
+[ -n "$FAKE_RAGON_SANDBOXED" ] || echo "$(basename "$0")" >> "$NIGHT_HOOK_ESCAPED"
+case "$(basename "$0")" in pre-commit) echo hooked >> hooked.txt && git add hooked.txt ;; esac
+exit 0
+"""
+
+
+def plant_hooks(setup, monkeypatch, tmp_path, where):
+    """Sets the fake agent up to plant `HOSTILE_HOOK` where the checkout's git looks for hooks."""
+    escaped = tmp_path / "escaped.txt"
+    monkeypatch.setenv("NIGHT_HOOK_ESCAPED", str(escaped))
+    monkeypatch.setenv("FAKE_HOOK_SCRIPT", HOSTILE_HOOK)
+    if where == "relative hooksPath":
+        # husky's layout: the hooks are tracked files of the checkout itself.
+        git(setup["repo"], "config", "core.hooksPath", ".husky/_")
+        monkeypatch.setenv("FAKE_HOOK_DIR", ".husky/_")
+    elif where == ".git/hooks":
+        monkeypatch.setenv("FAKE_HOOK_DIR", str(setup["repo"] / ".git" / "hooks"))
+    else:  # The task's own worktree config names a hooks folder in the worktree.
+        git(setup["repo"], "config", "extensions.worktreeConfig", "true")
+        monkeypatch.setenv("FAKE_HOOK_DIR", ".hooks")
+        monkeypatch.setenv("FAKE_HOOK_WORKTREE_CONFIG", "1")
+    return escaped
+
+
+@pytest.mark.parametrize("where", ["relative hooksPath", ".git/hooks", "worktree config"])
+def test_a_planted_hook_runs_inside_the_sandbox_and_the_commit_still_happens(
+    setup, monkeypatch, tmp_path, where
+):
+    # Owner's decision: hooks stay allowed, but Night Shift's commit runs in the task's
+    # own sandbox. Until then the runner's host-side `git commit` ran whatever hook the task had
+    # written, with the user's full rights.
+    monkeypatch.delenv("DREAMFERENCE_RAGON_AIRGAPPED", raising=False)
+    escaped = plant_hooks(setup, monkeypatch, tmp_path, where)
+    status, record, run = run_task(setup, monkeypatch, "plant_hooks")
+    assert status == "done", record["result"]
+    assert not escaped.exists(), escaped.read_text()
+    branch = record["result"]["branch"]
+    # The hook ran, in the sandbox, and what it staged is in the commit.
+    assert git(setup["repo"], "show", f"{branch}:hooked.txt").stdout == "hooked\n"
+    assert git(setup["repo"], "show", f"{branch}:hello.txt").stdout == "hi\n"
+    assert git(setup["repo"], "log", "-1", "--format=%s%n%an%n%ae", branch).stdout.splitlines() == [
+        "night: Add hello.txt",
+        "Night Test",
+        "night@test",
+    ]
+    assert (
+        git(setup["repo"], "rev-parse", f"{branch}~1").stdout
+        == git(setup["repo"], "rev-parse", "HEAD").stdout
+    )
+    commits = [call for call in sandbox_calls(setup, "git") if "commit" in call["args"]]
+    assert len(commits) == 1
+    args = commits[0]["args"]
+    options = [
+        args[index + 1]
+        for index, arg in enumerate(args)
+        if arg == "-c" and index < args.index("--")
+    ]
+    assert options[0] == 'sandbox_mode="workspace-write"'
+    assert options[2] == "sandbox_workspace_write.network_access=true"
+    # One writable root beside the worktree: the runner's own scratch folder, gone afterwards.
+    roots = json.loads(options[1].removeprefix("sandbox_workspace_write.writable_roots="))
+    assert len(roots) == 1 and not Path(roots[0]).exists()
+    assert commits[0]["cwd"] == str(run.worktree)
+    assert not run.worktree.exists()
+
+
+def test_at_airgapped_on_the_commit_has_no_network_either(setup, monkeypatch, tmp_path):
+    monkeypatch.delenv("DREAMFERENCE_RAGON_AIRGAPPED", raising=False)
+    (setup["repo"] / "dreamference.toml").write_text('ragon_airgapped = "on"\n')
+    git(setup["repo"], "add", "-A")
+    git(setup["repo"], "commit", "-q", "-m", "seal")
+    escaped = plant_hooks(setup, monkeypatch, tmp_path, "relative hooksPath")
+    status, _, _ = run_task(setup, monkeypatch, "plant_hooks")
+    assert status == "done" and not escaped.exists()
+    commits = [call for call in sandbox_calls(setup, "git") if "commit" in call["args"]]
+    assert "sandbox_workspace_write.network_access=false" in commits[0]["args"]
+    assert commits[0]["env"]["DREAMFERENCE_RAGON_AIRGAPPED"] == "on"
+
+
+def test_a_hook_that_refuses_the_commit_fails_the_task_and_keeps_the_worktree(
+    setup, monkeypatch, tmp_path
+):
+    escaped = plant_hooks(setup, monkeypatch, tmp_path, "relative hooksPath")
+    monkeypatch.setenv("FAKE_HOOK_SCRIPT", "#!/bin/sh\necho 'lint: no' >&2\nexit 1\n")
+    status, record, run = run_task(setup, monkeypatch, "plant_hooks")
+    assert status == "failed"
+    note = record["result"]["last_message"]
+    assert "git commit failed" in note and "lint: no" in note
+    assert run.worktree.is_dir() and not escaped.exists()
+    assert (
+        git(setup["repo"], "rev-parse", "--verify", "--quiet", record["branch"]).stdout.strip()
+        == record["base"]
+    )
+
+
+def test_the_runners_own_git_on_the_host_runs_no_hook(setup, monkeypatch, tmp_path):
+    # The runner's plumbing (worktree add of a branch an earlier night left, its ref updates) runs
+    # outside any sandbox: no hook runs there, the checkout's own or one a task committed.
+    escaped = tmp_path / "escaped.txt"
+    monkeypatch.setenv("NIGHT_HOOK_ESCAPED", str(escaped))
+    for name in ("post-checkout", "reference-transaction"):
+        hook = setup["repo"] / ".git" / "hooks" / name
+        hook.write_text(HOSTILE_HOOK)
+        hook.chmod(0o755)
+    record = queue(setup["night"], setup["repo"])
+    git(setup["repo"], "branch", record["branch"], record["base"])
+    escaped.unlink(missing_ok=True)
+    monkeypatch.setenv("FAKE_RAGON_MODE", "change")
+    run = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], time.time() + 60
+    )
+    assert run.run() == "done"
+    assert not escaped.exists(), escaped.read_text()
+    assert git(setup["repo"], "show", f"{record['branch']}:hello.txt").stdout == "hi\n"
+
+
+def test_night_prompt_names_the_system_prompt_of_every_session_of_the_task(setup, monkeypatch):
+    # `[night] prompt` (prompt spec §7): set, every `ragon exec` of the task starts under it;
+    # unset, the runner adds nothing and the configured prompt applies.
+    monkeypatch.delenv("DREAMFERENCE_RAGON_PROMPT", raising=False)
+    monkeypatch.setenv("FAKE_RAGON_MODE", "change")
+    record = queue(setup["night"], setup["repo"])
+    run = NightShiftTaskRun(
+        setup["night"],
+        record,
+        NightShiftSettings({"prompt": "high-swe"}),
+        setup["ragon"],
+        deadline=time.time() + 60,
+    )
+    assert run.run() == "done"
+    seen = [
+        json.loads(line) for line in Path(str(setup["calls"]) + ".env").read_text().splitlines()
+    ]
+    assert seen and all(entry["DREAMFERENCE_RAGON_PROMPT"] == "high-swe" for entry in seen)
+    Path(str(setup["calls"]) + ".env").unlink()
+    status, _, _ = run_task(setup, monkeypatch, "change", task_id="20151001-0100-def")
+    assert status == "done"
+    seen = [
+        json.loads(line) for line in Path(str(setup["calls"]) + ".env").read_text().splitlines()
+    ]
+    assert seen and all(entry["DREAMFERENCE_RAGON_PROMPT"] is None for entry in seen)
+
+
+def test_night_prompt_is_read_trimmed_and_a_blank_one_is_no_prompt():
+    # A blank `[night] prompt` must not reach the launcher as a name: unset, the configured one applies.
+    assert NightShiftSettings({"prompt": "  high-swe\n"}).prompt == "high-swe"
+    assert NightShiftSettings({"prompt": "   "}).prompt is None
+    assert NightShiftSettings({"prompt": ""}).prompt is None
+    assert NightShiftSettings({"prompt": 3}).prompt is None
+    assert NightShiftSettings({}).prompt is None
+
+
+def test_every_session_of_a_task_is_on_the_base_whatever_the_users_default_adapter(
+    setup, monkeypatch
+):
+    # specs/DREAMFERENCE_RAGON_ADAPTERS.md §10.4: the runner sets the variable itself, empty.
+    monkeypatch.setenv("DREAMFERENCE_RAGON_ADAPTER", "rust")
+    status, _, _ = run_task(setup, monkeypatch, "change")
+    assert status == "done"
+    seen = [
+        json.loads(line) for line in Path(str(setup["calls"]) + ".env").read_text().splitlines()
+    ]
+    assert seen and all(entry["DREAMFERENCE_RAGON_ADAPTER"] == "" for entry in seen)
+
+
+def test_the_model_server_and_loopback_never_go_through_a_leftover_proxy(setup, monkeypatch):
+    # specs/DREAMFERENCE_RAGON_EGRESS.md §11: a lane on another node is exempt too, and what the
+    # user had in NO_PROXY stays.
+    monkeypatch.setenv("FAKE_RAGON_MODE", "change")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:3128")
+    monkeypatch.setenv("NO_PROXY", "corp.example")
+    monkeypatch.delenv("no_proxy", raising=False)
+    record = queue(setup["night"], setup["repo"])
+    run = NightShiftTaskRun(
+        setup["night"],
+        record,
+        NightShiftSettings({}),
+        setup["ragon"],
+        deadline=time.time() + 60,
+        model_host="http://10.9.8.7:8000",
+    )
+    assert run.run() == "done"
+    seen = [
+        json.loads(line) for line in Path(str(setup["calls"]) + ".env").read_text().splitlines()
+    ]
+    assert seen
+    for entry in seen:
+        assert (
+            entry["NO_PROXY"]
+            == entry["no_proxy"]
+            == "corp.example,localhost,127.0.0.1,::1,10.9.8.7"
+        )
+
+
+def refined_run(setup, monkeypatch, settings, **queue_args):
+    monkeypatch.setenv("FAKE_RAGON_MODE", "refine")
+    record = queue(setup["night"], setup["repo"], **queue_args)
+    run = NightShiftTaskRun(
+        setup["night"],
+        record,
+        NightShiftSettings(settings),
+        setup["ragon"],
+        deadline=time.time() + 60,
+        window_end=time.time() + 3600,
+    )
+    status = run.run()
+    return status, NightShiftQueue.read(setup["night"], record["id"]), run
+
+
+def test_refine_studies_a_new_task_first_and_puts_the_worktree_back(setup, monkeypatch):
+    # specs/DREAMFERENCE_RAGON_REFINE.md §5.3: a study session, then a fresh one that does the task.
+    status, record, _run = refined_run(
+        setup, monkeypatch, {"refine": True}, test="test -f hello.txt"
+    )
+    assert status == "done"
+    study, fix = calls(setup)
+    assert study[-1].startswith("This is the first of two steps") and study[-1].endswith(
+        "Task:\nAdd hello.txt"
+    )
+    assert "every change there is discarded" in study[-1] and "resume" not in study
+    assert study[study.index("-o") + 1].endswith(".refined.txt")
+    assert fix[-1].startswith("This is a Night Shift task.") and "resume" not in fix
+    assert fix[-1].index("Task:\nAdd hello.txt") < fix[-1].index(
+        "Refined description (written by the first step"
+    )
+    assert fix[-1].endswith("1. Intent: greet.\n6. Acceptance checks: test -f hello.txt")
+    # The study step's scratch file was put back, and only the task's change was committed.
+    assert record["result"]["diff_stat"].splitlines()[-1].strip().startswith("1 file changed")
+    refine = record["result"]["refine"]
+    assert (
+        refine["study_edited"] is True
+        and refine["refined_chars"] > 0
+        and refine["study_exit"] == "ok"
+    )
+    # The task's session is the doing step's, never the study's: a resume continues the work.
+    assert record["session"] and record["session"] != refine["study_session"]
+    # Every `ragon exec` the runner starts is told not to refine again on its own.
+    seen = [
+        json.loads(line) for line in Path(str(setup["calls"]) + ".env").read_text().splitlines()
+    ]
+    assert seen and all(entry["DREAMFERENCE_RAGON_REFINE"] == "off" for entry in seen)
+    text = NightShiftReport.render(datetime.now().astimezone(), [record], [])
+    assert "- Refine: studied first for" in text and "which was put back" in text
+
+
+def test_refine_follows_the_configured_setting_unless_night_says_otherwise(setup, monkeypatch):
+    monkeypatch.setenv("DREAMFERENCE_RAGON_REFINE", "on")
+    status, record, _ = refined_run(setup, monkeypatch, {})
+    assert status == "done" and len(calls(setup)) == 2 and "refine" in record["result"]
+    setup["calls"].unlink()
+    status, record, _ = refined_run(
+        setup, monkeypatch, {"refine": False}, task_id="20151001-0100-def"
+    )
+    assert status == "done" and len(calls(setup)) == 1 and "refine" not in record["result"]
+    setup["calls"].unlink()
+    monkeypatch.setenv("DREAMFERENCE_RAGON_REFINE", "off")
+    status, _, _ = refined_run(setup, monkeypatch, {}, task_id="20151001-0100-ghi")
+    assert status == "done" and len(calls(setup)) == 1
+
+
+def test_refine_v2_follows_night_then_the_configured_version(setup, monkeypatch):
+    # specs/DREAMFERENCE_RAGON_REFINE.md §10: `[night] refine_version`, then `ragon_refine_version`.
+    monkeypatch.delenv("DREAMFERENCE_RAGON_REFINE_VERSION", raising=False)
+    status, record, _ = refined_run(setup, monkeypatch, {"refine": True, "refine_version": "v2"})
+    assert status == "done"
+    study, fix = calls(setup)
+    assert STUDY_SECTIONS_V2 in study[-1] and RefinePrompt.subject(FIX_RULES_V2, "task") in fix[-1]
+    assert record["result"]["refine"]["version"] == "v2"
+    text = NightShiftReport.render(datetime.now().astimezone(), [record], [])
+    assert "description; it changed the worktree, which was put back (refine-v2)" in text
+    setup["calls"].unlink()
+    monkeypatch.setenv("DREAMFERENCE_RAGON_REFINE_VERSION", "v2")
+    status, record, _ = refined_run(
+        setup, monkeypatch, {"refine": True, "refine_version": "v1"}, task_id="20151001-0100-def"
+    )
+    study, fix = calls(setup)
+    assert STUDY_SECTIONS_V2 not in study[-1] and record["result"]["refine"]["version"] == "v1"
+    assert "(refine-v" not in NightShiftReport.render(datetime.now().astimezone(), [record], [])
+    setup["calls"].unlink()
+    status, record, _ = refined_run(
+        setup, monkeypatch, {"refine": True}, task_id="20151001-0100-ghi"
+    )
+    assert (
+        STUDY_SECTIONS_V2 in calls(setup)[0][-1] and record["result"]["refine"]["version"] == "v2"
+    )
+
+
+def test_a_resumed_task_is_not_studied_again(setup, monkeypatch):
+    monkeypatch.setenv("FAKE_RAGON_MODE", "refine")
+    record = queue(setup["night"], setup["repo"])
+    record["session"] = "11111111-2222-3333-4444-555555555555"
+    run = NightShiftTaskRun(
+        setup["night"],
+        record,
+        NightShiftSettings({"refine": True}),
+        setup["ragon"],
+        deadline=time.time() + 60,
+    )
+    run.run()
+    (only,) = calls(setup)
+    assert "resume" in only and "This is the first of two steps" not in only[-1]
+
+
+def test_what_the_test_run_leaves_behind_is_not_committed(setup, monkeypatch):
+    # The live run committed pytest's `__pycache__` in a repository with no .gitignore.
+    status, _record, _ = run_task(setup, monkeypatch, "change", test="echo junk > leftover.pyc")
+    assert status == "done"
+    files = git(setup["repo"], "show", "--name-only", "--format=", "night/20151001-0100-abc").stdout
+    assert files.split() == ["hello.txt"]
+
+
+def test_the_test_run_is_sandboxed_with_a_policy_the_runner_fixes(setup, monkeypatch):
+    # The test command runs what the agent wrote. Originally it ran as plain `bash -c`, with
+    # the user's full rights; it now goes through `ragon sandbox`, the agent's own sandbox.
+    monkeypatch.delenv("DREAMFERENCE_RAGON_AIRGAPPED", raising=False)
+    status, record, run = run_task(setup, monkeypatch, "change", test="test -f hello.txt")
+    assert status == "done" and record["result"]["test_result"] == "passed"
+    assert record["result"]["test_sandbox"] == "workspace-write"
+    (call,) = sandbox_calls(setup)
+    args = call["args"]
+    assert args[:2] == ["sandbox", "-c"] and args[-3:] == ["bash", "-c", "test -f hello.txt"]
+    options = [
+        args[index + 1]
+        for index, arg in enumerate(args)
+        if arg == "-c" and index < args.index("--")
+    ]
+    # Workspace-write, and nothing from the user's config: `~/.ragon/skills` is writable there, and
+    # a test run that could write it could leave instructions for every later session.
+    assert options == [
+        'sandbox_mode="workspace-write"',
+        "sandbox_workspace_write.writable_roots=[]",
+        "sandbox_workspace_write.network_access=true",
+    ]
+    assert call["cwd"] == str(run.worktree)
+    # The sandbox helper looks the /airgapped level up by the task's own session.
+    # ...and the runner hands every command of the task the level it fixed before the first one.
+    assert call["env"] == {
+        "CODEX_THREAD_ID": record["session"],
+        "DREAMFERENCE_RAGON_AIRGAPPED": "off",
+    }
+    assert record["airgapped"] == "off"
+    assert "sandbox: workspace-write" in NightShiftReport.render(
+        datetime.now().astimezone(), [record], []
+    )
+
+
+def test_at_airgapped_on_the_test_run_has_no_network(setup, monkeypatch):
+    # The worktree's own config file may tighten the level (the agent can write it), never loosen it.
+    monkeypatch.delenv("DREAMFERENCE_RAGON_AIRGAPPED", raising=False)
+    (setup["repo"] / "dreamference.toml").write_text('ragon_airgapped = "on"\n')
+    git(setup["repo"], "add", "-A")
+    git(setup["repo"], "commit", "-q", "-m", "seal")
+    status, record, _ = run_task(setup, monkeypatch, "change", test="true")
+    assert status == "done"
+    (call,) = sandbox_calls(setup)
+    assert "sandbox_workspace_write.network_access=false" in call["args"]
+    assert call["env"]["DREAMFERENCE_RAGON_AIRGAPPED"] == "on"
+    assert record["result"]["test_sandbox"] == "workspace-write, no network (/airgapped on)"
+
+
+def test_the_agent_cannot_loosen_the_level_for_its_own_tests(setup, monkeypatch):
+    # The level is fixed before the agent runs. Read again before the test run, it would be whatever
+    # the agent had by then written into the worktree's dreamference.toml.
+    monkeypatch.delenv("DREAMFERENCE_RAGON_AIRGAPPED", raising=False)
+    (setup["repo"] / "dreamference.toml").write_text('ragon_airgapped = "on"\n')
+    git(setup["repo"], "add", "-A")
+    git(setup["repo"], "commit", "-q", "-m", "seal")
+    monkeypatch.setenv("FAKE_RAGON_MODE", "loosen")
+    record = queue(setup["night"], setup["repo"], test="true")
+    run = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], time.time() + 60
+    )
+    assert run.run() == "done"
+    assert (run.repo / "dreamference.toml").exists()
+    changed = git(setup["repo"], "show", "--format=", record["branch"]).stdout
+    assert '+ragon_airgapped = "off"' in changed
+    (call,) = sandbox_calls(setup)
+    assert "sandbox_workspace_write.network_access=false" in call["args"]
+    assert call["env"]["DREAMFERENCE_RAGON_AIRGAPPED"] == "on"
+    # A task cut off and resumed another night keeps at least the level its first night recorded.
+    resumed = dict(
+        NightShiftQueue.read(setup["night"], record["id"]),
+        id="20151001-0100-abe",
+        branch="night/20151001-0100-abe",
+    )
+    (setup["night"] / "tasks" / "20151001-0100-abe.json").write_text(json.dumps(resumed))
+    again = NightShiftTaskRun(
+        setup["night"], resumed, NightShiftSettings({}), setup["ragon"], time.time() + 60
+    )
+    (setup["repo"] / "dreamference.toml").write_text('ragon_airgapped = "off"\n')
+    again.worktree.mkdir(parents=True)
+    assert again._fix_level() == "on"
+
+
+def test_night_airgapped_tightens_the_level_and_never_loosens_it(setup, monkeypatch):
+    monkeypatch.delenv("DREAMFERENCE_RAGON_AIRGAPPED", raising=False)
+    record = queue(setup["night"], setup["repo"])
+
+    def level(table):
+        return NightShiftTaskRun(
+            setup["night"], record, NightShiftSettings(table), setup["ragon"], time.time() + 60
+        )._fix_level()
+
+    assert level({}) == "off"
+    assert level({"airgapped": "on"}) == "on"
+    assert level({"airgapped": "nonsense"}) == "off"
+    monkeypatch.setenv("DREAMFERENCE_RAGON_AIRGAPPED", "on")
+    assert level({"airgapped": "off"}) == "on"
+
+
+def test_the_main_checkouts_untracked_level_reaches_its_night_tasks(setup, monkeypatch):
+    # dreamference.toml is usually untracked, so the worktree has no copy of it.
+    monkeypatch.delenv("DREAMFERENCE_RAGON_AIRGAPPED", raising=False)
+    (setup["repo"] / ".gitignore").write_text("dreamference.toml\n")
+    git(setup["repo"], "add", "-A")
+    git(setup["repo"], "commit", "-q", "-m", "ignore the local config")
+    (setup["repo"] / "dreamference.toml").write_text('ragon_airgapped = "on"\n')
+    status, record, _ = run_task(setup, monkeypatch, "change", test="true")
+    assert status == "done" and record["airgapped"] == "on"
+    (call,) = sandbox_calls(setup)
+    assert "sandbox_workspace_write.network_access=false" in call["args"]
+
+
+def test_the_airgapped_level_resolves_as_the_launcher_does(tmp_path, monkeypatch):
+    monkeypatch.delenv("DREAMFERENCE_RAGON_AIRGAPPED", raising=False)
+    monkeypatch.delenv("DREAMFERENCE_CONFIG_PATH", raising=False)
+    worktree, home = tmp_path / "tree", tmp_path / "ragon-home"
+    worktree.mkdir()
+
+    def level(session=None):
+        return NightShiftTaskRun.airgapped_level(worktree, session, home)
+
+    assert level() == "off"
+    user = Path(os.path.expanduser("~/.config/dreamference/config.toml"))
+    user.parent.mkdir(parents=True, exist_ok=True)
+    user.write_text('ragon_airgapped = "off"\n')
+    assert level() == "off"
+    # Strictest of the files: the worktree's can tighten the user's, and cannot loosen it.
+    (worktree / "dreamference.toml").write_text(
+        'ragon_airgapped = "on"  # sealed\n[night]\ntest = "x"\n'
+    )
+    assert level() == "on"
+    user.write_text('ragon_airgapped = "on"\n')
+    (worktree / "dreamference.toml").write_text('ragon_airgapped = "off"\n')
+    assert level() == "on"
+    # A key under a table is not the top-level key.
+    user.write_text('[night]\nragon_airgapped = "on"\n')
+    assert level() == "off"
+    # The environment overrides the files, and the session's own file overrides both.
+    monkeypatch.setenv("DREAMFERENCE_RAGON_AIRGAPPED", "ON")
+    assert level() == "on"
+    (home / "airgapped").mkdir(parents=True)
+    (home / "airgapped" / "0a1b-2c3d").write_text("off\n")
+    assert level("0a1b-2c3d") == "off"
+    assert level("../escape") == "on"
+
+
+def test_unsandboxed_tests_are_an_explicit_choice_and_refused_at_airgapped_on(setup, monkeypatch):
+    monkeypatch.delenv("DREAMFERENCE_RAGON_AIRGAPPED", raising=False)
+    monkeypatch.setenv("FAKE_RAGON_MODE", "change")
+    record = queue(setup["night"], setup["repo"], test="test -f hello.txt")
+    settings = NightShiftSettings({"test_sandbox": False})
+    run = NightShiftTaskRun(setup["night"], record, settings, setup["ragon"], time.time() + 60)
+    assert run.run() == "done"
+    result = NightShiftQueue.read(setup["night"], record["id"])["result"]
+    assert (
+        result["test_result"] == "passed"
+        and result["test_sandbox"] == "off ([night] test_sandbox = false)"
+    )
+    assert sandbox_calls(setup) == []
+    # With no sandbox nothing would keep the tests off the network, so at `on` they do not run.
+    monkeypatch.setenv("DREAMFERENCE_RAGON_AIRGAPPED", "on")
+    record = queue(setup["night"], setup["repo"], test="touch ran.txt", task_id="20151001-0100-abd")
+    run = NightShiftTaskRun(setup["night"], record, settings, setup["ragon"], time.time() + 60)
+    assert run.run() == "done"
+    result = NightShiftQueue.read(setup["night"], record["id"])["result"]
+    assert (
+        result["test_result"] == "untested" and "not run: /airgapped is on" in result["test_source"]
+    )
+    assert (
+        "ran.txt"
+        not in git(setup["repo"], "show", "--name-only", "--format=", record["branch"]).stdout
+    )
+
+
+def test_a_failing_test_is_recorded_not_hidden(setup, monkeypatch):
+    status, record, _ = run_task(setup, monkeypatch, "change", test="echo boom; exit 3")
+    assert status == "done"
+    assert record["result"]["test_result"] == "failed (exit 3)"
+    assert "boom" in record["result"]["test_tail"]
+
+
+def test_an_announce_only_reply_is_nudged_then_marked_stalled(setup, monkeypatch):
+    status, record, run = run_task(setup, monkeypatch, "stall")
+    assert status == "stalled"
+    resumes = [call for call in calls(setup) if "resume" in call]
+    assert len(resumes) == 2 and all(call[-1] == NUDGE for call in resumes)
+    assert resumes[0][resumes[0].index("resume") + 1] == record["session"]
+    assert record["result"]["nudges"] == 2
+    assert "I'll now create" in record["result"]["last_message"]
+    # No change, so no branch is kept; the log is.
+    assert git(setup["repo"], "branch", "--list", "night/*").stdout == ""
+    assert not run.worktree.exists()
+    assert Path(record["result"]["log"]).exists()
+
+
+def test_a_nudge_that_works_ends_in_done(setup, monkeypatch):
+    status, record, _ = run_task(setup, monkeypatch, "stall_then_act")
+    assert status == "done"
+    assert record["result"]["nudges"] == 1
+
+
+def test_no_change_and_no_announcement_is_no_change(setup, monkeypatch):
+    status, _record, _ = run_task(setup, monkeypatch, "nothing")
+    assert status == "no-change"
+    assert len(calls(setup)) == 1
+    assert git(setup["repo"], "branch", "--list", "night/*").stdout == ""
+
+
+def test_an_exec_error_with_no_change_is_failed(setup, monkeypatch):
+    status, record, _ = run_task(setup, monkeypatch, "error")
+    assert status == "failed"
+    assert record["result"]["last_message"]
+
+
+def test_an_exec_error_after_a_change_still_tests_and_commits_it(setup, monkeypatch):
+    status, record, _ = run_task(setup, monkeypatch, "change_then_error", test="test -f hello.txt")
+    assert status == "done" and record["result"]["test_result"] == "passed"
+    assert git(setup["repo"], "show", "night/20151001-0100-abc:hello.txt").stdout == "hi\n"
+
+
+def test_a_task_cut_off_keeps_its_worktree_and_resumes_its_session_next_time(setup, monkeypatch):
+    status, record, run = run_task(setup, monkeypatch, "hang", deadline_s=1)
+    assert status == "interrupted"
+    assert run.worktree.is_dir()
+    session = record["session"]
+    assert session and record["result"]["branch"] == "night/20151001-0100-abc"
+    # The next night: the same worktree, the recorded session, and it finishes.
+    monkeypatch.setenv("FAKE_RAGON_MODE", "act_on_resume")
+    rerun = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], deadline=time.time() + 60
+    )
+    assert rerun.run() == "done"
+    last = calls(setup)[-1]
+    assert last[last.index("resume") + 1] == session
+    assert NightShiftQueue.read(setup["night"], record["id"])["attempts"] == 2
+
+
+def test_a_dropped_task_is_cancelled_before_it_starts(setup, monkeypatch):
+    record = queue(setup["night"], setup["repo"])
+    NightShiftQueue.update(
+        setup["night"],
+        record["id"],
+        lambda task: NightShiftQueue.set_status(task, "cancel-requested"),
+    )
+    run = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], time.time() + 60
+    )
+    assert run.run() == "cancelled"
+    assert not setup["calls"].exists()
+
+
+def test_a_cancel_requested_while_running_wins_over_the_runners_next_status(setup):
+    record = queue(setup["night"], setup["repo"])
+    NightShiftQueue.transition(setup["night"], record["id"], "running")
+    NightShiftQueue.update(
+        setup["night"],
+        record["id"],
+        lambda task: NightShiftQueue.set_status(task, "cancel-requested"),
+    )
+    assert NightShiftQueue.transition(setup["night"], record["id"], "done") == "cancelled"
+
+
+def test_a_transition_to_the_same_status_is_written_only_with_a_note(setup):
+    record = queue(setup["night"], setup["repo"])
+    NightShiftQueue.transition(setup["night"], record["id"], "queued")
+    assert NightShiftQueue.read(setup["night"], record["id"])["history"] == record["history"]
+    NightShiftQueue.transition(setup["night"], record["id"], "queued", note="node spark-2 gone")
+    history = NightShiftQueue.read(setup["night"], record["id"])["history"]
+    assert [(entry["status"], entry.get("note")) for entry in history[1:]] == [
+        ("queued", "node spark-2 gone")
+    ]
+
+
+def test_a_task_file_that_holds_no_record_is_skipped(setup):
+    record = queue(setup["night"], setup["repo"])
+    (setup["night"] / "tasks" / "broken.json").write_text("[1, 2]")
+    assert NightShiftQueue.read(setup["night"], "broken") is None
+    assert [task["id"] for task in NightShiftQueue.tasks(setup["night"])] == [record["id"]]
+
+
+def test_a_vanished_base_commit_fails_the_task(setup, monkeypatch):
+    record = queue(setup["night"], setup["repo"])
+    record["base"] = "0" * 40
+    run = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], time.time() + 60
+    )
+    assert run.run() == "failed"
+    assert (
+        "no longer exists"
+        in NightShiftQueue.read(setup["night"], record["id"])["result"]["last_message"]
+    )
+
+
+# -- test detection ------------------------------------------------------------------------------
+
+
+def test_test_command_detection_order(tmp_path):
+    repo, tree = tmp_path / "repo", tmp_path / "tree"
+    tree.mkdir()
+
+    def detect(override=None, configured=None):
+        return NightShiftTaskRun.detect_test_command(tree, override, configured, repo)
+
+    assert detect() == (None, "none found")
+    (tree / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    assert detect() == ("npm test", "package.json")
+    (tree / "Cargo.toml").write_text("[package]\n")
+    assert detect() == ("cargo test", "Cargo.toml")
+    (tree / "setup.py").write_text("")
+    (tree / "tests").mkdir()
+    assert detect() == ("python3 -m pytest -q", "pytest")
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python").write_text("")
+    assert detect()[0] == f"{repo / '.venv/bin/python'} -m pytest -q"
+    assert detect(configured="make check") == ("make check", "config [night] test")
+    (tree / "dreamference.toml").write_text('[night]\ntest = "tox"\n')
+    assert detect(configured="make check") == ("tox", "dreamference.toml [night] test")
+    assert detect(override="true", configured="make check") == ("true", "--test")
+
+
+def test_a_resumed_task_takes_the_test_command_from_its_base_not_from_its_own_edits(tmp_path):
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    git(tree, "init", "-q")
+    (tree / "dreamference.toml").write_text('[night]\ntest = "make check"\n')
+    git(tree, "add", "-A")
+    git(tree, "-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "-m", "base")
+    base = git(tree, "rev-parse", "HEAD").stdout.strip()
+    # Last night's work, left in the worktree of a task that ran out of time, names its own command.
+    (tree / "dreamference.toml").write_text('[night]\ntest = "true"\n')
+    detect = NightShiftTaskRun.detect_test_command
+    assert detect(tree, None, None, tmp_path, base) == (
+        "make check",
+        "dreamference.toml [night] test",
+    )
+    git(tree, "rm", "-q", "--cached", "dreamference.toml")
+    git(tree, "-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "-m", "none")
+    head = git(tree, "rev-parse", "HEAD").stdout.strip()
+    assert detect(tree, None, "tox", tmp_path, head) == ("tox", "config [night] test")
+
+
+def test_the_venv_test_command_survives_a_space_in_the_repository_path(tmp_path):
+    # The command runs through `bash -c`, so an unquoted path splits at the space.
+    repo, tree = tmp_path / "my repo", tmp_path / "tree"
+    (tree / "tests").mkdir(parents=True)
+    (tree / "setup.py").write_text("")
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python").write_text("")
+    command, _ = NightShiftTaskRun.detect_test_command(tree, None, None, repo)
+    assert shlex.split(command) == [str(repo / ".venv/bin/python"), "-m", "pytest", "-q"]
+
+
+# -- the host ------------------------------------------------------------------------------------
+
+SGLANG_METRICS = """\
+# HELP sglang:num_running_reqs x
+sglang:num_running_reqs{engine_type="unified",tp_rank="0"} 1.0
+sglang:num_queue_reqs{engine_type="unified",tp_rank="0"} 2.0
+sglang:prompt_tokens_total{engine_type="unified"} 3.5e+07
+sglang:max_total_num_tokens{engine_type="unified",tp_rank="0"} 144870.0
+"""
+VLLM_METRICS = """\
+vllm:num_requests_running{model_name="m"} 0.0
+vllm:num_requests_waiting{model_name="m"} 0.0
+vllm:prompt_tokens_total{model_name="m"} 1234.0
+vllm:cache_config_info{block_size="16",num_gpu_blocks="6000",model_name="m"} 1.0
+"""
+
+
+def test_metrics_are_read_under_both_engines_names():
+    sglang = NightShiftHost.parse_metrics(SGLANG_METRICS)
+    assert sglang == {"running": 3.0, "served": 3.5e7, "kv_pool": 144870.0}
+    vllm = NightShiftHost.parse_metrics(VLLM_METRICS)
+    assert vllm == {"running": 0.0, "served": 1234.0, "kv_pool": 96000.0}
+
+
+def test_parallelism_follows_the_kv_pool_never_zero():
+    # The default model: 144,870 pool tokens against a 262,144-token context. Dividing by the
+    # context, as the spec first did, gives 0; per-task budgeting gives 2.
+    assert NightShiftHost.parallelism(3, 144870.0, 49152) == 2
+    assert NightShiftHost.parallelism(3, 1000.0, 49152) == 1
+    assert NightShiftHost.parallelism(3, 0.0, 49152) == 3
+    assert NightShiftHost.parallelism(2, 10_000_000.0, 49152) == 2
+
+
+def test_tui_command_lines_are_told_from_the_rest():
+    assert NightShiftHost.is_interactive([])
+    assert NightShiftHost.is_interactive(["-m", "x", "fix the bug"])
+    assert NightShiftHost.is_interactive(["resume", "--last"])
+    assert not NightShiftHost.is_interactive(["exec", "--json", "task"])
+    assert not NightShiftHost.is_interactive(["app-server"])
+    assert not NightShiftHost.is_interactive(["night", "list"])
+    # The web server runs for days; its busy marker, not its command line, says when a turn runs.
+    assert not NightShiftHost.is_interactive(["web", "serve", "--lan"])
+    # The desktop app's Gmail search, started by Codex as an MCP server, lives as long as the window.
+    assert not NightShiftHost.is_interactive(["apps", "serve", "gmail"])
+    assert NightShiftHost.is_interactive(["fork", "--last"])
+    assert NightShiftHost.is_interactive(["agents"])
+    assert not NightShiftHost.is_interactive(["--help"])
+    assert not NightShiftHost.is_interactive(["resume", "-h"])
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-C", "docs"],
+        ["--cd", "web"],
+        ["-C", "node", "fix the bug"],
+        ["-m", "exec", "fix it"],
+        ["-p", "night"],
+        ["--add-dir", "chat", "go"],
+        ["-c", "model=x", "fix the night run"],
+        ["-i", "app", "what is this"],
+        ["--", "exec"],
+        ["--", "-h"],
+        ["fix", "exec"],
+    ],
+)
+def test_a_non_session_word_outside_the_subcommands_place_is_still_a_session(args):
+    # A word anywhere used to count, so `ragon -C docs` (a folder named docs) was not counted as a
+    # session.
+    assert NightShiftHost.is_interactive(args)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-C", "/repo", "exec", "task"],
+        ["-c", "model=x", "app-server"],
+        ["--cd=/repo", "web", "serve"],
+        ["-m", "qwen", "--search", "review"],
+        ["--enable", "x", "night", "list"],
+    ],
+)
+def test_the_subcommand_after_options_and_their_values_is_found(args):
+    assert not NightShiftHost.is_interactive(args)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["chat", "start"],
+        ["signal", "status"],
+        ["docs", "status"],
+        ["audit", "egress"],
+        ["ledger", "show"],
+        ["notice"],
+        ["refine", "hook"],
+        ["guard", "tests.finish"],
+        ["plugin", "list"],
+        ["remote-control"],
+        ["exec-server"],
+        ["queue", "t1", "next"],
+        ["archive", "t1"],
+        ["unarchive", "t1"],
+        ["delete", "t1"],
+        ["execpolicy", "check"],
+        ["migrate-rollouts"],
+        ["responses-api-proxy"],
+        ["stdio-to-uds", "/s"],
+        ["tcp-tunnel"],
+        ["mcp-server"],
+        ["app-server", "--listen", "unix:///s"],
+    ],
+)
+def test_daemons_hooks_and_one_shot_commands_are_not_sessions(args):
+    # Every `ragon` subcommand that runs without a person at the TUI (ragon-rs/src/lib.rs and Codex's
+    # CLI): counting one would hold every night back while it runs.
+    assert not NightShiftHost.is_interactive(args)
+
+
+def test_a_busy_app_server_holds_the_run_back_and_a_stale_marker_is_pruned(tmp_path):
+    busy = tmp_path / "night" / "busy"
+    busy.mkdir(parents=True)
+    # This test process stands in for `ragon app-server`: its marker counts while it lives.
+    (busy / str(os.getpid())).write_text('{"threads": ["t1"]}')
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    (busy / str(dead.pid)).write_text('{"threads": ["t2"]}')
+    (busy / "not-a-pid").write_text("{}")
+    assert NightShiftHost.busy_app_server_pids(sys.executable, str(tmp_path)) == [os.getpid()]
+    assert sorted(p.name for p in busy.iterdir()) == [str(os.getpid())]
+    # A live process that is not the installed `ragon` is not a session either.
+    assert NightShiftHost.busy_app_server_pids("/bin/true", str(tmp_path)) == []
+    # No markers, or no folder: an idle Work window holds nothing back.
+    assert NightShiftHost.busy_app_server_pids(sys.executable, str(tmp_path / "elsewhere")) == []
+
+
+def test_the_desktop_apps_bundled_ragon_is_recognised_as_an_app_server(tmp_path):
+    # The Electron app runs the `ragon` bundled inside it, not the installed one: a program of the
+    # same name running `app-server` counts; the same name doing anything else does not.
+    import shutil
+
+    bundled = tmp_path / "app" / "resources" / "ragon"
+    bundled.parent.mkdir(parents=True)
+    shutil.copy("/bin/bash", bundled)
+    installed = str(tmp_path / "installed" / "ragon")
+    busy = tmp_path / "home" / "night" / "busy"
+    busy.mkdir(parents=True)
+    # Two commands, so bash cannot exec `sleep` in its own place: with one it often did, and the
+    # process's exe became /usr/bin/sleep, so the copy was never seen (about 1 run in 3).
+    server = subprocess.Popen([str(bundled), "-c", "sleep 30; true", "app-server"])
+    other = subprocess.Popen([str(bundled), "-c", "sleep 30; true", "exec"])
+    try:
+        for process in (server, other):
+            (busy / str(process.pid)).write_text('{"threads": ["t1"]}')
+        for _ in range(50):  # until both have exec'd the copy
+            if all(os.path.realpath(f"/proc/{p.pid}/exe") == str(bundled) for p in (server, other)):
+                break
+            time.sleep(0.05)
+        assert NightShiftHost.busy_app_server_pids(installed, str(tmp_path / "home")) == [
+            server.pid
+        ]
+        assert sorted(p.name for p in busy.iterdir()) == [str(server.pid)]
+    finally:
+        for process in (server, other):
+            process.kill()
+            process.wait()
+
+
+def test_a_ragon_web_that_is_not_the_installed_ragon_keeps_its_marker(tmp_path):
+    # `ragon web serve` writes the same marker while a browser tab's turn runs; a copy of the
+    # same name serving the web holds the run back as an app-server does.
+    import shutil
+
+    other_build = tmp_path / "build" / "ragon"
+    other_build.parent.mkdir(parents=True)
+    shutil.copy("/bin/bash", other_build)
+    installed = str(tmp_path / "installed" / "ragon")
+    busy = tmp_path / "home" / "night" / "busy"
+    busy.mkdir(parents=True)
+    server = subprocess.Popen([str(other_build), "-c", "sleep 30; true", "web", "serve"])
+    try:
+        (busy / str(server.pid)).write_text('{"threads": ["t1"]}')
+        _wait_for_exe(server, other_build)
+        assert NightShiftHost.busy_app_server_pids(installed, str(tmp_path / "home")) == [
+            server.pid
+        ]
+    finally:
+        server.kill()
+        server.wait()
+
+
+def _wait_for_exe(process, path):
+    for _ in range(50):  # until it has exec'd the program
+        if os.path.realpath(f"/proc/{process.pid}/exe") == str(path):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"{process.pid} never ran {path}")
+
+
+def test_a_ragon_replaced_by_a_rebuild_still_counts(tmp_path):
+    # A build replaces the installed binary (a new inode at the same path) under running processes:
+    # their /proc exe then reads "<path> (deleted)". A busy app-server keeps its marker and a TUI
+    # still counts.
+    import shutil
+
+    installed = tmp_path / "bin" / "ragon"
+    installed.parent.mkdir()
+    shutil.copy("/bin/bash", installed)
+    busy = tmp_path / "home" / "night" / "busy"
+    busy.mkdir(parents=True)
+    # `sleep 30; :` keeps bash itself running: a lone command would be exec'd in its place.
+    server = subprocess.Popen([str(installed), "-c", "sleep 30; :", "app-server"])
+    tui = subprocess.Popen([str(installed), "-c", "sleep 30; :"])
+    try:
+        for process in (server, tui):
+            _wait_for_exe(process, installed)
+        (busy / str(server.pid)).write_text('{"threads": ["t1"]}')
+        installed.unlink()
+        shutil.copy("/bin/bash", installed)
+        assert os.readlink(f"/proc/{server.pid}/exe") == f"{installed} (deleted)"
+        assert NightShiftHost.executable_of(str(server.pid)) == str(installed)
+        assert NightShiftHost.busy_app_server_pids(str(installed), str(tmp_path / "home")) == [
+            server.pid
+        ]
+        assert [p.name for p in busy.iterdir()] == [str(server.pid)]
+        assert tui.pid in NightShiftHost.interactive_ragon_pids(str(installed))
+        assert server.pid not in NightShiftHost.interactive_ragon_pids(str(installed))
+    finally:
+        for process in (server, tui):
+            process.kill()
+            process.wait()
+
+
+def test_only_a_trailing_deleted_suffix_is_dropped(monkeypatch):
+    # A fake /proc entry: the suffix is stripped only at the end, never from inside a path.
+    links = {
+        "/proc/1/exe": "/opt/ragon (deleted)",
+        "/proc/2/exe": "/opt/ragon (deleted)/ragon",
+        "/proc/3/exe": "/opt/ragon",
+    }
+
+    def readlink(path):
+        if path not in links:
+            raise FileNotFoundError(path)
+        return links[path]
+
+    monkeypatch.setattr(os, "readlink", readlink)
+    monkeypatch.setattr(os.path, "realpath", lambda path: path)
+    assert NightShiftHost.executable_of("1") == "/opt/ragon"
+    assert NightShiftHost.executable_of("2") == "/opt/ragon (deleted)/ragon"
+    assert NightShiftHost.executable_of("3") == "/opt/ragon"
+    assert NightShiftHost.executable_of("4") == ""
+
+
+def test_sizes_parse():
+    assert NightShiftHost.parse_size("8G") == 8 * 1024**3
+    assert NightShiftHost.parse_size("512M") == 512 * 1024**2
+    assert NightShiftHost.parse_size("1024") == 1024
+
+
+# -- admission and scheduling --------------------------------------------------------------------
+
+
+class FakeHost(NightShiftHost):
+    model = ("m", 262144)
+    safe = True
+    available = 40 * 1024**3
+    heavy = []
+    sessions = []
+    samples = []
+
+    @classmethod
+    def served_model(cls, host, timeout=3.0):
+        return cls.model
+
+    @classmethod
+    def host_safety_ok(cls):
+        return cls.safe
+
+    @classmethod
+    def mem_available_bytes(cls):
+        return cls.available
+
+    @classmethod
+    def heavy_jobs(cls):
+        return list(cls.heavy)
+
+    @classmethod
+    def interactive_ragon_pids(cls, ragon_bin):
+        return list(cls.sessions)
+
+    @classmethod
+    def metrics(cls, host, timeout=3.0):
+        if len(cls.samples) > 1:
+            return cls.samples.pop(0)
+        return (
+            cls.samples[0] if cls.samples else {"running": 0.0, "served": 1.0, "kv_pool": 144870.0}
+        )
+
+    @classmethod
+    def scope_memory_current(cls, unit):
+        return 0
+
+
+@pytest.fixture
+def fake_host(monkeypatch):
+    for name, value in (
+        ("model", ("m", 262144)),
+        ("safe", True),
+        ("available", 40 * 1024**3),
+        ("heavy", []),
+        ("sessions", []),
+        ("samples", []),
+    ):
+        monkeypatch.setattr(FakeHost, name, value)
+    monkeypatch.setattr(NightShiftRunner, "host", FakeHost)
+    monkeypatch.setattr(NightShiftRunner, "sleep", staticmethod(lambda seconds: None))
+    return FakeHost
+
+
+def far_end():
+    return datetime.now().astimezone() + timedelta(hours=1)
+
+
+@pytest.mark.parametrize(
+    "change, reason",
+    [
+        (("model", None), "not answering"),
+        (("safe", False), "host-safety"),
+        (("available", 4 * 1024**3), "GiB of memory is available"),
+        (("heavy", ["a ragon build holds the build lock"]), "build lock"),
+        (("sessions", [4242]), "Ragon session is open"),
+    ],
+)
+def test_each_admission_check_stops_the_night_on_its_own(fake_host, monkeypatch, change, reason):
+    monkeypatch.setattr(FakeHost, change[0], change[1])
+    assert reason in NightShiftRunner.admit("http://x", "ragon", 0, far_end())
+
+
+def test_admission_waits_for_the_model_to_be_idle(fake_host, monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "dreamference.night_shift.night_shift_runner.time.time", lambda: clock["now"]
+    )
+
+    def advance(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr(NightShiftRunner, "sleep", staticmethod(advance))
+    busy = {"running": 1.0, "served": 10.0, "kv_pool": 1.0}
+    moved = {"running": 0.0, "served": 20.0, "kv_pool": 1.0}
+    quiet = {"running": 0.0, "served": 20.0, "kv_pool": 1.0}
+    FakeHost.samples = [busy, moved, quiet]
+    assert NightShiftRunner.wait_for_idle("http://x", "ragon", 1, far_end()) is None
+    # Idle for a full minute counted from the last change, not from the start.
+    assert clock["now"] >= 1000.0 + 60 + 30
+
+
+def test_a_window_that_closes_while_waiting_reports_it(fake_host):
+    FakeHost.samples = [{"running": 1.0, "served": 1.0, "kv_pool": 1.0}]
+    past = datetime.now().astimezone() - timedelta(minutes=1)
+    assert "until the window closed" in NightShiftRunner.wait_for_idle(
+        "http://x", "ragon", 10, past
+    )
+
+
+def test_one_steady_request_keeps_the_model_busy(fake_host, monkeypatch):
+    # The served counter never moves, but a request is running all along: nobody has been idle.
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "dreamference.night_shift.night_shift_runner.time.time", lambda: clock["now"]
+    )
+
+    def advance(seconds):
+        clock["now"] += seconds
+        if clock["now"] >= 1000.0 + 600:
+            FakeHost.sessions = [1]
+
+    monkeypatch.setattr(NightShiftRunner, "sleep", staticmethod(advance))
+    FakeHost.samples = [{"running": 1.0, "served": 1.0, "kv_pool": 1.0}]
+    assert "session is open" in NightShiftRunner.wait_for_idle("http://x", "ragon", 1, far_end())
+
+
+def test_a_silent_metrics_endpoint_never_counts_as_idle(fake_host, monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "dreamference.night_shift.night_shift_runner.time.time", lambda: clock["now"]
+    )
+
+    def advance(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr(NightShiftRunner, "sleep", staticmethod(advance))
+    FakeHost.samples = [None]
+    assert "/metrics does not answer" in NightShiftRunner.wait_for_idle(
+        "http://x", "ragon", 0, far_end()
+    )
+
+
+def test_a_few_lost_metrics_reads_do_not_end_the_wait(fake_host, monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "dreamference.night_shift.night_shift_runner.time.time", lambda: clock["now"]
+    )
+    naps = []
+
+    def advance(seconds):
+        naps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(NightShiftRunner, "sleep", staticmethod(advance))
+    idle = {"running": 0.0, "served": 1.0, "kv_pool": 1.0}
+    FakeHost.samples = [None, None, None, idle, idle]
+    assert NightShiftRunner.wait_for_idle("http://x", "ragon", 0, far_end()) is None
+    assert naps[:3] == [2.0, 4.0, 8.0]
+
+
+def test_a_miss_restarts_the_quiet_period(fake_host, monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "dreamference.night_shift.night_shift_runner.time.time", lambda: clock["now"]
+    )
+
+    def advance(seconds):
+        clock["now"] += seconds
+
+    monkeypatch.setattr(NightShiftRunner, "sleep", staticmethod(advance))
+    idle = {"running": 0.0, "served": 1.0, "kv_pool": 1.0}
+    FakeHost.samples = [idle, None, idle, idle]
+    assert NightShiftRunner.wait_for_idle("http://x", "ragon", 1, far_end()) is None
+    assert clock["now"] - 1000.0 >= 60
+
+
+def test_a_night_picks_up_queued_and_interrupted_tasks_and_no_finished_one(tmp_path):
+    statuses = [
+        "queued",
+        "interrupted",
+        "cancel-requested",
+        "sent",
+        "done",
+        "no-change",
+        "stalled",
+        "failed",
+        "cancelled",
+        "timed-out",
+        "running",
+    ]
+    (tmp_path / "tasks").mkdir()
+    for index, status in enumerate(statuses):
+        (tmp_path / "tasks" / f"t{index:02}.json").write_text(
+            json.dumps({"id": f"t{index:02}", "status": status})
+        )
+    assert [task["status"] for task in NightShiftRunner.pending_tasks(tmp_path)] == [
+        "queued",
+        "interrupted",
+    ]
+
+
+def test_round_robin_alternates_repositories():
+    tasks = [{"id": i, "repo": repo} for i, repo in enumerate("AAAB")]
+    assert [task["id"] for task in NightShiftRunner.round_robin(tasks)] == [0, 3, 1, 2]
+
+
+def test_window_end_is_the_next_such_time():
+    now = datetime(2015, 10, 1, 1, 30).astimezone()
+    assert NightShiftRunner.window_end(now, None, None, "01:00-07:00").hour == 7
+    assert NightShiftRunner.window_end(now, None, None, "01:00-07:00").day == 1
+    assert NightShiftRunner.window_end(now, "01:00", None, "x").day == 2
+    assert NightShiftRunner.window_end(now, None, 30, "x") == now + timedelta(minutes=30)
+
+
+def test_a_run_started_at_the_windows_end_runs_to_the_next_one():
+    # The end already reached is not an end in the future: the next such time is a day away.
+    now = datetime(2015, 10, 1, 7, 0).astimezone()
+    assert NightShiftRunner.window_end(now, None, None, "01:00-07:00") == now + timedelta(days=1)
+
+
+@pytest.mark.parametrize("start", [datetime(2015, 10, 24, 22, 0), datetime(2015, 3, 28, 22, 0)])
+def test_window_end_is_the_wall_clock_time_on_a_night_the_clocks_change(start, monkeypatch):
+    # The start's UTC offset is not the end's on these nights: 06:00 is 06:00 on the clock.
+    monkeypatch.setenv("TZ", "Europe/Berlin")
+    time.tzset()
+    try:
+        now = start.astimezone()
+        end = NightShiftRunner.window_end(now, "06:00", None, "x").astimezone()
+        assert (end.day, end.hour, end.minute) == (start.day + 1, 6, 0)
+        end = NightShiftRunner.window_end(now, None, None, "01:00-06:00").astimezone()
+        assert (end.day, end.hour) == (start.day + 1, 6)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def test_an_outside_request_or_session_blocks_the_next_start(fake_host):
+    settings = NightShiftSettings({})
+    FakeHost.samples = [{"running": 1.0, "served": 1.0, "kv_pool": 1.0}]
+    assert "not the night run's" in NightShiftRunner.start_blocker("http://x", "p", [], settings)
+    FakeHost.samples = [{"running": 0.0, "served": 1.0, "kv_pool": 1.0}]
+    FakeHost.sessions = [1]
+    assert "session is open" in NightShiftRunner.start_blocker("http://x", "p", [], settings)
+    FakeHost.sessions = []
+    assert NightShiftRunner.start_blocker("http://x", "p", [], settings) is None
+    FakeHost.available = 12 * 1024**3
+    assert "GiB is free" in NightShiftRunner.start_blocker("http://x", "p", [], settings)
+
+
+def test_with_the_gates_priority_only_memory_holds_a_start_back(fake_host):
+    # A SWE-bench run whose model gate refuses everyone else (SWE_BENCH spec §18): an open session
+    # cannot start a turn and another request is one already in flight, so neither waits it.
+    settings = NightShiftSettings({})
+    FakeHost.samples = [{"running": 3.0, "served": 1.0, "kv_pool": 1.0}]
+    FakeHost.sessions = [1]
+    assert NightShiftRunner.start_blocker("http://x", "p", [], settings, priority=True) is None
+    FakeHost.available = 12 * 1024**3
+    assert "GiB is free" in NightShiftRunner.start_blocker(
+        "http://x", "p", [], settings, priority=True
+    )
+
+
+def test_one_wait_is_noted_once_whatever_its_figures(fake_host, monkeypatch):
+    # Live run: the memory reason's free-memory figure changed on every poll, and the
+    # report carried "waiting to start the next task" eight times in one minute.
+    reasons = iter(
+        [
+            "11.6 GiB is free after the running tasks' allowance; one more needs 16",
+            "11.8 GiB is free after the running tasks' allowance; one more needs 16",
+            "a Ragon session is open",
+            "11.7 GiB is free after the running tasks' allowance; one more needs 16",
+        ]
+    )
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "dreamference.night_shift.night_shift_runner.time.time", lambda: clock["now"]
+    )
+    monkeypatch.setattr(
+        NightShiftRunner,
+        "sleep",
+        staticmethod(lambda seconds: clock.update(now=clock["now"] + seconds)),
+    )
+    monkeypatch.setattr(
+        NightShiftRunner,
+        "start_blocker",
+        classmethod(
+            lambda cls, *args: next(
+                reasons, "11.9 GiB is free after the running tasks' allowance; one more needs 16"
+            )
+        ),
+    )
+    notes = []
+    end = datetime.fromtimestamp(1000.0 + 4 * 5 + 1).astimezone()
+    NightShiftRunner.schedule(
+        Path("/nonexistent"),
+        [{"id": "t", "repo": "r"}],
+        NightShiftSettings({}),
+        "ragon",
+        "http://x",
+        end,
+        1,
+        notes,
+    )
+    waits = [note for note in notes if "waiting to start" in note]
+    assert len(waits) == 3, waits
+    assert "11.6 GiB" in waits[0] and "session is open" in waits[1] and "11.7 GiB" in waits[2]
+
+
+@pytest.mark.parametrize("task_timeout, deadline", [("5s", 1005.0), ("2h", 1012.0)])
+def test_the_window_closing_stops_the_running_task_and_leaves_the_rest_queued(
+    fake_host, monkeypatch, task_timeout, deadline
+):
+    # A task stops at its own timeout or the window's end, whichever comes first; at the window's
+    # end the running one is asked to stop and the ones not started stay queued.
+    import threading
+
+    from dreamference.night_shift.night_shift_best_of_n import NightShiftBestOfN
+
+    runs = []
+
+    class Run:
+        in_model = False
+        current_unit = None
+
+        def __init__(self, deadline, window_end):
+            self.stop_event = threading.Event()
+            self.deadline, self.window_end, self.stopped = deadline, window_end, False
+
+        def run(self):
+            self.stopped = self.stop_event.wait(10)
+
+    def task_run(cls, night_dir, task, settings, ragon_bin, deadline, **kwargs):
+        runs.append(Run(deadline, kwargs.get("window_end")))
+        return runs[-1]
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "dreamference.night_shift.night_shift_runner.time.time", lambda: clock["now"]
+    )
+    monkeypatch.setattr(
+        NightShiftRunner,
+        "sleep",
+        staticmethod(lambda seconds: clock.update(now=clock["now"] + seconds)),
+    )
+    monkeypatch.setattr(NightShiftBestOfN, "task_run", classmethod(task_run))
+    notes = []
+    end = datetime.fromtimestamp(1012.0).astimezone()
+    NightShiftRunner.schedule(
+        Path("/nonexistent"),
+        [{"id": f"t{i}", "repo": "r"} for i in range(3)],
+        NightShiftSettings({"task_timeout": task_timeout}),
+        "ragon",
+        "http://x",
+        end,
+        1,
+        notes,
+    )
+    assert len(runs) == 1
+    assert runs[0].deadline == deadline and runs[0].window_end == 1012.0
+    assert runs[0].stopped
+    assert "The window closed with 2 task(s) not started; they stay queued." in notes
+
+
+def test_a_whole_night_runs_three_tasks_and_writes_the_report(setup, fake_host, monkeypatch):
+    monkeypatch.setenv("FAKE_RAGON_MODE", "change")
+    for index in range(3):
+        queue(
+            setup["night"],
+            setup["repo"],
+            task_text=f"Task {index}",
+            test="test -f hello.txt",
+            task_id=f"20151001-0100-a{index}0",
+        )
+    code = NightShiftRunner.run(
+        minutes=5,
+        idle_minutes=0,
+        night_dir=setup["night"],
+        ragon_bin=setup["ragon"],
+        vllm_host="http://x",
+        settings=NightShiftSettings({"max_parallel": 2}),
+    )
+    assert code == 0
+    statuses = [task["status"] for task in NightShiftQueue.tasks(setup["night"])]
+    assert statuses == ["done", "done", "done"]
+    branches = git(
+        setup["repo"], "branch", "--list", "night/*", "--format=%(refname:short)"
+    ).stdout.split()
+    assert len(branches) == 3
+    report = next((setup["night"] / "reports").glob("*.md")).read_text()
+    assert f"## {setup['repo']}" in report and report.count("— done") == 3
+    # 90% of the 144,870-token pool holds one 65,536-token task budget, not two
+    # (test_night_shift_compaction.py has the budget itself).
+    assert "Up to 1 task(s) at once" in report
+    assert git(setup["repo"], "status", "--porcelain").stdout == ""
+
+
+class FakeIndex(NightShiftIndex):
+    """Records what would have been indexed; nothing in the suite runs `ragon-code`."""
+
+    binary = "/opt/ragon-code"
+    outcome = "3 ok"
+    calls = []
+
+    @classmethod
+    def executable(cls):
+        return cls.binary
+
+    @classmethod
+    def refresh(cls, binary, repo, timeout_s):
+        # The first task has not started: its branch does not exist yet.
+        branches = git(repo, "branch", "--list", "night/*").stdout.split()
+        cls.calls.append((binary, str(repo), timeout_s, len(branches)))
+        return cls.outcome
+
+
+@pytest.fixture
+def fake_index(monkeypatch):
+    monkeypatch.setattr(FakeIndex, "calls", [])
+    monkeypatch.setattr(FakeIndex, "binary", "/opt/ragon-code")
+    monkeypatch.setattr(NightShiftRunner, "index", FakeIndex)
+    return FakeIndex
+
+
+def test_each_repository_is_indexed_once_before_its_tasks_start(
+    setup, fake_host, fake_index, monkeypatch
+):
+    monkeypatch.setenv("FAKE_RAGON_MODE", "change")
+    for index in range(2):
+        queue(
+            setup["night"],
+            setup["repo"],
+            task_text=f"Task {index}",
+            task_id=f"20151001-0100-b{index}0",
+        )
+    assert (
+        NightShiftRunner.run(
+            minutes=30,
+            idle_minutes=0,
+            night_dir=setup["night"],
+            ragon_bin=setup["ragon"],
+            vllm_host="http://x",
+            settings=NightShiftSettings({"index_timeout": "5m"}),
+        )
+        == 0
+    )
+    assert [(call[0], call[1], call[3]) for call in fake_index.calls] == [
+        ("/opt/ragon-code", str(setup["repo"]), 0)
+    ]
+    assert fake_index.calls[0][2] == 300
+    report = next((setup["night"] / "reports").glob("*.md")).read_text()
+    assert f"Code index of {setup['repo']}: 3 ok." in report
+    assert [task["status"] for task in NightShiftQueue.tasks(setup["night"])] == ["done", "done"]
+
+
+def test_the_index_refresh_can_be_switched_off_and_needs_ragon_code(
+    setup, fake_host, fake_index, monkeypatch
+):
+    monkeypatch.setenv("FAKE_RAGON_MODE", "change")
+    queue(setup["night"], setup["repo"])
+    NightShiftRunner.run(
+        minutes=30,
+        idle_minutes=0,
+        night_dir=setup["night"],
+        ragon_bin=setup["ragon"],
+        vllm_host="http://x",
+        settings=NightShiftSettings({"index": False}),
+    )
+    assert fake_index.calls == []
+    # Not installed: nothing runs, and nothing is said.
+    queue(setup["night"], setup["repo"], task_id="20151001-0100-c00")
+    fake_index.binary = None
+    NightShiftRunner.run(
+        minutes=30,
+        idle_minutes=0,
+        night_dir=setup["night"],
+        ragon_bin=setup["ragon"],
+        vllm_host="http://x",
+        settings=NightShiftSettings({}),
+    )
+    assert fake_index.calls == []
+    # A refused admission indexes nothing either: the run never started.
+    queue(setup["night"], setup["repo"], task_id="20151001-0100-d00")
+    fake_index.binary = "/opt/ragon-code"
+    FakeHost.model = None
+    NightShiftRunner.run(
+        minutes=30,
+        idle_minutes=0,
+        night_dir=setup["night"],
+        ragon_bin=setup["ragon"],
+        vllm_host="http://x",
+        settings=NightShiftSettings({}),
+    )
+    assert fake_index.calls == []
+
+
+def test_the_index_refresh_takes_at_most_half_of_what_is_left(fake_host, fake_index, tmp_path):
+    notes = []
+    tasks = [{"repo": str(tmp_path)}, {"repo": str(tmp_path)}, {"repo": str(tmp_path / "gone")}]
+    end = datetime.now().astimezone() + timedelta(minutes=10)
+    NightShiftRunner.refresh_indexes(tasks, NightShiftSettings({}), end, notes)
+    assert len(fake_index.calls) == 1 and 290 <= fake_index.calls[0][2] <= 300
+    # With under two minutes left, the tasks get them all.
+    notes.clear()
+    NightShiftRunner.refresh_indexes(
+        tasks[:1],
+        NightShiftSettings({}),
+        datetime.now().astimezone() + timedelta(seconds=90),
+        notes,
+    )
+    assert len(fake_index.calls) == 1 and "the window is nearly over" in notes[0]
+
+
+def test_another_machines_job_repository_is_never_indexed(fake_host, fake_index, tmp_path):
+    (tmp_path / "job").mkdir()
+    tasks = [{"repo": str(tmp_path / "job"), "remote": {"from": "spark-1"}}]
+    notes = []
+    NightShiftRunner.refresh_indexes(tasks, NightShiftSettings({}), far_end(), notes)
+    assert fake_index.calls == [] and notes == []
+
+
+def test_index_output_is_condensed_for_the_report():
+    output = (
+        "skipped: scip-go for svc: runs on demand (`ragon-code index`)\n"
+        "ragon-index-0a1b2c3d4e-codebase-memory: ok\n"
+        "ragon-index-0a1b2c3d4e-scip-python-dreamference: ok\n"
+        "ragon-index-0a1b2c3d4e-rust-analyzer-ragon-code-rs: deferred: memory\n"
+    )
+    assert (
+        NightShiftIndex.summarise(output)
+        == "2 ok, 1 deferred (rust-analyzer-ragon-code-rs deferred: memory)"
+    )
+    assert (
+        NightShiftIndex.summarise("skipped: codebase-memory-mcp is not installed\n")
+        == "nothing to index"
+    )
+
+
+def test_the_installed_ragon_code_is_the_only_one_used(tmp_path, monkeypatch):
+    monkeypatch.setattr("dreamference.night_shift.night_shift_index.INSTALL_DIR", str(tmp_path))
+    assert NightShiftIndex.executable() is None
+    (tmp_path / "bin").mkdir()
+    binary = tmp_path / "bin" / "ragon-code"
+    binary.write_text('#!/bin/sh\necho "ragon-index-x-codebase-memory: ok"\n')
+    binary.chmod(0o755)
+    assert NightShiftIndex.executable() == str(binary)
+    # A real run of the stand-in: foreground, in the repository, its output condensed.
+    assert NightShiftIndex.refresh(str(binary), tmp_path, 30) == "1 ok"
+    binary.write_text("#!/bin/sh\necho boom\nexit 4\n")
+    assert NightShiftIndex.refresh(str(binary), tmp_path, 30) == "not refreshed (exit 4): boom"
+
+
+def test_an_index_run_past_its_time_is_stopped_even_when_systemctl_hangs(tmp_path, monkeypatch):
+    binary = tmp_path / "ragon-code"
+    binary.write_text("#!/bin/sh\nexec sleep 30\n")
+    binary.chmod(0o755)
+
+    def hanging(args, **kwargs):
+        # Stopping the index slice waits for its units' own stop timeouts.
+        raise subprocess.TimeoutExpired(args, kwargs.get("timeout", 0))
+
+    monkeypatch.setattr("dreamference.night_shift.night_shift_index.subprocess.run", hanging)
+    assert NightShiftIndex.refresh(str(binary), tmp_path, 0.5).startswith("stopped after 0 min")
+
+
+def test_a_refused_admission_keeps_the_queue_and_says_why(setup, fake_host):
+    queue(setup["night"], setup["repo"])
+    FakeHost.model = None
+    assert (
+        NightShiftRunner.run(
+            minutes=5,
+            idle_minutes=0,
+            night_dir=setup["night"],
+            ragon_bin=setup["ragon"],
+            vllm_host="http://x",
+            settings=NightShiftSettings({}),
+        )
+        == 0
+    )
+    assert NightShiftQueue.tasks(setup["night"])[0]["status"] == "queued"
+    report = next((setup["night"] / "reports").glob("*.md")).read_text()
+    assert "Not run: the model server at http://x is not answering" in report
+
+
+def test_a_refused_admission_still_waits_for_the_tasks_on_other_nodes(
+    setup, fake_host, monkeypatch
+):
+    from dreamference.night_shift import NightShiftRemote
+
+    queue(setup["night"], setup["repo"])
+    FakeHost.model = None
+    elsewhere = {"id": "20151001-0100-a99", "status": "sent", "on": "spark-2"}
+    waits = []
+    monkeypatch.setattr(
+        NightShiftRemote, "sent_tasks", classmethod(lambda cls, night_dir: [elsewhere])
+    )
+    monkeypatch.setattr(
+        NightShiftRemote, "hand_off", classmethod(lambda cls, night_dir, pending, notes: [])
+    )
+    monkeypatch.setattr(
+        NightShiftRemote,
+        "collect",
+        classmethod(lambda cls, night_dir, sent, end, notes, wait: waits.append(wait)),
+    )
+    assert (
+        NightShiftRunner.run(
+            minutes=5,
+            idle_minutes=0,
+            night_dir=setup["night"],
+            ragon_bin=setup["ragon"],
+            vllm_host="http://x",
+            settings=NightShiftSettings({}),
+        )
+        == 0
+    )
+    assert waits[-1] is True
+    report = next((setup["night"] / "reports").glob("*.md")).read_text()
+    assert "Not run: the model server at http://x is not answering" in report
+
+
+def test_a_night_with_only_tasks_on_other_nodes_still_waits_for_them(setup, fake_host, monkeypatch):
+    # Nothing is queued here, but last night's hand-off is still out there: its result is collected.
+    from dreamference.night_shift import NightShiftRemote
+
+    elsewhere = {"id": "20151001-0100-a99", "status": "sent", "on": "spark-2"}
+    waits = []
+    monkeypatch.setattr(
+        NightShiftRemote, "sent_tasks", classmethod(lambda cls, night_dir: [elsewhere])
+    )
+    monkeypatch.setattr(
+        NightShiftRemote, "hand_off", classmethod(lambda cls, night_dir, pending, notes: [])
+    )
+    monkeypatch.setattr(
+        NightShiftRemote,
+        "collect",
+        classmethod(lambda cls, night_dir, sent, end, notes, wait: waits.append((wait, sent))),
+    )
+    assert (
+        NightShiftRunner.run(
+            minutes=5,
+            idle_minutes=0,
+            night_dir=setup["night"],
+            ragon_bin=setup["ragon"],
+            vllm_host="http://x",
+            settings=NightShiftSettings({}),
+        )
+        == 0
+    )
+    assert waits and waits[-1] == (True, [elsewhere])
+
+
+def test_a_repeating_task_not_queued_on_an_empty_night_still_reaches_a_report(tmp_path):
+    from dreamference.night_shift.night_shift_recurring import NightShiftRecurring
+
+    night, gone = tmp_path / "night", tmp_path / "gone"
+    gone.mkdir()
+    NightShiftRecurring.add(night, gone, "Tidy up", "daily")
+    gone.rmdir()
+    quiet = NightShiftSettings({"compaction_audit": False})
+    assert (
+        NightShiftRunner.run(
+            night_dir=night, ragon_bin="ragon", vllm_host="http://127.0.0.1:9", settings=quiet
+        )
+        == 0
+    )
+    (report,) = (night / "reports").glob("*.md")
+    assert "not queued" in report.read_text()
+
+
+def test_a_second_runner_is_refused_while_the_lock_is_held(setup, fake_host):
+    queue(setup["night"], setup["repo"])
+    with NightShiftQueue.runner_lock(setup["night"]) as held:
+        assert held
+        assert NightShiftQueue.runner_active(setup["night"])
+        assert (
+            NightShiftRunner.run(
+                minutes=5,
+                night_dir=setup["night"],
+                ragon_bin=setup["ragon"],
+                vllm_host="http://x",
+                settings=NightShiftSettings({}),
+            )
+            == 1
+        )
+    assert not NightShiftQueue.runner_active(setup["night"])
+
+
+def test_build_index_and_server_start_refuse_during_a_night_run(tmp_path, monkeypatch):
+    from dreamference.cli.dreamference_cli_controller import DreamferenceCLIController
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    with NightShiftQueue.runner_lock(tmp_path / "night") as held:
+        assert held
+        with pytest.raises(SystemExit):
+            DreamferenceCLIController._refuse_during_night_run("codex build")
+    DreamferenceCLIController._refuse_during_night_run("codex build")  # free again: no exit
+
+
+# -- the queue format, shared with the launcher --------------------------------------------------
+
+
+def test_a_record_written_by_the_launcher_reads_and_round_trips(setup):
+    record = queue(setup["night"], setup["repo"])
+    NightShiftQueue.transition(setup["night"], record["id"], "running", attempts=1)
+    stored = json.loads((setup["night"] / "tasks" / f"{record['id']}.json").read_text())
+    assert stored["status"] == "running" and stored["attempts"] == 1
+    assert [entry["status"] for entry in stored["history"]] == ["queued", "running"]
+    datetime.fromisoformat(
+        stored["history"][-1]["at"]
+    )  # RFC 3339 with offset, as the launcher writes
+    assert not list((setup["night"] / "tasks").glob(".*.tmp"))
+
+
+# -- the timer -----------------------------------------------------------------------------------
+
+
+def test_enable_writes_absolute_paths_and_the_window(tmp_path, monkeypatch):
+    commands = []
+    monkeypatch.setattr(
+        NightShiftScheduler,
+        "systemctl",
+        staticmethod(
+            lambda args: commands.append(args) or subprocess.CompletedProcess(args, 0, "", "")
+        ),
+    )
+    monkeypatch.setattr(NightShiftScheduler, "lingering", classmethod(lambda cls: True))
+    assert NightShiftScheduler.enable("01:30-06:15")
+    timer = (NightShiftScheduler.unit_dir() / "ragon-night.timer").read_text()
+    service = (NightShiftScheduler.unit_dir() / "ragon-night.service").read_text()
+    assert timer.startswith("# Night Shift window: 01:30-06:15\n")
+    assert "OnCalendar=*-*-* 01:30:00" in timer
+    # A night missed while the machine was off is not made up for in the morning.
+    assert "Persistent=false" in timer
+    exec_start = next(line for line in service.splitlines() if line.startswith("ExecStart="))
+    assert exec_start.split("=", 1)[1].startswith("/") and exec_start.endswith(
+        "night run --until 06:15"
+    )
+    assert "/.local/bin" in service and "/.cargo/bin" in service
+    assert commands == [["daemon-reload"], ["enable", "--now", "ragon-night.timer"]]
+    assert "window 01:30-06:15" in NightShiftScheduler.status()
+    assert NightShiftScheduler.disable()
+    assert not (NightShiftScheduler.unit_dir() / "ragon-night.timer").exists()
+
+
+def test_enable_refuses_a_window_it_cannot_read_and_installs_nothing(monkeypatch, capsys):
+    commands = []
+    monkeypatch.setattr(
+        NightShiftScheduler,
+        "systemctl",
+        staticmethod(
+            lambda args: commands.append(args) or subprocess.CompletedProcess(args, 0, "", "")
+        ),
+    )
+    assert not NightShiftScheduler.enable("tonight")
+    assert "❌" in capsys.readouterr().out
+    assert commands == [] and not (NightShiftScheduler.unit_dir() / "ragon-night.timer").exists()
+
+
+def test_enable_fails_when_systemctl_fails_and_starts_nothing_after(monkeypatch, capsys):
+    commands = []
+    monkeypatch.setattr(
+        NightShiftScheduler,
+        "systemctl",
+        staticmethod(
+            lambda args: commands.append(args) or subprocess.CompletedProcess(args, 1, "", "no bus")
+        ),
+    )
+    monkeypatch.setattr(NightShiftScheduler, "lingering", classmethod(lambda cls: True))
+    assert not NightShiftScheduler.enable("01:30-06:15")
+    assert commands == [["daemon-reload"]]
+    out = capsys.readouterr().out
+    assert "❌ systemctl --user daemon-reload: no bus" in out and "✅" not in out
+
+
+def test_disable_says_so_and_keeps_the_timer_when_systemctl_cannot_stop_it(monkeypatch, capsys):
+    ok = staticmethod(lambda args: subprocess.CompletedProcess(args, 0, "", ""))
+    monkeypatch.setattr(NightShiftScheduler, "systemctl", ok)
+    monkeypatch.setattr(NightShiftScheduler, "lingering", classmethod(lambda cls: True))
+    assert NightShiftScheduler.enable("01:30-06:15")
+    monkeypatch.setattr(
+        NightShiftScheduler,
+        "systemctl",
+        staticmethod(
+            lambda args: subprocess.CompletedProcess(args, 1, "", "Failed to connect to bus")
+        ),
+    )
+    assert not NightShiftScheduler.disable()
+    assert "❌" in capsys.readouterr().out
+    assert (NightShiftScheduler.unit_dir() / "ragon-night.timer").exists()
+    # With no timer installed there is nothing to stop.
+    (NightShiftScheduler.unit_dir() / "ragon-night.timer").unlink()
+    assert NightShiftScheduler.disable()
+
+
+def test_the_service_quotes_a_path_with_a_space(monkeypatch):
+    # systemd splits ExecStart= and Environment= on whitespace unless quoted, and expands `%`.
+    import shlex
+
+    _, service = NightShiftScheduler.render_units("01:00-07:00", "/opt/my tools/100%/ragon-admin")
+    exec_start = next(line for line in service.splitlines() if line.startswith("ExecStart="))
+    words = shlex.split(exec_start.split("=", 1)[1].replace("%%", "%"))
+    assert words == ["/opt/my tools/100%/ragon-admin", "night", "run", "--until", "07:00"]
+    environment = next(line for line in service.splitlines() if line.startswith("Environment="))
+    assert len(shlex.split(environment.split("=", 1)[1])) == 1
+    assert ":/opt/my tools/100%%/:" not in environment and ":/opt/my tools/100%%:" in environment
+
+
+def test_the_service_quotes_a_path_with_a_quote_but_no_space():
+    import shlex
+
+    _, service = NightShiftScheduler.render_units("01:00-07:00", "/opt/it's/ragon-admin")
+    exec_start = next(line for line in service.splitlines() if line.startswith("ExecStart="))
+    assert shlex.split(exec_start.split("=", 1)[1])[0] == "/opt/it's/ragon-admin"
+
+
+def test_settings_parse_durations_and_windows():
+    settings = NightShiftSettings(
+        {"task_timeout": "2h", "test_timeout": 15, "window": "23:00-05:00"}
+    )
+    assert settings.task_timeout_s == 7200 and settings.test_timeout_s == 900
+    start, end = NightShiftSettings.parse_window(settings.window)
+    assert (start.hour, end.hour) == (23, 5)
+    with pytest.raises(ValueError):
+        NightShiftSettings.parse_duration("soon")
+    with pytest.raises(ValueError):
+        NightShiftSettings.parse_window("23:00-05:00 tomorrow")
+
+
+def test_a_duration_without_a_unit_is_minutes_and_one_with_trailing_words_is_refused():
+    assert NightShiftSettings({"task_timeout": "30"}).task_timeout_s == 1800
+    with pytest.raises(ValueError):
+        NightShiftSettings.parse_duration("90m later")
+
+
+def test_parallelism_is_at_least_one_and_a_compaction_limit_never_negative():
+    settings = NightShiftSettings({"max_parallel": 0, "compact_at": -5})
+    assert settings.max_parallel == 1 and settings.compact_at == 0
+
+
+def test_a_task_has_no_negative_nudges_and_at_least_one_token_of_context():
+    settings = NightShiftSettings({"nudges": -1, "task_context": 0})
+    assert settings.nudges == 0 and settings.task_context == 1
+
+
+def test_the_reports_review_command_quotes_a_repository_with_a_space():
+    record = {
+        "id": "t",
+        "repo": "/srv/my repo",
+        "base": "a" * 40,
+        "status": "done",
+        "task": "x",
+        "result": {"branch": "night/t"},
+    }
+    text = NightShiftReport.render(datetime.now().astimezone(), [record], [])
+    command = next(line for line in text.splitlines() if line.startswith("- `git -C"))
+    assert shlex.split(command[3:-1]) == [
+        "git",
+        "-C",
+        "/srv/my repo",
+        "diff",
+        "a" * 12 + "..night/t",
+    ]
+
+
+def test_report_rows_carry_what_the_spec_lists():
+    started = datetime(2015, 10, 1, 1, 0)
+    tasks = [
+        {
+            "id": "a",
+            "repo": "/r",
+            "base": "b" * 40,
+            "task": "Fix it\nmore",
+            "status": "done",
+            "result": {
+                "branch": "night/a",
+                "diff_stat": " x | 1 +\n 1 file changed, 1 insertion(+)",
+                "test_command": "pytest",
+                "test_source": "pytest",
+                "test_result": "passed",
+                "attempts": 1,
+                "nudges": 0,
+                "wall_s": 75,
+            },
+        },
+        {
+            "id": "b",
+            "repo": "/r",
+            "base": "b" * 40,
+            "task": "Other",
+            "status": "stalled",
+            "result": {"last_message": "I'll now do it.", "attempts": 1, "nudges": 2, "wall_s": 5},
+        },
+    ]
+    text = NightShiftReport.render(started, tasks, ["note one"])
+    assert "## /r" in text and "### a — done" in text and "1 file changed, 1 insertion(+)" in text
+    assert "`pytest` (pytest): passed" in text and "1 min 15 s" in text
+    assert "Last message: I'll now do it." in text
+    assert f"git -C /r diff {'b' * 12}..night/a" in text
+    assert "## Notes" in text
+
+
+def test_the_report_keeps_no_terminal_escape_an_agent_or_judge_wrote():
+    # `ragon night report` prints the file to a terminal: an ESC from the agent's last message
+    # could set the clipboard (OSC 52) or hide the rest of the line.
+    task = {
+        "id": "e",
+        "repo": "/r",
+        "base": "b" * 40,
+        "task": "Other",
+        "status": "failed",
+        "result": {
+            "last_message": "done\x1b]52;c;aGk=\x07 \x1b[8mhidden\x9b2J\r",
+            "attempts": 1,
+            "best_of": {"n": 2, "ran": 2, "chosen": 1, "reason": "better\x1b]0;title\x07"},
+        },
+    }
+    text = NightShiftReport.render(datetime(2015, 10, 1, 1, 0), [task], ["note\x1bc"])
+    assert not re.search("[\x00-\x08\x0b-\x1f\x7f-\x9f]", text)
+    assert "Last message: done]52;c;aGk= [8mhidden2J" in text and "Why: better]0;title" in text
+
+
+# -- several nodes (specs/DREAMFERENCE_RAGON_NODE.md §12.3, §13.3) --------------------------------
+
+REPLICA = {
+    "name": "spark-2",
+    "node": "2222-bbbb",
+    "host": "http://192.168.50.106:8000",
+    "kv_pool": 144870.0,
+    "parallel": 1,
+    "budget": 65536,
+}
+
+
+def test_a_session_here_holds_up_this_machines_lane_and_not_a_replicas(
+    setup, fake_host, monkeypatch
+):
+    monkeypatch.setenv("FAKE_RAGON_MODE", "change")
+    for index in range(2):
+        queue(
+            setup["night"],
+            setup["repo"],
+            task_text=f"Task {index}",
+            task_id=f"20151001-0100-b{index}0",
+        )
+    local = {
+        "name": "this machine",
+        "node": None,
+        "host": "http://x",
+        "kv_pool": 144870.0,
+        "parallel": 1,
+        "budget": 65536,
+    }
+    monkeypatch.setattr(
+        NightShiftRunner,
+        "lanes",
+        classmethod(
+            lambda cls, host, settings: (
+                [local, dict(REPLICA)],
+                ["Also using spark-2's model server (…)."],
+            )
+        ),
+    )
+    monkeypatch.setattr(NightShiftRunner, "admit", classmethod(lambda cls, *args: None))
+    monkeypatch.setattr(FakeHost, "sessions", [4242])  # someone is working here
+    assert (
+        NightShiftRunner.run(
+            minutes=5,
+            idle_minutes=0,
+            night_dir=setup["night"],
+            ragon_bin=setup["ragon"],
+            vllm_host="http://x",
+            settings=NightShiftSettings({}),
+        )
+        == 0
+    )
+    tasks = NightShiftQueue.tasks(setup["night"])
+    assert [task["status"] for task in tasks] == ["done", "done"]
+    assert [task["result"]["model_node"] for task in tasks] == ["spark-2", "spark-2"]
+    report = next((setup["night"] / "reports").glob("*.md")).read_text()
+    assert report.count("- Model server: spark-2's (the task ran on this machine)") == 2
+    assert "Also using spark-2's model server" in report
+
+
+def test_a_replica_counts_only_its_own_tasks_and_never_a_session_here(fake_host, monkeypatch):
+    class Running:
+        in_model = True
+        lane_host = "http://192.168.50.106:8000"
+        current_unit = None
+
+    settings = NightShiftSettings({})
+    monkeypatch.setattr(FakeHost, "sessions", [4242])
+    monkeypatch.setattr(FakeHost, "samples", [{"running": 1.0, "served": 1.0, "kv_pool": 1.0}])
+    active = [(None, Running())]
+    assert "session is open" in NightShiftRunner.start_blocker("http://x", "p", active, settings)
+    # One request running there is the night's own task on that lane, not someone else's.
+    assert (
+        NightShiftRunner.start_blocker(REPLICA["host"], "p", active, settings, local=False) is None
+    )
+    assert "not the night run's" in NightShiftRunner.start_blocker(
+        REPLICA["host"], "p", [], settings, local=False
+    )
+
+
+def test_without_a_paired_node_the_run_has_one_lane_and_asks_nobody(fake_host, monkeypatch):
+    from dreamference.node import NodePairing
+
+    monkeypatch.setattr(
+        NodePairing, "run", classmethod(lambda cls, *args, **kwargs: pytest.fail("no SSH"))
+    )
+    lanes, notes = NightShiftRunner.lanes("http://x", NightShiftSettings({}))
+    assert len(lanes) == 1 and lanes[0]["host"] == "http://x" and notes == []
+
+
+@pytest.mark.parametrize("paired, nodes", [([], "paired"), ([{"name": "spark-2"}], "none")])
+def test_the_nodes_are_asked_only_when_one_is_paired_and_wanted(
+    fake_host, monkeypatch, paired, nodes
+):
+    from dreamference.node import NodePairing
+    from dreamference.node.node_lanes import NodeLanes
+
+    monkeypatch.setattr(NodePairing, "paired", classmethod(lambda cls: list(paired)))
+    monkeypatch.setattr(
+        NodeLanes, "lanes", classmethod(lambda cls, *args, **kwargs: pytest.fail("asked the nodes"))
+    )
+    lanes, notes = NightShiftRunner.lanes("http://x", NightShiftSettings({"nodes": nodes}))
+    assert [lane["host"] for lane in lanes] == ["http://x"] and notes == []
+
+
+def test_a_running_request_on_a_lane_is_the_nights_only_if_its_task_is_on_that_lane_and_in_the_model(
+    fake_host, monkeypatch
+):
+    class Running:
+        current_unit = None
+
+        def __init__(self, lane_host, in_model):
+            self.lane_host, self.in_model = lane_host, in_model
+
+    settings = NightShiftSettings({})
+    monkeypatch.setattr(FakeHost, "samples", [{"running": 1.0, "served": 1.0, "kv_pool": 1.0}])
+
+    def blocker(*runs):
+        return NightShiftRunner.start_blocker(
+            REPLICA["host"], "p", [(None, run) for run in runs], settings, local=False
+        )
+
+    assert blocker(Running(REPLICA["host"], True)) is None
+    # A task on this machine's lane does not account for a request on the replica.
+    assert "not the night run's" in blocker(Running("http://x", True))
+    # Nor does a task on the replica's lane that is running its tests, not asking the model.
+    assert "not the night run's" in blocker(Running(REPLICA["host"], False))
+
+
+def test_a_silent_metrics_endpoint_holds_the_next_start_back(fake_host):
+    FakeHost.samples = [None]
+    assert "/metrics does not answer" in NightShiftRunner.start_blocker(
+        "http://x", "p", [], NightShiftSettings({})
+    )
+
+
+def test_each_running_task_keeps_its_memory_allowance_and_no_more(fake_host, monkeypatch):
+    # task_memory 8G and an 8 GiB reserve: one more task needs 16 GiB beyond what the running ones may still take.
+    class Running:
+        in_model = False
+        lane_host = "http://x"
+        current_unit = "night-t"
+
+    settings = NightShiftSettings({"task_memory": "8G"})
+    gib = 1024**3
+    used = {"bytes": 0}
+    monkeypatch.setattr(
+        FakeHost, "scope_memory_current", classmethod(lambda cls, unit: used["bytes"])
+    )
+    active = [(None, Running())]
+    # A task that has used nothing yet may still take all 8 GiB.
+    monkeypatch.setattr(FakeHost, "available", 23 * gib)
+    assert "GiB is free" in NightShiftRunner.start_blocker("http://x", "p", active, settings)
+    monkeypatch.setattr(FakeHost, "available", 24 * gib)
+    assert NightShiftRunner.start_blocker("http://x", "p", active, settings) is None
+    # One past its allowance frees none of the others' memory.
+    used["bytes"] = 12 * gib
+    monkeypatch.setattr(FakeHost, "available", 15 * gib)
+    assert "GiB is free" in NightShiftRunner.start_blocker("http://x", "p", active, settings)
+
+
+def test_a_free_lane_is_one_with_fewer_tasks_of_its_own_than_it_holds(fake_host, monkeypatch):
+    # This machine holds one task and the replica one: two tasks start, one on each, and no third.
+    import threading
+
+    from dreamference.night_shift.night_shift_best_of_n import NightShiftBestOfN
+
+    hosts = []
+
+    class Run:
+        in_model = False
+        current_unit = None
+
+        def __init__(self):
+            self.stop_event = threading.Event()
+
+        def run(self):
+            self.stop_event.wait(10)
+
+    def task_run(cls, night_dir, task, settings, ragon_bin, deadline, **kwargs):
+        hosts.append(kwargs["model_host"])
+        return Run()
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "dreamference.night_shift.night_shift_runner.time.time", lambda: clock["now"]
+    )
+    monkeypatch.setattr(
+        NightShiftRunner,
+        "sleep",
+        staticmethod(lambda seconds: clock.update(now=clock["now"] + seconds)),
+    )
+    monkeypatch.setattr(
+        NightShiftRunner, "start_blocker", classmethod(lambda cls, *args, **kwargs: None)
+    )
+    monkeypatch.setattr(NightShiftBestOfN, "task_run", classmethod(task_run))
+    local = {
+        "name": "this machine",
+        "node": None,
+        "host": "http://x",
+        "parallel": 1,
+        "budget": None,
+    }
+    replica = dict(REPLICA, budget=None)
+    NightShiftRunner.schedule(
+        Path("/nonexistent"),
+        [{"id": f"t{i}", "repo": "r"} for i in range(3)],
+        NightShiftSettings({}),
+        "ragon",
+        "http://x",
+        datetime.fromtimestamp(1012.0).astimezone(),
+        1,
+        [],
+        lanes=[local, replica],
+    )
+    assert hosts == ["http://x", REPLICA["host"]]
+
+
+def test_a_wait_after_a_start_is_noted_again(fake_host, monkeypatch):
+    # Waiting, a start, then the same wait: two waits, each in the report.
+    import threading
+
+    from dreamference.night_shift.night_shift_best_of_n import NightShiftBestOfN
+
+    reasons = iter(["a Ragon session is open", None, "a Ragon session is open"])
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "dreamference.night_shift.night_shift_runner.time.time", lambda: clock["now"]
+    )
+    monkeypatch.setattr(
+        NightShiftRunner,
+        "sleep",
+        staticmethod(lambda seconds: clock.update(now=clock["now"] + seconds)),
+    )
+    monkeypatch.setattr(
+        NightShiftRunner,
+        "start_blocker",
+        classmethod(lambda cls, *args, **kwargs: next(reasons, "a Ragon session is open")),
+    )
+
+    class Run:
+        in_model = False
+        current_unit = None
+
+        def __init__(self):
+            self.stop_event = threading.Event()
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(
+        NightShiftBestOfN, "task_run", classmethod(lambda cls, *args, **kwargs: Run())
+    )
+    notes = []
+    NightShiftRunner.schedule(
+        Path("/nonexistent"),
+        [{"id": "t0", "repo": "r"}, {"id": "t1", "repo": "r"}],
+        NightShiftSettings({}),
+        "ragon",
+        "http://x",
+        datetime.fromtimestamp(1030.0).astimezone(),
+        1,
+        notes,
+    )
+    assert len([note for note in notes if "waiting to start" in note]) == 2, notes
+
+
+@pytest.fixture
+def two_nodes(setup, fake_host, monkeypatch):
+    """This machine as both sender and node: the pairing reaches `serve-job` in this process, and
+    git reaches the node's job repository by its path.
+    """
+    import contextlib
+    import io
+
+    from dreamference.node import NodeJob, NodeJobSender, NodePairing, NodeServe
+
+    record = {
+        "node": "2222-bbbb",
+        "name": "spark-2",
+        "address": "192.168.50.106",
+        "user": "owner",
+        "ssh_port": 22,
+    }
+    NodePairing._save(record)
+    monkeypatch.setattr(
+        NodePairing, "find", classmethod(lambda cls, name, browse=True: dict(record))
+    )
+    requests = []
+
+    def serve(cls, record, request, capture=True, input_text=None):
+        requests.append(request)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = NodeServe.serve(request)
+        return subprocess.CompletedProcess([], code, out.getvalue(), err.getvalue())
+
+    monkeypatch.setattr(NodePairing, "run", classmethod(serve))
+
+    def url(cls, record, slug):
+        repo = NodeJob.repo_path(slug)
+        if not repo.is_dir():
+            repo.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "init", "-q", "--bare", str(repo)], check=True)
+        return str(repo)
+
+    monkeypatch.setattr(NodeJobSender, "git_url", classmethod(url))
+    monkeypatch.setattr(
+        NodeJobSender, "git_environment", classmethod(lambda cls, record: dict(os.environ))
+    )
+    sandboxed = []
+
+    def no_bubblewrap(self, command, extra_env):
+        sandboxed.append(self.task_id)
+        self.home.mkdir(parents=True, exist_ok=True)
+        return command
+
+    monkeypatch.setattr(NightShiftTaskRun, "remote_sandbox", no_bubblewrap)
+    monkeypatch.setattr(NodeJob, "sandbox_blocker", classmethod(lambda cls: None))
+    return {"requests": requests, "sandboxed": sandboxed, **setup}
+
+
+def test_a_task_for_another_node_is_worked_there_and_its_branch_comes_back(two_nodes, monkeypatch):
+    from dreamference.night_shift import NightShiftRemote
+
+    monkeypatch.setenv("FAKE_RAGON_MODE", "change")
+    task = queue(
+        two_nodes["night"],
+        two_nodes["repo"],
+        task_text="Add hello.txt on the other node",
+        task_id="20151001-0100-c00",
+    )
+    path = two_nodes["night"] / "tasks" / f"{task['id']}.json"
+    path.write_text(json.dumps(dict(json.loads(path.read_text()), on="spark-2")))
+    node_runs = []
+
+    def the_other_nodes_night(seconds):
+        # While this machine waits, the node's own runner works its queue.
+        node_runs.append(
+            NightShiftRunner.run(
+                minutes=5,
+                idle_minutes=0,
+                ragon_bin=two_nodes["ragon"],
+                vllm_host="http://127.0.0.1:8000",
+                settings=NightShiftSettings({}),
+            )
+        )
+
+    monkeypatch.setattr(NightShiftRemote, "sleep", staticmethod(the_other_nodes_night))
+    assert (
+        NightShiftRunner.run(
+            minutes=5,
+            idle_minutes=0,
+            night_dir=two_nodes["night"],
+            ragon_bin=two_nodes["ragon"],
+            vllm_host="http://x",
+            settings=NightShiftSettings({}),
+        )
+        == 0
+    )
+    assert node_runs == [0]
+    here = NightShiftQueue.read(two_nodes["night"], task["id"])
+    assert here["status"] == "done" and here["result"]["node"] == "spark-2"
+    assert [entry["status"] for entry in here["history"]] == ["queued", "sent", "done"]
+    # The branch is in this repository, committed as this repository's author; nothing was merged.
+    log = git(
+        two_nodes["repo"], "log", "-1", "--format=%an %s", f"night/{task['id']}"
+    ).stdout.strip()
+    assert log == "Night Test night: Add hello.txt on the other node"
+    assert git(
+        two_nodes["repo"], "show", "--name-only", "--format=", f"night/{task['id']}"
+    ).stdout.split() == ["hello.txt"]
+    assert not (two_nodes["repo"] / "hello.txt").exists()
+    # On the node: worked inside the job sandbox, with a home of its own, and marked fetched.
+    there = NightShiftQueue.read(NightShiftQueue.night_dir(), task["id"])
+    assert there["remote"] and there["fetched"] and two_nodes["sandboxed"] == [task["id"]]
+    report = sorted((two_nodes["night"] / "reports").glob("*.md"))[-1].read_text()
+    assert "- Ran on: spark-2, by that node's own runner and model server" in report
+    asked = [
+        request.split()[0] for request in two_nodes["requests"] if request.startswith("night-")
+    ]
+    assert (
+        asked[0] == "night-submit"
+        and asked[-1] == "night-fetched"
+        and set(asked[1:-1]) == {"night-status"}
+    )
+
+
+def test_a_dropped_task_is_dropped_on_the_node_too(two_nodes, monkeypatch):
+    from dreamference.night_shift import NightShiftRemote
+
+    task = queue(two_nodes["night"], two_nodes["repo"], task_id="20151001-0100-d00")
+    path = two_nodes["night"] / "tasks" / f"{task['id']}.json"
+    path.write_text(json.dumps(dict(json.loads(path.read_text()), on="spark-2")))
+    sent = NightShiftRemote.hand_off(
+        two_nodes["night"], NightShiftQueue.tasks(two_nodes["night"]), []
+    )
+    assert [entry["id"] for entry in sent] == [task["id"]]
+    NightShiftQueue.transition(two_nodes["night"], task["id"], "cancel-requested")
+    NightShiftRemote.collect(two_nodes["night"], sent, far_end(), [], wait=False)
+    assert NightShiftQueue.read(NightShiftQueue.night_dir(), task["id"])["status"] == "cancelled"
+    assert NightShiftQueue.read(two_nodes["night"], task["id"])["status"] == "cancelled"
+
+
+def test_the_node_refuses_a_malformed_task_and_answers_only_about_tasks_from_other_machines(
+    two_nodes, capsys, monkeypatch
+):
+    import base64
+
+    from dreamference.night_shift import NightShiftRemote
+
+    def encode(request):
+        return base64.urlsafe_b64encode(json.dumps(request).encode()).decode()
+
+    good = {
+        "id": "20151001-0100-e00",
+        "repo": "calc-0123456789",
+        "base": "a" * 40,
+        "task": "Fix it",
+    }
+    for change in (
+        {"id": "../x"},
+        {"repo": "../etc"},
+        {"base": "HEAD"},
+        {"task": ""},
+        {"task": "x" * 20001},
+        {"test": ["x"]},
+        {},
+    ):
+        assert NightShiftRemote.serve("night-submit", [encode(dict(good, **change))]) == 2, change
+    assert (
+        NightShiftRemote.serve("night-submit", [base64.urlsafe_b64encode(b"[" * 100_000).decode()])
+        == 2
+    )
+    assert "was not pushed" in capsys.readouterr().out
+    from dreamference.node import NodeJob
+
+    monkeypatch.setattr(
+        NodeJob,
+        "sandbox_blocker",
+        classmethod(lambda cls: "this node cannot sandbox a job (uid map)"),
+    )
+    task = queue(two_nodes["night"], two_nodes["repo"], task_id="20151001-0100-e02")
+    path = two_nodes["night"] / "tasks" / f"{task['id']}.json"
+    path.write_text(json.dumps(dict(json.loads(path.read_text()), on="spark-2")))
+    NightShiftRemote.hand_off(two_nodes["night"], NightShiftQueue.tasks(two_nodes["night"]), [])
+    refused = NightShiftQueue.read(two_nodes["night"], task["id"])
+    assert refused["status"] == "failed" and "cannot sandbox" in refused["result"]["last_message"]
+    assert (
+        NightShiftQueue.read(NightShiftQueue.night_dir(), task["id"]) is None
+    )  # never queued there
+    queue(
+        NightShiftQueue.night_dir(), two_nodes["repo"], task_id="20151001-0100-e01"
+    )  # the owner's own task
+    for operation in ("night-status", "night-cancel", "night-fetched"):
+        assert NightShiftRemote.serve(operation, ["20151001-0100-e01"]) == 1
+        assert NightShiftRemote.serve(operation, ["../../x"]) == 2
+
+
+def test_a_task_sent_again_after_an_unanswered_submit_is_not_failed_by_its_own_first_copy(
+    two_nodes, monkeypatch
+):
+    import base64
+
+    from dreamference.night_shift import NightShiftRemote
+
+    task = queue(two_nodes["night"], two_nodes["repo"], task_id="20151001-0100-e10")
+    path = two_nodes["night"] / "tasks" / f"{task['id']}.json"
+    path.write_text(json.dumps(dict(json.loads(path.read_text()), on="spark-2")))
+    NightShiftRemote.hand_off(two_nodes["night"], NightShiftQueue.tasks(two_nodes["night"]), [])
+    # The node queued it, but its answer was lost (ssh 255): the next night sends it again.
+    path.write_text(json.dumps(dict(json.loads(path.read_text()), status="queued")))
+    notes = []
+    NightShiftRemote.hand_off(two_nodes["night"], NightShiftQueue.tasks(two_nodes["night"]), notes)
+    assert NightShiftQueue.read(two_nodes["night"], task["id"])["status"] == "sent", notes
+    there = NightShiftQueue.read(NightShiftQueue.night_dir(), task["id"])
+    assert there["status"] == "queued" and len(there["history"]) == 1
+    # A different task under the same id is still refused.
+    payload = [
+        request.split()[1]
+        for request in two_nodes["requests"]
+        if request.startswith("night-submit")
+    ][-1]
+    request = json.loads(base64.urlsafe_b64decode(payload))
+    changed = base64.urlsafe_b64encode(
+        json.dumps(dict(request, task="Something else")).encode()
+    ).decode()
+    assert NightShiftRemote.serve("night-submit", [changed]) == 2
+
+
+def test_a_task_from_another_machine_runs_in_the_job_sandbox_with_its_own_home(setup, tmp_path):
+    from dreamference.night_shift import NightShiftRemote
+
+    task = {
+        "id": "20151001-0100-f00",
+        "repo": str(setup["repo"]),
+        "base": "a" * 40,
+        "task": "x",
+        "remote": {"sender": "1111", "sender_name": "spark-1"},
+        "author": {"name": "S", "email": "s@x"},
+    }
+    run = NightShiftTaskRun(
+        setup["night"],
+        task,
+        NightShiftSettings({}),
+        setup["ragon"],
+        time.time() + 60,
+        model_host="http://127.0.0.1:8000",
+    )
+    run.airgapped = "on"
+    argv = NightShiftTaskRun.__dict__["remote_sandbox"](
+        run, [setup["ragon"], "exec", "-C", str(run.worktree)], {}
+    )
+    home = NightShiftRemote.task_home(task["id"])
+    assert argv[0] == "bwrap" and "--unshare-net" not in argv  # loopback reaches the model
+    assert [argv[i + 1] for i, word in enumerate(argv) if word == "--bind"] == [
+        str(run.worktree),
+        str(home),
+    ]
+    assert os.path.expanduser("~") in [
+        argv[i + 1] for i, word in enumerate(argv) if word == "--tmpfs"
+    ]
+    variables = {argv[i + 1]: argv[i + 2] for i, word in enumerate(argv) if word == "--setenv"}
+    assert variables["CODEX_HOME"] == str(home) and variables["DREAMFERENCE_RAGON_GMAIL"] == "false"
+    assert variables["DREAMFERENCE_RAGON_DOCS"] == "0"  # no file index over the owner's folders
+    assert (
+        variables["DREAMFERENCE_RAGON_AIRGAPPED"] == "on"
+        and variables["DREAMFERENCE_VLLM_HOST"] == "http://127.0.0.1:8000"
+    )
+    assert variables["DREAMFERENCE_RAGON_ADAPTER"] == ""  # the base (adapters §10.4)
+    assert variables["NO_PROXY"] == variables["no_proxy"] == "localhost,127.0.0.1,::1"
+    assert run.last_message_path.parent == home
+
+
+def test_remote_hand_off_collect_and_bring_back_error_branches(two_nodes, monkeypatch):
+    from dreamference.night_shift import NightShiftRemote
+    from dreamference.node import NodeJobSender, NodePairing
+    from dreamference.runner.safe_git import SafeGit
+
+    assert NightShiftRemote.json_line("plain text\n") is None
+    assert NightShiftRemote.json_line("{broken json\n") is None
+
+    night_dir = two_nodes["night"]
+    repo = two_nodes["repo"]
+
+    # 1. Unpaired node in hand_off transitions task to failed.
+    t_unpaired = queue(night_dir, repo, task_id="20151001-0200-a01")
+    p_unpaired = night_dir / "tasks" / f"{t_unpaired['id']}.json"
+    p_unpaired.write_text(json.dumps(dict(json.loads(p_unpaired.read_text()), on="missing-node")))
+
+    # 2. Paired node push failure and 255 timeout keep task queued and append notes.
+    t_push = queue(night_dir, repo, task_id="20151001-0200-a02")
+    p_push = night_dir / "tasks" / f"{t_push['id']}.json"
+    p_push.write_text(json.dumps(dict(json.loads(p_push.read_text()), on="spark-2")))
+
+    record = {"node": "2222-bbbb", "name": "spark-2", "address": "192.168.50.106", "user": "owner"}
+    monkeypatch.setattr(
+        NodePairing,
+        "find",
+        classmethod(
+            lambda cls, name, browse=True: (
+                dict(record) if name in ("spark-2", "2222-bbbb") else None
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        NodeJobSender, "git_url", classmethod(lambda cls, rec, slug: str(night_dir / "missing.git"))
+    )
+    notes = []
+    sent = NightShiftRemote.hand_off(night_dir, NightShiftQueue.tasks(night_dir), notes)
+    assert sent == []
+    assert NightShiftQueue.read(night_dir, t_unpaired["id"])["status"] == "failed"
+    assert NightShiftQueue.read(night_dir, t_push["id"])["status"] == "queued"
+    assert any("could not reach spark-2" in note for note in notes)
+
+    # Restore valid git_url, make NodePairing.run return 255 on night-submit.
+    bare = night_dir / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    monkeypatch.setattr(NodeJobSender, "git_url", classmethod(lambda cls, rec, slug: str(bare)))
+    monkeypatch.setattr(
+        NodePairing,
+        "run",
+        classmethod(lambda cls, rec, req, **kw: subprocess.CompletedProcess([], 255, "", "")),
+    )
+    notes.clear()
+    assert NightShiftRemote.hand_off(night_dir, NightShiftQueue.tasks(night_dir), notes) == []
+    assert any("did not answer; the task stays queued" in note for note in notes)
+
+    # 3. collect() handles already-done task, unpaired node, silent node, and _bring_back fetch failure.
+    t_done = queue(night_dir, repo, task_id="20151001-0200-b01")
+    NightShiftQueue.transition(night_dir, t_done["id"], "done")
+
+    t_gone = queue(night_dir, repo, task_id="20151001-0200-b02")
+    NightShiftQueue.transition(
+        night_dir, t_gone["id"], "sent", sent_to={"node": "gone-id", "name": "gone-node"}
+    )
+
+    t_silent1 = queue(night_dir, repo, task_id="20151001-0200-b03")
+    NightShiftQueue.transition(
+        night_dir, t_silent1["id"], "sent", sent_to={"node": "2222-bbbb", "name": "spark-2"}
+    )
+    t_silent2 = queue(night_dir, repo, task_id="20151001-0200-b04")
+    NightShiftQueue.transition(
+        night_dir, t_silent2["id"], "sent", sent_to={"node": "2222-bbbb", "name": "spark-2"}
+    )
+
+    notes.clear()
+    NightShiftRemote.collect(
+        night_dir,
+        [t_done, t_gone, t_silent1, t_silent2],
+        far_end(),
+        notes,
+        wait=False,
+    )
+    assert any("gone-node is no longer paired" in note for note in notes)
+    assert sum("spark-2 did not answer about its tasks" in note for note in notes) == 1
+    assert SafeGit is not None
+
+
+def test_remote_bring_back_fetch_failure_and_accept_duplicates(two_nodes, monkeypatch):
+    from dreamference.night_shift import NightShiftRemote
+    from dreamference.night_shift import night_shift_remote as remote_module
+    from dreamference.node import NodeJob, NodeJobSender, NodePairing
+
+    night_dir = two_nodes["night"]
+    repo = two_nodes["repo"]
+    bare = night_dir / "remote2.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    monkeypatch.setattr(NodeJobSender, "git_url", classmethod(lambda cls, rec, slug: str(bare)))
+
+    t_fetch_fail = queue(night_dir, repo, task_id="20151001-0200-b05")
+    NightShiftQueue.transition(
+        night_dir,
+        t_fetch_fail["id"],
+        "sent",
+        sent_to={"node": "2222-bbbb", "name": "spark-2", "slug": "slug"},
+    )
+    monkeypatch.setattr(
+        NodePairing,
+        "run",
+        classmethod(
+            lambda cls, rec, req, **kw: subprocess.CompletedProcess(
+                [],
+                0,
+                json.dumps(
+                    {
+                        "status": "done",
+                        "result": {"branch": f"night/{t_fetch_fail['id']}"},
+                    }
+                )
+                + "\n",
+                "",
+            )
+        ),
+    )
+    NightShiftRemote.collect(night_dir, [t_fetch_fail], far_end(), [], wait=False)
+    after_fail = NightShiftQueue.read(night_dir, t_fetch_fail["id"])
+    assert after_fail["status"] == "sent"
+    assert "branch" not in after_fail["result"]
+    assert "could not be fetched" in after_fail["result"]["last_message"]
+
+    with pytest.raises(ValueError, match="JSON object"):
+        NightShiftRemote.accept(["not-a-dict"])  # type: ignore[arg-type]
+
+    task_id = "20151001-0300-c01"
+    slug = "calc-0123456789"
+    node_bare = NodeJob.repo_path(slug)
+    node_bare.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "--bare", str(node_bare)], check=True)
+    head = git(repo, "rev-parse", "HEAD").stdout.strip()
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "push",
+            "--quiet",
+            str(node_bare),
+            f"{head}:refs/night/{task_id}",
+        ],
+        check=True,
+    )
+    req = {"id": task_id, "repo": slug, "base": head, "task": "Fix bug"}
+    assert NightShiftRemote.accept(req)["status"] == "queued"
+    assert NightShiftRemote.accept(req)["note"] == "this node already holds it"
+    with pytest.raises(ValueError, match="already exists on this node"):
+        NightShiftRemote.accept(dict(req, task="Fix another bug"))
+
+    race_id = "20151001-0300-c02"
+    monkeypatch.setattr(
+        remote_module.os,
+        "link",
+        lambda src, dst: (_ for _ in ()).throw(FileExistsError(dst)),
+    )
+    with pytest.raises(ValueError, match=f"a task {race_id} already exists"):
+        NightShiftRemote.accept(dict(req, id=race_id))
+
+    NightShiftQueue.transition(NightShiftQueue.night_dir(), task_id, "running")
+    assert NightShiftRemote.cancel(task_id) == "cancel-requested"
+    assert (
+        NightShiftQueue.read(NightShiftQueue.night_dir(), task_id)["status"] == "cancel-requested"
+    )
+
+
+def test_remote_start_runner_and_prune(two_nodes, monkeypatch):
+    from datetime import datetime, timedelta
+
+    from dreamference.night_shift import NightShiftRemote, NightShiftScheduler
+    from dreamference.night_shift import night_shift_remote as remote_module
+    from dreamference.night_shift.night_shift_scheduler import UNIT
+    from dreamference.node import NodeJob
+
+    unit_dir = NightShiftScheduler.unit_dir()
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    (unit_dir / f"{UNIT}.timer").write_text("[Timer]\n")
+    monkeypatch.setattr(NightShiftQueue, "runner_active", classmethod(lambda cls: True))
+    monkeypatch.setattr(NightShiftQueue, "runner_holder", classmethod(lambda cls: "pid 99"))
+    assert "pid 99 is in progress" in NightShiftRemote.start_runner()
+
+    monkeypatch.setattr(NightShiftQueue, "runner_active", classmethod(lambda cls: False))
+    monkeypatch.setattr(
+        NightShiftSettings,
+        "parse_window",
+        classmethod(lambda cls, w: (_ for _ in ()).throw(ValueError("bad"))),
+    )
+    assert "window could not be read" in NightShiftRemote.start_runner()
+
+    now_h = datetime.now().time().hour
+    closed_start = (now_h + 2) % 24
+    closed_end = (now_h + 3) % 24
+    monkeypatch.setattr(
+        NightShiftSettings,
+        "parse_window",
+        classmethod(
+            lambda cls, w: (
+                datetime.strptime(f"{closed_start:02d}:00", "%H:%M").time(),
+                datetime.strptime(f"{closed_end:02d}:00", "%H:%M").time(),
+            )
+        ),
+    )
+    assert "outside this node's window" in NightShiftRemote.start_runner()
+
+    open_start = (now_h - 1) % 24
+    open_end = (now_h + 2) % 24
+    monkeypatch.setattr(
+        NightShiftSettings,
+        "parse_window",
+        classmethod(
+            lambda cls, w: (
+                datetime.strptime(f"{open_start:02d}:00", "%H:%M").time(),
+                datetime.strptime(f"{open_end:02d}:00", "%H:%M").time(),
+            )
+        ),
+    )
+    real_run = remote_module.subprocess.run
+    monkeypatch.setattr(
+        remote_module.subprocess,
+        "run",
+        lambda argv, **kw: (
+            subprocess.CompletedProcess(argv, 1, "", "bus down")
+            if argv[0] == "systemctl"
+            else real_run(argv, **kw)
+        ),
+    )
+    assert "could not start this node's night run (bus down)" in NightShiftRemote.start_runner()
+
+    monkeypatch.setattr(
+        remote_module.subprocess,
+        "run",
+        lambda argv, **kw: (
+            subprocess.CompletedProcess(argv, 0, "", "")
+            if argv[0] == "systemctl"
+            else real_run(argv, **kw)
+        ),
+    )
+    assert NightShiftRemote.start_runner() == "this node's night run was started for it"
+
+    nd = NightShiftQueue.night_dir()
+    task_id = "20151001-0300-c09"
+    (nd / "tasks").mkdir(parents=True, exist_ok=True)
+    (nd / "tasks" / f"{task_id}.json").write_text(
+        json.dumps(
+            {
+                "id": task_id,
+                "repo": str(two_nodes["repo"]),
+                "branch": f"night/{task_id}",
+                "status": "done",
+                "remote": {"sender": "x"},
+                "fetched": NightShiftQueue.now(),
+                "history": [{"at": NightShiftQueue.now()}],
+            }
+        )
+    )
+    (nd / "logs").mkdir(parents=True, exist_ok=True)
+    (nd / "logs" / f"{task_id}.log").write_text("log\n")
+    NodeJob.job_dir(task_id).mkdir(parents=True, exist_ok=True)
+
+    bad_id = "20151001-0300-c03"
+    (nd / "tasks" / f"{bad_id}.json").write_text(
+        json.dumps(
+            {
+                "id": bad_id,
+                "status": "done",
+                "remote": {"sender": "x"},
+                "fetched": "not-an-iso-date",
+                "history": [{"at": "not-an-iso-date"}],
+            }
+        )
+    )
+
+    now = datetime.now().astimezone()
+    assert NightShiftRemote.prune(now) == []
+    assert NightShiftRemote.prune(now + timedelta(days=2)) == [task_id]
+    assert NightShiftQueue.read(nd, task_id) is None
+    assert not (nd / "logs" / f"{task_id}.log").exists()
+    assert not NodeJob.job_dir(task_id).exists()
+
+
+def test_refine_a_task_cut_off_in_its_study_has_no_session_and_is_studied_again(setup, monkeypatch):
+    # specs/DREAMFERENCE_RAGON_REFINE.md §5.3 point 5: the window ends the study step, so the
+    # task is interrupted with no session, and the next night studies it again from the start.
+    monkeypatch.setenv("FAKE_RAGON_MODE", "hang")
+    record = queue(setup["night"], setup["repo"])
+    run = NightShiftTaskRun(
+        setup["night"],
+        record,
+        NightShiftSettings({"refine": True}),
+        setup["ragon"],
+        deadline=time.time() + 1,
+        window_end=time.time() + 1,
+    )
+    assert run.run() == "interrupted"
+    record = NightShiftQueue.read(setup["night"], record["id"])
+    assert record["session"] is None
+    assert record["result"]["refine"]["study_exit"] == "interrupted"
+    (only,) = calls(setup)
+    assert only[-1].startswith("This is the first of two steps")
+    monkeypatch.setenv("FAKE_RAGON_MODE", "refine")
+    rerun = NightShiftTaskRun(
+        setup["night"],
+        record,
+        NightShiftSettings({"refine": True}),
+        setup["ragon"],
+        deadline=time.time() + 60,
+        window_end=time.time() + 3600,
+    )
+    assert rerun.run() == "done"
+    study, fix = calls(setup)[1:]
+    assert study[-1].startswith("This is the first of two steps") and "resume" not in study + fix
+    record = NightShiftQueue.read(setup["night"], record["id"])
+    assert record["session"] and record["session"] != record["result"]["refine"]["study_session"]
+
+
+def test_refine_gives_the_doing_step_a_fresh_task_timeout_within_the_window(setup, monkeypatch):
+    # §5.3 point 3: after the study the doing step gets a full `task_timeout` of its own, but
+    # never past the window's end.
+    started = time.time()
+    status, _, run = refined_run(setup, monkeypatch, {"refine": True, "task_timeout": "10m"})
+    assert status == "done"
+    assert started + 600 <= run.deadline <= time.time() + 600 < run.window_end
+    status, _, run = refined_run(setup, monkeypatch, {"refine": True}, task_id="20151001-0100-def")
+    assert status == "done" and run.settings.task_timeout_s > 3600
+    assert run.deadline == run.window_end

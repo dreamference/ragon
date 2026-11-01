@@ -1,0 +1,421 @@
+//! The bridge's one connection to the agent, through `ragon web` (RAGON_CHAT §2).
+//!
+//! The hub talks to the agent through an [`AgentHandle`] (requests with answers, responses to the
+//! server's requests) and reads what the agent says from an event channel: every notification and
+//! server request the app-server sends, plus `ragon/connected` each time a connection is
+//! (re)made, so the hub knows its thread subscriptions are gone. [`run_link`] is the real
+//! connection: it signs in to `ragon web` the way `ragon web ask` does (a one-time login code
+//! written into its state folder, traded for a session cookie), opens `/ws`, and relays. A dropped
+//! connection, a restarted `ragon web` (whose sessions live in memory) or a refused upgrade all lead
+//! to the same place: sign in again and reconnect, with a backoff capped at a minute. The tests
+//! drive the hub through a scripted stand-in on the same two channels.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use futures::SinkExt;
+use futures::StreamExt;
+use serde_json::Value;
+use serde_json::json;
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderValue;
+use tokio_tungstenite::tungstenite::http::header;
+
+use ragon_web_server::ask_client::MadeFile;
+use ragon_web_server::ask_client::Saved;
+
+/// The event the link sends after every successful (re)connection.
+pub const CONNECTED: &str = "ragon/connected";
+
+/// What the hub asks of the agent.
+pub enum AgentCommand {
+    Request { method: String, params: Value, reply: oneshot::Sender<Result<Value, String>> },
+    Respond { id: Value, result: Value },
+    /// An attachment into a thread's Ask folder (`/api/upload`, with the link's cookie).
+    Upload { thread: String, name: String, image: bool, bytes: Vec<u8>, reply: oneshot::Sender<Result<Saved, String>> },
+    /// A voice message to text (`/api/transcribe`).
+    Transcribe { media: String, bytes: Vec<u8>, reply: oneshot::Sender<Result<String, String>> },
+    /// The files a thread's agent changed since a time (`/api/ask/files`).
+    MadeFiles { thread: String, since_ms: u64, reply: oneshot::Sender<Result<Vec<MadeFile>, String>> },
+    /// One of them (`/api/ask/file`).
+    MadeFile { thread: String, name: String, reply: oneshot::Sender<Result<Vec<u8>, String>> },
+    /// A JSON call to one of `ragon web`'s own routes (Night Shift's): GET, or POST with a body.
+    Web { path: String, body: Option<Value>, reply: oneshot::Sender<Result<Value, String>> },
+}
+
+/// The hub's side of the connection.
+#[derive(Clone)]
+pub struct AgentHandle {
+    tx: mpsc::UnboundedSender<AgentCommand>,
+}
+
+impl AgentHandle {
+    /// A handle and the receiving end the link (or a test's stand-in) serves.
+    pub fn channel() -> (AgentHandle, mpsc::UnboundedReceiver<AgentCommand>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (AgentHandle { tx }, rx)
+    }
+
+    /// Sends a request to the app-server and waits for its result.
+    pub async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(AgentCommand::Request { method: method.to_string(), params, reply })
+            .map_err(|_| "the bridge to ragon web has stopped".to_string())?;
+        answer.await.map_err(|_| "the connection to ragon web was lost".to_string())?
+    }
+
+    /// Answers one of the server's requests (an approval).
+    pub fn respond(&self, id: Value, result: Value) {
+        let _ = self.tx.send(AgentCommand::Respond { id, result });
+    }
+
+    /// The files `thread`'s agent changed since `since_ms`.
+    pub async fn made_files(&self, thread: &str, since_ms: u64) -> Result<Vec<MadeFile>, String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(AgentCommand::MadeFiles { thread: thread.to_string(), since_ms, reply })
+            .map_err(|_| "the bridge to ragon web has stopped".to_string())?;
+        answer.await.map_err(|_| "the connection to ragon web was lost".to_string())?
+    }
+
+    /// A JSON call to `ragon web` itself (`/api/night/…`).
+    pub async fn web(&self, path: &str, body: Option<Value>) -> Result<Value, String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(AgentCommand::Web { path: path.to_string(), body, reply })
+            .map_err(|_| "the bridge to ragon web has stopped".to_string())?;
+        answer.await.map_err(|_| "the connection to ragon web was lost".to_string())?
+    }
+
+    /// One file of `thread`'s folder.
+    pub async fn made_file(&self, thread: &str, name: &str) -> Result<Vec<u8>, String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(AgentCommand::MadeFile { thread: thread.to_string(), name: name.to_string(), reply })
+            .map_err(|_| "the bridge to ragon web has stopped".to_string())?;
+        answer.await.map_err(|_| "the connection to ragon web was lost".to_string())?
+    }
+
+    /// A voice message to text, by the speech-to-text service on this machine.
+    pub async fn transcribe(&self, media: &str, bytes: Vec<u8>) -> Result<String, String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(AgentCommand::Transcribe { media: media.to_string(), bytes, reply })
+            .map_err(|_| "the bridge to ragon web has stopped".to_string())?;
+        answer.await.map_err(|_| "the connection to ragon web was lost".to_string())?
+    }
+
+    /// Uploads an attachment into `thread`'s Ask folder; `ragon web` reads an image's text.
+    pub async fn upload(&self, thread: &str, name: &str, image: bool, bytes: Vec<u8>) -> Result<Saved, String> {
+        let (reply, answer) = oneshot::channel();
+        self.tx
+            .send(AgentCommand::Upload { thread: thread.to_string(), name: name.to_string(), image, bytes, reply })
+            .map_err(|_| "the bridge to ragon web has stopped".to_string())?;
+        answer.await.map_err(|_| "the connection to ragon web was lost".to_string())?
+    }
+}
+
+/// Where `ragon web` is: its state folder (for login codes and its port), and how to start it.
+#[derive(Clone, Debug)]
+pub struct WebTarget {
+    pub state: PathBuf,
+    /// `ragon`, to run `ragon web start` when nothing answers.
+    pub ragon: Option<PathBuf>,
+}
+
+type Socket = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
+
+async fn open(target: &WebTarget) -> Result<(Socket, u16, String), String> {
+    let port = ragon_web_server::cli::running_port(&target.state);
+    if ragon_web_server::cli::probe(&target.state, port).is_none()
+        && let Some(ragon) = &target.ragon {
+            let _ = tokio::process::Command::new(ragon).args(["web", "start"]).status().await;
+            for _ in 0..60 {
+                if ragon_web_server::cli::probe(&target.state, ragon_web_server::cli::running_port(&target.state)).is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    let port = ragon_web_server::cli::running_port(&target.state);
+    let cookie = ragon_web_server::ask_client::sign_in(&target.state, port).await?;
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.map_err(|err| format!("ragon web is not answering on port {port}: {err}"))?;
+    let mut request = format!("ws://127.0.0.1:{port}/ws").into_client_request().map_err(|err| err.to_string())?;
+    let headers = request.headers_mut();
+    headers.insert(header::ORIGIN, HeaderValue::from_str(&format!("http://127.0.0.1:{port}")).map_err(|err| err.to_string())?);
+    headers.insert(header::COOKIE, HeaderValue::from_str(&cookie).map_err(|err| err.to_string())?);
+    let (socket, _) = tokio_tungstenite::client_async(request, stream).await.map_err(|err| format!("ragon web refused the bridge: {err}"))?;
+    Ok((socket, port, cookie))
+}
+
+/// One bridge connection: the frames `ragon web`'s relay speaks (`{"call", "message"}` out,
+/// `{"answer", …}` and `{"event": {"channel", "payload"}}` in).
+struct Session {
+    socket: Socket,
+    /// `ragon web`'s port and this connection's session cookie, for uploads.
+    port: u16,
+    cookie: String,
+    next_call: u64,
+    next_id: u64,
+    calls: HashMap<u64, oneshot::Sender<Result<Value, String>>>,
+    requests: HashMap<String, oneshot::Sender<Result<Value, String>>>,
+    /// The call that carried each request: a refused `work/send` fails its request at once.
+    acks: HashMap<u64, String>,
+}
+
+enum Frame {
+    Answer(u64, Result<Value, String>),
+    Message(Value),
+    Exit,
+    Other,
+}
+
+fn parse(text: &str) -> Frame {
+    let Ok(frame) = serde_json::from_str::<Value>(text) else { return Frame::Other };
+    if let Some(call) = frame.get("answer").and_then(Value::as_u64) {
+        let result = match frame.get("error") {
+            Some(error) => Err(error.as_str().unwrap_or("refused").to_string()),
+            None => Ok(frame.get("result").cloned().unwrap_or(Value::Null)),
+        };
+        return Frame::Answer(call, result);
+    }
+    match frame.pointer("/event/channel").and_then(Value::as_str) {
+        Some("work://message") => Frame::Message(frame["event"]["payload"].clone()),
+        Some("work://exit") => Frame::Exit,
+        _ => Frame::Other,
+    }
+}
+
+impl Session {
+    async fn send_call(&mut self, message: Value) -> Result<u64, String> {
+        self.next_call += 1;
+        self.socket
+            .send(Message::Text(json!({ "call": self.next_call, "message": message }).to_string().into()))
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(self.next_call)
+    }
+
+    async fn call(&mut self, message: Value) -> Result<oneshot::Receiver<Result<Value, String>>, String> {
+        let (tx, rx) = oneshot::channel();
+        let call = self.send_call(message).await?;
+        self.calls.insert(call, tx);
+        Ok(rx)
+    }
+
+    /// Sends a JSON-RPC request; its response is matched by id when it arrives.
+    async fn request(&mut self, method: &str, params: Value, reply: oneshot::Sender<Result<Value, String>>) {
+        self.next_id += 1;
+        let id = self.next_id;
+        let message = json!({ "id": id, "method": method, "params": params });
+        match self.send_call(json!({ "type": "work/send", "message": message })).await {
+            Ok(call) => {
+                self.requests.insert(id.to_string(), reply);
+                self.acks.insert(call, id.to_string());
+            }
+            Err(err) => {
+                let _ = reply.send(Err(err));
+            }
+        }
+    }
+
+    /// Reads frames until the call's answer arrives, keeping app-server messages for `events`.
+    async fn handshake_call(&mut self, message: Value, events: &mpsc::UnboundedSender<Value>) -> Result<Value, String> {
+        let rx = self.call(message).await?;
+        self.wait(rx, events).await
+    }
+
+    async fn wait(&mut self, mut rx: oneshot::Receiver<Result<Value, String>>, events: &mpsc::UnboundedSender<Value>) -> Result<Value, String> {
+        loop {
+            if let Ok(result) = rx.try_recv() {
+                return result;
+            }
+            let Some(frame) = self.socket.next().await else { return Err("ragon web closed the connection".to_string()) };
+            let text = match frame.map_err(|err| err.to_string())? {
+                Message::Text(text) => text.as_str().to_string(),
+                Message::Close(_) => return Err("ragon web closed the connection".to_string()),
+                _ => continue,
+            };
+            if !self.dispatch(&text, events) {
+                return Err("the agent's server stopped".to_string());
+            }
+        }
+    }
+
+    /// Handles one frame. Returns false when the agent's server went away.
+    fn dispatch(&mut self, text: &str, events: &mpsc::UnboundedSender<Value>) -> bool {
+        match parse(text) {
+            Frame::Answer(call, result) => {
+                // A refused work/send means its request will get no response: fail it now.
+                if let Some(id) = self.acks.remove(&call)
+                    && let Err(error) = &result
+                    && let Some(reply) = self.requests.remove(&id)
+                {
+                    let _ = reply.send(Err(error.clone()));
+                }
+                if let Some(tx) = self.calls.remove(&call) {
+                    let _ = tx.send(result);
+                } else if let Err(error) = result {
+                    eprintln!("ragon chat: ragon web refused a message: {error}");
+                }
+                true
+            }
+            Frame::Message(message) => {
+                let is_response = message.get("method").is_none() && message.get("id").is_some();
+                if is_response {
+                    let key = message.get("id").map(|id| id.as_u64().map(|n| n.to_string()).unwrap_or_else(|| id.to_string())).unwrap_or_default();
+                    if let Some(reply) = self.requests.remove(&key) {
+                        let result = match message.get("error") {
+                            Some(error) => Err(error.get("message").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| error.to_string())),
+                            None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
+                        };
+                        let _ = reply.send(result);
+                    }
+                } else {
+                    let _ = events.send(message);
+                }
+                true
+            }
+            Frame::Exit => false,
+            Frame::Other => true,
+        }
+    }
+
+    fn fail_all(&mut self, error: &str) {
+        for (_, tx) in self.calls.drain() {
+            let _ = tx.send(Err(error.to_string()));
+        }
+        for (_, tx) in self.requests.drain() {
+            let _ = tx.send(Err(error.to_string()));
+        }
+        self.acks.clear();
+    }
+}
+
+async fn connect(target: &WebTarget, events: &mpsc::UnboundedSender<Value>) -> Result<Session, String> {
+    let (socket, port, cookie) = open(target).await?;
+    let mut session = Session { socket, port, cookie, next_call: 0, next_id: 0, calls: HashMap::new(), requests: HashMap::new(), acks: HashMap::new() };
+    session.handshake_call(json!({ "type": "work/start" }), events).await?;
+    let (tx, rx) = oneshot::channel();
+    let info = json!({ "clientInfo": { "name": "ragon-chat", "title": null, "version": env!("CARGO_PKG_VERSION") } });
+    session.request("initialize", info, tx).await;
+    session.wait(rx, events).await?;
+    session.handshake_call(json!({ "type": "work/send", "message": { "method": "initialized" } }), events).await?;
+    Ok(session)
+}
+
+/// Serves `commands` over `ragon web` until the hub drops its handle, reconnecting as needed.
+pub async fn run_link(target: WebTarget, mut commands: mpsc::UnboundedReceiver<AgentCommand>, events: mpsc::UnboundedSender<Value>) {
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        let mut session = match connect(&target, &events).await {
+            Ok(session) => session,
+            Err(err) => {
+                eprintln!("ragon chat: could not reach ragon web ({err}); retrying in {}s", backoff.as_secs());
+                // Requests made meanwhile fail fast rather than wait for a connection.
+                let deadline = tokio::time::sleep(backoff);
+                tokio::pin!(deadline);
+                loop {
+                    tokio::select! {
+                        () = &mut deadline => break,
+                        command = commands.recv() => match command {
+                            None => return,
+                            Some(AgentCommand::Request { reply, .. }) => { let _ = reply.send(Err(format!("ragon web is not reachable: {err}"))); }
+                            Some(AgentCommand::Respond { .. }) => {}
+                            Some(AgentCommand::Upload { reply, .. }) => { let _ = reply.send(Err(format!("ragon web is not reachable: {err}"))); }
+                            Some(AgentCommand::Transcribe { reply, .. }) => { let _ = reply.send(Err(format!("ragon web is not reachable: {err}"))); }
+                            Some(AgentCommand::MadeFiles { reply, .. }) => { let _ = reply.send(Err(format!("ragon web is not reachable: {err}"))); }
+                            Some(AgentCommand::MadeFile { reply, .. }) => { let _ = reply.send(Err(format!("ragon web is not reachable: {err}"))); }
+                            Some(AgentCommand::Web { reply, .. }) => { let _ = reply.send(Err(format!("ragon web is not reachable: {err}"))); }
+                        },
+                    }
+                }
+                backoff = (backoff * 2).min(Duration::from_secs(60));
+                continue;
+            }
+        };
+        backoff = Duration::from_secs(1);
+        let _ = events.send(json!({ "method": CONNECTED }));
+        loop {
+            tokio::select! {
+                command = commands.recv() => match command {
+                    None => {
+                        let _ = session.socket.close(None).await;
+                        return;
+                    }
+                    Some(AgentCommand::Request { method, params, reply }) => session.request(&method, params, reply).await,
+                    Some(AgentCommand::Respond { id, result }) => {
+                        let message = json!({ "id": id, "result": result });
+                        if let Err(err) = session.send_call(json!({ "type": "work/send", "message": message })).await {
+                            eprintln!("ragon chat: could not answer the agent: {err}");
+                        }
+                    }
+                    Some(AgentCommand::MadeFiles { thread, since_ms, reply }) => {
+                        let (port, cookie) = (session.port, session.cookie.clone());
+                        tokio::spawn(async move {
+                            let _ = reply.send(ragon_web_server::ask_client::made_files(port, &cookie, &thread, since_ms).await);
+                        });
+                    }
+                    Some(AgentCommand::Web { path, body, reply }) => {
+                        let (port, cookie) = (session.port, session.cookie.clone());
+                        tokio::spawn(async move {
+                            let _ = reply.send(ragon_web_server::ask_client::web_json(port, &cookie, &path, body.as_ref()).await);
+                        });
+                    }
+                    Some(AgentCommand::MadeFile { thread, name, reply }) => {
+                        let (port, cookie) = (session.port, session.cookie.clone());
+                        tokio::spawn(async move {
+                            let _ = reply.send(ragon_web_server::ask_client::made_file(port, &cookie, &thread, &name).await);
+                        });
+                    }
+                    Some(AgentCommand::Transcribe { media, bytes, reply }) => {
+                        let (port, cookie) = (session.port, session.cookie.clone());
+                        tokio::spawn(async move {
+                            let _ = reply.send(ragon_web_server::ask_client::transcribe(port, &cookie, &media, &bytes).await);
+                        });
+                    }
+                    Some(AgentCommand::Upload { thread, name, image, bytes, reply }) => {
+                        // Over HTTP beside the socket, so a large file or a slow read holds nothing up.
+                        let (port, cookie) = (session.port, session.cookie.clone());
+                        tokio::spawn(async move {
+                            let _ = reply.send(ragon_web_server::ask_client::upload(port, &cookie, &thread, &name, image, &bytes).await);
+                        });
+                    }
+                },
+                frame = session.socket.next() => {
+                    let text = match frame {
+                        Some(Ok(Message::Text(text))) => text.as_str().to_string(),
+                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                        Some(Ok(_)) => continue,
+                    };
+                    if !session.dispatch(&text, &events) {
+                        break;
+                    }
+                }
+            }
+        }
+        session.fail_all("the connection to ragon web was lost");
+        eprintln!("ragon chat: the connection to ragon web closed; signing in again");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_are_told_apart() {
+        assert!(matches!(parse(r#"{"answer":3,"result":null}"#), Frame::Answer(3, Ok(Value::Null))));
+        assert!(matches!(parse(r#"{"answer":4,"error":"no"}"#), Frame::Answer(4, Err(e)) if e == "no"));
+        assert!(matches!(parse(r#"{"event":{"channel":"work://message","payload":{"method":"turn/started"}}}"#), Frame::Message(_)));
+        assert!(matches!(parse(r#"{"event":{"channel":"work://exit","payload":null}}"#), Frame::Exit));
+        assert!(matches!(parse(r#"{"event":{"channel":"work://stderr","payload":"waiting"}}"#), Frame::Other));
+        assert!(matches!(parse("not json"), Frame::Other));
+    }
+}

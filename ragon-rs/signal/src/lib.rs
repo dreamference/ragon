@@ -1,0 +1,24 @@
+//! Ragon over Signal (specs/DREAMFERENCE_RAGON_SIGNAL.md).
+//!
+//! `ragon-signal serve` is the bridge daemon the system unit runs as `ragon-signal`: it drives
+//! signal-cli over JSON-RPC on stdio and is one more paired client of `ragon web`, so a message from
+//! the owner's phone becomes a turn in an Ask thread. The conversation's rules (`bridge`), the gate
+//! (`gate`) and the formatting (`format`) are pure and tested without Signal or a network; `serve`
+//! only carries out what they decide. `cli` is the command line, reached as `ragon signal …` from the
+//! launcher and as `ragon-signal …` from the binary the unit runs.
+
+pub mod agent;
+pub mod bridge;
+pub mod cli;
+pub mod command;
+pub mod envelope;
+pub mod format;
+pub mod gate;
+pub mod limits;
+pub mod release_signature;
+pub mod rpc;
+pub mod serve;
+pub mod setup;
+pub mod state;
+pub mod timing;
+pub mod unit;

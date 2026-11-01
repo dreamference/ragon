@@ -1,0 +1,271 @@
+# Ragon System Requirements & Setup
+
+> **Version:** 0.9.0
+> **Subject:** Installation, Hardware Detection, Quickstart, Helper Scripts
+> **Checked against the code** (`setup.py`, `install.sh`, `scripts/`, `dreamference/`, the release assets)
+
+---
+
+## Table of Contents
+
+- [1. System Requirements](#1-system-requirements)
+- [2. Hardware Identification](#2-hardware-identification)
+- [3. Installation](#3-installation)
+- [4. Helper Scripts](#4-helper-scripts)
+- [5. Troubleshooting](#5-troubleshooting)
+- [6. Post-Installation Checks](#6-post-installation-checks)
+
+---
+
+## 1. System Requirements
+
+### 1.1. Hardware
+
+- **NVIDIA GB10** (Blackwell SM121, 128 GB unified LPDDR5X, Arm `aarch64` CPU), in any of the eight machines built on it (§3.5): NVIDIA's DGX Spark and the Acer, ASUS, Dell, Gigabyte, HP, Lenovo and MSI boxes.
+- NVMe storage: the model (~20 GB of weights, the SGLang image) fits a 1 TB drive, the smallest any GB10 machine ships with. SWE-bench keeps 100 GB free (`DEFAULT_DISK_RESERVE = "100G"`, `disk_reserve` in `swe_bench_settings.py`).
+
+### 1.2. Operating System and Drivers
+
+- Linux ARM64: DGX OS 7 (Ubuntu 24.04 underneath), which every GB10 machine ships with, or Ubuntu 24.04 with NVIDIA's packages where the vendor documents it (HP, Lenovo). This machine runs DGX OS 7.5.0 with the 6.17 NVIDIA kernel and driver 580.
+- The NVIDIA driver and the NVIDIA Container Toolkit, for `docker run --gpus all`. DGX OS ships both, Docker, Avahi and bubblewrap; on plain Ubuntu `ragon-admin host check` names what is missing (§3.3).
+- **Memory-safety prerequisites**, which `check_host_safety()` checks before a model load and aborts without: sysstat, 64 GB of swap, two raised sysctls, and `earlyoom` or `systemd-oomd` armed. `ragon-admin host setup` applies them (§3.3); `ragon-admin host check` only reports. See `DREAMFERENCE_INFERENCE.md` §7.
+
+### 1.3. Software
+
+- **Python:** 3.10 or newer; development and tests run on 3.12. `setup.py` declares no `python_requires`.
+- **Python dependencies** (`setup.py` `install_requires`): `pyyaml`, `toml`, `rich`, `requests`, `sentence-transformers`, `sqlite-vec`, `tensorizer`, `einops`, `Pillow`, `beautifulsoup4`.
+- **Docker**, which is required: the model server runs only in Docker.
+- **For `ragon`:**
+  - `git` with submodules (`codex/`), and a Rust toolchain via rustup (`ragon-admin codex build` installs rustup if missing);
+  - `perl` and a C compiler, because OpenSSL is built from source;
+  - no `libssl-dev` or `libcap-dev` is needed.
+- **For the web UI:** nothing; `ragon web` is part of `ragon`.
+- **For the desktop app (a checkout's build):** Node.js 22.13 or newer (Forge 8's minimum) and npm (Electron comes from npm as a prebuilt binary; Vite builds the UI); `dpkg` only to make the `.deb` (no `fakeroot` since Forge 8, whose maker runs `dpkg-deb --root-owner-group` itself). No Rust and no system headers. A dev run on Ubuntu 24.04 needs an AppArmor profile for Chromium's sandbox, which `ragon-admin desktop install` writes with sudo (`/etc/apparmor.d/ragon-desktop-dev`); the `.deb` writes its own in `postinst`.
+- **For the document index:** `ragon-admin docs setup` fetches what `ragon-docs` loads (PDFium, ONNX Runtime, the embedding model; about 320 MB, each pinned).
+- **For the code index:** `ragon-admin code setup` installs the pinned tools `ragon-code` runs; Go, a JDK 17+ and a .NET SDK 8+ are optional and only enable their languages' exact indexers.
+- **For Night Shift:** a systemd user session (`ragon-admin night enable` installs a user timer; lingering must be on for it to fire while logged out).
+- **Optional agents:**
+  - VS Code / VSCodium, for Cline and Continue;
+  - Docker, for OpenHands.
+
+### 1.4. Privileges
+
+- Docker through `docker` group membership, without `sudo`.
+- Write access to `~/.cache/`, `~/.config/`, `~/.local/`.
+- `sudo` only where something outside the home folder changes, each command printed before it runs: `ragon-admin host setup` (§3.3), `node enable` (the Avahi service file), `node prepare`, `desktop install` (the dev AppArmor profile), `ragon signal setup` (its system account and unit), and `install.sh` on a node (§3.2.1, once at the start).
+
+---
+
+## 2. Hardware Identification
+
+`HardwareManager` reads `/proc/meminfo` and `nvidia-smi --query-gpu=name,driver_version,memory.total`. The machine qualifies as GB10 when:
+- the GPU name contains `GB10`; **or**
+- the PCI bus has the GB10's GPU, vendor `0x10de` device `0x2e12` (added: a machine whose driver is not installed yet has no `nvidia-smi` to ask; `install.sh`'s `is_gb10` has the same fallback).
+
+Nothing else qualifies. Originally a GPU name containing `BLACKWELL` or total memory ≥ 100 GB did too, which counted an RTX PRO 6000 Blackwell workstation or any large x86 server as a GB10: `server start` then went on to SM121 recipes, and `node enable` advertised it.
+
+The vendor is never matched on: every GB10 machine names itself differently in DMI (`ASUSTeK COMPUTER INC.` / `GX10` here; the DGX Spark reports `NVIDIA` / `NVIDIA_DGX_Spark`). `ragon-admin status` shows it as **Machine** (DMI vendor and product) and **Operating System** (`DGX OS <version> (<Ubuntu>)` from `/etc/dgx-release`, or `/etc/os-release` alone), so a report says whose box it came from.
+
+There is no override variable. The `DREAMFERENCE_GB10_OVERRIDE` this document used to describe does not exist.
+
+```bash
+nvidia-smi --query-gpu=name,memory.total --format=csv
+free -h
+ragon-admin status        # "System Target" row
+```
+
+---
+
+## 3. Installation
+
+### 3.1. Recommended manual install
+
+```bash
+git clone --recurse-submodules https://github.com/dreamference/ragon.git
+cd ragon                     # the codex/ submodule is shallow; add --depth 1 on update if preferred
+
+python3 -m venv .venv
+.venv/bin/pip install -e .       # installs the `ragon-admin` console script into .venv/bin
+
+.venv/bin/ragon-admin init                  # default model qwen3.8-27b-nvfp4-dflash2: downloads weights,
+                                             # writes dreamference.toml, indexes the workspace
+.venv/bin/ragon-admin codex build           # builds ragon from codex/ + codex-patches/ + ragon-rs/,
+                                             # also ragon-search, ragon-fetch, ragon-code and ragon-docs; links them into
+                                             # ~/.local/bin (first build: long; later: incremental)
+.venv/bin/ragon-admin server start          # model server (SGLang); exits when healthy
+ragon                                       # the terminal agent
+```
+
+**Extras:**
+- **Web UI:** `ragon web start` (Ragon's own, port 3100; `ragon web open` signs a browser in).
+- **Desktop app:** `ragon-admin desktop install`, then `ragon-admin desktop build` and `desktop run`, or `ragon app`.
+- **Google (Gmail, Drive, Calendar in `/apps`):** `ragon-admin google start`, then connect an account.
+- **Document index:** `ragon-admin docs setup`; `~/Documents` and `~/Downloads` are the default collections, others are added with `ragon docs add`.
+- **Web search for `ragon`:** `ragon-admin searxng start` (the web UI's `configure` also sets it up).
+- **Code index:** `ragon-admin code setup`.
+- **Night Shift:** `ragon-admin night enable`; tasks are queued from `ragon` with `/night add`.
+
+**Model image.** The model pins `lmsysorg/sglang` by digest; being registry-qualified, it is pulled by `server start` when missing. Nothing has to be built by hand since the 122B fallback and its locally built vLLM images were removed (`DREAMFERENCE_DOCKER.md` §5.2).
+
+### 3.2. Install from a release: `install.sh`
+
+No checkout and nothing compiled. `install.sh` (repository root; attached to every release) installs from a published release; on Windows, `install.ps1` installs the client (an unsigned preview, RAGON_WINDOWS_ARM):
+
+```bash
+curl -fsSLO https://github.com/dreamference/ragon/releases/latest/download/install.sh
+bash install.sh [--role client|node] [--version X.Y.Z] [--no-advertise] [--from <dir>] [--no-host-setup] [--no-model] [--no-app]
+```
+
+- **The machine decides the role.** A GB10 (arm64 Linux whose `nvidia-smi --query-gpu=name` says `GB10`) gets the **node**; everything else gets the **client**. `--role` overrides it. The device tree has no model string on this hardware and the DMI product name is the vendor's (`GX10` on the machine this was written on), so neither is used.
+- **Client:** `ragon`, `codex-code-mode-host`, and, when the release carries them, `ragon-search`, `ragon-fetch`, `ragon-code` and, on Linux, `ragon-docs` and `ragon-signal` (the Signal daemon, never linked onto PATH). They are the same assets `ragon update` downloads, by the same names, every archive checked against `ragon-<target>.sha256sums` before any is placed, and `SHA256SUMS` checked against its Ed25519 signature with `ssh-keygen -Y verify` (RELEASE_SIGNING). They go to `~/.local/share/dreamference/ragon/bin`, linked into `~/.local/bin`; a real file of the same name there is left alone.
+- **Node:** the client, then the release's wheel into a virtualenv of its own (`~/.local/share/dreamference/venv`), `ragon-admin` linked into `~/.local/bin`, then everything else a node needs, unattended (§3.2.1).
+- **Token.** None is needed: the repository has been public. `GH_TOKEN` or `GITHUB_TOKEN` is used when set (a higher rate limit), and a logged-in `gh`'s token only for a fork named by `RAGON_RELEASE_REPO`, which may be private.
+- **Targets.** Releases carry arm64 and x86-64 Linux and macOS (Apple silicon and Intel) for the client; a Mac cannot be a node, and the script says so. On another machine the script stops with the targets the release does have.
+- **The desktop app comes with the client on a Mac and on Windows (owner's decision,: "let's just do command line installer for now").** The one-line installers are the supported way to install while the Mac and Windows builds stay unsigned: a file `curl` or `Invoke-WebRequest` downloads carries no quarantine mark or Mark of the Web, so neither Gatekeeper nor SmartScreen stops it. On a Mac, `install.sh` takes the release's `Ragon-<version>-<arm64|x64>[-preview].dmg`, checks it against the signed `SHA256SUMS` before anything is placed, mounts it (`hdiutil attach -nobrowse -readonly -noautoopen` at a mount point in its work folder), copies `Ragon.app` out with `ditto` under a hidden name and renames it over the old one, in the folder that already holds it, else `/Applications` when writable, else `~/Applications`, and clears `com.apple.quarantine` anyway. On Windows, `install.ps1` checks `Ragon-Setup-<version>-<arm64|x64>.exe` against `SHA256SUMS`, runs `Unblock-File` on it and then the NSIS installer with `/S` (no administrator, `%LOCALAPPDATA%\Programs\Ragon\App`). `--no-app` / `-NoApp` leaves it out; a release without the app installs the client alone, and a failed app step leaves the client installed. Each installer records the app it put in place (`desktop-app` beside the install folder's `bin`, `path=` and `version=`), and `ragon update` updates a recorded app with the binaries (or alone, when `ragon` is current and the app is not): the dmg or Setup is matched to the machine, checked against the signed `SHA256SUMS` before anything is replaced, downloaded by `ragon` itself (no quarantine, no Mark of the Web), and put in place as the installers do (`ditto` and a rename, or the NSIS installer with `/S`). A running app is left as it is, with a line saying to quit it and run `ragon update` again; an app installed by hand has no record and is left alone; a record whose app is gone is dropped (update.rs, `APP_RECORD`). Verified on the Mac mini (macOS 12.3, the release's dmg, a scratch home: no quarantine attribute, `codesign --verify --deep --strict` passes) and on the AMD box (Windows 11, PowerShell 5.1, the release's assets from a stand-in release API: the installer ran silently, exit 0; `Invoke-WebRequest` writes no `Zone.Identifier` stream).
+- **`--from <dir>`** installs from a folder holding the same asset names and checksum files (a release bundle, or this node's own build; `node provision` uses it, RAGON_FLEET §7.2).
+
+#### 3.2.1. A node is installed unattended
+
+The user's requirement: run the script on a fresh GB10 and leave. Installing on a second GB10 over SSH with no terminal showed what stood in the way: `host setup` fell back to `host check` (which only lists commands), `node enable` was left out, lingering was never turned on, a missing `python3-venv` stopped the script, and the closing lines did not say plainly what had been left out. The node path is now unattended by default; there is no flag for it.
+
+- **Root, asked for once, at the start.** Right after the role is decided and before anything is downloaded: nothing is asked when `sudo -n true` succeeds (root, a NOPASSWD rule); otherwise sudo's own prompt, once (`sudo -v`, on standard input or `/dev/tty` when the script was piped into bash), and a background loop refreshes sudo's timestamp every 50 s until the script exits (the model download outlasts sudo's 15 minutes). Every root command afterwards runs with `sudo -n`, so none can stop to ask. With no terminal and a sudo that wants a password, the script stops there, having downloaded nothing, and says to download it and run `bash install.sh` in a terminal (or over `ssh -t`). The timestamp is kept per terminal on Ubuntu, so the commands that use it run on the script's terminal: `HostSafetySetup` detaches only commands it runs as root.
+- **System updates, the one question.** With that sudo, at the start: `apt-get update`, then the upgrades `apt-get -s full-upgrade` would install (its simulation leaves out Ubuntu's phased updates, which `apt list --upgradable` counts; on the fresh GX10 that was 21 upgrades and 8 phased), NVIDIA's (`dgx-*`, `nvidia-*`, CUDA, the NVIDIA kernels; matched on the package and its origin) named; and firmware from `fwupdmgr get-updates --json` (there: the UEFI and the GX10's USB-C PD controller). At a terminal it asks once, default no, whether to install them. Yes installs them **after** everything else, so a driver update cannot break the model server's first start: `DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade` and `fwupdmgr update -y --no-reboot-check`. The script never reboots; the summary says to, and that the model server comes back by itself (`--restart unless-stopped`). With no terminal they are not installed: the summary lists them as "available, not installed", with the commands.
+- **Every step, in order, none asked about:** `python3-venv` when `python3 -m venv` fails (DGX OS lacks it); the wheel; `ragon-admin host setup --yes` (§3.3); the user in the `docker` group (`usermod -aG docker`; this login does not have it yet, so the model steps run through `sg docker -c`, as `node provision` does); lingering (`loginctl enable-linger`), without which jobs sent from another node and Night Shift tasks stop at logout; the node id; `ragon-admin node enable --yes` (advertising, which starts by itself: the user's decision); what the document index loads (`ragon-admin docs setup`); the default model (`ragon-admin model download`) and the model server (`ragon-admin server start`), both logged to `~/.local/state/dreamference/install-<time>.log`, whose path is printed first. Every `ragon-admin` runs with standard input from `/dev/null`, so none can ask anything (the sandbox check of §3.3 asks at a terminal).
+- **The summary** lists each step as done (✅) or failed (❌, with the command to run), the updates as available (📦) or installed, and the reboot when one is needed; nothing is ever "skipped". The exit status is 1 when a step failed. From the wheel on, a hang-up or a closed reader no longer stops the script halfway (`trap '' HUP PIPE`; `say` drops a line it cannot write).
+- **Opt-outs**, each named as such in the summary: `--no-advertise`; and, for `ragon-admin node provision`, which does those parts itself (RAGON_FLEET §7.2), `--no-host-setup` (no root at all, so no password and no update check) and `--no-model`.
+
+Tested against the stand-in release server with stand-ins for `sudo` (passwordless, or asking for a password on standard input), `apt-get`, `fwupdmgr`, `usermod`, `loginctl`, `sg`, `id`, `python3` and the virtualenv's `ragon-admin`; the fake `sudo` runs only those stand-ins and records anything else, and a test with a terminal uses a pseudo-terminal. **Not verified:** a real sudo prompt and its timestamp kept alive across a real model download; a real `fwupdmgr --json` output (the parser was written against fwupd's pretty-printed format, not a capture from this hardware); the whole run on a fresh GB10.
+
+**What a release install cannot do**, and says so instead of failing in the middle: `ragon-admin codex build` (there is no source; `ragon update` installs a newer release), `ragon-admin desktop build|install` (the release's `.deb` or AppImage is the app; `desktop run` opens it when installed), and building the plain `Dockerfile` image for a recipe that does not pull its own. `CodexBrandedBuilder.has_source()` is the test: with no `codex-patches/` and `ragon-rs/` beside the package, installed binaries count as current. Originally they counted as stale, and `ragon-admin run` installed rustup and then died on the missing `ragon-web-rs/` directory.
+
+**Verified**, on this GB10, in a scratch home with no checkout on any path:
+- **The gap, measured first.** The wheel in a fresh virtualenv: installing it took 113 s and 5.8 GB (PyTorch is most of it). `--help`, `status` and `night status` worked. `codex build` and `run "…"` installed a 1.4 GB Rust toolchain and then raised `FileNotFoundError` on `site-packages/ragon-web-rs`. The wheel is missing no files: the package has no data files, so there is no `MANIFEST.in` to add.
+- **Client, against a real release:** 23 s, about 155 MB downloaded, checksums passed. `ragon --version`, a `ragon-search` query and one `ragon exec` turn against the model server all worked from that home.
+- **Node, with no `--role`:** the script chose `node` here. Against a stand-in release holding a release's real binaries and a wheel built from this tree: 124 s; binaries, virtualenv and `ragon-admin` in place, and the host step reported nothing to do and ran no sudo (that was before the sandbox check of §3.3 existed). From that home, `ragon-admin codex build` reported the release's binaries and built nothing (and, with `ragon` removed, said how to install it); `desktop build` and `desktop install` pointed at the release's `.deb`; `ragon-admin run` went straight to `ragon` with no Rust toolchain installed.
+
+**Not verified then:** a second machine or a second user account; `ragon` from a release install in a plain terminal (every run above was from the IDE's terminal, where the sandbox worked even before this machine had the AppArmor profile of §3.3, loaded); a fresh GB10 where `host setup` has real work (its commands run only in tests, with sudo mocked); `install.sh` downloaded from a release; a non-GB10 client; and `server start` after a release install, which was not run because a model server is already resident here. **Since:** a second GB10 was installed from a release over SSH, where `host setup` had real work (§3.3, RAGON_NODE §18.10); x86-64 and macOS clients ship but have not been installed on such a machine here.
+
+### 3.3. Host settings: `ragon-admin host check|setup`
+
+`check_host_safety()` refuses a model load without them and, until recently, only printed the commands. `HostSafetySetup` (`vllm_server/host_safety_setup.py`) takes every reading from the check's own helpers, so the two cannot disagree, and applies:
+
+| Check | Fix |
+|---|---|
+| `sar` missing | install sysstat, enable collection |
+| no OOM handler | install earlyoom, write `EARLYOOM_ARGS="-m 5,2 -s 100 -r 60"`, enable, restart |
+| earlyoom running with arguments that cannot fire here | rewrite the arguments, restart |
+| swap on disk under 64 GB (zram is not counted) | resize `/swap.img` (or create it, with its fstab line) |
+| `vm.min_free_kbytes`, `vm.watermark_scale_factor` too low | `sysctl -w`, and `/etc/sysctl.d/99-dreamference.conf` |
+| no `docker` | explained: Docker Engine and the NVIDIA Container Toolkit, with NVIDIA's and Docker's install pages |
+| no NVIDIA Container Toolkit (`nvidia-ctk`, its hook or `nvidia-container-cli`) | explained: install from NVIDIA's repository, `nvidia-ctk runtime configure --runtime=docker`, restart Docker |
+| the user cannot reach the Docker socket and is not in the `docker` group | `usermod -aG docker <user>` (effective at the next login) |
+| no `bwrap` | `apt-get install -y bubblewrap`, and the AppArmor profile below in the same step where the restriction is on |
+| `bwrap` refused a user namespace by AppArmor (from a transient user unit) | install `/etc/apparmor.d/ragon-bwrap`, `apparmor_parser -r` it (or load an existing `bwrap-userns-restrict` profile on Ubuntu 25.04+) |
+| connected Wi-Fi interface with power saving on (`WifiPowerSave`, `wifi_power_save.py`) | `nmcli connection modify <connection> 802-11-wireless.powersave 2` and `iw dev <interface> set power_save off` (keeps mDNS multicast from being dropped) |
+
+- Each command is printed, then run through `sudo`, which asks on the terminal. With no terminal they run with `sudo -n` when sudo needs no password; otherwise nothing runs and the commands are printed. `host setup --yes` (what `install.sh` runs) never waits for input: `sudo -n` or nothing, terminal or not. `node enable --yes` is the same for its one root command.
+- **An interrupted setup does not leave the machine worse**. On the second GB10 `host setup | head` died of the closed pipe after `swapoff /swap.img` and `fallocate -l 64G`, before `mkswap`: the file was 64 GB under its old 16 GB header and the machine had no swap. Now output that cannot be written is dropped instead of raising, each command's own output is collected and printed by `ragon-admin` (so a closed pipe never reaches `mkswap`), the hang-up is ignored while commands run, and a `/swap.img` that exists but is not in use is finished on the next run when it is this machine's swap file (listed as swap in `/etc/fstab`, or `blkid` says so): the same `fallocate`/`chmod`/`mkswap`/`swapon`, with no `swapoff`. Anything else at that path is still left to its owner. Building the new file under another name and swapping it in was rejected: an active swap file cannot be renamed, so `/proc/swaps` would show the other name until a reboot, and the next run would see "not the single /swap.img".
+- **Swap is resized only when it is the single `/swap.img` Ubuntu sets up.** A partition or several areas are reported and left alone. zram is neither counted nor in the way: its pages stay in the RAM a model load is short of, so `_swap_total_gb()` reads disk-backed areas from `/proc/swaps`, and a `/swap.img` beside zram is resized as if alone. So is a root filesystem without 64 GB and 20 GB to spare, and so is swap holding more than fits back into memory (`swapoff` would have to move it there).
+- A failed command stops its step; the host is read again at the end and what remains is listed.
+- On this machine the four model-load checks pass and no sudo runs.
+- **One more check, and its fix: bubblewrap's sandbox.** Ubuntu 24.04 sets `kernel.apparmor_restrict_unprivileged_userns=1`, and with no AppArmor profile exempting `/usr/bin/bwrap`, `bwrap` is refused a user namespace. Measured here: it works from the PyCharm terminal, whose processes carry the snap's AppArmor label, and fails from a systemd user unit (so also a plain terminal, an SSH login and the Night Shift timer) with `setting up uid map: Permission denied`; `ragon sandbox` fails there too. Every sandbox Ragon starts uses that `bwrap` (Codex prefers the system's bubblewrap on PATH; the code indexers and node jobs call it by name). `host check` tries `bwrap` from a transient user unit; `host setup` now fixes it by installing `/etc/apparmor.d/ragon-bwrap`, a profile for `/usr/bin/bwrap` alone in the shape of Ubuntu's own for sandboxing programs (`chrome`, `linux-sandbox`: `flags=(unconfined)` and `userns,`), and loading it with `apparmor_parser -r`. The sysctl set to 0 would also work, for every program on the machine, and is not offered. Where the restriction is not the cause (the sysctl is not 1), the step stays a manual one.
+- **The same check runs on every `ragon-admin` run** (`SandboxPrerequisite`, `vllm_server/sandbox_prerequisite.py`; added). The probe is one transient unit, about 25 ms. When `bwrap` is refused and someone is at a terminal, it asks: **1** install the profile now (each command printed, sudo asks for the password), **2** turn off what needs it, **3** not now (the default, asked again next run). "Turn off" removes the Night Shift timer, refuses `night enable` and `night run`, and is remembered in `~/.config/dreamference/sandbox.json`, so the question is not asked again; once `bwrap` works (after `host setup`) the file is removed and the user is told to `night enable` again. With nobody at a terminal (the Night Shift timer, a script) it prints one line on stderr and refuses only `night run`/`night enable`, whose tasks would otherwise each fail inside a sandbox that cannot start. It never asks for `mcp`, `host`, `node serve-job`, `node askpass` or `node prepare` (`QUIET_COMMANDS`: protocols on stdio, askpass, or commands that report/fix it anyway), nor in a command `ragon` itself runs (`CODEX_THREAD_ID`/`CODEX_SANDBOX` set). **Verified:** the user ran `host setup` and the profile was loaded on this machine. From a throwaway systemd user unit, `bwrap --ro-bind / / --unshare-user --unshare-net true` and `ragon sandbox -- true` (Codex's sandbox, which sets up its loopback interface) both succeed where both failed before, and `host check` reports nothing to do. (Run from a shell with no controlling terminal, `host setup` has no terminal for sudo and prints the two commands instead; it has to be typed in a real terminal.)
+
+### 3.4. `scripts/install_gb10.sh`
+
+```bash
+./scripts/install_gb10.sh [MODEL]
+```
+
+§3.1 in one script, every step done by `ragon-admin`:
+1. `git submodule update --init codex`.
+2. `python3 -m pip install -e .` into whatever environment is active.
+3. `ragon-admin init`, with `--model MODEL` if one is given; otherwise the registry's default model.
+4. `ragon-admin host setup` (§3.3).
+5. `ragon-admin codex build`, so `ragon` exists when it finishes.
+6. Tells you to run `ragon-admin server start`, then `ragon`.
+
+Originally it defaulted to `qwen3.6-35b-a3b-nvfp4` and never built `ragon`.
+
+### 3.5. Every GB10 machine
+
+Ragon targets the chip, not a vendor's box. Eight machines carry it (researched), all with 128 GB of unified LPDDR5x and the same GPU:
+
+| Machine | Storage | OS shipped | Verified here |
+|---|---|---|---|
+| NVIDIA DGX Spark (Founders Edition) | 4 TB, self-encrypting | DGX OS | no |
+| Acer Veriton GN100 (GN100-UD11) | up to 4 TB | DGX OS ("DGX Base OS") | no |
+| ASUS Ascent GX10 | 1 TB, 2 TB (Gen4) or 4 TB (Gen5) | DGX OS, the only one ASUS supports | **yes**: this machine, 1 TB (916 GB root), DGX OS 7.5.0 (7.2.3 as shipped), Ubuntu 24.04.4, kernel 6.17.0-1029-nvidia, driver 580.173.02; and a second one (§3.2.1) |
+| Dell Pro Max with GB10 (FCM1253) | 2 TB (QLC, Gen4) and up | DGX OS 7, lightly reskinned | no |
+| Gigabyte AI TOP ATOM (ATAGB10-9000) | 4 TB | DGX OS | no |
+| HP ZGX Nano G1n AI Station | 2 or 4 TB, self-encrypting | DGX OS 7, or Ubuntu 24.04 | no |
+| Lenovo ThinkStation PGX | 1 or 4 TB, self-encrypting | DGX OS, or Ubuntu Pro with NVIDIA's packages | no |
+| MSI EdgeXpert (MS-C931) | 1 or 4 TB | DGX OS | no |
+
+Sources: [itechguides, all eight compared](https://www.itechguides.com/all-nvidia-dgx-spark-versions-so-far-1-generation-8-official-systems/), [Phoronix on the Dell](https://www.phoronix.com/review/dell-pro-max-gb10-preview), [Jeff Geerling on the Dell](https://www.jeffgeerling.com/blog/2025/dells-version-dgx-spark-fixes-pain-points/), [NVIDIA's DGX OS 7 guide](https://docs.nvidia.com/dgx/dgx-os-7-user-guide), [NVIDIA forum, GB10 = 10de:2e12](https://forums.developer.nvidia.com/t/please-add-gb10-10de-2e12-to-the-signed-nvgrace-gpu-vfio-pci-in-the-dgx-spark-kernel/383780), [a plain-Ubuntu GB10 guide](https://github.com/timothystewart6/ubuntu-gb10).
+
+**What every machine shares, and so what Ragon relies on:**
+- `nvidia-smi` names the GPU `NVIDIA GB10` and reports `memory.total` as `[N/A]` (unified memory), which `detect_gb10_hardware()` already tolerates; the PCI id is `10de:2e12`.
+- DGX OS 7 is Ubuntu 24.04, so the apt package names (`sysstat`, `earlyoom`, `bubblewrap`, `avahi-daemon`), the AppArmor user-namespace restriction and the systemd user session are the same on all of them.
+- The driver is 580 or later on every shipped image, which the CUDA 13 images (the SGLang default and the NGC vLLM base) need. Nothing checks the version; none older exists for this chip.
+- The default model, its pinned SGLang image (pulled, not built) and 64 GB of swap fit the smallest drive any of them ships, 1 TB.
+
+**What differs, and how each is handled:**
+- **DMI names.** Shown by `status`, never matched (§2). Only this ASUS's strings and the DGX Spark's published ones are known.
+- **Swap.** Not documented by any vendor; forum reports show DGX Sparks with 2 GiB and 16 GiB. `host setup` brings a single `/swap.img` (or none) to 64 GB itself; a partition, LVM or several areas are left for the owner, with what to do (§3.3). This ASUS has a 64 GB `/swap.img`, made by hand.
+- **OOM handler.** No vendor documents shipping earlyoom; systemd-oomd is installed on DGX OS but reported not enabled by default (inactive on this ASUS). Either way `host setup` installs and arms earlyoom (§3.3), and `check_host_safety()` accepts an active `systemd-oomd` instead.
+- **Plain Ubuntu instead of DGX OS** (HP and Lenovo document it; anyone can reinstall). DGX OS brings Docker, the NVIDIA Container Toolkit, Avahi and (through GNOME) bubblewrap, and this ASUS's first user is in the `docker` group; a server install has none of that. `host check` names each (§3.3), `host setup` installs bubblewrap and joins the `docker` group itself, and `node enable` installs `avahi-daemon` through sudo or publishes nothing and says how to reach the node by address. Docker and the toolkit come from vendor repositories and are left to the owner, with the links.
+- **The RTX Spark laptops** (GB10's Windows sibling, N1X, shipping from 2026-10) run Windows 11 on Arm and no Linux has been announced for them, so they cannot be a node: the model server needs Linux, Docker with the NVIDIA runtime, and the host-safety layer is Linux's. They are out of scope until NVIDIA ships Linux for them ([computingforgeeks](https://computingforgeeks.com/nvidia-rtx-spark-linux/)).
+
+**Not verified on hardware, so made to tolerate rather than assumed:** every machine but the two ASUS GX10s; plain Ubuntu on any of them (the Docker, toolkit, `docker` group, bubblewrap and Avahi steps are covered by tests only); a swap layout other than a single `/swap.img`; zram; another vendor's DMI strings; the DGX Spark's 4 TB self-encrypting drive (nothing in Ragon touches disk encryption). The first owner of another machine should run `ragon-admin host check` and `ragon-admin status` and report both.
+
+---
+
+## 4. Helper Scripts
+
+All in `scripts/` at the repository root.
+
+### 4.1. `scripts/run_vllm_gb10.sh [MODEL] [PORT] [DRAFT] [TOKENS]`
+
+A thin wrapper over `ragon-admin server start`: each argument given becomes `--model`, `--port`, `--draft-model` or `--num-speculative-tokens`, and anything omitted takes the configured value. The launch therefore gets what the CLI gives it — the alias resolved to its HF repo, the registry recipe and pinned image, the host-safety checks and the PSI watchdog.
+
+Originally it ran `python3 -m vllm.entrypoints.openai.api_server` directly, outside Docker, with the alias unresolved and the removed `--speculative-model` flags.
+
+---
+
+## 5. Troubleshooting
+
+| Problem | Fix |
+| --- | --- |
+| `docker ps` fails | `sudo apt install docker.io`; `sudo usermod -aG docker $USER`; log in again |
+| `--gpus all` fails | Install the NVIDIA Container Toolkit and restart Docker |
+| `server start` aborts in the host-safety pre-flight | `ragon-admin host setup` applies the fixes it lists. If it still aborts, the model doesn't fit current free memory |
+| `ragon-admin: command not found` | It lives in `.venv/bin/`: use the full path, or add `.venv/bin` to `PATH` |
+| `ragon: command not found` | `ragon-admin codex build` in a checkout, or `install.sh` without one; then make sure `~/.local/bin` is on `PATH` |
+| `ragon-admin codex build` says the submodule is not checked out | `git submodule update --init codex` |
+| `ragon` waits forever "for local vLLM server" | `ragon-admin server start`; check `DREAMFERENCE_VLLM_HOST` / `vllm_host` |
+| `ragon-search` says every engine failed with a connection error after a reboot | The SearXNG container was created on Docker's default bridge and started before the host had DNS: `ragon-admin searxng start` recreates it on the sidecar network (`DREAMFERENCE_DOCKER.md` §6) |
+| First `ragon-admin index` fails offline | The nomic embedding model is downloaded on first use; fetch it while online (`DREAMFERENCE_CONTEXT.md` §5) |
+
+---
+
+## 6. Post-Installation Checks
+
+```bash
+ragon-admin status                 # GB10 qualified; vLLM health; agent CLIs present; context index
+ragon-admin model list             # the model matrix
+ragon --version                    # "ragon 0.158.0"
+ragon exec "say hello"             # a one-shot answer from the local model (needs the server)
+ragon-admin index --force          # (re)builds .dreamference/ in the current directory
+.venv/bin/python -m pytest tests/ -q   # 1,046 tests; those that need a running model server
+                                       # are skipped without one
+```
+
+---
+
+## See Also
+
+- **[DREAMFERENCE_CLI.md](./DREAMFERENCE_CLI.md):** CLI reference
+- **[DREAMFERENCE_RAGON_CODEX.md](./DREAMFERENCE_RAGON_CODEX.md):** building `ragon`
+- **[DREAMFERENCE_MODELS.md](./DREAMFERENCE_MODELS.md):** model matrix
+- **[DREAMFERENCE_AGENTS.md](./DREAMFERENCE_AGENTS.md):** agents

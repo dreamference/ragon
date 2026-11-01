@@ -1,0 +1,157 @@
+"""Managing other nodes from this one (specs/DREAMFERENCE_RAGON_NODE.md §12.3, §12.4, §15.1).
+
+There is no primary: the machine a person types `ragon-admin node …` on is the one doing the
+managing. Listing needs no pairing, because a node's model, load and KV pool are on its open
+model port. Changing a node (its model, starting or stopping its server) goes over the SSH
+pairing, and is carried out by that node's own `ragon-admin`.
+"""
+
+from typing import Any
+
+from dreamference.node.node_browser import NodeBrowser
+from dreamference.node.node_identity import NodeIdentity
+from dreamference.node.node_pairing import NodePairing
+
+
+class NodeRemote:
+    """`ragon-admin node list|status|set|start|stop`."""
+
+    @classmethod
+    def list_lines(cls) -> list[str]:
+        """Returns:
+        List[str]: One line per node on the network: name, address, the model it serves and
+        its context, its load, its free memory (this machine's and paired nodes' only: memory
+        is not on the open model port, so it is asked over the pairing), whether it is paired,
+        which one is this machine, and its forge's role (its `_ragon-forge._tcp` record).
+        """
+        from dreamference.forge.forge_settings import SERVICE_TYPE as FORGE_SERVICE_TYPE
+        from dreamference.night_shift.night_shift_host import NightShiftHost
+
+        nodes = NodeBrowser.browse()
+        if not nodes:
+            return [
+                "No Ragon node answers on this network (`ragon-admin node enable` advertises this one)."
+            ]
+        mine = NodeIdentity.read()
+        records = {record["node"]: record for record in NodePairing.paired()}
+        paired = set(records)
+        forges = {
+            entry["node"]: entry.get("role")
+            for entry in NodeBrowser.browse_service(FORGE_SERVICE_TYPE)
+            if entry.get("node")
+        }
+        lines = []
+        for node in sorted(nodes, key=lambda entry: entry["name"]):
+            host = f"http://{cls.url_host(node['address'])}:{node['port']}"
+            served = NightShiftHost.served_model(host)
+            metrics = NightShiftHost.metrics(host) if served else None
+            if served:
+                serving = f"{served[0]} ({served[1]} tokens)"
+                load = (
+                    f"{int(metrics['running'])} request(s) running" if metrics else "load unknown"
+                )
+                pool = (
+                    f", KV pool {int(metrics['kv_pool'])} tokens"
+                    if metrics and metrics.get("kv_pool")
+                    else ""
+                )
+                detail = f"{serving}, {load}{pool}"
+            else:
+                detail = f"model server {node.get('state', 'not answering')}"
+            memory = cls.memory(node.get("node"), mine, records)
+            if memory:
+                detail = f"{detail}, {memory}"
+            tags = []
+            if mine and node.get("node") == mine:
+                tags.append("this machine")
+            elif node.get("node") in paired:
+                tags.append("paired")
+            else:
+                tags.append("not paired: `ragon-admin node add " + node["name"] + "` to manage it")
+            if node.get("main") != "1":
+                tags.append("not a coding model")
+            role = forges.get(node.get("node") or "")
+            if role:
+                tags.append(f"forge {role}")
+            lines.append(
+                f"{node['name']}  {host}/v1  {detail}  Ragon {node.get('version', '?')}  ({'; '.join(tags)})"
+            )
+        return lines
+
+    @classmethod
+    def memory(
+        cls, node_id: str | None, mine: str | None, records: dict[str, dict[str, Any]]
+    ) -> str | None:
+        """Args: node_id: The listed node's id. mine: This machine's node id. records.
+
+        The paired nodes' records, by id.
+
+        Returns:
+            Optional[str]: `<free> of <total> GiB free`, or None for a node that is neither this
+            machine nor paired, or that did not say.
+        """
+        from dreamference.night_shift.night_shift_host import GIB, NightShiftHost
+        from dreamference.node.node_lanes import NodeLanes
+
+        if node_id and node_id == mine:
+            try:
+                available, total = (
+                    NightShiftHost.mem_available_bytes(),
+                    NightShiftHost.mem_total_bytes(),
+                )
+            except OSError:
+                return None
+        elif node_id in records:
+            info = NodeLanes.info(records[node_id]) or {}
+            available, total = info.get("mem_available"), info.get("mem_total")
+        else:
+            return None
+        if not isinstance(available, int) or not isinstance(total, int) or not total:
+            return None
+        return f"{available / GIB:.1f} of {total / GIB:.1f} GiB free"
+
+    @classmethod
+    def url_host(cls, address: str) -> str:
+        """Args: address: An IP address.
+
+        Returns:
+            str: The address as it goes in a URL (IPv6 in brackets).
+        """
+        return f"[{address}]" if ":" in address and not address.startswith("[") else address
+
+    @classmethod
+    def request(cls, name: str, request: str) -> int:
+        """Sends one operation to a paired node, its output streaming to this terminal.
+
+        Args:
+            name: The node, by name, address or id.
+            request: The operation.
+
+        Returns:
+            int: The node's exit code; 1 when the node is not paired.
+        """
+        record: dict[str, Any] | None = NodePairing.find(name)
+        if record is None:
+            print(f"❌ {name} is not a paired node. Pair once with: ragon-admin node add {name}")
+            return 1
+        return NodePairing.run(record, request, capture=False).returncode
+
+    @classmethod
+    def status(cls, name: str) -> int:
+        """Shows that node's `ragon-admin status`."""
+        return cls.request(name, "status")
+
+    @classmethod
+    def set_model(cls, name: str, model_key: str) -> int:
+        """Assigns a model to that node and starts it there, by that node's own checks."""
+        return cls.request(name, f"set-model {model_key}")
+
+    @classmethod
+    def start(cls, name: str) -> int:
+        """Starts that node's model server with the model it has assigned."""
+        return cls.request(name, "start")
+
+    @classmethod
+    def stop(cls, name: str) -> int:
+        """Stops that node's model server."""
+        return cls.request(name, "stop")

@@ -1,0 +1,11 @@
+# Line endings that must survive a Windows checkout (core.autocrlf=true is the Windows default).
+# The patches are applied with `git apply` to an LF export of Codex: converted to CRLF they no
+# longer apply (specs/DREAMFERENCE_RAGON_WINDOWS_ARM.md section 16.1).
+*.patch -text
+# Shell scripts run by bash, which reads a CR as part of the line.
+*.sh text eol=lf
+# Read by PowerShell 5.1, which accepts either; CRLF is what Windows editors write.
+*.ps1 text eol=crlf
+# Prompts compiled into ragon with include_str! and shared byte for byte with the Python side: a
+# Windows checkout must not turn them into CRLF.
+ragon-rs/prompts/*.md text eol=lf

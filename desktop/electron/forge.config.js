@@ -1,0 +1,252 @@
+// Electron Forge, the way the Codex desktop app is packaged (specs/DREAMFERENCE_RAGON_DESKTOP_ELECTRON.md
+// §3): Vite builds the main process, the preload and Work's UI into `.vite/`; `package` writes
+// `out/Ragon-linux-<arch>/`; `make` wraps that in a `.deb` (and a zip). The fuses are flipped on
+// the packaged binary. `ragon` and `codex-code-mode-host` ride along as extra resources, copied into
+// `resources/` by `ragon-admin desktop build` before `make` runs.
+const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+// @electron/fuses 2 (Forge 7's own fuses plugin pinned the 1.x line, which has no WasmTrapHandlers
+// fuse; Forge 8's takes 2.x, but the hook also removes chrome-sandbox and re-signs on a Mac), flipped
+// on the packaged binary in the postPackage hook below.
+const { FuseV1Options, FuseVersion, flipFuses } = require("@electron/fuses");
+
+const app = require("./app.json");
+const { MakerDebOwnRelations } = require("./linux/deb-maker");
+const pkg = require("./package.json");
+
+const resources = path.join(__dirname, "resources");
+// Windows (DESKTOP_PARITY Phase 3 item 12): the bundled commands are `.exe`s, and the app's icon an `.ico`.
+const win32 = process.platform === "win32";
+const exe = win32 ? ".exe" : "";
+const extraResource = ["ragon", "codex-code-mode-host", "rg"]
+  .map((name) => path.join(resources, `${name}${exe}`))
+  .filter((file) => fs.existsSync(file));
+
+// What `Ragon --version` prints for the bundled `ragon` (src/version.ts, RAGON_VERSION_FILE):
+// `ragon --version`'s first line, read once here, at build time, so the app never runs `ragon` to
+// answer it. Run with a scratch HOME and CODEX_HOME, so it creates or migrates no real home folder.
+// A bundled `ragon` whose version cannot be read stops the build.
+function stampRagonVersion(packagerConfig) {
+  const ragon = path.join(resources, `ragon${exe}`);
+  const stamp = path.join(resources, "ragon.version");
+  fs.rmSync(stamp, { force: true });
+  if (!fs.existsSync(ragon)) return;
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ragon-version-"));
+  try {
+    const output = execFileSync(ragon, ["--version"], {
+      env: { ...process.env, HOME: scratch, CODEX_HOME: scratch },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 60_000,
+    });
+    const line = output.split("\n")[0].trim();
+    if (!line) throw new Error(`${ragon} --version printed nothing`);
+    fs.writeFileSync(stamp, `${line}\n`);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+  packagerConfig.extraResource = [...(packagerConfig.extraResource || []).filter((file) => file !== stamp), stamp];
+}
+
+// The Mac preview (§10): the packager wants an `.icns`, which `generateAssets` below makes from
+// icons/icon.png with the system's own `sips` and `iconutil`, into the git-ignored `resources/`
+// (so it stays out of the asar, which carries icons/ for the tray).
+const darwin = process.platform === "darwin";
+
+// The Windows icon: an `.ico` holding the PNGs already in icons/ (Windows reads PNG entries since
+// Vista), written by hand rather than with an image tool, so the build needs nothing more. Every size
+// Windows asks for between 100 % and 300 % scaling (16 to 48 for small icons, 32 to 64 and 256 for the
+// taskbar, the Start menu and Explorer), so it never scales a 32- or 128-pixel image to fit; the small
+// ones are the tray's (shell.ts, trayIconFile).
+const ICO_IMAGES = [
+  ["tray.png", 16],
+  ["tray@1.25x.png", 20],
+  ["tray@1.5x.png", 24],
+  ["32x32.png", 32],
+  ["tray@2.5x.png", 40],
+  ["tray@3x.png", 48],
+  ["64x64.png", 64],
+  ["128x128.png", 128],
+  ["128x128@2x.png", 256],
+];
+
+function writeIco(target) {
+  const images = ICO_IMAGES.map(([file, size]) => [fs.readFileSync(path.join(__dirname, "icons", file)), size]);
+  const header = Buffer.alloc(6 + 16 * images.length);
+  header.writeUInt16LE(0, 0);
+  header.writeUInt16LE(1, 2);
+  header.writeUInt16LE(images.length, 4);
+  let offset = header.length;
+  images.forEach(([data, size], index) => {
+    const entry = 6 + 16 * index;
+    header.writeUInt8(size >= 256 ? 0 : size, entry);
+    header.writeUInt8(size >= 256 ? 0 : size, entry + 1);
+    header.writeUInt16LE(1, entry + 4);
+    header.writeUInt16LE(32, entry + 6);
+    header.writeUInt32LE(data.length, entry + 8);
+    header.writeUInt32LE(offset, entry + 12);
+    offset += data.length;
+  });
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, Buffer.concat([header, ...images.map(([data]) => data)]));
+}
+
+module.exports = {
+  packagerConfig: {
+    name: app.productName,
+    executableName: app.executable,
+    appBundleId: app.identifier,
+    appCopyright: "Copyright (C) 2026 Dreamference contributors. AGPL-3.0-or-later.",
+    asar: true,
+    icon: darwin || win32 ? path.join(resources, "icon") : path.join(__dirname, "icons", "icon"),
+    extraResource,
+    // macOS only (the packager ignores these elsewhere). The scheme, so `ragon://` links reach
+    // `open-url`; the category; and the Local Network entries macOS 15 asks about before the app
+    // (or the bundled `ragon` it starts) may browse for a node or connect to one on the LAN.
+    protocols: [{ name: app.productName, schemes: [app.scheme] }],
+    appCategoryType: "public.app-category.developer-tools",
+    extendInfo: {
+      NSLocalNetworkUsageDescription:
+        "Ragon finds your Ragon node (a GB10) on the local network and talks to its model server and web UI.",
+      // ragon-rs/node-locator's SERVICE_TYPE, without the domain: the bundled `ragon` browses for it.
+      NSBonjourServices: ["_ragon-node._tcp"],
+      // The composer's dictation (egress.ts grantsRequest, audio only): macOS shows this text when
+      // it asks, and ends an app that touches the microphone without it. With the Developer ID
+      // signature, the hardened runtime also needs the audio-input entitlement (mac/entitlements.mjs).
+      NSMicrophoneUsageDescription:
+        "Ragon listens only while you dictate a message, and transcribes it on your own Ragon setup, never on the internet.",
+    },
+    // The asar holds what the app loads: the Vite build (main, preload, Work's page), the icons
+    // and package.json. Sources, configs, tests, the staged
+    // binaries (extra resources above) and node_modules stay out.
+    ignore: (file) =>
+      !(file === "" || file === "/package.json" || file === "/.vite" || file.startsWith("/.vite/") || file === "/icons" || file.startsWith("/icons/")),
+  },
+  rebuildConfig: {},
+  makers: [
+    // Forge's maker-deb, declaring only the relationships listed here (linux/deb-maker.js).
+    new MakerDebOwnRelations({
+      options: {
+        name: app.packageName,
+        productName: app.productName,
+        genericName: "AI assistant",
+        description: "Private AI on your GB10: a coding agent and a chat assistant, nothing leaves your machine.",
+        productDescription:
+          "Ragon's desktop app: Ask (questions with no project) and Work (the coding agent on your projects) in one window, on ragon, which is bundled inside the app.",
+        bin: app.executable,
+        icon: path.join(__dirname, "icons", "icon.png"),
+        categories: ["Utility", "Development"],
+        mimeType: [`x-scheme-handler/${app.scheme}`],
+        section: "devel",
+        priority: "optional",
+        homepage: "https://github.com/dreamference/ragon",
+        maintainer: "Dreamference <dgxcoder@dreamference.ai>",
+        scripts: {
+          postinst: path.join(__dirname, "linux", "postinst"),
+          prerm: path.join(__dirname, "linux", "prerm"),
+        },
+        // The whole Depends line: nothing is added to it (linux/deb-maker.js), and there is no
+        // Recommends or Suggests. Chromium's own libraries (electron-installer-debian's list for
+        // this Electron, each with its 64-bit-time name where Ubuntu 24.04 renamed it), then the
+        // sound library, xkbcommon and Vulkan. Left out of the installer's list: libsecret-1-0,
+        // which Chromium only dlopens to keep the cookie key in the desktop keyring and does
+        // without (the app stores no credential), and the trash helpers (it trashes nothing).
+        // None of the Codex app's extras (its TPM and USB libraries).
+        depends: [
+          "libgtk-3-0 | libgtk-3-0t64",
+          "libnotify4",
+          "libnss3",
+          "libxss1",
+          "libxtst6",
+          "xdg-utils",
+          "libatspi2.0-0 | libatspi2.0-0t64",
+          "libdrm2",
+          "libgbm1",
+          "libxcb-dri3-0",
+          "libasound2t64 | libasound2",
+          "libxkbcommon0",
+          "mesa-vulkan-drivers | vulkan-icd",
+        ],
+        // The Tauri-era package names, so an upgrade replaces them (written into the control
+        // file by linux/deb-maker.js: electron-installer-debian's template has neither field).
+        conflicts: ["ragon-app"],
+        replaces: ["ragon-app"],
+      },
+    }),
+    { name: "@electron-forge/maker-zip", platforms: ["linux", "darwin", "win32"] },
+  ],
+  plugins: [
+    { name: "@electron-forge/plugin-auto-unpack-natives", config: {} },
+    {
+      name: "@electron-forge/plugin-vite",
+      config: {
+        build: [
+          { entry: "src/early-bootstrap.ts", config: "vite.main.config.ts", target: "main" },
+          { entry: "src/preload.ts", config: "vite.preload.config.ts", target: "preload" },
+        ],
+        renderer: [{ name: "main_window", config: "vite.renderer.config.ts" }],
+      },
+    },
+  ],
+  hooks: {
+    // The Mac icon (see `darwin` above), and the Windows one; nothing to do elsewhere or when it is already there.
+    generateAssets: async () => {
+      if (win32) return writeIco(path.join(resources, "icon.ico"));
+      if (!darwin || fs.existsSync(path.join(resources, "icon.icns"))) return;
+      const { execFileSync } = require("node:child_process");
+      const iconset = path.join(resources, "icon.iconset");
+      fs.rmSync(iconset, { recursive: true, force: true });
+      fs.mkdirSync(iconset, { recursive: true });
+      const source = path.join(__dirname, "icons", "icon.png");
+      for (const size of [16, 32, 128, 256, 512]) {
+        for (const [scale, suffix] of [[1, ""], [2, "@2x"]]) {
+          const pixels = String(Math.min(size * scale, 512));
+          execFileSync("sips", ["-z", pixels, pixels, source, "--out", path.join(iconset, `icon_${size}x${size}${suffix}.png`)], { stdio: "ignore" });
+        }
+      }
+      execFileSync("iconutil", ["-c", "icns", iconset, "-o", path.join(resources, "icon.icns")]);
+      fs.rmSync(iconset, { recursive: true, force: true });
+    },
+    // The version the release stamps (`RAGON_VERSION`), else the package's; and the bundled
+    // `ragon`'s, for `--version` (stampRagonVersion above).
+    prePackage: async (forgeConfig) => {
+      forgeConfig.packagerConfig.appVersion = process.env.RAGON_VERSION || pkg.version;
+      stampRagonVersion(forgeConfig.packagerConfig);
+    },
+    // The Codex app's fuse settings (§3, decision 6): the binary cannot be run as Node, takes no
+    // NODE_OPTIONS or --inspect, loads only its own (integrity-checked) asar, and encrypts cookies.
+    postPackage: async (_forgeConfig, result) => {
+      for (const outputPath of result.outputPaths) {
+        // Not shipped: the SUID sandbox helper. The AppArmor profile of linux/postinst grants the
+        // user namespace Chromium's sandbox uses instead, as the Codex app does.
+        fs.rmSync(path.join(outputPath, "chrome-sandbox"), { force: true });
+        // An unpacked build (the zip, or this folder run as it is) has no postinst to write that
+        // profile: the script beside the binary writes it for the folder it is in, with sudo.
+        if (process.platform === "linux") {
+          const script = path.join(outputPath, "install-sandbox-profile.sh");
+          fs.copyFileSync(path.join(__dirname, "linux", "install-sandbox-profile.sh"), script);
+          fs.chmodSync(script, 0o755);
+        }
+        // On a Mac the fuses live in the bundle (fuses finds the framework from the `.app`), and
+        // flipping them breaks the ad-hoc signature Apple silicon will not run without, so fuses
+        // re-signs it ad hoc; the workflow then signs the whole bundle ad hoc (§10).
+        const binary = darwin ? path.join(outputPath, `${app.productName}.app`) : path.join(outputPath, `${app.executable}${exe}`);
+        await flipFuses(binary, {
+          version: FuseVersion.V1,
+          resetAdHocDarwinSignature: darwin,
+          [FuseV1Options.RunAsNode]: false,
+          [FuseV1Options.EnableCookieEncryption]: true,
+          [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
+          [FuseV1Options.EnableNodeCliInspectArguments]: false,
+          [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
+          [FuseV1Options.OnlyLoadAppFromAsar]: true,
+          [FuseV1Options.GrantFileProtocolExtraPrivileges]: false,
+          [FuseV1Options.WasmTrapHandlers]: true,
+        });
+      }
+    },
+  },
+};

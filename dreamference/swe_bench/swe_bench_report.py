@@ -1,0 +1,1594 @@
+"""The report of a run, and the comparison of two (specs/DREAMFERENCE_RAGON_SWE_BENCH.md §6.3, §8).
+
+Every figure is printed with what it is not: a number from this command compares configurations
+on this machine and is not a leaderboard score.
+"""
+
+import math
+import statistics
+from typing import Any, Final
+
+from dreamference.swe_bench.swe_bench_evaluator import DROP_TEST_HUNKS, SweBenchEvaluator
+from dreamference.swe_bench.swe_bench_patch_filter import SweBenchPatchFilter
+from dreamference.swe_bench.swe_bench_run_store import SweBenchRunStore
+
+CAVEATS: Final[str] = (
+    "Not comparable with published SWE-bench scores (spec §8): the benchmark is contaminated; "
+    "these are third-party arm64 images and only the instances that validate here, not the "
+    "official x86_64 set; the agent has no network and the model is a quantised build; and one "
+    "run is one sample."
+)
+
+# Manifest fields `--against` lists when they differ between two runs.
+COMPARED_FIELDS: Final[tuple] = (
+    "model_name_or_path",
+    "served_model",
+    "model_alias",
+    "ragon_version",
+    "runtime_hash",
+    "prompt",
+    "prompt_sha256",
+    "airgapped",
+    "code_index",
+    "masking",
+    "issue_text",
+    "refine",
+    "refine_version",
+    "task_rules",
+    "task_context",
+    "task_timeout_s",
+    "task_memory",
+    "nudges",
+    "turn_end_compaction",
+    "parallelism",
+    "harness",
+    "repository_commit",
+    "review_turn",
+    "hooks",
+    "restart_after_compactions",
+    "apply_patch",
+    "exec_tool",
+    "compat",
+    "drop_old_outputs",
+    "loop_guard",
+    "output_budget",
+    "sampling",
+    "test_guard",
+    "finish_check",
+    "strategy_hint",
+)
+# What a manifest written before a field existed ran with.
+MISSING_FIELDS: Final[dict] = {
+    "code_index": "off",
+    "prompt": "default",
+    "masking": "off",
+    "issue_text": "verbatim",
+    "refine": False,
+    "refine_version": "v1",
+    "turn_end_compaction": "auto",
+    "task_rules": [],
+    "review_turn": False,
+    "hooks": [],
+    "restart_after_compactions": 0,
+    "apply_patch": "auto",
+    "exec_tool": "auto",
+    "compat": "auto",
+    "drop_old_outputs": False,
+    "loop_guard": False,
+    "output_budget": 0,
+    "sampling": "default",
+    "test_guard": False,
+    "finish_check": False,
+    "strategy_hint": 0,
+}
+# The guards' holds in the order a report lists them (ragon-rs/src/guard.rs), and the guards' names.
+GUARD_HOLDS: Final[tuple] = ("untested", "pre-existing", "mid-work", "test-edits")
+TEST_GUARD: Final[str] = "test guard"
+FINISH_CHECK: Final[str] = "finish check"
+
+
+class SweBenchReport:
+    """Renders reports."""
+
+    @classmethod
+    def summary(
+        cls, store: SweBenchRunStore, variant: str | None = None, details: bool = True
+    ) -> dict[str, Any] | None:
+        """Counts a run.
+
+        Args:
+            store: The run.
+            variant: The grading series the verdicts come from; None for the plain one
+                (`drop-test-hunks`: the same predictions with their test files left out).
+            details: Also split the unresolved by cause and count the compactions, which reads
+                the harness's reports and every rollout; `status`, which counts every run on
+                disk, leaves them out.
+
+        Returns:
+            Optional[Dict[str, Any]]: The counts and per-instance verdicts; None when the run
+            does not exist.
+        """
+        manifest = store.manifest()
+        if manifest is None:
+            return None
+        number, grader, results = SweBenchEvaluator.results(store, variant)
+        states = store.states()
+        instances: list[str] = manifest.get("instances", [])
+        finished = set(store.finished())
+        statuses: dict[str, int] = {}
+        for instance_id in instances:
+            if instance_id in finished:
+                status = (states.get(instance_id) or {}).get("status", "?")
+                statuses[status] = statuses.get(status, 0) + 1
+        resolved = [i for i in instances if (results.get(i) or {}).get("resolved")]
+        graded = [i for i in instances if i in results]
+        walls = [
+            state["wall_s"] for i, state in states.items() if i in finished and "wall_s" in state
+        ]
+        stats = {i: store.log_stats(i) for i in instances if i in finished}
+        index_seconds = [
+            float((state.get("index") or {}).get("seconds") or 0)
+            for i, state in states.items()
+            if i in finished and state.get("index")
+        ]
+        per_repo: dict[str, list[int]] = {}
+        for instance_id in instances:
+            counts = per_repo.setdefault(instance_id.rsplit("-", 1)[0].replace("__", "/"), [0, 0])
+            counts[1] += 1
+            counts[0] += 1 if instance_id in resolved else 0
+        return {
+            "manifest": manifest,
+            "grading": number,
+            "grader": grader,
+            "results": results,
+            "variant": variant,
+            "validated": len(instances),
+            "excluded": len(manifest.get("excluded", {})),
+            "finished": len(finished & set(instances)),
+            "graded": len(graded),
+            "ungraded": len((finished & set(instances)) - set(graded)),
+            "resolved": len(resolved),
+            "resolved_ids": resolved,
+            "statuses": statuses,
+            "test_patch_failed": sum(1 for i in graded if results[i].get("test_patch_failed")),
+            "walls": walls,
+            "per_repo": per_repo,
+            "states": states,
+            "stats": stats,
+            "code_index": manifest.get("code_index", "off"),
+            "index_seconds": index_seconds,
+            "tokens": {
+                key: sum(entry[key] for entry in stats.values())
+                for key in ("input_tokens", "cached_input_tokens", "output_tokens")
+            },
+            "commands": sum(entry["commands"] for entry in stats.values()),
+            "ragon_code_calls": sum(entry["ragon_code_calls"] for entry in stats.values()),
+            "ragon_code_users": sum(1 for entry in stats.values() if entry["ragon_code_calls"]),
+            "refine": cls.refine_summary(store, manifest, states, finished & set(instances)),
+            "nudges_fired": cls.nudge_counts(states, finished & set(instances)),
+            "review": cls.review_summary(store, manifest, states, finished & set(instances)),
+            "restart": cls.restart_summary(manifest, states, finished & set(instances)),
+            "apply_patch": cls.apply_patch_summary(manifest, states, finished & set(instances)),
+            "exec_tool": cls.exec_tool_summary(manifest, states, finished & set(instances)),
+            "compaction": cls.drop_compaction_summary(manifest, states, finished & set(instances)),
+            "loop_guard": cls.loop_guard_summary(manifest, states, finished & set(instances)),
+            "hooks": cls.hooks_summary(manifest, states, finished & set(instances)),
+            "guards": cls.guards_summary(manifest, states, finished & set(instances)),
+            "weakened": cls.weakened_summary(store, finished & set(instances)),
+            "dropped": {i: results[i]["dropped"] for i in graded if results[i].get("dropped")},
+            "causes": cls.unresolved_causes(
+                store, manifest, number if details else None, variant, results, graded
+            ),
+            "compactions": cls.compaction_summary(
+                store, states, sorted(finished & set(instances)) if details else [], resolved
+            ),
+        }
+
+    @classmethod
+    def compaction_summary(
+        cls,
+        store: SweBenchRunStore,
+        states: dict[str, Any],
+        finished: list[str],
+        resolved: list[str],
+    ) -> dict[str, Any]:
+        """The compactions of a run's finished instances (compaction survey §3.5).
+
+        How many, what they cost in time, and the resolve rate by how often a session compacted.
+
+        Args:
+            store: The run.
+            states: Its instances' states.
+            finished: The finished instances.
+            resolved: The resolved instances.
+
+        Returns:
+            Dict[str, Any]: `per_instance` (instance to `count` and `seconds`, for the instances
+            with rollouts on disk), `missing` (finished instances without), `count`, `seconds`
+            (the measured durations), `wall` (those instances' wall seconds) and `by_count`
+            (`0`, `1`, `2`, `3+` to [resolved, instances]).
+        """
+        per_instance = {i: record for i in finished if (record := store.compactions(i)) is not None}
+        by_count: dict[str, list[int]] = {key: [0, 0] for key in ("0", "1", "2", "3+")}
+        for instance_id, record in per_instance.items():
+            bucket = by_count[str(record["count"]) if record["count"] < 3 else "3+"]
+            bucket[1] += 1
+            bucket[0] += 1 if instance_id in resolved else 0
+        return {
+            "per_instance": per_instance,
+            "missing": [i for i in finished if i not in per_instance],
+            "count": sum(record["count"] for record in per_instance.values()),
+            "seconds": [
+                s for record in per_instance.values() for s in record["seconds"] if s is not None
+            ],
+            "wall": sum(float((states.get(i) or {}).get("wall_s") or 0) for i in per_instance),
+            "by_count": by_count,
+        }
+
+    @classmethod
+    def compaction_lines(cls, compactions: dict[str, Any]) -> list[str]:
+        """The report's compaction lines.
+
+        The count, its time and share of agent time, and the resolve rate by compaction count.
+
+        Args:
+            compactions: The summary's `compactions` entry.
+
+        Returns:
+            List[str]: Report lines; one saying so when no rollout is on disk.
+        """
+        per_instance = compactions["per_instance"]
+        if not per_instance:
+            return (
+                ["Compactions         no rollout on disk to count them from"]
+                if compactions["missing"]
+                else []
+            )
+        seconds, wall = compactions["seconds"], compactions["wall"]
+        compacting = sum(1 for record in per_instance.values() if record["count"])
+        line = f"Compactions         {compactions['count']} in {compacting} of {len(per_instance)} instance(s)"
+        if seconds:
+            share = f", {100 * sum(seconds) / wall:.0f}% of their agent time" if wall else ""
+            line += (
+                f"; {cls.duration(sum(seconds))} in all{share}, median "
+                f"{cls.duration(statistics.median(seconds))} each"
+            )
+        if compactions["missing"]:
+            line += f"; {len(compactions['missing'])} instance(s) without rollouts not counted"
+        by_count = "   ".join(
+            f"{key}: {resolved} / {total}"
+            for key, (resolved, total) in compactions["by_count"].items()
+        )
+        return [line, f"  resolved by count {by_count}"]
+
+    @classmethod
+    def unresolved_causes(
+        cls,
+        store: SweBenchRunStore,
+        manifest: dict[str, Any],
+        number: int | None,
+        variant: str | None,
+        results: dict[str, Any],
+        graded: list[str],
+    ) -> dict[str, Any]:
+        """Splits the unresolved verdicts by what went wrong (survey §3.2).
+
+        A patch that broke a test that passed before (PASS_TO_PASS) is a different failure from one
+        that did not fix the issue (FAIL_TO_PASS), with a different remedy. "Resolved" already
+        requires both lists to pass, so this only splits the unresolved.
+
+        Each unresolved instance gets one cause, the first that applies: `empty` (no patch),
+        `not_applied` (the patch did not apply), `test_patch` (the instance's test patch did not
+        apply on top of it), `broke` (a PASS_TO_PASS test fails), `not_fixed` (a FAIL_TO_PASS
+        test fails and every PASS_TO_PASS test passes), `unknown` (no test results on disk).
+
+        Args:
+            store: The run.
+            manifest: Its manifest.
+            number: The grading the results come from; None when there is none.
+            variant: Its grading series; None for the plain one.
+            results: The grading's results.
+            graded: The graded instances.
+
+        Returns:
+            Dict[str, Any]: Cause to the sorted instance ids, plus `broke_unfixed` (the `broke`
+            ones whose FAIL_TO_PASS tests fail too) and `p2p_failed` (instance to the number of
+            PASS_TO_PASS tests it broke).
+        """
+        causes: dict[str, Any] = {
+            key: []
+            for key in ("empty", "not_applied", "test_patch", "broke", "not_fixed", "unknown")
+        }
+        causes["broke_unfixed"], causes["p2p_failed"] = [], {}
+        if number is None:
+            return causes
+        models = {p["instance_id"]: p.get("model_name_or_path") for p in store.predictions()}
+        for instance_id in sorted(graded):
+            result = results[instance_id]
+            if result.get("resolved"):
+                continue
+            if result.get("empty"):
+                causes["empty"].append(instance_id)
+                continue
+            if result.get("applied") is False:
+                causes["not_applied"].append(instance_id)
+                continue
+            if result.get("test_patch_failed"):
+                causes["test_patch"].append(instance_id)
+                continue
+            model = str(models.get(instance_id) or manifest.get("model_name_or_path") or "")
+            counts = SweBenchEvaluator.logged_test_counts(
+                store, number, variant, result, instance_id, model
+            )
+            if counts is None:
+                causes["unknown"].append(instance_id)
+            elif counts["p2p_failed"]:
+                causes["broke"].append(instance_id)
+                causes["p2p_failed"][instance_id] = counts["p2p_failed"]
+                if counts["f2p_failed"]:
+                    causes["broke_unfixed"].append(instance_id)
+            elif counts["f2p_failed"]:
+                causes["not_fixed"].append(instance_id)
+            else:
+                causes["unknown"].append(instance_id)
+        return causes
+
+    @classmethod
+    def causes_lines(cls, causes: dict[str, Any], graded: int) -> list[str]:
+        """The report's lines for the split of the unresolved.
+
+        The patches that broke a passing test, apart from those that did not fix the issue.
+
+        Args:
+            causes: The summary's `causes` entry.
+            graded: The number of graded instances.
+
+        Returns:
+            List[str]: Report lines; none before grading.
+        """
+        if not graded:
+            return []
+        broke = causes["broke"]
+        line = f"Broke a passing test {len(broke)} of {graded} graded ({100 * len(broke) / graded:.1f}%)"
+        if broke:
+            line += (
+                f", {len(causes['broke_unfixed'])} of them not fixing the issue either: "
+                + ", ".join(f"{i} ({causes['p2p_failed'][i]} PASS_TO_PASS)" for i in broke)
+            )
+        lines = [
+            line,
+            f"Did not fix          {len(causes['not_fixed'])}: a FAIL_TO_PASS test still fails, "
+            "every PASS_TO_PASS test passes",
+        ]
+        if causes["empty"]:
+            lines.append(
+                f"Graded empty         {len(causes['empty'])}: no patch to grade ({', '.join(causes['empty'])})"
+            )
+        if causes["not_applied"]:
+            lines.append(
+                f"Patch did not apply  {len(causes['not_applied'])}: {', '.join(causes['not_applied'])}"
+            )
+        if causes["unknown"]:
+            lines.append(
+                f"No test results      {len(causes['unknown'])}, unresolved with no failing test on disk: "
+                + ", ".join(causes["unknown"])
+            )
+        return lines
+
+    @classmethod
+    def nudge_counts(cls, states: dict[str, Any], finished: Any) -> dict[str, int]:
+        """Counts the nudges that fired, by kind.
+
+        `stall` (the tree unchanged and the last message announcing work) and `completion` (the tree
+        changed and the turn ended mid-work).
+
+        Args:
+            states: The instances' states.
+            finished: The instances that have a prediction.
+
+        Returns:
+            Dict[str, int]: Kind to the number of times it fired. A state written before the
+            kinds were recorded counts its nudges as `stall`, the only kind there was.
+        """
+        counts: dict[str, int] = {}
+        for instance_id in finished:
+            state = states.get(instance_id) or {}
+            kinds = state.get("nudge_kinds")
+            if kinds is None:
+                kinds = ["stall"] * int(state.get("nudges") or 0)
+            for kind in kinds:
+                counts[kind] = counts.get(kind, 0) + 1
+        return counts
+
+    @classmethod
+    def refine_summary(
+        cls,
+        store: SweBenchRunStore,
+        manifest: dict[str, Any],
+        states: dict[str, Any],
+        finished: Any,
+    ) -> dict[str, Any] | None:
+        """The refine arm's two steps, counted apart.
+
+        Their time, their tokens, and how often the first step changed the tree it was told not to
+        change.
+
+        Args:
+            store: The run.
+            manifest: Its manifest.
+            states: Its instances' states.
+            finished: The instances that have a prediction.
+
+        Returns:
+            Optional[Dict[str, Any]]: None for a run without the refine arm.
+        """
+        if not manifest.get("refine"):
+            return None
+        refine_records = {i: (states.get(i) or {}).get("refine") for i in finished}
+        records = {i: record for i, record in refine_records.items() if record}
+        first = dict.fromkeys(("input_tokens", "cached_input_tokens", "output_tokens"), 0)
+        for instance_id, record in records.items():
+            stats = store.log_stats(instance_id, 0, record.get("log_offset"))
+            for key in first:
+                first[key] += stats[key]
+        return {
+            "version": manifest.get("refine_version") or "v1",
+            "instances": len(records),
+            "refine_s": [record.get("refine_s", 0) for record in records.values()],
+            "fix_s": [record["fix_s"] for record in records.values() if "fix_s" in record],
+            "edited": sum(1 for record in records.values() if record.get("refine_edited")),
+            "empty": sum(1 for record in records.values() if not record.get("refined_bytes")),
+            "timeouts": sum(
+                1 for record in records.values() if record.get("refine_exec") == "timeout"
+            ),
+            "refine_tokens": first,
+        }
+
+    @classmethod
+    def review_summary(
+        cls,
+        store: SweBenchRunStore,
+        manifest: dict[str, Any],
+        states: dict[str, Any],
+        finished: Any,
+    ) -> dict[str, Any] | None:
+        """What the review turn did (spec §19).
+
+        Where it ran and why not elsewhere, how often it changed the patch and by how many lines,
+        its time limits reached, its time and tokens.
+
+        Args:
+            store: The run.
+            manifest: Its manifest.
+            states: Its instances' states.
+            finished: The instances that have a prediction.
+
+        Returns:
+            Optional[Dict[str, Any]]: None for a run without the review turn.
+        """
+        if not manifest.get("review_turn"):
+            return None
+        records = {i: (states.get(i) or {}).get("review") for i in finished}
+        ran = {i: record for i, record in records.items() if record and "skipped" not in record}
+        skipped: dict[str, int] = {}
+        for record in records.values():
+            if record and "skipped" in record:
+                skipped[record["skipped"]] = skipped.get(record["skipped"], 0) + 1
+        tokens = dict.fromkeys(("input_tokens", "cached_input_tokens", "output_tokens"), 0)
+        for instance_id, record in ran.items():
+            counted = record.get("tokens")
+            if counted is None:
+                counted = store.log_stats(instance_id, int(record.get("log_offset") or 0))
+            for key in tokens:
+                tokens[key] += int(counted.get(key) or 0)
+        changed = sorted(i for i, record in ran.items() if record.get("changed"))
+        return {
+            "instances": len(records),
+            "ran": len(ran),
+            "skipped": skipped,
+            "fresh": sum(1 for record in ran.values() if not record.get("resumed")),
+            "changed": changed,
+            "added": sum(int(record.get("added") or 0) for record in ran.values()),
+            "removed": sum(int(record.get("removed") or 0) for record in ran.values()),
+            "timeouts": sorted(i for i, record in ran.items() if record.get("exec") == "timeout"),
+            "seconds": [int(record.get("seconds") or 0) for record in ran.values()],
+            "tokens": tokens,
+        }
+
+    @classmethod
+    def restart_summary(
+        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Any
+    ) -> dict[str, Any] | None:
+        """The restart arm's measures (spec §21).
+
+        Which finished instances restarted, after how many compactions and how far into the task, so
+        two reports give the survey's measure (resolved among restarted tasks against the same tasks
+        in the record arm).
+
+        Returns:
+            Optional[Dict[str, Any]]: None for a run without the arm.
+        """
+        after = int(manifest.get("restart_after_compactions") or 0)
+        if not after:
+            return None
+        records = {i: (states.get(i) or {}).get("restart") for i in finished}
+        restarted = {i: record for i, record in records.items() if record}
+        return {
+            "after": after,
+            "instances": len(records),
+            "restarted": sorted(restarted),
+            "compactions": [int(r.get("compactions") or 0) for r in restarted.values()],
+            "after_s": [int(r.get("after_s") or 0) for r in restarted.values()],
+            "diff_bytes": [int(r.get("diff_bytes") or 0) for r in restarted.values()],
+        }
+
+    @classmethod
+    def restart_line(cls, restart: dict[str, Any] | None) -> str:
+        """One line: whether the restart arm was on and which instances restarted."""
+        if restart is None:
+            return "Restart             off: a session compacts as often as it needs"
+        if not restart["restarted"]:
+            return (
+                f"Restart             after {restart['after']} compaction(s): none of {restart['instances']} "
+                "finished instance(s) reached it"
+            )
+        return (
+            f"Restart             after {restart['after']} compaction(s): {len(restart['restarted'])} of "
+            f"{restart['instances']} restarted, median {cls.duration(statistics.median(restart['after_s']))} "
+            f"into the task, {sum(1 for b in restart['diff_bytes'] if b)} with a diff to hand over: "
+            + ", ".join(restart["restarted"])
+        )
+
+    @classmethod
+    def prompt_lines(cls, manifest: dict) -> list[str]:
+        """The report's lines on what a run added to the prompt: task rules and a strategy hint.
+
+        Args:
+            manifest: The run's manifest.
+
+        Returns:
+            list[str]: One line for each that the run had; none for the plain prompt.
+        """
+        lines = []
+        if manifest.get("task_rules"):
+            lines.append(
+                f"Task rules          {', '.join(manifest['task_rules'])} (lines added to the task prompt)"
+            )
+        if manifest.get("strategy_hint"):
+            lines.append(
+                f"Strategy hint       {manifest['strategy_hint']}: "
+                f"{manifest.get('strategy_hint_text', '')} (appended after the issue)"
+            )
+        return lines
+
+    @classmethod
+    def turn_end_line(cls, manifest: dict[str, Any]) -> str:
+        """One line: what the run pinned `model_post_turn_compact_threshold_percent` at, if anything (spec §16)."""
+        from dreamference.swe_bench.swe_bench_runner import SweBenchRunner
+
+        setting = str(manifest.get("turn_end_compaction") or "auto")
+        percent = SweBenchRunner.turn_end_percent(
+            setting,
+            int(manifest.get("served_context") or 0),
+            int(manifest.get("task_context") or 0),
+        )
+        if percent is None:
+            return f"{'Turn-end compaction':<20}auto (the key not set: exec never compacts at a turn's end)"
+        if percent == 0:
+            return f"{'Turn-end compaction':<20}off (the key pinned at 0 in every session)"
+        how = (
+            f"the launcher's rule, 70% of the {manifest.get('task_context')}-token limit"
+            if setting == "on"
+            else "as asked"
+        )
+        return f"{'Turn-end compaction':<20}{setting} ({percent}% of the usable window on every exec command line: {how})"
+
+    @classmethod
+    def apply_patch_summary(
+        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Any
+    ) -> dict[str, Any]:
+        """The apply_patch arm's measures (spec §22).
+
+        The form the run asked for and, over the finished instances with a record, how many called
+        the tool at all and how many calls.
+
+        Returns:
+            Dict[str, Any]: `form`, `instances`, `recorded`, `users` (ids that called it), `calls`.
+        """
+        return cls.tool_summary("apply_patch", manifest, states, finished)
+
+    @classmethod
+    def exec_tool_summary(
+        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Any
+    ) -> dict[str, Any]:
+        """The Code Mode arm's measures (spec §23), as `apply_patch_summary` gives them for
+        `apply_patch`: the form `exec` was offered in and how much the agent called it.
+
+        Returns:
+            Dict[str, Any]: `form`, `instances`, `recorded`, `users` (ids that called it), `calls`.
+        """
+        return cls.tool_summary("exec_tool", manifest, states, finished)
+
+    @classmethod
+    def tool_summary(
+        cls, key: str, manifest: dict[str, Any], states: dict[str, Any], finished: Any
+    ) -> dict[str, Any]:
+        """A tool arm's measures.
+
+        The form the manifest's `key` names and, over the finished instances whose state has a `key`
+        record, how many called the tool and how many calls.
+
+        Returns:
+            Dict[str, Any]: `form`, `instances`, `recorded`, `users` (ids that called it), `calls`.
+        """
+        form = str(manifest.get(key) or "auto")
+        records = {i: (states.get(i) or {}).get(key) for i in finished}
+        recorded = {i: r for i, r in records.items() if isinstance(r, dict)}
+        users = sorted(i for i, r in recorded.items() if int(r.get("calls") or 0))
+        return {
+            "form": form,
+            "instances": len(records),
+            "recorded": len(recorded),
+            "users": users,
+            "calls": sum(int(r.get("calls") or 0) for r in recorded.values()),
+        }
+
+    @classmethod
+    def drop_compaction_summary(
+        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Any
+    ) -> dict[str, Any]:
+        """What the finished instances spent on compaction, and what drop-first compaction did
+        (compaction spec §13), from each state's `compaction` record. The survey's acceptance rule
+        for the drop arm reads it: resolved not lower, compaction time down.
+
+        Returns:
+            Dict[str, Any]: `drop` (whether the run dropped first), `instances`, `recorded`,
+                `compacting` (ids that compacted), and the totals `compactions`, `seconds`, `drops`,
+                `declined`, `dropped_outputs`.
+        """
+        records = {i: (states.get(i) or {}).get("compaction") for i in finished}
+        recorded = {i: r for i, r in records.items() if isinstance(r, dict)}
+        totals = {
+            key: sum(float(r.get(key) or 0) for r in recorded.values())
+            for key in ("compactions", "seconds", "drops", "declined", "dropped_outputs")
+        }
+        return {
+            "drop": bool(manifest.get("drop_old_outputs", False)),
+            "instances": len(records),
+            "recorded": len(recorded),
+            "compacting": sorted(i for i, r in recorded.items() if r.get("compactions")),
+            **{
+                key: (round(value, 1) if key == "seconds" else int(value))
+                for key, value in totals.items()
+            },
+        }
+
+    @classmethod
+    def loop_guard_summary(
+        cls, manifest: dict[str, Any], states: dict[str, Any], finished: set[str]
+    ) -> dict[str, Any]:
+        """The loop guard's arms and what it stopped over the finished instances.
+
+        Returns:
+            Dict[str, Any]: `detector`, `budget`, `sampling`, `stopped_in` (ids with a stop) and the
+                totals `nudged`, `ended`, `capped`.
+        """
+        records = [(i, (states.get(i) or {}).get("loop_guard")) for i in finished]
+        recorded = [(i, r) for i, r in records if isinstance(r, dict)]
+        totals = {
+            key: sum(int(r.get(key) or 0) for _, r in recorded)
+            for key in ("nudged", "ended", "capped")
+        }
+        return {
+            "detector": bool(manifest.get("loop_guard", False)),
+            "budget": int(manifest.get("output_budget") or 0),
+            "sampling": str(manifest.get("sampling") or "default"),
+            "stopped_in": sorted(i for i, r in recorded if r.get("nudged") or r.get("ended")),
+            **totals,
+        }
+
+    @classmethod
+    def loop_guard_line(cls, summary: dict[str, Any]) -> str:
+        """One line: the loop guard's arms and, when it stopped anything, how often and where."""
+        head = (
+            f"{'Loop guard':<20}detector {'on' if summary['detector'] else 'off'}, "
+            f"cap {summary['budget'] or 'none'}, sampling {summary['sampling']}"
+        )
+        stops = summary["nudged"] + summary["ended"]
+        if not stops:
+            return head
+        return (
+            f"{head}: {stops} stop(s) in {len(summary['stopped_in'])} instance(s) ({summary['ended']} ended a turn, "
+            f"{summary['capped']} at the cap): {', '.join(summary['stopped_in'])}"
+        )
+
+    @classmethod
+    def drop_compaction_line(cls, summary: dict[str, Any]) -> str:
+        """One line: compactions and their time over the finished instances, and the drops when on."""
+        head = f"{'Compaction':<20}drop old outputs {'on' if summary['drop'] else 'off'}"
+        if not summary["recorded"]:
+            return (
+                head + ": no finished instance recorded its compactions"
+                if summary["instances"]
+                else head
+            )
+        line = (
+            f"{head}: {summary['compactions']} compaction(s) in {len(summary['compacting'])} of "
+            f"{summary['recorded']} finished instance(s), {cls.duration(summary['seconds'])} compacting"
+        )
+        if summary["drop"] or summary["drops"] or summary["declined"]:
+            line += (
+                f"; {summary['drops']} drop(s) instead of a summary ({summary['dropped_outputs']} output(s)), "
+                f"{summary['declined']} declined"
+            )
+        return line
+
+    @classmethod
+    def guards_summary(
+        cls, manifest: dict[str, Any], states: dict[str, Any], finished: set[str]
+    ) -> dict[str, Any]:
+        """Sums what the launcher's guards did over the finished instances (spec §29).
+
+        Args:
+            manifest: The run's manifest.
+            states: The instances' states.
+            finished: The finished instances.
+
+        Returns:
+            dict[str, Any]: `on` (the guards the run switched on), `instances`, `recorded` (the
+            instances with a guard state), `noted` (ids with a test-guard note), `holds` (per
+            kind: `fired` and `complied` instances, `ids`), and over the instances whose last
+            stop saw a change, `changed_at_end` and `tested_at_end`.
+        """
+        on = [
+            name
+            for name, key in ((TEST_GUARD, "test_guard"), (FINISH_CHECK, "finish_check"))
+            if manifest.get(key)
+        ]
+        records = {i: (states.get(i) or {}).get("guards") for i in finished}
+        recorded = {i: r for i, r in records.items() if isinstance(r, dict) and r.get("sessions")}
+        holds: dict[str, dict[str, Any]] = {}
+        for instance_id, record in sorted(recorded.items()):
+            for kind, counts in (record.get("holds") or {}).items():
+                entry = holds.setdefault(kind, {"fired": 0, "complied": 0, "ids": []})
+                entry["fired"] += 1
+                entry["complied"] += 1 if counts.get("complied") else 0
+                entry["ids"].append(instance_id)
+        ends: list[dict[str, Any]] = [
+            r["last_stop"] for r in recorded.values() if isinstance(r.get("last_stop"), dict)
+        ]
+        changed = [end for end in ends if end.get("edited") and end.get("code_changed")]
+        return {
+            "on": on,
+            "instances": len(records),
+            "recorded": len(recorded),
+            "noted": sorted(i for i, r in recorded.items() if r.get("notes")),
+            "holds": holds,
+            "changed_at_end": len(changed),
+            "tested_at_end": sum(1 for end in changed if end.get("tested_now")),
+        }
+
+    @classmethod
+    def guards_never_ran(cls, *runs: tuple[dict[str, Any], str]) -> list[str]:
+        """Says of each run with a guard on whose hooks never ran that it proves nothing about them.
+
+        Args:
+            runs: Each run's summary and name.
+
+        Returns:
+            list[str]: One line per such run.
+        """
+        return [
+            f"In {name} the guards never ran: this comparison says nothing about them."
+            for summary, name in runs
+            if summary["guards"]["on"] and not summary["guards"]["recorded"]
+        ]
+
+    @classmethod
+    def guard_names(cls, guards: dict[str, Any]) -> str:
+        """Names the guards a run switched on, for the side-by-side table."""
+        return ",".join(name.replace(" ", "-") for name in guards["on"]) or "none"
+
+    @classmethod
+    def guards_line(cls, guards: dict[str, Any]) -> str:
+        """One line: which guards were on and, when one was, what they held and whether it worked."""
+        on = guards["on"]
+        switches = (
+            f"{name} {'on' if name in on else 'off'}" for name in (TEST_GUARD, FINISH_CHECK)
+        )
+        head = f"{'Guards':<20}" + ", ".join(switches)
+        if not on and not guards["recorded"]:
+            return head
+        if not guards["recorded"]:
+            return (
+                head + ": the hooks never ran (no instance has a guard state)"
+                if guards["instances"]
+                else head
+            )
+        held = [
+            f"{kind} {entry['fired']} (complied {entry['complied']})"
+            for kind in GUARD_HOLDS
+            if (entry := guards["holds"].get(kind))
+        ]
+        return (
+            f"{head}: ran in {guards['recorded']} of {guards['instances']} finished instance(s); "
+            f"notes in {len(guards['noted'])}; holds: {', '.join(held) or 'none'}; "
+            f"tested at the last stop in {guards['tested_at_end']} of {guards['changed_at_end']} "
+            "that changed code"
+        )
+
+    @classmethod
+    def weakened_summary(cls, store: SweBenchRunStore, finished: set[str]) -> dict[str, Any]:
+        """Finds the patches that weaken an existing test, in every run, so two arms compare.
+
+        The rule is the launcher's test guard's, read from the patch alone
+        (`SweBenchPatchFilter.weakened_tests`): an assertion removed or rewritten, a test deleted
+        or skipped, in a test file the patch did not create.
+
+        Args:
+            store: The run.
+            finished: The finished instances.
+
+        Returns:
+            dict[str, Any]: `patches` (the finished instances with a non-empty patch), `ids` (the
+            weakening ones) and `files` (per id, the files).
+        """
+        patches = {
+            p["instance_id"]: str(p.get("model_patch") or "")
+            for p in store.predictions()
+            if p.get("instance_id") in finished
+        }
+        files = {
+            i: sorted(SweBenchPatchFilter.weakened_tests(patch)) for i, patch in patches.items()
+        }
+        files = {i: names for i, names in files.items() if names}
+        return {
+            "patches": sum(1 for patch in patches.values() if patch.strip()),
+            "ids": sorted(files),
+            "files": files,
+        }
+
+    @classmethod
+    def weakened_line(cls, weakened: dict[str, Any]) -> str:
+        """One line: how many patches weaken an existing test, and which."""
+        line = (
+            f"{'Weakened tests':<20}{len(weakened['ids'])} of {weakened['patches']} patch(es) "
+            "weaken an existing test (an assertion removed or rewritten, a test deleted or skipped)"
+        )
+        return line + (": " + ", ".join(weakened["ids"]) if weakened["ids"] else "")
+
+    @classmethod
+    def apply_patch_line(cls, summary: dict[str, Any]) -> str:
+        """One line: the apply_patch form and how much the agent used the tool."""
+        return cls.tool_line("Apply patch", "freeform on ragon-engine, none on SGLang", summary)
+
+    @classmethod
+    def compat_line(cls, manifest: dict[str, Any]) -> str:
+        """The compatibility-mode arm's line (RAGON_CLAUDE §11).
+
+        Args:
+            manifest: The run's manifest; one written before the arm existed reads as `auto`.
+
+        Returns:
+            str: The line.
+        """
+        mode = str(manifest.get("compat") or MISSING_FIELDS["compat"])
+        meaning = {
+            "claude": "every session in the compatibility mode (Claude Code's files, hooks and rules read)",
+            "off": "the compatibility mode off in every session",
+        }.get(mode, "the launcher's own setting (off in a container)")
+        return f"Compatibility       {mode}: {meaning}"
+
+    @classmethod
+    def exec_tool_line(cls, summary: dict[str, Any]) -> str:
+        """One line: the form Code Mode's `exec` was offered in and how much the agent called it."""
+        return cls.tool_line(
+            "Exec tool", "function on SGLang and vLLM, freeform on ragon-engine", summary
+        )
+
+    @classmethod
+    def tool_line(cls, label: str, auto: str, summary: dict[str, Any]) -> str:
+        """One line of a tool arm: its form, what `auto` means, and how much the agent used the tool.
+
+        Args:
+            label: The line's label (`Apply patch`).
+            auto: What the launcher chooses when the run left the form alone.
+            summary: `tool_summary`'s result.
+
+        Returns:
+            str: The line.
+        """
+        head = f"{label:<20}{summary['form']}"
+        if summary["form"] == "auto":
+            head += f" (the launcher's choice: {auto})"
+        if not summary["recorded"]:
+            return (
+                head + ": no finished instance recorded its calls" if summary["instances"] else head
+            )
+        return (
+            f"{head}: called in {len(summary['users'])} of {summary['recorded']} finished instance(s), "
+            f"{summary['calls']} call(s)"
+            + (": " + ", ".join(summary["users"]) if summary["users"] else "")
+        )
+
+    @classmethod
+    def review_line(cls, review: dict[str, Any] | None) -> str:
+        """Says whether the review turn was on and, when it was, what it did.
+
+        Args:
+            review: The summary's `review` entry; None when the run had no review turn.
+
+        Returns:
+            str: One line of the report.
+        """
+        if review is None:
+            return "Review turn         off: the patch was collected when the agent stopped"
+        if not review["ran"]:
+            return (
+                f"Review turn         on: it ran in none of {review['instances']} finished instance(s)"
+                + "".join(
+                    f"; {reason}: {count}" for reason, count in sorted(review["skipped"].items())
+                )
+            )
+        tokens = review["tokens"]
+        skipped = ", ".join(
+            f"{reason} {count}" for reason, count in sorted(review["skipped"].items())
+        )
+        return (
+            f"Review turn         on: ran in {review['ran']} of {review['instances']}"
+            + (f" (not run: {skipped})" if skipped else "")
+            + (f", {review['fresh']} as a fresh session" if review["fresh"] else "")
+            + f"; changed the patch in {len(review['changed'])} (+{review['added']} -{review['removed']} lines)"
+            + f", reached the time limit in {len(review['timeouts'])}"
+            + f"; median {cls.duration(statistics.median(review['seconds']))}, "
+            f"{cls.duration(sum(review['seconds']))} in all; {tokens['input_tokens']:,} tokens in, "
+            f"{tokens['output_tokens']:,} out"
+        )
+
+    @classmethod
+    def hooks_summary(
+        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Any
+    ) -> dict[str, Any] | None:
+        """What the hooks did (spec §20).
+
+        Where they ran at all, what the edit hold and the stop hold held, and whether the agent then
+        did what it was told.
+
+        Args:
+            manifest: The run's manifest.
+            states: Its instances' states.
+            finished: The instances that have a prediction.
+
+        Returns:
+            Optional[Dict[str, Any]]: None for a run without hooks.
+        """
+        if not manifest.get("hooks"):
+            return None
+        records = {i: (states.get(i) or {}).get("hooks") or {} for i in sorted(finished)}
+
+        def held(key: str) -> dict[str, Any]:
+            holds = {i: r[key] for i, r in records.items() if r.get(key)}
+            return {
+                "fired": sorted(holds),
+                "complied": sum(1 for h in holds.values() if h.get("complied") is True),
+                "not": sum(1 for h in holds.values() if h.get("complied") is False),
+                "undecided": sum(1 for h in holds.values() if h.get("complied") is None),
+            }
+
+        first = [
+            r["first_edit"]
+            for r in records.values()
+            if r.get("first_edit") and r["first_edit"].get("of")
+        ]
+        measured = [
+            r.get("example_run_after_last_edit")
+            for r in records.values()
+            if r.get("example_run_after_last_edit") is not None
+        ]
+        return {
+            "sets": manifest["hooks"],
+            "instances": len(records),
+            "never_ran": sorted(i for i, r in records.items() if not r.get("ran")),
+            "with_targets": sum(1 for r in records.values() if r.get("targets")),
+            "first_edit_read": sum(f["read"] for f in first),
+            "first_edit_of": sum(f["of"] for f in first),
+            "first_edit_all": sum(1 for f in first if f["read"] == f["of"]),
+            "first_edits": len(first),
+            "edit_hold": held("edit_hold"),
+            "stop_hold": held("stop_hold"),
+            "with_examples": sum(1 for r in records.values() if r.get("examples")),
+            "example_after_edit": sum(1 for value in measured if value),
+            "example_measured": len(measured),
+            "errors": sorted(i for i, r in records.items() if r.get("errors")),
+        }
+
+    @classmethod
+    def hooks_lines(cls, hooks: dict[str, Any] | None) -> list[str]:
+        """Says whether hooks were on and, when they were, what they held and whether the agent
+        complied.
+
+        Args:
+            hooks: The summary's `hooks` entry; None when the run had none.
+
+        Returns:
+            List[str]: Lines of the report.
+        """
+        if hooks is None:
+            return ["Hooks               off: no rule was enforced in the session"]
+        ran = hooks["instances"] - len(hooks["never_ran"])
+        lines = [
+            f"Hooks               {', '.join(hooks['sets'])}: ran in {ran} of {hooks['instances']} finished instance(s)"
+        ]
+        if hooks["never_ran"]:
+            lines.append(
+                f"  never ran in {len(hooks['never_ran'])} ({', '.join(hooks['never_ran'][:10])}"
+                + (", ..." if len(hooks["never_ran"]) > 10 else "")
+                + "): those ran as without hooks (an untrusted hook is skipped in silence)"
+            )
+        edit, stop = hooks["edit_hold"], hooks["stop_hold"]
+        lines.append(
+            f"  edit hold         held the first edit in {len(edit['fired'])}: then read what it named "
+            f"{edit['complied']}, did not {edit['not']}, edited no more {edit['undecided']}; "
+            f"{hooks['with_targets']} issue(s) named something to read, "
+            f"{hooks['first_edit_all']} of {hooks['first_edits']} first edits came after reading all of it "
+            f"({hooks['first_edit_read']} of {hooks['first_edit_of']} items)"
+        )
+        lines.append(
+            f"  stop hold         held the first stop in {len(stop['fired'])}: then ran the example "
+            f"{stop['complied']}, did not {stop['not']}, stopped no more {stop['undecided']}; "
+            f"{hooks['with_examples']} issue(s) showed an example, run after the last edit at the "
+            f"last stop in {hooks['example_after_edit']} of {hooks['example_measured']}"
+        )
+        if hooks["errors"]:
+            lines.append(
+                f"  gate errors in {len(hooks['errors'])}: {', '.join(hooks['errors'][:10])} (see state.hooks.errors)"
+            )
+        return lines
+
+    @classmethod
+    def render(cls, store: SweBenchRunStore, variant: str | None = None) -> str | None:
+        """Renders a run's report.
+
+        Args:
+            store: The run.
+            variant: The grading series to report; None for the plain one.
+
+        Returns:
+            Optional[str]: The report text; None when the run does not exist.
+        """
+        summary = cls.summary(store, variant)
+        if summary is None:
+            return None
+        manifest = summary["manifest"]
+        validated, selected = summary["validated"], summary["validated"] + summary["excluded"]
+        rate = f"{100 * summary['resolved'] / validated:.1f}%" if validated else "n/a"
+        statuses = summary["statuses"]
+        lines = [
+            f"{manifest.get('model_name_or_path')}       run {store.name}",
+            f"{manifest.get('dataset')}, {manifest.get('architecture')}, images: {manifest.get('image_source')}",
+            "",
+            f"Resolved            {summary['resolved']} / {validated} validated   {rate}",
+            f"Not evaluable       {summary['excluded']} of {selected} selected "
+            f"({manifest.get('dataset_rows') or '?'} in the dataset): no {manifest.get('architecture')} image, "
+            "or the instance does not validate here",
+            f"Empty patch         {statuses.get('empty', 0)}     Stalled {statuses.get('stalled', 0)}     "
+            f"Timeout {statuses.get('timeout', 0)}     Agent error {statuses.get('error', 0)}",
+            f"Patch broke test_patch application     {summary['test_patch_failed']}",
+            *cls.causes_lines(summary["causes"], summary["graded"]),
+            f"Nudges              stall {summary['nudges_fired'].get('stall', 0)}     "
+            f"completion {summary['nudges_fired'].get('completion', 0)}",
+        ]
+        lines.extend(cls.prompt_lines(manifest))
+        lines.append(cls.review_line(summary["review"]))
+        lines.append(cls.turn_end_line(manifest))
+        lines.append(cls.restart_line(summary["restart"]))
+        lines.append(cls.apply_patch_line(summary["apply_patch"]))
+        lines.append(cls.exec_tool_line(summary["exec_tool"]))
+        lines.append(cls.compat_line(manifest))
+        lines.append(cls.drop_compaction_line(summary["compaction"]))
+        lines.append(cls.loop_guard_line(summary["loop_guard"]))
+        lines.append(cls.guards_line(summary["guards"]))
+        lines.append(cls.weakened_line(summary["weakened"]))
+        lines += cls.hooks_lines(summary["hooks"])
+        lines += cls.compaction_lines(summary["compactions"])
+        not_run = validated - summary["finished"]
+        not_graded = summary["ungraded"]
+        if not_run or not_graded:
+            lines.append(
+                f"INCOMPLETE          {not_run} not run yet, {not_graded} run but not graded yet: "
+                "they count as unresolved above"
+            )
+        if summary["walls"]:
+            lines.append(
+                f"Median wall time    {cls.duration(statistics.median(summary['walls']))} per instance, "
+                f"up to {manifest.get('parallelism')} at once; "
+                f"{cls.duration(sum(summary['walls']))} of agent time in all"
+            )
+        tokens = summary["tokens"]
+        lines.append(
+            f"Tokens              {tokens['input_tokens']:,} in ({tokens['cached_input_tokens']:,} cached), "
+            f"{tokens['output_tokens']:,} out; {summary['commands']:,} commands"
+        )
+        lines.append(cls.code_index_line(summary))
+        lines += cls.gate_lines(store, summary["states"], manifest.get("instances", []))
+        if manifest.get("issue_text") == "names stripped":
+            stripped = manifest.get("stripped_issues") or {}
+            changed = sum(1 for entry in stripped.values() if entry.get("replaced"))
+            lines.append(
+                f"Issue text          names stripped: the files, modules, functions and classes the reference "
+                f"fix touches were taken out of {changed} of {len(stripped)} issues; the rest named none of them"
+            )
+        if summary["refine"] is not None:
+            lines.append(cls.refine_line(summary["refine"]))
+        if summary["grading"] is not None:
+            grader = summary["grader"]
+            lines.append(
+                f"Grading {summary['grading']}: harness {grader.get('harness')}, dataset revision "
+                f"{str(grader.get('dataset_revision'))[:12]}"
+                + (f", test files reset {grader['eval_reset']}" if grader.get("eval_reset") else "")
+            )
+            if variant == DROP_TEST_HUNKS:
+                emptied = sum(
+                    1
+                    for result in summary["results"].values()
+                    if result.get("empty") and result.get("dropped")
+                )
+                lines.append(
+                    f"Test files dropped  regrade of the same predictions with every test file left out of each "
+                    f"patch: {len(summary['dropped'])} patch(es) changed, {emptied} left empty"
+                )
+        else:
+            flag = f" --{variant}" if variant else ""
+            lines.append(
+                f"Not graded yet: run `ragon-admin swe-bench eval{flag} " + store.name + "`"
+            )
+        lines += ["", "Per repository (resolved / validated):"]
+        for repo, (resolved, total) in sorted(summary["per_repo"].items()):
+            lines.append(f"  {repo:<28} {resolved} / {total}")
+        lines += [
+            "",
+            f"Prompt {manifest.get('prompt', 'default')}; "
+            f"{manifest.get('task_context')} tokens per task; "
+            f"timeout {int(manifest.get('task_timeout_s', 0)) // 60} min; nudges {manifest.get('nudges')}.",
+            "",
+            CAVEATS,
+        ]
+        return "\n".join(lines) + "\n"
+
+    @classmethod
+    def code_index_line(cls, summary: dict[str, Any]) -> str:
+        """Says whether the agent had `ragon-code`, what the indexes cost and whether it used them.
+
+        Args:
+            summary: A run's summary.
+
+        Returns:
+            str: One line of the report.
+        """
+        if summary["code_index"] == "off":
+            return "Code index          off: the agent had no ragon-code and navigated with grep and find"
+        seconds = summary["index_seconds"]
+        built = (
+            (
+                f"indexes took {cls.duration(sum(seconds))} in all, median {cls.duration(statistics.median(seconds))}, "
+                "outside the agent's time"
+            )
+            if seconds
+            else "no index time recorded"
+        )
+        arm = summary["code_index"]
+        if arm == "exact":
+            indexes = [
+                state.get("index") or {}
+                for state in summary["states"].values()
+                if state.get("index")
+            ]
+            peak = max((int(index.get("peak_mb") or 0) for index in indexes), default=0)
+            partial = sum(1 for index in indexes if index.get("failed"))
+            bare = sum(1 for index in indexes if not index.get("stores"))
+            arm = (
+                f"exact (SCIP stores only, no graph; peak {peak} MiB per indexer run; "
+                f"{partial} instance(s) with an indexer that did not finish, {bare} with no store at all)"
+            )
+        return (
+            f"Code index          {arm}: {built}; the agent called ragon-code "
+            f"{summary['ragon_code_calls']} time(s), in {summary['ragon_code_users']} of "
+            f"{summary['finished']} instance(s)"
+        )
+
+    @classmethod
+    def refine_line(cls, refine: dict[str, Any]) -> str:
+        """Says what the refine arm's first step cost and did.
+
+        Args:
+            refine: The summary's `refine` entry.
+
+        Returns:
+            str: One line of the report.
+        """
+        state = f"on ({refine.get('version', 'v1')})"
+        if not refine["instances"]:
+            return f"Refine first        {state}: no instance has finished its first step yet"
+        tokens = refine["refine_tokens"]
+        fix = (
+            f", median {cls.duration(statistics.median(refine['fix_s']))} fixing"
+            if refine["fix_s"]
+            else ""
+        )
+        return (
+            f"Refine first        {state}: median {cls.duration(statistics.median(refine['refine_s']))} studying"
+            f"{fix}; the first step took {cls.duration(sum(refine['refine_s']))} and "
+            f"{tokens['input_tokens']:,} tokens in, {tokens['output_tokens']:,} out; it wrote nothing in "
+            f"{refine['empty']}, timed out in {refine['timeouts']} and changed the tree in {refine['edited']} "
+            f"of {refine['instances']} (discarded before fixing)"
+        )
+
+    @classmethod
+    def write(cls, store: SweBenchRunStore, variant: str | None = None) -> str | None:
+        """Renders a run's report and writes it to `report.md` in the run directory
+        (`report-<variant>.md` for another grading series).
+
+        Args:
+            store: The run.
+            variant: The grading series to report; None for the plain one.
+
+        Returns:
+            Optional[str]: The report text; None when the run does not exist.
+        """
+        text = cls.render(store, variant)
+        if text is not None:
+            (store.directory / (f"report-{variant}.md" if variant else "report.md")).write_text(
+                text
+            )
+        return text
+
+    @classmethod
+    def against(
+        cls, store: SweBenchRunStore, other: SweBenchRunStore, variant: str | None = None
+    ) -> str:
+        """Compares two runs instance by instance.
+
+        Args:
+            store: The run being reported.
+            other: The run it is compared with (it may be the same run).
+            variant: The grading series of `store`'s verdicts; `other`'s are always the plain
+                grading's, so `report X --drop-test-hunks --against X` says what dropping the
+                test files changes.
+
+        Returns:
+            str: The comparison, or the reason the two cannot be compared.
+        """
+        ours, theirs = cls.summary(store, variant), cls.summary(other)
+        if ours is None or theirs is None:
+            return f"No such run: {store.name if ours is None else other.name}\n"
+        name = f"{store.name} [{variant}]" if variant else store.name
+        a, b = ours["manifest"], theirs["manifest"]
+        if a.get("dataset") != b.get("dataset") or a.get("dataset_revision") != b.get(
+            "dataset_revision"
+        ):
+            return (
+                f"Not compared: {name} and {other.name} use different datasets "
+                f"({a.get('dataset')}@{str(a.get('dataset_revision'))[:8]} against "
+                f"{b.get('dataset')}@{str(b.get('dataset_revision'))[:8]}).\n"
+            )
+        if sorted(a.get("instances", [])) != sorted(b.get("instances", [])):
+            return (
+                f"Not compared: {name} and {other.name} cover different instances "
+                f"({len(a.get('instances', []))} against {len(b.get('instances', []))}). "
+                "A difference between them would say nothing about the configurations.\n"
+            )
+        both = [i for i in a["instances"] if i in ours["results"] and i in theirs["results"]]
+        only_ours = sorted(
+            i
+            for i in both
+            if ours["results"][i].get("resolved") and not theirs["results"][i].get("resolved")
+        )
+        only_theirs = sorted(
+            i
+            for i in both
+            if theirs["results"][i].get("resolved") and not ours["results"][i].get("resolved")
+        )
+        lines = [f"{name} against {other.name}: {len(both)} instance(s) graded in both"]
+        for field in COMPARED_FIELDS:
+            # Runs made before the code-index arm or named prompts existed have no such field.
+            first, second = (m.get(field, MISSING_FIELDS.get(field)) for m in (a, b))
+            if first != second:
+                lines.append(f"  differs: {field}: {first} | {second}")
+        # Timings are only comparable where the model was the run's alone (§18).
+        gates = [
+            cls.gate_lines(run, summary["states"], summary["manifest"].get("instances", []))
+            for run, summary in ((store, ours), (other, theirs))
+        ]
+        if gates[0][:1] != gates[1][:1]:
+            lines.append(
+                f"  differs: model gate: {(gates[0][:1] or ['no record'])[0].split('  ', 1)[-1].strip()} | "
+                f"{(gates[1][:1] or ['no record'])[0].split('  ', 1)[-1].strip()}"
+            )
+        for run_name, gate in zip(
+            (name, other.name), gates if other.name != store.name else gates[:1], strict=False
+        ):
+            if len(gate) > 1:
+                lines.append(
+                    f"  note: {run_name} paused its model gate; see its report for the instances "
+                    "whose times are not comparable"
+                )
+        lines.append(
+            f"Resolved only by {name} ({len(only_ours)}): {', '.join(only_ours) or 'none'}"
+        )
+        lines.append(
+            f"Resolved only by {other.name} ({len(only_theirs)}): {', '.join(only_theirs) or 'none'}"
+        )
+        if both:
+            low, high = cls.paired_interval(len(only_ours), len(only_theirs), len(both))
+            difference = (len(only_ours) - len(only_theirs)) / len(both)
+            p_value = cls.mcnemar(len(only_ours), len(only_theirs))
+            lines.append(
+                f"Difference in resolved rate: {100 * difference:+.1f} points "
+                f"(95% interval {100 * low:+.1f} to {100 * high:+.1f}; McNemar exact p = {p_value:.3f})"
+            )
+            if low <= 0 <= high:
+                lines.append("No measurable difference.")
+        lines += cls.arms(name, ours, other.name, theirs, both)
+        lines += ["", CAVEATS]
+        return "\n".join(lines) + "\n"
+
+    @classmethod
+    def arms(
+        cls, name: str, ours: dict[str, Any], other: str, theirs: dict[str, Any], both: list[str]
+    ) -> list[str]:
+        """Sets two runs side by side on the instances both graded.
+
+        The rates, the cost, the code index, and one row per instance.
+
+        Args:
+            name: The first run's name.
+            ours: Its summary.
+            other: The second run's name.
+            theirs: Its summary.
+            both: The instances graded in both.
+
+        Returns:
+            List[str]: The lines of the table.
+        """
+        if not both:
+            return []
+        lines = [
+            "",
+            f"Side by side, on the {len(both)} instance(s) graded in both "
+            "(one run per arm is one sample of each):",
+            f"{'':<22}{name:>18}{other:>18}",
+        ]
+
+        def row(label: str, first: Any, second: Any) -> str:
+            return f"{label:<22}{first!s:>18}{second!s:>18}"
+
+        def column(summary: dict[str, Any]) -> dict[str, Any]:
+            stats = [summary["stats"].get(i, {}) for i in both]
+            walls = [summary["states"].get(i, {}).get("wall_s") for i in both]
+            walls = [wall for wall in walls if wall is not None]
+            index = [
+                float((summary["states"].get(i, {}).get("index") or {}).get("seconds") or 0)
+                for i in both
+            ]
+            resolved = sum(1 for i in both if summary["results"][i].get("resolved"))
+            return {
+                "code index": summary["code_index"],
+                "issue text": summary["manifest"].get("issue_text", "verbatim"),
+                "refine first": f"on ({summary['refine']['version']})"
+                if summary["refine"] is not None
+                else "off",
+                "task rules": ",".join(summary["manifest"].get("task_rules") or []) or "none",
+                "review turn": "on" if summary["review"] is not None else "off",
+                "hooks": ",".join(summary["manifest"].get("hooks") or []) or "none",
+                "guards": cls.guard_names(summary["guards"]),
+                "weakened tests": sum(1 for i in both if i in summary["weakened"]["ids"]),
+                "grading": "test files dropped"
+                if summary.get("variant") == DROP_TEST_HUNKS
+                else "plain",
+                "resolved": f"{resolved} ({100 * resolved / len(both):.1f}%)",
+                "broke a passing test": sum(1 for i in both if i in summary["causes"]["broke"]),
+                "did not fix": sum(1 for i in both if i in summary["causes"]["not_fixed"]),
+                "compactions": sum(
+                    summary["compactions"]["per_instance"].get(i, {}).get("count", 0) for i in both
+                ),
+                "compaction time": cls.duration(
+                    sum(
+                        s
+                        for i in both
+                        for s in summary["compactions"]["per_instance"]
+                        .get(i, {})
+                        .get("seconds", [])
+                        if s is not None
+                    )
+                ),
+                "median wall": cls.duration(statistics.median(walls)) if walls else "n/a",
+                "agent time": cls.duration(sum(walls)),
+                "input tokens": f"{sum(s.get('input_tokens', 0) for s in stats):,}",
+                "output tokens": f"{sum(s.get('output_tokens', 0) for s in stats):,}",
+                "commands": f"{sum(s.get('commands', 0) for s in stats):,}",
+                "ragon-code calls": sum(s.get("ragon_code_calls", 0) for s in stats),
+                "instances using it": sum(1 for s in stats if s.get("ragon_code_calls")),
+                "index time": cls.duration(sum(index))
+                if summary["code_index"] != "off"
+                else "none",
+            }
+
+        first, second = column(ours), column(theirs)
+        lines += [row(label, first[label], second[label]) for label in first]
+        outcome = {
+            (True, True): "both",
+            (True, False): f"only {name}",
+            (False, True): f"only {other}",
+            (False, False): "neither",
+        }
+        counts: dict[str, int] = {}
+        table = []
+        for instance_id in both:
+            a, b = ours["results"][instance_id], theirs["results"][instance_id]
+            verdict = outcome[(bool(a.get("resolved")), bool(b.get("resolved")))]
+            counts[verdict] = counts.get(verdict, 0) + 1
+            cells = []
+            for summary in (ours, theirs):
+                state = summary["states"].get(instance_id, {})
+                calls = summary["stats"].get(instance_id, {}).get("ragon_code_calls", 0)
+                cells.append(
+                    f"{state.get('status', '?')} {state.get('wall_s', '?')} s"
+                    + (f", {calls} ragon-code" if summary["code_index"] != "off" else "")
+                    + (", broke P2P" if instance_id in summary["causes"]["broke"] else "")
+                )
+            table.append(f"  {instance_id:<34} {verdict:<16} {cells[0]:<28} {cells[1]}")
+        lines.append(
+            "Resolved in "
+            + ", ".join(
+                f"{label}: {counts.get(label, 0)}"
+                for label in ("both", f"only {name}", f"only {other}", "neither")
+            )
+        )
+        for summary, run in ((ours, name), (theirs, other)):
+            if summary["code_index"] != "off":
+                users = sum(1 for i in both if summary["stats"].get(i, {}).get("ragon_code_calls"))
+                if users == 0:
+                    lines.append(
+                        f"In {run} the agent never called ragon-code: this comparison says nothing about the index."
+                    )
+                else:
+                    lines.append(
+                        f"In {run} the agent called ragon-code in {users} of {len(both)} instances; "
+                        "the others ran as if there were no index."
+                    )
+        for summary, run in ((ours, name), (theirs, other)):
+            hooks = summary.get("hooks")
+            if hooks is not None:
+                ran = [i for i in both if i not in hooks["never_ran"]]
+                if not ran:
+                    lines.append(
+                        f"In {run} the hooks never ran: this comparison says nothing about them."
+                    )
+                elif len(ran) < len(both):
+                    lines.append(
+                        f"In {run} the hooks ran in {len(ran)} of {len(both)} instances; "
+                        "the others ran as if there were none."
+                    )
+        lines += cls.guards_never_ran((ours, name), (theirs, other))
+        lines += ["", f"  {'instance':<34} {'resolved in':<16} {name:<28} {other}", *table]
+        return lines
+
+    @classmethod
+    def mcnemar(cls, only_first: int, only_second: int) -> float:
+        """The exact (binomial) McNemar test on the discordant pairs.
+
+        Args:
+            only_first: Instances only the first run resolved.
+            only_second: Instances only the second run resolved.
+
+        Returns:
+            float: The two-sided p-value; 1.0 when there are no discordant pairs.
+        """
+        n = only_first + only_second
+        if n == 0:
+            return 1.0
+        k = min(only_first, only_second)
+        tail = sum(math.comb(n, i) for i in range(k + 1)) / 2**n
+        return min(1.0, 2 * tail)
+
+    @classmethod
+    def paired_interval(cls, only_first: int, only_second: int, pairs: int) -> tuple:
+        """A 95% Wald interval for the difference of two paired proportions.
+
+        Args:
+            only_first: Instances only the first run resolved.
+            only_second: Instances only the second run resolved.
+            pairs: Instances both runs attempted.
+
+        Returns:
+            tuple: (low, high), as fractions.
+        """
+        difference = (only_first - only_second) / pairs
+        variance = (only_first + only_second - (only_first - only_second) ** 2 / pairs) / pairs**2
+        half = 1.96 * math.sqrt(max(variance, 0.0))
+        return difference - half, difference + half
+
+    @classmethod
+    def gate_lines(
+        cls, store: SweBenchRunStore, states: dict[str, Any], instances: list[str]
+    ) -> list[str]:
+        """What the model gate did during a run (§18).
+
+        Whether it refused other requests, and the pauses that let them through, with the instances
+        that ran during one, whose times are not comparable with the rest. Nothing for a run made
+        before the gate existed.
+
+        Args:
+            store: The run.
+            states: Its instances' states.
+            instances: The instances it covers.
+
+        Returns:
+            List[str]: Report lines.
+        """
+        from datetime import datetime
+
+        from dreamference.swe_bench.swe_bench_gate_hold import SweBenchGateHold
+
+        record = SweBenchGateHold.read(store)
+        sessions, pauses = record["sessions"], record["pauses"]
+        if not sessions:
+            return []
+        kinds = {session.get("gate") for session in sessions}
+        if kinds == {"in force"}:
+            lines = [
+                "Model gate          in force: requests from anything but the run were refused"
+            ]
+        elif "in force" in kinds:
+            lines = [
+                "Model gate          in force for part of the run only; in the rest other requests were "
+                "served beside it and held its starts back"
+            ]
+        else:
+            lines = [
+                "Model gate          none in front of the model server: other requests were served beside "
+                "the run and held its starts back, as before the gate"
+            ]
+        if not pauses:
+            return lines
+
+        def stamp(t):
+            return datetime.fromtimestamp(t).strftime("%m-%d %H:%M")
+
+        total = sum(max(0.0, pause["end"] - pause["start"]) for pause in pauses)
+        spans = ", ".join(
+            f"{stamp(pause['start'])}-{datetime.fromtimestamp(pause['end']):%H:%M}"
+            for pause in pauses
+        )
+        shared = []
+        for instance_id in instances:
+            state = states.get(instance_id) or {}
+            try:
+                started = datetime.strptime(state["started"], "%Y-%m-%dT%H:%M:%S%z").timestamp()
+                ended = started + float(state["wall_s"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if any(started < pause["end"] and ended > pause["start"] for pause in pauses):
+                shared.append(instance_id)
+        lines.append(
+            f"Gate paused         {len(pauses)} time(s), {cls.duration(total)} in all ({spans}); "
+            f"{len(shared)} instance(s) ran during a pause and may have shared the model with other "
+            "requests, so their times are not comparable"
+            + (f": {', '.join(shared)}" if shared else "")
+        )
+        return lines
+
+    @classmethod
+    def duration(cls, seconds: float) -> str:
+        """Args:
+            seconds: A duration.
+
+        Returns:
+            str: `6 min 40 s`, `17 h 10 min`.
+        """
+        seconds = int(seconds)
+        if seconds >= 3600:
+            return f"{seconds // 3600} h {seconds % 3600 // 60} min"
+        if seconds >= 60:
+            return f"{seconds // 60} min {seconds % 60} s"
+        return f"{seconds} s"

@@ -1,0 +1,475 @@
+"""Sending a job to another node (specs/DREAMFERENCE_RAGON_NODE.md §13.3).
+
+`ragon-admin node run|jobs|logs|cancel|fetch`.
+
+The sender pushes `HEAD` to the node over the pairing, asks for the job, and shows its output;
+when it ends, the branch the node committed is fetched back, and the files the job kept under
+`--out` are copied to `$CODEX_HOME/jobs/received/<id>/`. Nothing lands in this checkout until the
+user merges it, and uncommitted changes are not sent. Once the result is here the node is told,
+which starts its shorter keep (§13.7).
+"""
+
+import base64
+import hashlib
+import json
+import os
+import random
+import subprocess
+import tarfile
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from dreamference.node.node_identity import NodeIdentity
+from dreamference.node.node_job import DEFAULT_MEMORY, DEFAULT_TIME, JOB_ID, NodeJob
+from dreamference.node.node_pairing import NodePairing
+from dreamference.runner.safe_git import SafeGit
+
+
+class NodeJobSender:
+    """The sending side of a remote job."""
+
+    @classmethod
+    def sent_dir(cls) -> Path:
+        """Returns:
+        Path: `~/.config/dreamference/nodes/jobs`: which node each job went to, and from
+        which repository.
+        """
+        return NodePairing.nodes_dir() / "jobs"
+
+    @classmethod
+    def received_dir(cls, job_id: str) -> Path:
+        """Args: job_id: A job sent from this machine.
+
+        Returns:
+            Path: Where its `--out` files are put: `$CODEX_HOME/jobs/received/<id>`.
+        """
+        codex_home = os.environ.get("CODEX_HOME") or str(Path("~/.ragon").expanduser())
+        return Path(codex_home) / "jobs" / "received" / job_id
+
+    @classmethod
+    def repo_slug(cls, repo: str) -> str:
+        """Args: repo: A repository's root on this machine.
+
+        Returns:
+            str: Its name on the node: the folder name and a digest of this machine and the
+            path, so two checkouts of the same name do not share a job repository.
+        """
+        digest = hashlib.sha1(
+            f"{NodeIdentity.read() or ''}:{os.path.realpath(repo)}".encode()
+        ).hexdigest()[:10]
+        name = "".join(
+            c if c.isalnum() or c in "._-" else "-" for c in Path(os.path.realpath(repo)).name
+        )
+        return f"{name.strip('.-') or 'repo'}-{digest}"[:80]
+
+    @classmethod
+    def new_id(cls) -> str:
+        """Returns:
+        str: A job id, `<date>-<time>-<3 hex>`, the shape of a Night Shift task id.
+        """
+        return f"{datetime.now():%Y%m%d-%H%M}-{random.randrange(0x1000):03x}"
+
+    @classmethod
+    def git_url(cls, record: dict[str, Any], slug: str) -> str:
+        """Args: record: The paired node's record. slug: The repository's name on the node.
+
+        Returns:
+            str: The URL git pushes to and fetches from; the node's `serve-job` maps it to its
+            job repository.
+        """
+        address = NodePairing.resolve(record)
+        if address is None:
+            raise LookupError(
+                f"{record['name']} is not on the network: no node answering a browse carries its id, "
+                f"so its remembered address was not tried."
+            )
+        host = f"[{address}]" if ":" in address else address
+        return f"ssh://{record['user']}@{host}:{record.get('ssh_port') or 22}/jobs/{slug}.git"
+
+    @classmethod
+    def git_environment(cls, record: dict[str, Any]) -> dict[str, str]:
+        """Args: record: The paired node's record.
+
+        Returns:
+            Dict[str, str]: The environment in which git reaches the node through the pairing
+            key and its pinned host key, and never asks anything.
+        """
+        import shlex
+
+        options = NodePairing.ssh_options(record)
+        # The port is in the URL, and git passes it to ssh itself.
+        at = options.index("-p")
+        options = options[:at] + options[at + 2 :]
+        return dict(
+            os.environ, GIT_SSH_COMMAND=shlex.join(["ssh", *options]), GIT_TERMINAL_PROMPT="0"
+        )
+
+    @classmethod
+    def compose(
+        cls,
+        repo: str,
+        commit: str,
+        command: list[str],
+        memory: str | None,
+        time_limit: str | None,
+        test: str | None,
+        gpu: bool = False,
+        setup: str | None = None,
+        out: str | None = None,
+        binds: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Builds the request sent to the node.
+
+        The memory cap and the time limit are always in it: Night Shift's defaults when the user
+        gave none.
+
+        Args:
+            repo: The repository's root.
+            commit: The commit the job runs at.
+            command: The command.
+            memory: `--memory`, or None for the default.
+            time_limit: `--time`, or None for the default.
+            test: `--test`, the command that decides pass or fail.
+            gpu: `--gpu`; sent so that the node refuses it by its own rule.
+            setup: `--setup`, the command that builds the job's environment.
+            out: `--out`, a folder the job writes that comes back as files, not as a commit.
+            binds: `--bind`, paths on the node bound read-only (the node decides which it allows).
+
+        Returns:
+            Dict[str, Any]: The request.
+        """
+        from dreamference.config import DreamferenceConfig
+
+        # The stricter of this instance's file and the launcher's two: the repository's
+        # dreamference.toml, which the agent can write, never loosens the user-level file.
+        try:
+            level = NodeJob.stricter(
+                DreamferenceConfig().ragon_airgapped,
+                DreamferenceConfig.resolve_airgapped_level(),
+            )
+        except Exception:
+            level = "on"
+        return {
+            "id": cls.new_id(),
+            "repo": cls.repo_slug(repo),
+            "commit": commit,
+            "command": list(command),
+            "memory": memory or DEFAULT_MEMORY,
+            "time": time_limit or DEFAULT_TIME,
+            "test": test,
+            "gpu": bool(gpu),
+            "airgapped": level,
+            "sender": NodeIdentity.read() or "",
+            "setup": setup,
+            "out": out,
+            "binds": list(binds or []),
+            "author": {
+                "name": cls._git(repo, "config", "user.name").stdout.strip(),
+                "email": cls._git(repo, "config", "user.email").stdout.strip(),
+            },
+        }
+
+    @classmethod
+    def run(
+        cls,
+        name: str,
+        command: list[str],
+        memory: str | None = None,
+        time_limit: str | None = None,
+        test: str | None = None,
+        gpu: bool = False,
+        cwd: str | None = None,
+        setup: str | None = None,
+        out: str | None = None,
+        binds: list[str] | None = None,
+    ) -> int:
+        """Runs a command on another node, in the current repository at HEAD.
+
+        Args:
+            name: The paired node.
+            command: The command and its arguments.
+            memory: The job's memory cap (default 8G).
+            time_limit: The job's time limit (default 90m).
+            test: A command that decides pass or fail, run after the job's own.
+            gpu: Ask for the GPU (refused by the node for now).
+            cwd: Where to run from; the working directory by default.
+            setup: The command that builds the job's environment, once per lock-file content.
+            out: A folder the job writes, brought back as files.
+            binds: Paths on the node to bind read-only.
+
+        Returns:
+            int: The job's exit code; 1 when it could not be sent.
+        """
+        cwd = cwd or str(Path.cwd())
+        if not command:
+            print("❌ Nothing to run: ragon-admin node run <node> -- <command>")
+            return 1
+        record = NodePairing.find(name)
+        if record is None:
+            print(f"❌ {name} is not a paired node. Pair once with: ragon-admin node add {name}")
+            return 1
+        top = cls._git(cwd, "rev-parse", "--show-toplevel")
+        head = cls._git(cwd, "rev-parse", "HEAD")
+        if top.returncode != 0 or head.returncode != 0:
+            print("❌ A job runs in a git repository at a commit, and this directory has none.")
+            return 1
+        repo, commit = top.stdout.strip(), head.stdout.strip()
+        if cls._git(repo, "status", "--porcelain").stdout.strip():
+            print("⚠️  Uncommitted changes are not sent: the job runs at HEAD.")
+        request = cls.compose(
+            repo, commit, command, memory, time_limit, test, gpu, setup, out, binds
+        )
+        try:
+            url = cls.git_url(record, request["repo"])
+        except LookupError as error:
+            print(f"❌ {error}")
+            return 1
+        print(
+            f"📤 Sending {commit[:10]} to {record['name']} as job {request['id']} "
+            f"(memory {request['memory']}, time {request['time']})..."
+        )
+        pushed = SafeGit.run(
+            ["push", "--quiet", url, f"{commit}:refs/jobs/{request['id']}"],
+            repo,
+            env=cls.git_environment(record),
+        )
+        if pushed.returncode != 0:
+            print(f"❌ Could not push to the node: {pushed.stderr.strip()[-300:]}")
+            return 1
+        cls._remember(request["id"], record, repo, request["repo"])
+        payload = base64.urlsafe_b64encode(json.dumps(request).encode()).decode()
+        code = NodePairing.run(record, f"job-submit {payload}", capture=False).returncode
+        if code == 255:
+            # The stream was lost, not the job: it carries on there.
+            print(
+                f"⚠️  The connection to {record['name']} ended; the job carries on there. "
+                f"`ragon-admin node logs {request['id']}` shows it, `node fetch` brings it back."
+            )
+            return code
+        cls._fetch_branch(request["id"], quiet_when_absent=True)
+        if out:
+            cls._fetch_out(request["id"], quiet_when_absent=True)
+        # A refused job has no record there, so the node ignores this; a job that exited 2 has one.
+        NodePairing.run(record, f"job-fetched {request['id']}")
+        return code
+
+    @classmethod
+    def split_run_arguments(cls, words: list[str]) -> Any:
+        """Separates `node run`'s own options from the job's command in what follows the node's
+        name: `--memory 16G --test "pytest -q" -- python train.py --epochs 3`.
+
+        Args:
+            words: Everything after the node's name.
+
+        Returns:
+            Any: `(options, command)`: the options (`memory`, `time`, `test`, `gpu`, `setup`,
+            `out`, `bind`) and the command's words. With `--`, what follows it is the command verbatim, so the
+            command's own options are never read as this one's; without it, the command starts
+            at the first word that is not one of these options. An option it does not know, or a
+            word before `--`, exits with argparse's error (2) rather than joining the command.
+        """
+        import argparse
+
+        parser = argparse.ArgumentParser(add_help=False, prog="ragon-admin node run")
+        parser.add_argument("--memory", default=None)
+        parser.add_argument("--time", default=None)
+        parser.add_argument("--test", default=None)
+        parser.add_argument("--gpu", action="store_true")
+        parser.add_argument("--setup", default=None)
+        parser.add_argument("--out", default=None)
+        parser.add_argument("--bind", action="append", default=[])
+        if "--" in words:
+            at = words.index("--")
+            return parser.parse_args(words[:at]), words[at + 1 :]
+        options, _command = parser.parse_known_args([])
+        index = 0
+        own = {
+            "--memory": 2,
+            "--time": 2,
+            "--test": 2,
+            "--gpu": 1,
+            "--setup": 2,
+            "--out": 2,
+            "--bind": 2,
+        }
+        while index < len(words):
+            word = words[index].split("=", 1)[0]
+            if word not in own:
+                break
+            index += 1 if "=" in words[index] else own[word]
+        options, _ = parser.parse_known_args(words[:index])
+        if words[index:] and words[index].startswith("-"):
+            parser.error(f"unrecognized arguments: {words[index]}")
+        return options, words[index:]
+
+    @classmethod
+    def jobs(cls, name: str | None = None) -> int:
+        """Lists jobs on one paired node, or on all of them.
+
+        Args:
+            name: A paired node, or None for every one.
+
+        Returns:
+            int: 0, or 1 when the node is not paired.
+        """
+        records = [NodePairing.find(name)] if name else NodePairing.paired()
+        if name and records[0] is None:
+            print(f"❌ {name} is not a paired node.")
+            return 1
+        if not records:
+            print("No node is paired (`ragon-admin node add <node>`).")
+            return 0
+        for record in records:
+            answer = NodePairing.run(record, "job-list")
+            if answer.returncode != 0:
+                print(f"{record['name']}: not answering ({answer.stderr.strip()[-100:]})")
+                continue
+            listed = [
+                json.loads(line) for line in answer.stdout.splitlines() if line.startswith("{")
+            ]
+            if not listed:
+                print(f"{record['name']}: no jobs")
+            for job in listed:
+                branch = f"  branch {job['branch']}" if job.get("branch") else ""
+                out = f"  {job['out_files']} --out file(s)" if job.get("out_files") else ""
+                prune = (
+                    f"  (pruned after {job['prune_after'][:16].replace('T', ' ')})"
+                    if job.get("prune_after")
+                    else ""
+                )
+                print(
+                    f"{record['name']}  {job['id']}  {job['status']:<9}  {' '.join(job['command'])[:60]}"
+                    f"{branch}{out}{prune}"
+                )
+        return 0
+
+    @classmethod
+    def logs(cls, job_id: str) -> int:
+        """Shows a job's output again, or continues it if the job is still running."""
+        return cls._ask(job_id, f"job-logs {job_id}", capture=False)
+
+    @classmethod
+    def cancel(cls, job_id: str) -> int:
+        """Stops a running job."""
+        return cls._ask(job_id, f"job-cancel {job_id}", capture=False)
+
+    @classmethod
+    def fetch(cls, job_id: str) -> int:
+        """Brings a job's result branch into the repository it was sent from, and its `--out`
+        files to `received_dir`; then tells the node it may prune the job a day later.
+
+        Args:
+            job_id: The job's id.
+
+        Returns:
+            int: 0 when anything came back.
+        """
+        branch = cls._fetch_branch(job_id, quiet_when_absent=False)
+        files = cls._fetch_out(job_id, quiet_when_absent=True)
+        sent = cls._sent(job_id)
+        record = NodePairing.find(sent["node"], browse=False) if sent else None
+        if record is not None and (branch or files):
+            NodePairing.run(record, f"job-fetched {job_id}")
+        return 0 if branch or files else 1
+
+    # -- pieces ----------------------------------------------------------------------------------
+
+    @classmethod
+    def _ask(cls, job_id: str, request: str, capture: bool) -> int:
+        sent = cls._sent(job_id)
+        record = NodePairing.find(sent["node"]) if sent else None
+        if record is None:
+            print(f"❌ No job {job_id} was sent from this machine to a node that is still paired.")
+            return 1
+        return NodePairing.run(record, request, capture=capture).returncode
+
+    @classmethod
+    def _fetch_branch(cls, job_id: str, quiet_when_absent: bool) -> bool:
+        sent = cls._sent(job_id)
+        record = NodePairing.find(sent["node"], browse=False) if sent else None
+        if record is None:
+            if not quiet_when_absent:
+                print(
+                    f"❌ No job {job_id} was sent from this machine to a node that is still paired."
+                )
+            return False
+        branch = f"job/{job_id}"
+        try:
+            url = cls.git_url(record, sent["slug"])
+        except LookupError as error:
+            if not quiet_when_absent:
+                print(f"❌ {error}")
+            return False
+        fetched = SafeGit.run(
+            ["fetch", "--quiet", url, f"refs/heads/{branch}:refs/heads/{branch}"],
+            sent["repo"],
+            env=cls.git_environment(record),
+        )
+        if fetched.returncode != 0:
+            if not quiet_when_absent:
+                print(
+                    f"No result branch for {job_id}: the job changed no file, or has not finished."
+                )
+            return False
+        print(f"📥 The job's changes are on branch {branch} (review: git diff HEAD...{branch}).")
+        return True
+
+    @classmethod
+    def _fetch_out(cls, job_id: str, quiet_when_absent: bool) -> bool:
+        """Copies the files a job kept under `--out` to `received_dir`, from the node's tar stream."""
+        sent = cls._sent(job_id)
+        record = NodePairing.find(sent["node"], browse=False) if sent else None
+        if record is None:
+            return False
+        target = cls.received_dir(job_id)
+        try:
+            process = subprocess.Popen(
+                NodePairing.ssh_command(record, f"job-out {job_id}"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, LookupError):
+            return False
+        count = 0
+        try:
+            with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+                target.mkdir(parents=True, exist_ok=True)
+                for member in archive:
+                    # The node is paired, not trusted with this machine's files: nothing may land
+                    # outside the job's folder, and no link may point out of it.
+                    archive.extract(member, target, filter="data")
+                    count += member.isfile()
+        except (tarfile.TarError, OSError):
+            pass
+        # A stream the reader stopped in would otherwise leave the node writing to a full pipe.
+        if process.stdout is not None:
+            process.stdout.close()
+        process.wait()
+        if process.returncode != 0 or not count:
+            if not quiet_when_absent:
+                print(f"No --out files for {job_id}.")
+            return False
+        print(f"📥 {count} --out file(s) of {job_id} are in {target}")
+        return True
+
+    @classmethod
+    def _remember(cls, job_id: str, record: dict[str, Any], repo: str, slug: str) -> None:
+        cls.sent_dir().mkdir(parents=True, exist_ok=True)
+        (cls.sent_dir() / f"{job_id}.json").write_text(
+            json.dumps({"id": job_id, "node": record["node"], "repo": repo, "slug": slug}, indent=2)
+            + "\n"
+        )
+
+    @classmethod
+    def _sent(cls, job_id: str) -> dict[str, Any] | None:
+        if not JOB_ID.fullmatch(job_id or ""):
+            return None
+        try:
+            return json.loads((cls.sent_dir() / f"{job_id}.json").read_text())
+        except (OSError, ValueError):
+            return None
+
+    @classmethod
+    def _git(cls, cwd: str, *arguments: str) -> subprocess.CompletedProcess:
+        return SafeGit.run(list(arguments), cwd)

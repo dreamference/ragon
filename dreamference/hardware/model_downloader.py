@@ -1,0 +1,775 @@
+"""HuggingFace Model Pre-downloader for Dreamference.
+
+This module handles pre-flight downloads of model weights from HuggingFace Hub into local cache
+prior to launching the model server. It prioritizes local cache to minimize HF API calls.
+"""
+
+import contextlib
+import json
+import os
+import shlex
+import shutil
+import subprocess
+from pathlib import Path
+
+from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
+
+# `docker -v` ends the host path at the first colon, so no host path may hold one.
+VOLUME_SEPARATOR = ":"
+
+
+class ModelDownloader:
+    """Utility class managing pre-downloading and local cache verification for LLM weights.
+
+    Prioritizes local cache to minimize HuggingFace Hub API calls.
+    """
+
+    # Where every model container sees the HuggingFace home and its hub; container-side paths
+    # (SGLang's snapshot directories, the tensorizer's source) are built against these.
+    CONTAINER_HF_HOME = "/root/.cache/huggingface"
+    CONTAINER_HF_HUB_DIR = f"{CONTAINER_HF_HOME}/hub"
+    TENSORIZER_CACHE_HOME = Path.home() / ".cache" / "dreamference" / "tensorizer"
+
+    @classmethod
+    def get_hf_home(cls) -> Path:
+        """Gets the HuggingFace home directory, resolved as huggingface_hub resolves it.
+
+        `HF_HOME`, then `$XDG_CACHE_HOME/huggingface`, then `~/.cache/huggingface`. The home holds
+        the hub, the login token and the remote-code modules cache.
+
+        Returns:
+            Path: HuggingFace home directory path.
+        """
+        hf_home = os.getenv("HF_HOME")
+        if hf_home:
+            return Path(hf_home).expanduser()
+        xdg_cache = os.getenv("XDG_CACHE_HOME")
+        if xdg_cache:
+            return Path(xdg_cache).expanduser() / "huggingface"
+        # Resolved per call, not at import, so it follows HOME.
+        return Path.home() / ".cache" / "huggingface"
+
+    @classmethod
+    def get_hf_cache_dir(cls) -> Path:
+        """Gets the HuggingFace hub cache directory, where snapshot_download writes.
+
+        `HF_HUB_CACHE` when set, then its older name `HUGGINGFACE_HUB_CACHE` (which
+        huggingface_hub still honours), otherwise `hub` under the home from get_hf_home().
+
+        Returns:
+            Path: HuggingFace hub cache directory path.
+        """
+        hub_cache = os.getenv("HF_HUB_CACHE") or os.getenv("HUGGINGFACE_HUB_CACHE")
+        if hub_cache:
+            return Path(hub_cache).expanduser()
+        return cls.get_hf_home() / "hub"
+
+    @classmethod
+    def container_volume_args(cls) -> list[str]:
+        """Builds the `docker run` mounts that show a container the host's HuggingFace cache.
+
+        The container always sees it at CONTAINER_HF_HOME, whatever the host calls it: a host with
+        a custom `HF_HOME` downloads there, and a fixed `~/.cache/huggingface` mount would hand the
+        engine a snapshot path that does not exist inside the container. A hub moved out of the
+        home by `HF_HUB_CACHE` gets a mount of its own over CONTAINER_HF_HUB_DIR.
+
+        Returns:
+            List[str]: `-v` options, with the host directories created if missing.
+        """
+        # Docker reads a relative path as a volume name, not a host folder.
+        home = cls.get_hf_home().absolute()
+        hub = cls.get_hf_cache_dir().absolute()
+        for path in (home, hub):
+            if VOLUME_SEPARATOR in str(path):
+                raise ValueError(f"{path} cannot be mounted into the container: rename it")
+        home.mkdir(parents=True, exist_ok=True)
+        args = ["-v", f"{home}:{cls.CONTAINER_HF_HOME}"]
+        if hub != home / "hub":
+            hub.mkdir(parents=True, exist_ok=True)
+            args += ["-v", f"{hub}:{cls.CONTAINER_HF_HUB_DIR}"]
+        return args
+
+    @classmethod
+    def get_tensorizer_cache_dir(cls) -> Path:
+        """Gets the Dreamference tensorizer cache directory.
+
+        Returns:
+            Path: Tensorizer model weights directory path.
+        """
+        return cls.TENSORIZER_CACHE_HOME
+
+    @classmethod
+    def get_dgx_cache_dir(cls) -> Path:
+        """Gets the Dreamference cache directory, the one the tensorizer cache sits in.
+
+        Returns:
+            Path: The directory a serialization container mounts at /root/.cache/dreamference.
+        """
+        return cls.TENSORIZER_CACHE_HOME.parent
+
+    @classmethod
+    def get_model_snapshot_dir(cls, model_key: str) -> Path | None:
+        """Gets the local HuggingFace snapshot directory for the given model key.
+
+        The registry's pinned revision when it is on disk: a cache that also holds another
+        revision (the Hub's default branch, fetched before every fetch honoured the pin) must not
+        have that one sized or tensorized in its place. Otherwise the newest complete snapshot,
+        the kind is_model_downloaded() accepts, then the newest of any.
+
+        Args:
+            model_key (str): Model key or repo ID.
+
+        Returns:
+            Optional[Path]: Path to snapshot directory if it exists, else None.
+        """
+        if not model_key:
+            return None
+        repo_id = ModelMatrixRegistry.resolve_hf_repo(model_key)
+        if not repo_id:
+            return None
+        folder_name = "models--" + repo_id.replace("/", "--")
+        cache_dir = cls.get_hf_cache_dir() / folder_name / "snapshots"
+        pin = ModelMatrixRegistry.pinned_revision(model_key)
+        if pin and (cache_dir / pin).is_dir():
+            return cache_dir / pin
+        if cache_dir.exists():
+            snapshots = [d for d in cache_dir.iterdir() if d.is_dir()]
+            if snapshots:
+                return max(snapshots, key=lambda p: (cls._snapshot_complete(p), p.stat().st_mtime))
+        return None
+
+    @classmethod
+    def get_tensorized_dir(cls, model_key: str) -> Path | None:
+        """Gets the tensorized model output directory.
+
+        Args:
+            model_key (str): Model key or repo ID.
+
+        Returns:
+            Optional[Path]: Output directory path; under the pinned commit for a pinned model, so
+            a checkpoint serialized at an earlier pin is never loaded for the current one.
+        """
+        if not model_key:
+            return None
+        repo_id = ModelMatrixRegistry.resolve_hf_repo(model_key)
+        if not repo_id:
+            return None
+        folder = cls.TENSORIZER_CACHE_HOME / repo_id.replace("/", "--")
+        revision = ModelMatrixRegistry.pinned_revision(model_key)
+        return folder / revision if revision else folder
+
+    @classmethod
+    def get_tensorized_path(cls, model_key: str) -> Path | None:
+        """Gets path to the .tensors serialized file if present and non-empty.
+
+        Args:
+            model_key (str): Model key or repo ID.
+
+        Returns:
+            Optional[Path]: Path to model.tensors if present, else None.
+        """
+        tdir = cls.get_tensorized_dir(model_key)
+        if not tdir:
+            return None
+        tensor_file = tdir / "model.tensors"
+        if tensor_file.exists() and tensor_file.stat().st_size > 0:
+            return tensor_file
+        return None
+
+    @classmethod
+    def is_model_tensorized(cls, model_key: str) -> bool:
+        """Checks if model snapshot has been serialized into tensorize (.tensors) format.
+
+        Args:
+            model_key (str): Model key or repo ID.
+
+        Returns:
+            bool: True if tensorized file exists.
+        """
+        return cls.get_tensorized_path(model_key) is not None
+
+    @classmethod
+    def tensorize_model(
+        cls, model_key: str, force: bool = False, hf_token: str | None = None
+    ) -> bool:
+        """Converts local HuggingFace model weights into tensorize (.tensors) format.
+
+        Saves them alongside model config files for fast GPU loading in vLLM.
+
+        Args:
+            model_key (str): Short alias or HuggingFace repo ID.
+            force (bool): Force re-conversion even if already tensorized.
+            hf_token (Optional[str]): HuggingFace access token.
+
+        Returns:
+            bool: True if tensorized model is present or successfully created.
+        """
+        if not model_key:
+            return False
+
+        if not force and cls.is_model_tensorized(model_key):
+            tpath = cls.get_tensorized_path(model_key)
+            print(f"✅ Model '{model_key}' is already saved in tensorize format ({tpath}).")
+            return True
+
+        # Serialization loads the whole checkpoint, so it carries the same freeze risk as serving
+        # it and has to clear the same gate — reachable directly via `ragon-admin model download`, which
+        # never passes through start_server.
+        from dreamference.vllm_server.vllm_server_manager import VLLMServerManager
+
+        VLLMServerManager.check_host_safety()
+
+        # Ensure HF snapshot exists
+        if not cls.is_model_downloaded(model_key):
+            print(f"📥 Pre-downloading HF weights for '{model_key}' prior to tensorization...")
+            if not cls.download_model(model_key, hf_token=hf_token, auto_tensorize=False):
+                print(f"❌ Failed to download HuggingFace model weights for '{model_key}'.")
+                return False
+
+        snapshot_dir = cls.get_model_snapshot_dir(model_key)
+        if not snapshot_dir:
+            print(f"❌ Model snapshot directory not found for '{model_key}'.")
+            return False
+
+        tdir = cls.get_tensorized_dir(model_key)
+        if not tdir:
+            return False
+        tdir.mkdir(parents=True, exist_ok=True)
+        tensors_file = tdir / "model.tensors"
+        staging = tdir / "model.tensors.partial"
+
+        print(f"⚡ Converting '{model_key}' to tensorize format and saving to {tensors_file}...")
+
+        serialization_success = False
+
+        # Attempt 1: Try containerized vllm-tensorizer if Docker is available
+        if shutil.which("docker"):
+            try:
+                hf_base = cls.get_hf_cache_dir()
+                dgx_base = cls.get_dgx_cache_dir()
+
+                if snapshot_dir.is_relative_to(hf_base) and tdir.is_relative_to(dgx_base):
+                    snap_rel = snapshot_dir.relative_to(hf_base)
+                    tdir_rel = tdir.relative_to(dgx_base)
+                    container_snap = f"{cls.CONTAINER_HF_HUB_DIR}/{snap_rel}"
+                    # Written under the staging name and renamed here, as attempt 2 does: a container
+                    # killed midway must not leave a file that reads as tensorized.
+                    container_tfile = f"/root/.cache/dreamference/{tdir_rel}/{staging.name}"
+
+                    from dreamference.vllm_server.vllm_server_manager import (
+                        DEFAULT_VLLM_IMAGE,
+                        VLLMServerManager,
+                    )
+
+                    # ensure_docker_image pulls the image; when it could not, the next attempt runs.
+                    if not VLLMServerManager().ensure_docker_image(DEFAULT_VLLM_IMAGE):
+                        raise RuntimeError(f"{DEFAULT_VLLM_IMAGE} is not available")
+                    print(
+                        f"   Using {DEFAULT_VLLM_IMAGE} Docker container for model weight serialization..."
+                    )
+
+                    total_cpus = os.cpu_count() or 1
+                    cpus_limit = max(1.0, total_cpus * 0.7)
+
+                    # Serialization loads the full checkpoint, so it carries the same freeze risk as
+                    # serving it: unreclaimable driver-pinned pages starve the host with no OOM kill
+                    # to end it. Bound the container's cgroup so the kernel has something it can kill.
+                    #
+                    # Anchored to the checkpoint rather than to total memory, for the same reason
+                    # the serving cap is: `total - reserve` is a ceiling this job cannot reach, so
+                    # it bounds nothing and the host starves underneath it. Serialization's working
+                    # set is the checkpoint plus the buffers it is written through, so that is what
+                    # the cap is built from — still clamped by the host reserve.
+                    from dreamference.hardware.hardware_manager import HardwareManager
+                    from dreamference.vllm_server.vllm_server_manager import (
+                        CONTAINER_MEM_HEADROOM_GB,
+                        CONTAINER_OOM_SCORE_ADJ,
+                        HOST_MEMORY_RESERVE_GB,
+                        VLLMServerManager,
+                    )
+
+                    total_mem_gb = HardwareManager.detect_gb10_hardware().total_unified_memory_gb
+                    weights_gb = VLLMServerManager._estimate_model_weights_gb(model_key)
+                    host_ceiling_gb = total_mem_gb - HOST_MEMORY_RESERVE_GB
+                    # A zero estimate means neither the snapshot nor the registry knows this model.
+                    # Fall back to the ceiling rather than capping at the headroom alone, which
+                    # would kill every serialization on a model we simply failed to size.
+                    container_mem_gb = max(
+                        1.0,
+                        min(weights_gb + CONTAINER_MEM_HEADROOM_GB, host_ceiling_gb)
+                        if weights_gb
+                        else host_ceiling_gb,
+                    )
+
+                    cmd = [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "--gpus",
+                        "all",
+                        f"--cpus={cpus_limit:.1f}",
+                        f"--memory={container_mem_gb:.0f}g",
+                        f"--memory-swap={container_mem_gb:.0f}g",
+                        f"--oom-score-adj={CONTAINER_OOM_SCORE_ADJ}",
+                        *cls.container_volume_args(),
+                        "-v",
+                        f"{dgx_base}:/root/.cache/dreamference",
+                        "--entrypoint",
+                        "python3",
+                        DEFAULT_VLLM_IMAGE,
+                        "-c",
+                        f"import torch, torch.nn as nn; from tensorizer import "
+                        f"TensorSerializer; from transformers import AutoModelForCausalLM; "
+                        f"model = AutoModelForCausalLM.from_pretrained('{container_snap}', "
+                        f"trust_remote_code=True, torch_dtype='auto'); "
+                        f"model.register_parameter('vllm_tensorized_marker', "
+                        f"nn.Parameter(torch.tensor((1,), device='meta'), requires_grad=False)); "
+                        f"serializer = TensorSerializer('{container_tfile}'); "
+                        f"serializer.write_module(model); serializer.close()",
+                    ]
+                    res = subprocess.run(cmd, capture_output=True, text=True)
+                    if res.returncode == 0 and staging.exists():
+                        staging.replace(tensors_file)
+                        serialization_success = True
+            except Exception:
+                pass
+
+        # Attempt 2: Try local tensorizer library (TensorSerializer)
+        if not serialization_success:
+            try:
+                import torch
+                import torch.nn as nn
+                from rich.progress import (
+                    BarColumn,
+                    Progress,
+                    SpinnerColumn,
+                    TextColumn,
+                    TimeElapsedColumn,
+                )
+                from tensorizer import TensorSerializer
+                from transformers import AutoModelForCausalLM
+
+                print("   Using local TensorSerializer (tensorizer Python library)...")
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    TimeElapsedColumn(),
+                ) as progress:
+                    task = progress.add_task("Tensorizing model weights", total=None)
+                    # This runs on the host, outside any container: the repository's own modeling
+                    # code never runs and pickled weights are never loaded. A model that needs
+                    # either is serialized by the container attempt or not at all.
+                    model = AutoModelForCausalLM.from_pretrained(
+                        str(snapshot_dir),
+                        trust_remote_code=False,
+                        use_safetensors=True,
+                        low_cpu_mem_usage=True,
+                        torch_dtype="auto",
+                    )
+                    model.register_parameter(
+                        "vllm_tensorized_marker",
+                        nn.Parameter(torch.tensor((1,), device="meta"), requires_grad=False),
+                    )
+                    progress.update(task, description="Serializing to .tensors format")
+                    # Written under another name and renamed whole: a kill midway (the host's OOM
+                    # killer skips every except) must not leave a file that reads as tensorized.
+                    serializer = TensorSerializer(str(staging))
+                    serializer.write_module(model)
+                    serializer.close()
+                    staging.replace(tensors_file)
+                    del model
+                    progress.update(task, description="Tensorization complete", completed=True)
+                serialization_success = True
+            except ImportError:
+                pass
+            except Exception as e:
+                print(f"⚠️ TensorSerializer note: {e}")
+
+        # Attempt 3: Try vLLM tensorize script module if available
+        if not serialization_success:
+            try:
+                import sys
+
+                cmd = [
+                    sys.executable,
+                    "-m",
+                    "examples.tensorize_vllm_model",
+                    "--model",
+                    str(snapshot_dir),
+                    "serialize",
+                    "--serialized-directory",
+                    str(tdir),
+                ]
+                res = subprocess.run(cmd, capture_output=True, text=True)
+                if res.returncode == 0 and tensors_file.exists():
+                    serialization_success = True
+            except Exception:
+                pass
+
+        if not serialization_success:
+            # A failed attempt may have left part of the file, which would read as tensorized.
+            tensors_file.unlink(missing_ok=True)
+            staging.unlink(missing_ok=True)
+            # download_model goes on either way; the result says whether the file now exists.
+            print(
+                "⚠️  No tensorize attempt succeeded — skipping tensorize step (normal download will be used)."
+            )
+            return False
+
+        # Copy metadata and tokenizer config files alongside model.tensors
+        for fpath in snapshot_dir.iterdir():
+            if fpath.is_file() and not fpath.name.endswith(
+                (".safetensors", ".bin", ".h5", ".ot", ".pt", ".onnx")
+            ):
+                shutil.copy2(fpath, tdir / fpath.name)
+
+        size_mb = tensors_file.stat().st_size / (1024 * 1024)
+        print(
+            f"✅ Successfully saved '{model_key}' in tensorize format ({size_mb:.1f} MB -> {tensors_file})"
+        )
+        return True
+
+    @classmethod
+    def is_model_downloaded(cls, model_key: str, revision: str | None = None) -> bool:
+        """Checks if model snapshot files already exist in local HuggingFace cache.
+
+        Args:
+            model_key (str): Short alias or HuggingFace repo ID.
+            revision (Optional[str]): A pinned commit; None means the registry's pin for the
+                model (ModelMatrixRegistry.pinned_revision), if it has one. Under a pin only
+                that snapshot counts: a cache holding some other revision is not the checkpoint
+                the recipe was measured on.
+
+        Returns:
+            bool: True if the snapshot is non-empty, holds every shard its index names, and no
+            blob of the repository is still being written.
+        """
+        if not model_key:
+            return False
+        if ModelMatrixRegistry.get_release_source(model_key) is not None:
+            from dreamference.hardware.release_asset_downloader import ReleaseAssetDownloader
+
+            return ReleaseAssetDownloader.is_present(model_key)
+        repo_id = ModelMatrixRegistry.resolve_hf_repo(model_key)
+        if not repo_id or "/" not in repo_id:
+            return False
+        folder_name = "models--" + repo_id.replace("/", "--")
+        cache_dir = cls.get_hf_cache_dir() / folder_name / "snapshots"
+        revision = revision or ModelMatrixRegistry.pinned_revision(model_key)
+        blobs = cache_dir.parent / "blobs"
+        # `<blob>.<id>.incomplete` is a blob still being fetched, unless that blob has since landed.
+        if any(
+            not (blobs / part.name.split(".")[0]).exists() for part in blobs.glob("*.incomplete")
+        ):
+            return False
+        if revision:
+            return cls._snapshot_complete(cache_dir / revision)
+        return cache_dir.is_dir() and any(cls._snapshot_complete(s) for s in cache_dir.iterdir())
+
+    @classmethod
+    def _snapshot_complete(cls, snapshot: Path) -> bool:
+        """Whether a snapshot holds a whole checkpoint, as far as the files in it tell.
+
+        Args:
+            snapshot (Path): A snapshot folder in the hub cache.
+
+        Returns:
+            bool: True if it is non-empty and every shard a `*.index.json` names is present.
+        """
+        if not snapshot.is_dir() or not any(snapshot.iterdir()):
+            return False
+        for index in snapshot.glob("*.index.json"):
+            try:
+                weight_map = json.loads(index.read_text()).get("weight_map", {})
+            except (OSError, ValueError, AttributeError):
+                return False
+            if not all((snapshot / shard).is_file() for shard in set(weight_map.values())):
+                return False
+        return True
+
+    @classmethod
+    def download_model(
+        cls,
+        model_key: str,
+        hf_token: str | None = None,
+        auto_tensorize: bool = False,
+        revision: str | None = None,
+    ) -> bool:
+        """Pre-downloads HuggingFace model weights into local cache and optionally converts to tensorize format.
+
+        Args:
+            model_key (str): Short alias or HuggingFace repo ID.
+            hf_token (Optional[str]): Optional HuggingFace access token.
+            auto_tensorize (bool): If True, convert to tensorize format after download.
+            revision (Optional[str]): Commit to fetch; None fetches the registry's pin for the
+                model or drafter (ModelMatrixRegistry.pinned_revision), and the Hub's default
+                branch only for a model no recipe pins.
+
+        Returns:
+            bool: True if weights are present or successfully downloaded.
+        """
+        repo_id = ModelMatrixRegistry.resolve_hf_repo(model_key) if model_key else ""
+        if not repo_id:
+            raise ValueError(
+                f"Unable to resolve model '{model_key}' to a valid HuggingFace repository ID."
+                if model_key
+                else "model_key cannot be None or empty. Please specify a model to download."
+            )
+        if ModelMatrixRegistry.get_release_source(model_key) is not None:
+            # Hosted as release assets, not on the Hub: fetched by URL, checked against SHA-256 pins.
+            from dreamference.hardware.release_asset_downloader import ReleaseAssetDownloader
+
+            return ReleaseAssetDownloader.ensure(model_key)
+        revision = revision or ModelMatrixRegistry.pinned_revision(model_key)
+
+        success = False
+
+        # Check cache FIRST before any downloads
+        if cls.is_model_downloaded(model_key, revision):
+            cache_size = cls._get_cache_size(model_key)
+            print(f"✅ Model '{model_key}' ({repo_id}) found in local cache ({cache_size}).")
+            success = True
+        else:
+            at = f" at {revision[:12]}" if revision else ""
+            print(f"📥 Pre-downloading HuggingFace weights for '{model_key}' ({repo_id}){at}...")
+            token_val = hf_token or os.getenv("HF_TOKEN") or os.getenv("DREAMFERENCE_HF_TOKEN")
+
+            # 1. Attempt python huggingface_hub snapshot_download
+            try:
+                from huggingface_hub import snapshot_download
+
+                snapshot_download(repo_id=repo_id, token=token_val, revision=revision)
+                cache_size = cls._get_cache_size(model_key)
+                print(f"✅ Successfully pre-downloaded {repo_id} ({cache_size})")
+                success = True
+            except ImportError:
+                pass
+            except Exception as e:
+                print(f"⚠️ HuggingFace snapshot_download note: {e}")
+
+            # 2. Attempt CLI fallback
+            if not success and shutil.which("huggingface-cli"):
+                cmd = ["huggingface-cli", "download", repo_id]
+                if revision:
+                    cmd.extend(["--revision", revision])
+                # In the environment, not as `--token`: arguments are readable by every user (ps).
+                env = {**os.environ, "HF_TOKEN": token_val} if token_val else None
+                res = subprocess.run(cmd, env=env)
+                if res.returncode == 0:
+                    cache_size = cls._get_cache_size(model_key)
+                    print(
+                        f"✅ Successfully pre-downloaded {repo_id} via huggingface-cli ({cache_size})"
+                    )
+                    success = True
+
+        if success and auto_tensorize:
+            cls.tensorize_model(
+                model_key, hf_token=hf_token
+            )  # best-effort; continues even if tensorizer missing
+
+        if not success:
+            print(
+                f"💡 vLLM will attempt to fetch '{repo_id}' during initialization (cache-first mode)."
+            )
+        return success
+
+    @classmethod
+    def download_with_drafter(
+        cls, model_key: str, hf_token: str | None = None, auto_tensorize: bool = False
+    ) -> bool:
+        """Fetches a model and the drafter its recipe speculates against, each at its pin.
+
+        What `server start` would fetch before a load, so a model fetched ahead of time
+        (`model download`, `init`) is the one served and nothing is fetched at start. The
+        engine assets of the model's default engine come along (download_companions).
+
+        Args:
+            model_key (str): Short alias or HuggingFace repo ID.
+            hf_token (str | None): Optional HuggingFace access token.
+            auto_tensorize (bool): Convert the model (never the drafter, 1-2 GiB, named by
+                repository) to tensorize format after the download.
+
+        Returns:
+            bool: True if all of them are present afterwards.
+        """
+        ok = cls.download_model(model_key, hf_token=hf_token, auto_tensorize=auto_tensorize)
+        return cls.download_companions(model_key, hf_token=hf_token) and ok
+
+    @classmethod
+    def download_companions(
+        cls, model_key: str, hf_token: str | None = None, engine: str | None = None
+    ) -> bool:
+        """Fetches what the model's recipe serves beside the checkpoint, each at its pin.
+
+        The drafter its speculative_config names and the engine assets its engine reads
+        (ModelMatrixRegistry.get_engine_assets), never tensorized. A release-hosted one comes from
+        its release assets, checked against its SHA-256 pins (ReleaseAssetDownloader).
+
+        Args:
+            model_key (str): Short alias or HuggingFace repo ID.
+            hf_token (str | None): Optional HuggingFace access token.
+            engine (str | None): The engine whose recipe is served; None for the model's default.
+
+        Returns:
+            bool: True when every companion is present afterwards (or there are none).
+        """
+        overrides = ModelMatrixRegistry.get_launch_overrides(model_key, engine)
+        speculative = overrides.get("speculative_config") or {}
+        wanted: list[tuple[str, str | None]] = []
+        if speculative.get("model"):
+            wanted.append((str(speculative["model"]), speculative.get("revision") or None))
+        for asset in ModelMatrixRegistry.get_engine_assets(model_key, engine):
+            wanted.append((asset["repo"], asset.get("revision") or None))
+        ok = True
+        for repo, revision in wanted:
+            ok = (
+                cls.download_model(repo, hf_token=hf_token, auto_tensorize=False, revision=revision)
+                and ok
+            )
+        return ok
+
+    @classmethod
+    def _get_cache_size(cls, model_key: str) -> str:
+        """Gets human-readable size of cached model.
+
+        Args:
+            model_key (str): Model key to check.
+
+        Returns:
+            str: Human-readable size (e.g., "12.5 GB").
+        """
+        try:
+            repo_id = ModelMatrixRegistry.resolve_hf_repo(model_key)
+            if not repo_id:
+                return "unknown size"
+            folder_name = "models--" + repo_id.replace("/", "--")
+            cache_dir = cls.get_hf_cache_dir() / folder_name
+            if not cache_dir.exists():
+                return "0 B"
+
+            # Snapshots are links into blobs/: count each blob once.
+            total_size: float = sum(
+                f.stat().st_size for f in cache_dir.rglob("*") if f.is_file() and not f.is_symlink()
+            )
+            for unit in ["B", "KB", "MB", "GB"]:
+                if total_size < 1024:
+                    return f"{total_size:.1f} {unit}"
+                total_size /= 1024
+            return f"{total_size:.1f} TB"
+        except Exception:
+            return "unknown size"
+
+    @classmethod
+    def download_all_models(
+        cls, hf_token: str | None = None, auto_tensorize: bool = False
+    ) -> dict[str, bool]:
+        """Pre-downloads all qualified GB10 models in the matrix.
+
+        Args:
+            hf_token (Optional[str]): Optional HuggingFace access token.
+            auto_tensorize (bool): If True, convert models to tensorize format after download.
+
+        Returns:
+            Dict[str, bool]: Dictionary mapping model keys to download success flags.
+        """
+        results: dict[str, bool] = {}
+        print("🚀 Pre-downloading all qualified NVIDIA GB10 LLM & Draft models...")
+        for key, spec in ModelMatrixRegistry.MATRIX.items():
+            if spec.compatible_gb10 and ModelMatrixRegistry.is_offered(key):
+                results[key] = cls.download_model(
+                    key, hf_token=hf_token, auto_tensorize=auto_tensorize
+                )
+        return results
+
+    @classmethod
+    def clear_cache(cls) -> bool:
+        """Clears the HuggingFace hub (downloaded weights) and the tensorizer cache.
+
+        Only those two directories. Their parents hold other things: `~/.cache/huggingface` keeps
+        the HuggingFace login token, and `~/.cache/dreamference` keeps the ragon build cache and
+        vLLM's compile cache, which take many minutes to rebuild. This used to delete both parents.
+
+        Returns:
+            bool: True if both directories are gone afterwards.
+        """
+        cleared = all(
+            [
+                cls._remove_cache_dir(cls.get_hf_cache_dir()),
+                cls._remove_cache_dir(cls.get_tensorizer_cache_dir()),
+            ]
+        )
+        if cleared:
+            print("✅ Model cache cleared.")
+        return cleared
+
+    @classmethod
+    def clear_tensorizer_cache(cls) -> bool:
+        """Clears only the tensorizer cache (`~/.cache/dreamference/tensorizer`).
+
+        Not its parent, which also holds the ragon build cache and vLLM's compile cache; this
+        used to delete the whole of `~/.cache/dreamference`.
+
+        Returns:
+            bool: True if the directory is gone afterwards.
+        """
+        cleared = cls._remove_cache_dir(cls.get_tensorizer_cache_dir())
+        if cleared:
+            print("✅ Tensorizer cache cleared.")
+        return cleared
+
+    @classmethod
+    def _remove_cache_dir(cls, cache_dir: Path) -> bool:
+        """Removes one cache directory and says whether that worked.
+
+        Containers write parts of these caches as root, and `rmtree` cannot remove those as the
+        user; reporting success anyway would leave gigabytes behind with a green tick.
+
+        Args:
+            cache_dir (Path): The directory to remove.
+
+        A directory kept on another disk through a link is emptied and the link kept: `rmtree`
+        refuses a link, and with `ignore_errors` it would say nothing.
+
+        Returns:
+            bool: True if the directory no longer exists (or, behind a link, is empty).
+        """
+        if not cache_dir.exists():
+            print(f"ℹ️  Cache directory not found: {cache_dir}")
+            return True
+        print(f"🗑️  Clearing cache: {cache_dir}")
+        if cache_dir.is_symlink():
+            if cls._empty_dir(cache_dir):
+                return True
+        else:
+            shutil.rmtree(cache_dir, ignore_errors=True)
+        if cache_dir.exists():
+            print(
+                f"⚠️  Some files in {cache_dir} could not be removed (written as root by a container)."
+            )
+            # `rm -rf` on a link removes the link alone and leaves the files.
+            if cache_dir.is_symlink():
+                command = f"sudo find {shlex.quote(f'{cache_dir}/')} -mindepth 1 -delete"
+            else:
+                command = f"sudo rm -rf {shlex.quote(str(cache_dir))}"
+            print(f"💡 Remove them with: {command}")
+            return False
+        return True
+
+    @classmethod
+    def _empty_dir(cls, directory: Path) -> bool:
+        """Removes what a directory holds and keeps the directory.
+
+        Args:
+            directory (Path): The directory (or a link to it) to empty.
+
+        Returns:
+            bool: True if it is empty now.
+        """
+        for entry in directory.iterdir():
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                with contextlib.suppress(OSError):
+                    entry.unlink()
+        return not any(directory.iterdir())

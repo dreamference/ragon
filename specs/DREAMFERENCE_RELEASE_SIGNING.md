@@ -1,0 +1,193 @@
+# Signed releases
+
+*Built on `release/signing`, closing finding 8 of
+[DREAMFERENCE_SECURITY_REVIEW.md](./DREAMFERENCE_SECURITY_REVIEW.md); merged into
+`main`. The signing key lives in the `release` environment, which only `main` and
+`release/*` can use; no approval is asked (§4).*
+
+## 1. What it protects against
+
+Before this, a release's checksum files were published by the same job, in the same release, as
+the files they checked. They caught a corrupted download. They did not catch a replaced one: anyone
+who could write release assets could replace a binary and its checksum line together. That covers
+a leaked token with `contents: write`, a compromised workflow run, and someone who takes over an
+old repository name.
+
+Two things are added:
+
+1. **A signature.** `SHA256SUMS` lists every file the release carries. The release job signs it
+   with an Ed25519 key, and `ragon update` and `install.sh` refuse to install from a release whose
+   signature is missing or does not verify against the public key built into them.
+   Someone who can write release assets but does not hold the key cannot make a release a client
+   will install.
+2. **Build provenance.** Every file, `SHA256SUMS` and its signature included, gets a GitHub
+   artifact attestation (`actions/attest-build-provenance`). The attestation records which
+   workflow, commit and run built the file, and Sigstore's transparency log keeps a record of it.
+   A person can check it with `gh attestation verify` (§6). The installers do not check
+   attestations: that would need `gh` or a Sigstore client on every machine.
+
+## 2. The chain of trust
+
+```
+release key (Ed25519, private half: the RELEASE_SIGNING_KEY secret and one offline copy)
+  └─ SHA256SUMS.sig      ssh-keygen -Y sign -n ragon-release
+       └─ SHA256SUMS     sha256 of every release file:
+            ├─ ragon-<target>.sha256sums ─┬─ ragon-<target>.gz
+            │                            ├─ codex-code-mode-host-<target>.gz
+            │                            └─ ragon-search / ragon-fetch / ragon-code-<target>.gz
+            ├─ dreamference-<version>-py3-none-any.whl
+            ├─ install.sh, the desktop bundles
+            └─ release-key-transition.pub(.sig), during a key rotation (§5)
+```
+
+One signature covers everything, because each file is listed by a file that is signed or that a
+signed file lists. Both clients check the per-target sums file against `SHA256SUMS` before
+trusting any line in it. This is the step that stops someone from replacing the binaries together
+with their sums file (a test does exactly that).
+
+## 3. The format: OpenSSH signatures, and why not `openssl`
+
+The signature is OpenSSH's file-signature format (SSHSIG; `PROTOCOL.sshsig` in OpenSSH), made with
+`ssh-keygen -Y sign` and checked with `ssh-keygen -Y verify`. The key is an ordinary
+`ssh-ed25519` key.
+
+`openssl pkeyutl -verify -rawin` was the first suggestion. It works on Linux with OpenSSL 3, but
+`/usr/bin/openssl` on macOS is LibreSSL, and LibreSSL's `pkeyutl` does not (to our knowledge) do
+Ed25519. This was not tried on a Mac here. The installer would then need a second code path for
+macOS, or a tool the user has to install (minisign, signify, gpg). Python's standard library has no
+Ed25519 either.
+
+`ssh-keygen -Y` is in OpenSSH 8.1 (2019) and later. Every current Linux distribution ships it, and
+so does macOS, both as part of the base system. Windows 11 ships it as the optional OpenSSH Client
+feature. That gives one tool, one format and one command on all three systems. The costs:
+
+- **The installer needs `ssh-keygen`.** A minimal container image may not have it. install.sh then
+  stops and names the package (`openssh-client`) instead of skipping the check. There is no
+  opt-out: an opt-out a user can be talked into setting is the attack.
+- **OpenSSH older than 8.1 cannot verify.** Ubuntu 18.04 (7.6) and the OpenSSH that shipped in
+  Windows 10 (7.7) are too old. Ubuntu 20.04 and later, Debian 11 and later, and Windows 11 are
+  fine.
+- **The armored format has to be parsed in Rust.** `ragon update` does not shell out. It reads the
+  SSHSIG blob itself (`ragon-rs/src/release_signature.rs`, about 200 lines) and verifies it with
+  `ed25519-dalek` 2.2, which the Codex workspace already locks. A test checks the parser against a
+  signature made by the real `ssh-keygen` 9.6, not only against signatures the test made itself.
+
+Namespaces keep two kinds of signature apart. `ragon-release` signs checksum files, and
+`ragon-release-key` signs a key transition (§5). A signature made for one is refused as the
+other, by both verifiers.
+
+## 4. Where each piece lives
+
+| Piece | Where |
+|---|---|
+| Private key | `~/.config/dreamference/release-signing/release-ed25519.key` on the maintainer's machine (mode 0600, folder 0700), plus the `release` environment's secret `RELEASE_SIGNING_KEY`. **Keep one copy offline** (a password manager or an encrypted USB key); losing it means a rotation that clients cannot follow (§5) |
+| Public key(s) | `ragon-rs/release-signing.pub`, which `ragon` compiles in (`include_str!`). install.sh repeats the lines in `RELEASE_KEYS`, and a test keeps the two identical |
+| Signing | `.github/workflows/release.yml`, job `release`, step "Write and sign SHA256SUMS". The key is written to a 0600 temporary file only for the `ssh-keygen -Y sign` call. If the secret is missing, the release fails |
+| Self-check | Same step: the job verifies its own signature against `release-signing.pub` (and a transition, if one is present) before publishing. A secret that does not match the published key stops the release, rather than shipping one no client would install |
+| Attestation | Same job, `actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8` (v4.2.2), with `subject-checksums` over every file plus `SHA256SUMS` and its `.sig`. The job has `id-token: write` and `attestations: write`, and no other job does |
+| Verification | `ragon update` (`ragon-rs/src/update.rs`, `release_signature.rs`) `install.sh` and `install.ps1`, which runs Windows 11's own `ssh-keygen.exe` (`-Y verify`) with the same keys, namespaces and branches; its input is the file's handle (`Start-Process -RedirectStandardInput`), since that `ssh-keygen` never sees the end of a pipe |
+
+The current key:
+
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII9boVZe01adX9jSk8Hh/GAJURmqzCznictI3meZX0/i ragon-release-2026-11
+SHA256:jJFz+58pRIsOwhybW+1STmSODE+gA2rz9OnqIsVxukI
+```
+
+**Done (the user's decision):** `RELEASE_SIGNING_KEY` is an **environment secret** of the
+`release` environment, which allows only the branch `main` and requires the maintainer (`dgxcoder`)
+to approve each run; the repository-level secret was deleted. The `release` job declares
+`environment: release`, so a workflow pushed to any other branch cannot read the key, and every
+release waited for an "Approve" click on GitHub before it was signed and published.
+
+**Changed (the user's decision): releases are automatic.** The `release` environment no
+longer has a required reviewer; its branch policy stays (`main` and `release/*`), so the key is
+still out of reach of a workflow pushed to any other branch, but anyone who can push to those
+branches and dispatch the workflow now gets a signed release without a second person's click.
+**A dispatch publishes (the same decision).** The workflow's `draft` input now
+defaults to false, so a run that passes ends in a published release with no hand step: no notes
+pasted, no Publish button. Its description is the text between the first two `---` lines of
+`specs/DREAMFERENCE_RELEASE_<version>.md` (a pre-release names its own file), extracted and
+unwrapped into single lines by `scripts/release_notes.py` (tested in `tests/test_release_notes.py`),
+after the "Mac desktop app (preview, unsigned)" paragraph when a `-preview.dmg` is attached and
+before GitHub's generated "Full Changelog" line. A spec that is missing, or whose description still
+contains `{{TBD` or a `VARIANT` marker, stops a non-draft run in the `validate` job, before any
+build, and again in the `release` job before the release is created. `draft=true` still builds a
+draft to publish by hand; it goes out with GitHub's generated notes alone when the spec is not ready.
+
+## 5. Rotating the key
+
+A rotation is planned in advance and done with the current key. The new key is published with a
+signature by the current key, and every client accepts the new key on the strength of that
+endorsement.
+
+1. Make the new key offline: `ssh-keygen -t ed25519 -N "" -C ragon-release-<yyyy-mm> -f next.key`.
+2. Endorse it with the current key:
+   ```
+   cp next.key.pub ragon-rs/release-key-transition.pub
+   ssh-keygen -Y sign -f ~/.config/dreamference/release-signing/release-ed25519.key \
+       -n ragon-release-key ragon-rs/release-key-transition.pub
+   ```
+   This writes `ragon-rs/release-key-transition.pub.sig`. Commit both files.
+3. Append the new key's line to `ragon-rs/release-signing.pub` and to `RELEASE_KEYS` in install.sh.
+   Keep the old line, because a client built now should trust both.
+4. Replace the secret: `gh secret set RELEASE_SIGNING_KEY --env release -R dreamference/ragon < next.key`.
+   Move `next.key` to the key's folder and its offline copy.
+5. From then on, the release job signs with the new key and attaches the two transition files.
+   An older `ragon`, which knows only the old key, checks that the transition is signed by the old
+   key under `ragon-release-key`, then accepts `SHA256SUMS` signed by the new key. Its next
+   update brings the new key in compiled.
+6. Remove the old key and the transition files only once no supported install could still be
+   relying on them. The files are small, so keep them for a long time. A `ragon` that skipped the
+   whole period has to be reinstalled with install.sh.
+
+**What a rotation does not handle: a stolen key.** A thief can endorse a key of their own, and
+every client that trusts the stolen key follows that endorsement. Revocation needs a channel the
+thief does not control. Publish a release signed by the new key, with no transition, so that
+clients which already updated stop trusting the old key. Announce the change outside GitHub, and
+have everyone else reinstall with install.sh, fetched from the repository at a commit they trust.
+For this reason the private key stays in the secret and on one machine, plus the offline copy, and
+nowhere else.
+
+## 6. Checking a release by hand
+
+```
+gh release download v0.9.0 -R dreamference/ragon -p SHA256SUMS -p SHA256SUMS.sig -p 'ragon-aarch64-*'
+echo 'ragon-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII9boVZe01adX9jSk8Hh/GAJURmqzCznictI3meZX0/i' > allowed_signers
+ssh-keygen -Y verify -f allowed_signers -I ragon-release -n ragon-release -s SHA256SUMS.sig < SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+sha256sum -c --ignore-missing ragon-aarch64-unknown-linux-gnu.sha256sums
+
+# Provenance: built by this repository's release workflow, from which commit
+gh attestation verify ragon-aarch64-unknown-linux-gnu.gz -R dreamference/ragon \
+    --signer-workflow dreamference/ragon/.github/workflows/release.yml
+```
+
+## 7. Unsigned releases
+
+Every release is signed, and no client has a branch for an unsigned one. `ragon update` refuses an
+unsigned release, whatever its tag, with "release vX is not signed … nothing was installed"; it
+only ever installs the latest release. `install.sh` and `install.ps1` verify the signature of every
+release they install, `--version` / `-Version` included, and refuse one without it, because whoever
+can mark a release latest without the key could otherwise give it an old tag. If the signing secret
+is missing, the release job fails before publishing.
+
+## 8. Tests
+
+- `tests/test_release_install.py` runs the real install.sh against the stand-in release server,
+  with session keys made by `ssh-keygen` (the release key's private half is never used in tests).
+  Cases: a signed release installs; an unsigned release is refused, whatever its tag (a version
+  number or `nightly`); a missing
+  `.sig` is refused; `SHA256SUMS` changed after
+  signing fails; a release signed by another key fails; binaries swapped together with their sums
+  file fail against the signed `SHA256SUMS`; a key transition endorsed by the current key installs;
+  a key endorsed only by itself, or endorsed under the checksums namespace, is refused. A further
+  test keeps install.sh's `RELEASE_KEYS` equal to `ragon-rs/release-signing.pub`.
+- `cargo test -p ragon-launcher` (in an export, never in `codex/`):
+  - `release_signature::tests`: a real `ssh-keygen` signature verifies, plus tampered message,
+    unknown key, wrong namespace, garbage, and key transitions accepted and refused.
+  - `update::tests`: signed sums tie the target sums, a swapped target sums file is refused,
+    another key is refused, rotation works, and an unsigned latest release is refused whatever its
+    tag.
+- actionlint was not run: it is not installed here and nothing was installed for this. The
+  workflow was checked as YAML and its `run:` blocks with `bash -n`.

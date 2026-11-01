@@ -1,0 +1,8 @@
+diff --git a/codex-rs/cli/src/main.rs b/codex-rs/cli/src/main.rs
+--- a/codex-rs/cli/src/main.rs
++++ b/codex-rs/cli/src/main.rs
+@@ -1019,2 +1019,4 @@ fn stage_str(stage: Stage) -> &'static str {
+ fn main() -> anyhow::Result<()> {
++    // Ragon: its own ~/.ragon, never upstream's ~/.codex with its ChatGPT login.
++    ragon_launcher::home::use_ragon_home();
+     codex_build_info::initialize!();

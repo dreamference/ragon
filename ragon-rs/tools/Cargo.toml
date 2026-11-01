@@ -1,0 +1,22 @@
+# Presents MCP tools to the local model server as plain function tools, and Code Mode's custom
+# `exec` tool as a function on a server that drops custom tools (patch 0020). Its own crate, with
+# serde and serde_json as its only dependencies, because Codex's core calls it and the launcher
+# crate depends on crates that depend on core.
+[package]
+name = "ragon-tools"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "ragon_tools"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
+
+[dev-dependencies]
+# The tests round-trip a stand-in for Codex's item type.
+serde = { workspace = true, features = ["derive"] }

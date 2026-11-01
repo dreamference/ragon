@@ -1,0 +1,192 @@
+# Ragon Code Indexing & Context Engine
+
+> **Version:** 0.9.0
+> **Subject:** AST Extraction, Hybrid Search, SQLite/FTS5 Indexing, Testing
+> **Checked against the code** (`dreamference/context_engine/` and `tests/`: all 110 `test_*.py` files in `tests/` are listed in §6)
+
+---
+
+## Table of Contents
+
+- [1. Code Indexing Pipeline](#1-code-indexing-pipeline)
+- [2. AST Symbol Extraction](#2-ast-symbol-extraction)
+- [3. Hybrid Search](#3-hybrid-search)
+- [4. Cache Behavior](#4-cache-behavior)
+- [5. Known Gaps](#5-known-gaps)
+- [6. Tests Architecture](#6-tests-architecture)
+
+**Who uses this index:**
+- the MCP tool `workspace_search_code` (`ragon-admin mcp`, for JetBrains and VS Code), as the fallback when the workspace is not indexed by `ragon-code` (`CodeIndexSearch`);
+- the web canvas (`ragon-admin web`);
+- `status`, which shows the counts.
+
+The `ragon` agent does **not** use it: it uses `ragon-code` (built in `DREAMFERENCE_RAGON_CODE_INDEX.md`) and searches with `rg`/`ast-grep` through its shell.
+
+---
+
+## 1. Code Indexing Pipeline
+
+### 1.1. Entry Points
+
+- **`ragon-admin init`:** always forces a full re-index (`ContextEngine().index_workspace(force_reindex=True)`) of the current directory.
+- **`ragon-admin index [--dir PATH] [--force]`:** indexes `--dir`, or the current directory. Without `--force`, an existing index is reused (§4).
+
+### 1.2. Steps (`index_workspace`)
+
+1. **Discover files** (`collect_files`):
+   - **In a git repository:** `SafeGit.run(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], …)`, i.e. tracked files plus untracked files git does not ignore (with repository hooks, fsmonitor, `core.gitProxy` and `gpg.ssh.defaultKeyCommand` disabled). Every `.gitignore` applies, nested ones included.
+   - **Submodules are not entered.** They are someone else's code (`codex/` alone is ~8,700 files), and git lists each one as a single directory entry, which the file check drops.
+   - **Outside a repository, or without git:** `os.walk` from the workspace root.
+   - **Both paths skip `IGNORE_DIRS`:** `.git`, `.svn`, `.hg`, `__pycache__`, `.venv`, `venv`, `node_modules`, `.idea`, `.vscode`, `build`, `dist`, `.dreamference`, `target`, `.cargo`.
+   - **Both paths skip `IGNORE_EXTENSIONS`:** `.pyc .pyo .so .o .a .exe .dll .dylib .png .jpg .jpeg .gif .ico .pdf .zip .tar .gz`.
+   - **Symlinks are skipped.**
+   - **A file is skipped if it is larger than `MAX_FILE_BYTES` (1 MiB), or has a NUL byte in its first 8 KiB (binary).** Everything else is decoded as UTF-8, with errors ignored.
+   - **Why:** until recently discovery was the walk alone, with no size cap. On this repository it collected 11,565 files and 2.3 GB, 2.2 GB of it a Tauri `target/`, against 223 files and 2.4 MB now. Holding that beside a resident vLLM pushed the host under earlyoom's 5% line, and earlyoom killed vLLM's EngineCore. `ragon-admin mcp` indexes on its first query, so any workspace with a Rust build tree was exposed.
+2. **Reset the database:** it clears `files`, `symbols` and `fts_context`.
+3. **Parse in parallel:** `ProcessPoolExecutor(max_workers=max(1, min(8, cpu_count, files // 32 + 1)))`. The pool is sized to the work, because each worker is a fork of a parent that has imported torch. Results are consumed as they arrive, inside the pool's `with`. Each worker reads the file, tokenizes it (`TFIDFCalculator.tokenize`), and extracts symbols from **`.py` files only** (`ASTSymbolExtractor`).
+4. **Persist to `.dreamference/context.db`:**
+   - `files(rel_path PRIMARY KEY, abs_path, size_bytes)`;
+   - `symbols(name, symbol_type, file_path, line_start, line_end, signature, docstring)`;
+   - `fts_context`, an FTS5 table with `rel_path UNINDEXED, content` (the full file text);
+   - every connection sets `PRAGMA mmap_size = 2147483648` (2 GB).
+5. **TF-IDF:** `TFIDFCalculator.compute_matrix` builds an IDF table and a per-token TF-IDF map. It uses one `Counter` per document; until recently it scanned every document's token list once per token, which is quadratic.
+6. **Embeddings:** `EmbeddingCalculator.compute_embeddings` encodes each file with sentence-transformers `nomic-ai/nomic-embed-text-v1.5`, one vector per file. The model loads with `trust_remote_code`, so it is fetched at a pinned commit (`EMBEDDING_REVISION`), and so is the modeling code its config takes from `nomic-ai/nomic-bert-2048` (`EMBEDDING_CODE_REVISION`, passed as `code_revision`).
+   - The model is loaded with `trust_remote_code=True`; vectors are normalised and 768-dim.
+   - **Input:** each text is prefixed `search_document: ` and truncated to its first `MAX_SEQUENCE_TOKENS` (1,024) tokens. Texts are encoded in batches of 8.
+   - **Device:** the model runs on the **CPU** (`EMBEDDING_DEVICE`). With vLLM resident, CUDA refuses even this model (out of memory, although the host has gigabytes free), and a failed attempt leaves a CUDA context in unified memory.
+   - **Memory:** at nomic's full 8,192 tokens and a batch of 32, attention memory alone runs to gigabytes. The vectors are kept in memory and written to `embeddings(rel_path PRIMARY KEY, vector BLOB)` as float32 bytes, replacing the previous run's rows. A plain table, not sqlite-vec: search scores the vectors in Python, so nothing needs the extension. If the model cannot be loaded, this step stores nothing and indexing continues (§5).
+7. **Save** `.dreamference/context_index.json`, holding the symbols, the file metadata and the TF-IDF tables (`idf_table`, `tf_idf_index`).
+
+**Memory budget.** Beside a resident vLLM the host has about 10–13 GB available, and earlyoom sends SIGTERM at 5% (about 6 GB). An index run therefore has roughly 4 GB to work with. Measured on this repository with vLLM serving:
+- 223 files in 1 min 47 s;
+- available memory never below 10.8 GB;
+- peak RSS 2.1 GB;
+- no earlyoom action.
+
+---
+
+## 2. AST Symbol Extraction
+
+`ASTSymbolExtractor.extract_python_ast` walks the whole `ast` tree of each `.py` file:
+
+| `symbol_type` | From | `signature` |
+| :--- | :--- | :--- |
+| `class` | `ast.ClassDef` | `class Name` (no bases) |
+| `function` | `ast.FunctionDef`, `ast.AsyncFunctionDef`, including methods | `def name(arg1, arg2)`: positional argument names only, no annotations, defaults or return type |
+
+Each symbol records `name` (unqualified), `file_path`, `line_start`, `line_end` and `docstring`. There is no parent class and no separate method type: methods are `function`s. Files that don't parse yield no symbols, silently. Other languages yield no symbols, but are still tokenized, full-text indexed and embedded.
+
+**Tokenization** (`TFIDFCalculator.tokenize`): it takes `[A-Za-z0-9_]+` runs, splits camelCase (`getUserName` → `get`, `user`, `name`) and snake_case, and lowercases.
+
+---
+
+## 3. Hybrid Search
+
+`search_code(query, top_k=5)`:
+
+1. **FTS5:** the query tokens are joined with `OR` and matched against `fts_context`, taking up to `2 × top_k` rows. Each row adds `2 / (|rank| + 1)` to its file's score.
+2. **TF-IDF:** for each query token, each file's TF-IDF weight is added.
+3. **Dense:** the query is embedded with the `search_query: ` prefix, and every file vector adds `3.0 × max(0, cosine)`. Skipped when there are no file vectors or no model.
+4. The top `top_k` files are returned, sorted by the combined score.
+
+**Result:** a list of `{"rel_path", "score", "symbols": [all symbols in the file], "size_bytes"}`. There are no snippets or matched line ranges: the caller reads the file.
+
+Nomic was trained with those task prefixes and retrieves noticeably worse without them. Originally neither was applied, and no embedding was computed at all: step 6 iterated a one-shot `executor.map` result a second time and got nothing, and the sqlite-vec extension was never loaded, so every `vec_context` write failed silently.
+
+---
+
+## 4. Cache Behavior
+
+- **Without `--force`:** if `context_index.json` exists, `load_index()` restores the symbols, the file metadata and the TF-IDF tables, reads the file vectors back from `embeddings`, and returns the summary immediately. No files are re-read.
+- **A JSON without `tf_idf_index`** was written before the tables were saved, and is treated as absent: it is rebuilt once.
+- **With `--force`**, or when there is no JSON: a full re-index.
+- **Locations:**
+  - `.dreamference/context_index.json`;
+  - `.dreamference/context.db`;
+  - the nomic model in the HF cache (`~/.cache/huggingface/hub/models--nomic-ai--nomic-embed-text-v1.5`).
+- **Loading the model:** it is loaded lazily, on the first embed. At indexing time that is the first index run; at search time it is the first query.
+
+---
+
+## 5. Known Gaps
+
+These are recorded here because the spec used to promise otherwise.
+
+- **Dense search sees only a file's head.** Embeddings cover a file's first 1,024 tokens, so a definition deep in a long file is found by FTS5 and TF-IDF but not by meaning. Chunking files into several vectors would close this.
+- **Not air-gapped by default.** Nothing pre-downloads the nomic model. `init` downloads only the LLM weights, so the first embedding triggers a Hugging Face download. On an offline machine without the model cached, loading fails once, `⚠️ Embedding model … is unavailable` is printed, and indexing and search carry on by keyword only (FTS5 and TF-IDF) for the rest of the process. The same happens silently when `sentence-transformers` is not installed. Pre-fetch the model while online to get the dense signal. (Originally a failed load aborted indexing, and a missing library produced zero vectors that scored every file equally.)
+- **Symbols are Python only.** Rust, TypeScript and the rest get full-text and embedding coverage, but no symbols.
+
+---
+
+## 6. Tests Architecture
+
+- **Runner:** `.venv/bin/python -m pytest tests/ -q`. No GPU, Docker or model server is needed; hardware, subprocess and Docker calls are mocked. Once pytest collects 1,046 tests (655, 521, when 63 were skipped without a model server and the rest took about 25 s). The skips are the live slash-command tests, which need a running model server; with one, the full run takes about 13 minutes.
+- **Style:** `tmp_path` isolation, and no external services except in tests that detect them and skip.
+
+| Test File | Scope |
+| :-------- | :---- |
+| `test_config.py` | `DreamferenceConfig`: four-tier resolution, model pinning, tool-call parser |
+| `test_context_engine.py` | Indexing and search |
+| `test_hardware.py` | GB10 detection, model matrix, downloads |
+| `test_vllm_server.py` | Launch command and recipe layering, host safety, compile-cache reset |
+| `test_diffusion_server.py` | Diffusion sidecar |
+| `test_runner.py` | Agent runners, the Codex hand-off |
+| `test_codex_branded_builder.py` | `ragon` build: patches apply, submodule untouched, build key, size limit |
+| `test_ragon_slash_commands.py` | Every `ragon` slash command and subcommand on a pseudo-terminal (live cases skip without vLLM) |
+| `test_cli_entry_points.py` | `ragon-admin` entry point, no Python `ragon`, strict parsing |
+| `test_mcp_server.py` | MCP tools and IDE state |
+| `test_docker_bridge.py` | The loopback-to-bridge rewrite for containers (OpenHands) |
+| `test_google_service_origin.py` | The Google service accepts posts from its own origin only |
+| `test_gmail_client.py` | `ragon-admin gmail` client |
+| `test_image_search_service.py` | Image search sidecar |
+| `test_image_search_sidecar.py` | `ragon-admin images` and `voice`: the sidecars on `dreamference-sidecars`, and the `image_search` MCP server |
+| `test_desktop.py` | Desktop window (`ragon-app`) install and launch |
+| `test_codex_test_runner.py` | `ragon-admin codex test`: Codex's own tests on the patched export, the skip list |
+| `test_ragon_privacy.py` | No usage analytics or the upstream vendor channels from `ragon` |
+| `test_web_commands.py` | `ragon-search` and `ragon-fetch` are Rust binaries, not console scripts |
+| `test_removed_cave_settings.py` | Old cave-mode config keys/env vars are ignored without breaking config loading (`test_cave_mode.py` was removed with cave mode) |
+| `test_code_index.py` | `ragon-admin code setup`, and `server start` stopping index runs before a load |
+| `test_night_shift.py` | Night Shift's runner, with a scripted stand-in for `ragon` |
+| `test_swe_bench.py` | `ragon-admin swe-bench`, with a stand-in for `docker` and a scripted `ragon exec` |
+| `test_egress_audit.py` | `ragon-admin audit egress`: the strace parser and the verdict, on a recorded trace |
+| `test_airgapped.py` | `/airgapped`: the Python side of the setting, and the default level and the resolver that Python, the launcher and the web commands share |
+| `test_node.py` | The node half of the client/server split: the service file, the node id, the published addresses; nothing writes `/etc` or runs `sudo` |
+| `test_sidecar_network.py` | Sidecars are created on a user-defined network, never Docker's default bridge |
+| `test_cache_clearing.py` | `ragon-admin clear` removes weights only |
+| `test_admin_reference.py` | `docs/admin.md` is generated from the CLI and in step with it |
+| `test_desktop_work.py` | The desktop app's Work window on Electron |
+| `test_desktop_parity.py` | Desktop app parity backlog items and bridge policy conformance |
+| `test_diffusion_switched_off.py` | Diffusion switched off: never started, downloaded or shown; and everything back when the switch is on |
+| `test_docs_index.py` | `ragon-admin docs setup`'s pinned files and the document index's egress verdict (fetches stubbed) |
+| `test_fleet_provision.py` / `test_fleet_hub_fetch.py` | `ragon-admin node provision` (`--model-source copy\|hf`) and `node prepare`, with stand-ins for every machine; any real `ssh`, `scp`, `rsync`, `sudo` or `sg` fails the test |
+| `test_matrix_homeserver.py` | `ragon-admin matrix`, with Docker, systemd, Tailscale and the homeserver replaced |
+| `test_ragon_apps_service.py` | `/apps`'s Python half: scopes per app, the Drive and Calendar reader, the connect page |
+| `test_ragon_prompt.py` | Named system prompts' Python side, the shipped `high-swe` text, Night Shift's pass-through |
+| `test_night_shift_compaction.py` / `test_night_shift_compaction_audit.py` | Night Shift's per-task KV budget, compaction limit and morning compaction audit |
+| `test_night_shift_best_of_n.py` / `test_night_shift_recurring.py` / `test_night_shift_autofill.py` / `test_night_shift_archive.py` / `test_night_probe_services.py` | Night Shift best-of-N and chooser, `night every`, `night autofill`, `night archive` and host probes |
+| `test_refine.py` | Refine mode's setting tiers and the texts the product and the benchmark share |
+| `test_release_install.py` / `test_install_ps1.py` / `test_windows_installer.py` / `test_macos_signing.py` / `test_macos_ci_runner.py` | Installing from a release (`install.sh`, `install.ps1`, Windows/macOS packaging and signing) |
+| `test_release_benchmark.py` / `test_release_dry_run.py` / `test_release_notes.py` / `test_release_on_green.py` | Release benchmark gate, dry-run, release notes generator and release-on-green script |
+| `test_removed_models.py` | A configuration naming a removed model is refused with what to do |
+| `test_sandbox_prerequisite.py` / `test_sandbox_host_sockets.py` | The bubblewrap check every `ragon-admin` run makes, and host control socket masking |
+| `test_skills.py` | What the Python side and the docs must agree on with the launcher's skills |
+| `test_adapters.py` / `test_adapter_signing.py` / `test_adapter_serving.py` / `test_adapters_need_sglang.py` | `ragon-admin adapter`, Ed25519 manifest signing, SGLang LoRA serving and engine fallback |
+| `test_ragon_serve_engine.py` / `test_ragon_serve_dockerfile.py` / `test_sglang_phase_merge.py` / `test_sglang_stream_phase.py` / `test_flash_next_recipe.py` / `test_pinned_revisions.py` / `test_tool_call_canary.py` | `ragon-serve` launch and image, SGLang runtime patches, Flash-Next recipe, pinned revisions and `/v1/responses` canary |
+| `test_model_gate.py` | The loopback model gate, SWE-bench gate hold, `night pause`/`resume` and LRU adapter loading |
+| `test_node_power.py` / `test_node_role_provisioner.py` / `test_wifi_power_save.py` | Smart-plug power cycling, `node provision --role` and Wi-Fi power-save checks |
+| `test_forge.py` / `test_forge_private.py` | `ragon-admin forge`: Forgejo container, mirrors, backups, GitHub mirror and anonymity hook |
+| `test_remote_access.py` / `test_remote_relay_certificate.py` | `ragon-admin remote`: NetBird control plane, CA, Let's Encrypt certificates, relay box and LAN enrolment |
+| `test_claude_plugin.py` / `test_session_monitor.py` | `ragon delegate` and `ragon monitor` (Claude Code plugin MCP servers, watch, lookup, task and ledger) |
+| `test_swe_bench_arm_smoke.py` / `test_swe_bench_best_of.py` / `test_swe_bench_chooser.py` / `test_swe_bench_chooser_v2.py` / `test_swe_bench_fresh.py` / `test_swe_bench_image_cache.py` / `test_swe_bench_multilingual.py` / `test_swe_bench_night_script.py` / `test_swe_bench_shards.py` | SWE-bench arms, best-of-N chooser, fresh task selection, image cache, Multilingual image builder and sharding/merging |
+| `test_code_quality.py` / `test_typing.py` / `test_conftest_guards.py` / `test_safe_git.py` / `test_proxy_bypass.py` / `test_anonymity.py` / `test_as_team.py` / `test_agents_md.py` | Ruff and mypy ratchets, `conftest.py` isolation guards, `SafeGit`, proxy bypass, anonymity check, `as_team.py` and `AGENTS.md` size cap |
+| `test_ask_evals.py` / `test_chat_limits.py` / `test_context_budget_replay.py` / `test_industry_evals.py` / `test_loop_guard_binary.py` / `test_messenger_live.py` / `test_searxng_settings.py` / `test_sync_egress_audit.py` / `test_telegram_mini_app.py` / `test_turn_end_compaction_bench.py` / `test_website.py` | Ask/industry/messenger evals, chat limits, loop-guard corpus, SearXNG settings, `ragon sync` egress audit, Telegram Mini App, compaction bench and website checks |
+
+The Rust launcher has its own unit tests, run in the build export with `cargo test --release -p ragon-launcher` (`DREAMFERENCE_RAGON_CODEX.md`); `ragon-web-rs/`, `ragon-code-rs/` and `ragon-docs-rs/` are tested with `cargo test --locked` in their own directories, and the member crates (`ragon-signal`, `ragon-chat`, `ragon-web-server`, `ragon-apps`, `ragon-skills`, `ragon-delegate`, `ragon-monitor`, `ragon-sync`, `ragon-safegit`, `ragon-loop-guard`) with `cargo test -p <crate>` in the export; the Electron app and the UI with `vitest` in `desktop/electron/` and `desktop/ui/`.
+
+---
+
+## See Also
+
+- **[DREAMFERENCE_RAGON_CODE_INDEX.md](./DREAMFERENCE_RAGON_CODE_INDEX.md):** the code index for `ragon` (`ragon-code`, implemented)
+- **[DREAMFERENCE_AGENTS.md](./DREAMFERENCE_AGENTS.md):** agent integration
+- **[DREAMFERENCE_CODEBASE.md](./DREAMFERENCE_CODEBASE.md):** source layout

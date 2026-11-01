@@ -1,0 +1,126 @@
+# The Ragon launcher: what used to be Dreamference's Python `ragon` entry point, compiled into the
+# branded Codex binary. It is not part of the codex submodule. CodexBrandedBuilder copies this crate
+# into the exported tree as `codex-rs/ragon`; patch 0002 adds one dependency line to the CLI's
+# manifest (a path dependency inside the workspace root makes it a member automatically) and one
+# call in `cli_main`. It builds against the workspace's own dependency versions.
+[package]
+name = "ragon-launcher"
+version.workspace = true
+edition.workspace = true
+license = "AGPL-3.0-or-later"
+
+[lib]
+name = "ragon_launcher"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+# Release signatures: SHA256SUMS.sig is checked before `ragon update` installs anything
+# (src/release_signature.rs).
+base64 = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+codex-extension-api = { workspace = true }
+codex-models-manager = { workspace = true }
+# Codex's compaction prompt, which summary_cap.rs bounds in length.
+codex-prompts = { workspace = true }
+codex-utils-home-dir = { workspace = true }
+ed25519-dalek = { workspace = true }
+flate2 = { workspace = true }
+# The loop guard wraps Codex's response stream (src/loop_guard.rs).
+futures = { workspace = true, features = ["std"] }
+# Pure-Rust mDNS browsing, one code path on Linux, macOS and Windows; no async runtime, no logging.
+mdns-sd = { version = "0.21.4", default-features = false }
+ragon-airgapped = { path = "airgapped" }
+# Host-side git with the program-running config keys turned off (src/*.rs that run git in a checkout).
+ragon-safegit = { path = "safegit" }
+# The loop guard's detector: three checks on streamed text (src/loop_guard.rs).
+ragon-loop-guard = { path = "loop-guard" }
+# Ragon's apps for `/apps` (patch 0022) and as MCP tools (src/apps.rs).
+ragon-apps = { path = "apps" }
+# Observation masking: the rule Codex's core calls (patch 0021); the launcher sets its policy.
+ragon-masking = { path = "masking" }
+ragon-node-locator = { path = "node-locator" }
+# Code Mode's `exec` as a function on a server that drops custom tools: the launcher sets the
+# choice, Codex's core translates (patch 0020; src/exec_tool.rs).
+ragon-tools = { path = "tools" }
+# Skills from other agents: the on-disk half, testable without the Codex workspace (src/skills.rs).
+ragon-skills = { path = "skills" }
+# `ragon monitor`: the session monitor, plain code over the agents' transcripts (src/monitor.rs).
+ragon-monitor = { path = "monitor" }
+# `ragon delegate`: the Claude Code delegation plugin server and CLI (src/delegate.rs).
+ragon-delegate = { path = "delegate" }
+rand = { workspace = true }
+# The guards' rules on commands and last messages (src/guard.rs).
+regex-lite = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+semver = { workspace = true }
+serde_json = { workspace = true }
+# Claude Code's agent files: their YAML frontmatter (src/compat_agents.rs).
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+
+# Build OpenSSL from source on glibc Linux, as upstream does only for musl, so building ragon needs
+# no libssl-dev. Cargo unifies features across the build, so enabling `vendored` here applies to the
+# openssl-sys every other crate links -- which is what keeps this out of a patch to codex-core.
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+openssl-sys = { workspace = true, features = ["vendored"] }
+
+# `/node` ignores Ctrl-C while its child has the terminal (src/node_command.rs).
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+# `ragon web`: the web server, a crate of its own so its tests run without the Codex workspace
+# (src/web.rs). Unix only: it reaches the app-server over a Unix socket; Windows has no `ragon web` yet.
+ragon-web-server = { path = "web" }
+# `ragon chat`: the messenger bridge, a client of `ragon web` (src/chat.rs). Unix only, for the same reason.
+ragon-chat = { path = "chat" }
+# `ragon sync`: the sync agent and its commands (src/sync.rs); the hub is a module of `ragon web`.
+# Unix only, for the same reason.
+ragon-sync = { path = "sync" }
+
+# `ragon signal`: Ragon over Signal (src/signal.rs). The same crate also builds the small
+# `ragon-signal` binary the bridge's system account runs from /usr/local/lib/ragon; the launcher
+# routes the user's commands to it. Linux only: the bridge is a system unit.
+[target.'cfg(target_os = "linux")'.dependencies]
+ragon-signal = { path = "signal" }
+
+# Windows: whether the process that wrote an air-gap seal is still running (src/airgapped.rs), and
+# the sandbox let into a service window station over SSH (src/winsta.rs); the same windows-sys
+# release the Codex workspace already builds.
+[target.'cfg(windows)'.dependencies]
+# `ragon uninstall` (src/uninstall.rs) takes its folder out of the user's Path in the registry and
+# tells running programs.
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Registry",
+    "Win32_System_StationsAndDesktops",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# Whether the elevated sandbox is set up, asked exactly as Codex asks it (src/airgapped.rs).
+codex-windows-sandbox = { workspace = true }
+# `ragon audit egress`: the ETW real-time trace (src/audit.rs; WINDOWS_ARM §14).
+ferrisetw = "1.2"
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+# The loop guard's tests run its stream to the end without a runtime.
+futures = { workspace = true, features = ["executor"] }
+# Codex's own hook types, to check the trust hashes the launcher computes (refine.rs's tests).
+codex-config = { workspace = true }
+# How Codex resolves its session-flags layer's path, the source of a `-c` hook's trust key.
+codex-utils-absolute-path = { workspace = true }
+# Codex's own parser of agent role files, to check the ones compat_agents.rs writes.
+codex-agent-roles = { workspace = true }
+# A custom profile's sandbox, decided exactly as Codex decides it (src/airgapped.rs's tests, patch 0019).
+codex-protocol = { workspace = true }
+codex-sandboxing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tar = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+zip = { workspace = true }

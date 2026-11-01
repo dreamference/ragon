@@ -1,0 +1,186 @@
+"""What a browse of the local network returns, from the node's side
+(specs/DREAMFERENCE_RAGON_NODE.md §5): `ragon-admin node status` shows it so the owner sees what
+clients see. Clients themselves browse with the launcher's own code, not with this.
+
+Each machine is kept once, at the address that is easiest to reach: IPv4 first, then an IPv6
+address with no scope, then a link-local IPv6 address, which is given its interface (`fe80::1%eth0`)
+because without one neither ssh nor a socket can use it (once `node add` passed a bare
+`fe80::…` to ssh, which answered "Invalid argument"). The launcher ranks the same way
+(`ragon-rs/src/node.rs`, `usable_addresses`), and drops link-local addresses altogether, because a
+URL there cannot carry the scope.
+"""
+
+import ipaddress
+import re
+import shutil
+import subprocess
+from typing import Final
+
+from dreamference.node.node_service_file import SERVICE_TYPE
+
+# What NVIDIA's first-boot wizard publishes on every finished unit (FLEET §3, §9.1).
+SSH_SERVICE_TYPE: Final[str] = "_ssh._tcp"
+
+# What avahi-browse itself says about a service; a TXT record with one of these keys is ignored.
+BASE_FIELDS: Final[frozenset[str]] = frozenset({"interface", "name", "host", "address", "port"})
+
+# Host names a GB10 is shipped with: DGX Spark, ASUS Ascent GX10, HP ZGX.
+GB10_NAMES: Final[re.Pattern] = re.compile(r"^(spark|gx10|zgx)-", re.IGNORECASE)
+
+
+class NodeBrowser:
+    """Browses `_ragon-node._tcp` through Avahi's own tool."""
+
+    @classmethod
+    def parse(cls, output: str, service_type: str = SERVICE_TYPE) -> list[dict[str, str]]:
+        """Reads `avahi-browse -rtp` output.
+
+        Args:
+            output: The tool's parseable output.
+            service_type: The service to keep (`_ragon-node._tcp` unless told otherwise).
+
+        Returns:
+            List[Dict[str, str]]: One entry per node seen on a real network interface, at its best
+            address (see the module's docstring): `name`, `host`, `address`, `port`, `interface`
+            and the TXT records by key. Docker's bridges and container interfaces are left out:
+            Avahi answers on them too, and no client is there.
+        """
+        best: dict[str, dict[str, str]] = {}
+        order: list[str] = []
+        for line in output.splitlines():
+            fields = line.split(";", 9)
+            if len(fields) < 10 or fields[0] != "=" or fields[4] != service_type:
+                continue
+            interface = fields[1]
+            if interface == "lo" or interface.startswith(("docker", "br-", "veth")):
+                continue
+            entry: dict[str, str] = {}
+            for record in fields[9].split('" "'):
+                key, _, value = record.strip('"').partition("=")
+                if key and key not in BASE_FIELDS:  # a TXT record cannot move the node
+                    entry[key] = value
+            # What the browse line says about the node wins over what the node says about itself:
+            # a node's own record cannot name another machine's address or port.
+            entry.update(
+                {
+                    "interface": interface,
+                    "name": fields[3],
+                    "host": fields[6],
+                    "address": cls.scoped(fields[7], interface),
+                    "port": fields[8],
+                }
+            )
+            identity = entry.get("node", entry["name"])
+            if identity not in best:
+                order.append(identity)
+                best[identity] = entry
+            elif cls.rank(entry["address"]) < cls.rank(best[identity]["address"]):
+                best[identity] = entry
+        return [best[identity] for identity in order]
+
+    @classmethod
+    def scoped(cls, address: str, interface: str) -> str:
+        """Args: address: An address as Avahi printed it. interface: The interface it was seen on.
+
+        Returns:
+            str: The address, with `%<interface>` added to a link-local IPv6 one that has no scope.
+        """
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            return address
+        if parsed.version == 6 and parsed.is_link_local and parsed.scope_id is None and interface:
+            return f"{address}%{interface}"
+        return address
+
+    @classmethod
+    def rank(cls, address: str) -> int:
+        """Args: address: An address, possibly with an IPv6 scope.
+
+        Returns:
+            int: 0 for IPv4, 1 for IPv6 that needs no scope, 2 for link-local IPv6, 3 otherwise.
+        """
+        try:
+            parsed = ipaddress.ip_address(address.split("%", 1)[0])
+        except ValueError:
+            return 3
+        if parsed.version == 4:
+            return 0
+        return 2 if parsed.is_link_local else 1
+
+    @classmethod
+    def unprovisioned(cls, match: str | None = None, timeout: int = 6) -> list[dict[str, str]]:
+        """Finds machines `node provision` could set up.
+
+        SSH hosts on the network that are not already advertised as Ragon nodes and whose name
+        looks like a GB10's (FLEET §9.1). Nothing is decided from the name alone: provisioning
+        checks `/etc/dgx-release` first.
+
+        Args:
+            match: A regular expression for names, instead of the GB10 patterns.
+            timeout: Seconds for each browse.
+
+        Returns:
+            List[Dict[str, str]]: One entry per host (`name`, `host`, `address`, `port`).
+        """
+        pattern = re.compile(match, re.IGNORECASE) if match else GB10_NAMES
+        advertised = cls.browse(timeout=timeout)
+        nodes = {entry.get("host", "").lower() for entry in advertised}
+        nodes |= {entry.get("name", "").lower() for entry in advertised}
+        found: list[dict[str, str]] = []
+        seen = set()
+        for entry in cls.browse_service(SSH_SERVICE_TYPE, timeout=timeout):
+            host = entry["host"].lower()
+            short = host.split(".")[0]
+            if host in nodes or short in nodes or entry["name"].lower() in nodes:
+                continue
+            if not (pattern.search(short) or pattern.search(entry["name"])) or short in seen:
+                continue
+            seen.add(short)
+            found.append(entry)
+        return found
+
+    @classmethod
+    def browse_service(cls, service_type: str, timeout: int = 6) -> list[dict[str, str]]:
+        """Args: service_type: The DNS-SD service to browse. timeout: Seconds to allow the tool.
+
+        Returns:
+            List[Dict[str, str]]: See `parse`; empty when `avahi-browse` is missing or times out.
+        """
+        if not shutil.which("avahi-browse"):
+            return []
+        try:
+            result = subprocess.run(
+                ["avahi-browse", "-rtp", service_type],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        return cls.parse(result.stdout, service_type)
+
+    @classmethod
+    def browse(cls, timeout: int = 6) -> list[dict[str, str]]:
+        """Browses the network once.
+
+        Args:
+            timeout: Seconds to allow the tool.
+
+        Returns:
+            List[Dict[str, str]]: See `parse`; empty when `avahi-browse` is missing or times out.
+        """
+        if not shutil.which("avahi-browse"):
+            return []
+        try:
+            result = subprocess.run(
+                ["avahi-browse", "-rtp", SERVICE_TYPE],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        return cls.parse(result.stdout)

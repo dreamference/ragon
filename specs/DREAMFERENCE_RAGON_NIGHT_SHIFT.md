@@ -1,0 +1,456 @@
+# Ragon Night Shift — `/night`
+
+**Status:** implemented: the launcher module `ragon-rs/src/night.rs`, patch `0018-night-slash-command`, and the runner package `dreamference/night_shift/` with `ragon-admin night {enable,disable,status,run}`. Where the build departs from the design below, §11 says how and why; the measured runs are in §11.4. Since then: `pause`/`resume` (§11.8) and best-of-N (§11.9, merged; three attempts by default) are on `main`.
+**Target:** the `ragon` terminal agent, and the GB10 it runs on overnight.
+**Builds on:**
+- the launcher in `ragon-rs/`;
+- the patch series in `codex-patches/` ([RAGON_CODEX](./DREAMFERENCE_RAGON_CODEX.md));
+- `ragon exec` and its `resume`;
+- git worktrees;
+- `VLLMServerManager.check_host_safety()` ([INFERENCE](./DREAMFERENCE_INFERENCE.md));
+- the admission-control pattern in [RAGON_CODE_INDEX §6.4](./DREAMFERENCE_RAGON_CODE_INDEX.md);
+- the nudge-on-stall loop in `tests/test_ragon_slash_commands.py`.
+
+---
+
+## 1. Goal
+
+You queue coding tasks during the day with `/night add …`, from inside a `ragon` session. Overnight the GB10 works through them:
+- each task runs in its own git worktree, on its own branch;
+- tests run after each task;
+- a report is waiting in the morning;
+- nothing is merged, pushed or rebased.
+
+**Why this fits the machine:**
+- The GB10 is always on, and a token costs nothing.
+- Its weakness is single-stream speed. Decode is limited by memory bandwidth, so a few streams side by side cost little more than one.
+- A cloud agent does the same work on someone else's machine and bills for it.
+
+**Non-goals:**
+- **Merging or pushing:** a branch and a report are the whole output.
+- **Scheduling on other machines.**
+- **Running while you work:** the night run gives way to interactive use (§5.5).
+- **Choosing tasks for you:** the queue holds only what was added explicitly.
+
+---
+
+## 2. The slash command
+
+`/night` is a built-in slash command of the `ragon` TUI. Everything it does is local file work in the queue directory (§4). It never calls the model and never starts a run, so it answers instantly, even while a turn is in progress.
+
+| Form | Effect |
+|---|---|
+| `/night add <task>` | Queues `<task>` for the repository of the current session, at its current `HEAD`. Prints the task id and branch name (`night/<id>`). |
+| `/night add --test "<cmd>" <task>` | As above, with the command that decides pass or fail. Without it, the command is detected (§5.4). |
+| `/night add --best-of N <task>` | As above, attempted `N` times and one attempt chosen (§11.9); the task's own `best_of`, which outranks `[night] best_of`. `N` is a whole number from 1 (`--best-of 1` pins one attempt where the table asks for more). Refused together with `--on <node>`, since a node works a task sent to it once. Options come in any order before the task; `ragon night add` takes the same. |
+| `/night` or `/night list` | Lists this repository's queue: id, status, age, first line of the task. The last line is the next window. |
+| `/night show <id>` | The full task, its status history, and for finished tasks the branch, diff stat, test result and stall notes. |
+| `/night drop <id>` | Cancels a queued or interrupted task. A running task is marked `cancel-requested` and stopped at its next check (§5.3). A unique suffix of the id is enough (`/night drop a3f`). |
+| `/night apply <id>` | Applies `base..night/<id>` to the checkout as uncommitted changes, all or nothing (§11.10); also `ragon night apply <id>`. |
+| `/night report` | The latest morning report (§5.6) for this repository. |
+
+**Rules:**
+- **Needs a git repository.** `add` outside one refuses, saying so.
+- **The work starts from `HEAD`, not the working tree.** If the tree has uncommitted changes, `add` says the night run will not see them, and queues anyway.
+- **The task text is stored verbatim**, together with the model id that was served when it was added (for the report, not to pin a model).
+- **Also available outside the TUI:** the same forms work as `ragon night …`. The launcher handles them before Codex parses its arguments, as it does `ragon app` and `ragon update`, so scripts and cron can queue work.
+- **After a night run:** the next `ragon` start prints one line before the TUI opens, e.g. `Night Shift: 3 done, 1 stalled — /night report`.
+
+---
+
+## 3. How it is built into `ragon`
+
+The Codex source is never edited ([RAGON_CODEX §1](./DREAMFERENCE_RAGON_CODEX.md)), so `/night` is one more hook patch, and all the logic lives in the launcher crate.
+
+**Patch `0018-night-slash-command`**, modelled on `0011-usage-token-stats`, adds to `codex-rs/tui`:
+- the variant `SlashCommand::Night` (strum's kebab-case gives `night`), placed after `Goal` so it sits near the long-running-task commands in the popup;
+- its description, "queue a task for the overnight run";
+- membership in `supports_inline_args()` and `available_during_task()`;
+- one arm in `dispatch_command` and one in `dispatch_command_with_args`. Both call `ragon_launcher::night::command(args, &self.config.cwd)`, which returns the lines to print, and add them with `add_plain_history_lines`, as `/usage` does (and as `/cavemode` did before cave mode was removed);
+- membership in `queued_command_drain_result`'s list of commands that run at once when queued.
+
+`tui` already depends on the launcher crate (patch `0011`), so `0018` needs no manifest change.
+
+**Budget.** When `0018` landed, the patch series was capped at 25,000 bytes (`test_the_patches_stay_small`) and stood at 24,800 bytes after `0017-cave-mode` (removed; the cap is now 64,000 bytes in `tests/test_codex_branded_builder.py`). `0018` was 2,133 bytes (seven hunks in two files; 1,808 bytes today after hunk-header and index-line trimming), so the series was 26,933 bytes and the cap was raised to 27,500 in the same commit, explicitly, as the name hooks and cave mode did.
+- Adding a variant needs an arm in every exhaustive `match` over `SlashCommand`. Across the three files that is about six places, judging by where `Goal` appears.
+- Where `_ =>` defaults already exist, rely on them.
+- If `0018` cannot fit, raise the cap in the same commit and say why. Do not trim the other patches.
+
+**Launcher module `ragon-rs/src/night.rs`:**
+- argument parsing, for the TUI line and for `ragon night …`;
+- queue reads and writes (§4);
+- `git rev-parse` for the repository root and `HEAD` (a linked worktree's root is its main checkout, so a task queued from one is listed with the others);
+- printing the latest report's section for this repository;
+- the startup line.
+
+Test-command detection is not here: it needs the worktree at the task's base, which exists only when the task runs, so the runner does it once (§11.1).
+
+It has no network code and no knowledge of vLLM. Its unit tests run with the other launcher tests in the export directory.
+
+**Tests:**
+- `tests/test_ragon_slash_commands.py` enumerates slash commands from the source, so a visible `/night` gets a case there: `add` then `list` then `drop`, with no model call.
+
+---
+
+## 4. The queue
+
+**Layout.** The queue lives under `$CODEX_HOME/night/`, i.e. `~/.ragon/night/`, one file per task so that concurrent `ragon` sessions never contend:
+
+```
+~/.ragon/night/
+  tasks/<id>.json        one task; written atomically (write + rename)
+  tasks/<id>.lock        flock held for every read-modify-write, by the launcher and the runner alike
+  worktrees/<id>/        the task's git worktree while it exists
+  logs/<id>.jsonl        `ragon exec --json` events of every attempt
+  reports/<date>.md      the morning report
+  runner.lock            flock held by the runner for the whole night
+  seen.json              when each repository's results were last announced at startup
+```
+
+**Task record:**
+
+```json
+{
+  "id": "20261101-2141-a3f",
+  "repo": "/home/user/ragon",
+  "base": "5484992…",
+  "branch": "night/20261101-2141-a3f",
+  "task": "Add type hints to dreamference/hardware/model_spec.py",
+  "test": null,
+  "on": null,
+  "best_of": null,
+  "model_at_add": "Intel/Qwen3.5-122B-A10B-int4-AutoRound",
+  "status": "queued",
+  "history": [{"at": "2020-09-29T21:41:07+01:00", "status": "queued"}],
+  "attempts": 0,
+  "result": null
+}
+```
+
+**Statuses:**
+
+| Status | Meaning |
+|---|---|
+| `queued` | Waiting for a night run. |
+| `running` | A night run is working on it. |
+| `done` | Finished, with changes and test results. |
+| `no-change` | Finished, but made no changes. |
+| `stalled` | Still no action after the nudges (§5.3). |
+| `failed` | An error prevented the run. |
+| `interrupted` | Cut off by the end of the window; kept for the next night. |
+| `cancel-requested` | Dropped while running; the runner stops it at its next step and writes `cancelled`. A runner status never overwrites it. |
+| `cancelled` | Dropped. |
+
+**Ordering:** tasks run first in, first out within a repository. Across repositories they round-robin, so one long list cannot starve another.
+
+---
+
+## 5. The night run
+
+### 5.1. Trigger
+
+**Enabling.** `ragon-admin night enable --window 01:00-07:00` installs a systemd **user** timer and service, `ragon-night.{timer,service}`, which run `ragon-admin night run` at the window's start. `night disable` removes them, and `night status` shows the timer, the window and the queue across repositories.
+
+**Where the pieces live.** The runner is Python, in `ragon-admin`, because host safety, vLLM health and the memory checks already live there. The slash command and the queue format belong to the launcher, and the runner reads the same JSON files.
+
+### 5.2. Admission
+
+The runner takes `runner.lock` and then checks, in order, stopping with a reason in the report at the first failure:
+1. **vLLM is healthy** at the configured host. The runner never starts or stops the model server.
+2. **The host is safe:** `check_host_safety()` passes, and MemAvailable is at least 8 GiB, which leaves room above earlyoom's 5% line.
+3. **Nothing else heavy is running:**
+   - the ragon build lock (`CodexBrandedBuilder`'s flock) is free;
+   - no `ragon-admin index` is running;
+   - no model load is in progress.
+4. **Nobody is working interactively:**
+   - no `ragon` TUI process is running outside the night run;
+   - vLLM has had no running request for 10 minutes (`vllm:num_requests_running` on `/metrics`).
+
+**Parallelism.** `N = min(night.max_parallel (default 3), floor(KV pool tokens / max_model_len))`. The KV pool comes from `/metrics` (`vllm:cache_config_info`: `num_gpu_blocks × block_size`), and `max_model_len` from `/v1/models`.
+- **Why not the 8-sequence setting:** today's default has room for about three full 32k contexts before preemption. The one `CUBLAS_STATUS_INTERNAL_ERROR` crash came with two requests running and the KV cache at 92%.
+
+### 5.3. One task
+
+1. **Worktree.** `git worktree add ~/.ragon/night/worktrees/<id> -b night/<id> <base>`. If the base commit is gone, the task is marked `failed`.
+2. **Run.** `ragon exec -C <worktree> -s workspace-write --json -o <last-message> "<prompt>"`, inside a transient systemd user scope:
+   - `MemoryMax=8G` and `MemorySwapMax=0`, so a runaway test build is killed without reaching vLLM;
+   - `CPUQuota=400%`, so the test commands of several tasks cannot starve vLLM's host threads.
+
+   The prompt is the task text plus a fixed preamble: work only in this repository, make the change rather than describing it, run the test command, and end by listing the files changed.
+3. **Stall check.** Once `exec` returns, `git status --porcelain` in the worktree decides. With no change, and a last message that announces work ("I'll now…", "Next I will…"):
+   - the runner nudges with `ragon exec resume <session> "Go ahead and make the change now."`;
+   - it nudges at most twice;
+   - if there is still no change, the task is `stalled`, and its log is kept.
+
+   This is the failure the live `/init` tests showed twice.
+4. **Limits.** A task is stopped after `night.task_timeout` (default 90 minutes), or at the window's end:
+   - SIGTERM, then SIGKILL after 30 s;
+   - it is marked `interrupted`, and its worktree and branch are kept, so the next night resumes the recorded session rather than starting over.
+5. **Tests.** The test command runs in the worktree under the same scope, with its own timeout (default 20 minutes). The exit code and the last 200 lines are recorded.
+6. **Commit.**
+   - **With changes:** they are committed on `night/<id>` as `night: <first line of task>`, using the repository's configured git identity and no tool attribution line. The worktree is then removed and the branch kept.
+   - **With no changes:** the task is `no-change` and the branch is deleted.
+7. **Cancellation.** Before each step the runner rereads the task record, so `cancel-requested` takes effect at the next step.
+
+### 5.4. Test command detection
+
+The first match wins, and the report says which one was chosen:
+1. the task's `--test`;
+2. `night.test` in the repository's `dreamference.toml`;
+3. `pyproject.toml`, `pytest.ini` or `setup.py` (this repository has only the last) with a `tests/` directory: `python -m pytest -q`, using the repository's `.venv/bin/python` if present;
+4. `Cargo.toml`: `cargo test`;
+5. `package.json` with a `test` script: `npm test`;
+6. otherwise none, and the report says the result is untested.
+
+### 5.5. Stopping for interactive use
+
+The runner stops starting new tasks when a `ragon` TUI starts or an outside request reaches vLLM. Running tasks finish their current attempt. The same check decides whether the next task may start.
+
+### 5.6. The morning report
+
+`reports/<date>.md` has one section per repository and one row per task. Each row gives:
+- the status;
+- the branch;
+- `git diff --stat base..branch`;
+- the test command and its result;
+- the number of attempts and nudges;
+- the wall time;
+- for `stalled`, `failed` and `interrupted` tasks, the last message.
+
+It ends with the review commands (`git diff <base>..night/<id>`, `git worktree list`) and a note of anything the admission checks skipped.
+
+---
+
+## 6. Safety
+
+1. **Only the night branch is written.**
+   - Nothing touches the user's checkout: the agent's sandbox allows writes only inside its worktree and `/tmp`.
+   - The runner's own git commands name the worktree explicitly.
+   - Nothing is merged, pushed or rebased.
+   - **Nothing the agent wrote runs with the user's rights.** The runner's own test run executes the task's test command, and with it the agent's code, so it goes through the agent's sandbox too (`ragon sandbox`, workspace-write): writes reach the worktree and `/tmp` only, and the network follows the task's `/airgapped` level (§11.1). Originally it ran as a plain `bash -c` inside the memory-capped scope. What still runs outside the sandbox is the runner's own code: its `git add`, `git worktree` and branch commands, all with `core.hooksPath=/dev/null`, and the index refresh, which has its own bubblewrap sandbox. The commit runs in the sandbox (owner's decision): hooks stay allowed, and they are files the agent could write, so `git commit` runs through `ragon sandbox` with the task's level, scope and writable roots (the worktree and one scratch folder), in a scratch repository that borrows the repository's objects and config; it leaves a bundle, which the host copies without following a link, unbundles with no hook and accepts only as one commit on the branch's head (`commit_in_sandbox`, 300 s of its own). A task from another node commits on the host with no hook, as a node job does. `[night] test_sandbox = false` switches the test sandbox off, for the user to choose (§7).
+2. **The model server is never at risk.**
+   - It is never loaded, restarted or stopped by the runner.
+   - Every task runs under a memory cap, and admission requires headroom.
+   - While the runner holds its lock, `ragon-admin index`, `codex build` and `server start` refuse to run, with a message naming the night run. Now the lock file records who holds it (`NightShiftQueue.runner_lock(holder=…)`), because a SWE-bench run takes the same lock ([RAGON_SWE_BENCH §5.5](./DREAMFERENCE_RAGON_SWE_BENCH.md)), and the refusal names that holder. This is the rule that today's earlyoom kill of vLLM (an index run beside the server) made explicit.
+3. **Interactive use wins** (§5.5).
+4. **Network.** The night run uses the same channels as an interactive session. Once `/airgapped` exists, a night run follows the configured level, and `[night] airgapped` may set a stricter one ([RAGON_AIRGAPPED §7](./DREAMFERENCE_RAGON_AIRGAPPED.md)); this replaces the earlier plan to put night runs in the egress airlock by default.
+
+---
+
+## 7. Configuration
+
+In the `night` table of `dreamference.toml`, resolved like every other setting ([CLI](./DREAMFERENCE_CLI.md)):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `window` | `01:00-07:00` | When the timer may run. |
+| `max_parallel` | `3` | Upper bound on concurrent tasks; the KV pool may lower it (§5.2). |
+| `task_timeout` | `90m` | Per-task wall clock, nudges included. |
+| `test_timeout` | `20m` | Per test run. |
+| `task_memory` | `8G` | `MemoryMax` of each task's scope. |
+| `nudges` | `2` | Nudges before `stalled`. |
+| `best_of` | `3` | Attempts per task, chosen among by chooser v1 (§11.9); `1` is a single attempt, as earlier. A task's own `best_of` key outranks it. |
+| `test` | *(detected)* | Default test command for the repository. |
+| `test_sandbox` | `true` | Run the test command in the agent's sandbox (§6, §11.1). `false` runs it with the user's rights, for a test command that must reach Docker or write outside the worktree; at `/airgapped on` the tests are then not run at all, because nothing would keep them off the network. Read from the user's configuration, never from the worktree. |
+| `airgapped` | *(none)* | A stricter `/airgapped` level for night runs alone ([RAGON_AIRGAPPED §7](./DREAMFERENCE_RAGON_AIRGAPPED.md)); a looser one than the configured level is ignored (§11.1). |
+| `prompt` | *(none)* | The system prompt each task's `ragon exec` starts with, passed as `DREAMFERENCE_RAGON_PROMPT` ([RAGON_PROMPT §7](./DREAMFERENCE_RAGON_PROMPT.md)): `high-swe`, or any installed prompt. Absent: the configured one (`default` unless `ragon_prompt` says otherwise). A task resumed on a later night keeps the prompt its session started with. |
+| `refine` | *(absent)* | Refine mode for night tasks ([RAGON_REFINE §5.3](./DREAMFERENCE_RAGON_REFINE.md)): `true` studies each new task in a session of its own first, puts the worktree back, and gives the task the refined description and a fresh `task_timeout` (within the window). Absent: the configured `ragon_refine` (off by default). A task resumed on a later night is not studied again. |
+| `refine_version` | *(absent)* | Which texts refine mode uses for night tasks: `"v1"` (the measured ones) or `"v2"` ([RAGON_REFINE §10](./DREAMFERENCE_RAGON_REFINE.md)). Absent: the configured `ragon_refine_version` (`v1` by default). The task's result records it (`refine.version`), and the report line names a v2 study. |
+| `task_context` | `65536` | The smallest KV budget a concurrent task may be given; the run splits the pool between as many tasks as can each get this much (§11.1). |
+| `compact_at` | *(absent)* | Each task's compaction limit, passed to every `ragon exec` of the task (`-c model_auto_compact_token_limit=<n>`). Absent: the task's share of the KV pool (§11.1), which is what holds the tasks of a night to the pool together. A number: that limit, and only as many tasks at once as fit at it. `0`: no limit is passed, the launcher's own (60% of the pool) applies, and nothing holds the tasks to the pool. |
+| `idle_minutes` | `10` | How long the model must have been idle before a night starts (§5.2). |
+| `index` | `true` | Refresh each repository's code index before its tasks start (§11.1). |
+| `index_timeout` | `20m` | The most one repository's refresh may take; never more than half of what is left of the window. |
+| `nodes` | `paired` | Other nodes' model servers a run may also use, as extra lanes ([RAGON_NODE §12.3](./DREAMFERENCE_RAGON_NODE.md)): every paired node serving the same model by default, `none`, or a list of node names. |
+| `compaction_audit` | `true` | Before the queue, audit the compactions of the sessions written since the last run for what their summaries lost, by rule and with no model call, into the report's `## Compactions` section; an empty queue still gets a report when there is something to say ([COMPACTION §12.2](./DREAMFERENCE_RAGON_COMPACTION.md)). |
+| `autofill` | `false` | Before reading the queue on a non-benchmark night, queue up to `autofill_max` bounded tasks from failing CI tests on `main`, failing desktop QA checks, the open Windows QA issue, and unchecked spec boxes / `TODO:` lines (`night_shift_autofill.py`, §11.11). |
+| `autofill_max` | `5` | Maximum tasks autofill queues per night (`1` to `5`). |
+| `autofill_repo` | *(this checkout)* | Repository checkout where autofill runs `ragon night add`. |
+
+---
+
+## 8. Tests
+
+- **Launcher unit tests:**
+  - argument parsing for every `/night` form;
+  - atomic queue writes;
+  - id generation;
+  - repository and `HEAD` resolution;
+  - uncommitted-change warning;
+  - test detection;
+  - report formatting.
+- **Python unit tests for the runner:** a fake `ragon` binary scripted to change files, to stall, to stall and then act after a nudge, or to hang. Each admission check is tested separately, as are cancellation, `interrupted` and resume, and parallelism from a mocked `/metrics`.
+- **Live test (skips without a server):** a throwaway repository with one failing test, one task, a window of "now". Expected results:
+  - a `night/<id>` branch whose test passes;
+  - the report row;
+  - the user checkout's `git status` unchanged;
+  - earlyoom's journal free of kills during the run.
+- **Slash suite:** `/night add`, `/night list`, `/night drop` in the TUI.
+
+---
+
+## 9. Acceptance criteria
+
+- **Speed:** `/night add` returns in under 100 ms and makes no model request.
+- **One night on this repository** with three tasks:
+  - produces a branch or an honest status for each;
+  - writes a report;
+  - leaves the working tree, `main` and `origin` untouched.
+- **Safety:** vLLM stays up through the night, and earlyoom logs no kill.
+- **Stalls:** a scripted announce-only reply is caught and nudged, then marked `stalled` if it never acts.
+- **Patch size:** `0018` fits the patch budget (§3), or the budget change is explicit.
+
+---
+
+## 10. Open questions
+
+- **Waiting on vLLM:** should admission wait, rather than skip, when vLLM is down at window start? For now it skips and reports.
+- **Tasks needing input:** Codex's own `/goal` mode already frames long-running work. Should a night task be a goal, so that a question the agent would ask is recorded in the report instead of ending the turn? That needs measuring against the stall check.
+- **Drafter tuning:** it needs vLLM stopped ([SELF_SPEEDING §5](./DREAMFERENCE_SELF_SPEEDING.md)), so the two cannot overlap. The proposal is that tuning takes the tail of the window, only after the night queue is empty.
+
+---
+
+## 11. As built
+
+### 11.1 Departures from the design, each for a measured reason
+
+- **Parallelism uses a per-task budget, not the full context, and the budget is enforced.** §5.2's formula, `floor(KV pool / max_model_len)`, gives **0** on the default model: SGLang's pool is 156,907 tokens (`sglang:max_total_num_tokens`; 144,870 before the server's restart) and the served context is 262,144, so not even one full context fits. A night run instead divides 90% of the pool between as many tasks as can each get `task_context` (default 65,536): `N = max(1, min(max_parallel, floor(0.9 × pool / task_context)))`, and gives each task `min(0.9 × pool / N, 60% of the pool)` as the compaction limit of every `ragon exec` it runs (`NightShiftHost.task_budget`). So `N × limit ≤ 0.9 × pool`: the tasks fit in the pool together, which until recently was assumed and not checked; three tasks with the launcher's own 94,144-token limit could ask for 282K of a 157K pool. Today that is **2 tasks of 70,608 tokens**. The 10% left over is for Codex compacting after the turn that crosses the limit, not before it. `task_context` was 49,152 until then; enforced as a compaction limit, that size cost the task in the compaction measurement (an hour without finishing its own tests, where the same task with no limit passed in 14-18 minutes and peaked at 49,241 and 79,909 tokens), so the floor was raised to 65,536. Whether 70,608 costs anything is unmeasured: on that task the 80K run would compact about once. With the pool unknown, one task runs at a time. `[night] compact_at` overrides the limit (and the parallelism follows it), and `compact_at = 0` restores the old, unenforced behaviour; the report's first note says which applied. The pool is read under both engines' names: `sglang:max_total_num_tokens`, or `num_gpu_blocks × block_size` from `vllm:cache_config_info`.
+- **Idle is a counter, not a gauge.** "No running request for 10 minutes" cannot be read from a gauge sampled once. The runner samples `/metrics` every 30 s and requires the running and queued gauges (`sglang:num_running_reqs` + `sglang:num_queue_reqs`, or `vllm:num_requests_running` + `vllm:num_requests_waiting`) to be zero **and** the prompt-token counter (`sglang:prompt_tokens_total` / `vllm:prompt_tokens_total`) unchanged for `idle_minutes`. If the window closes first, the night is skipped and the report says so.
+- **"An outside request" is defined.** Once night tasks are running, requests are expected. An outside request is one beyond the night's own: the engine's running plus queued requests exceed the number of night tasks currently waiting on the model. A `ragon` TUI is found by process: the installed binary (also one a build has since replaced, whose `/proc/<pid>/exe` reads `<path> (deleted)`), `argv[0]` `ragon` or `codex` (not Codex's sandbox re-executions), no non-interactive subcommand (`NON_INTERACTIVE`, which includes the servers no person runs, such as `apps serve`, the desktop app's Gmail search, alive as long as its window; read in the subcommand's place only, after the options and their values, so `ragon -C docs` is a session), and not carrying `RAGON_NIGHT_RUN=1`, which the runner sets on every process it starts.
+- **Memory is admitted per task, not once.** Before each start: `MemAvailable` minus what the running tasks may still grow into (`task_memory` minus each scope's `MemoryCurrent`) must be at least the 8 GiB reserve plus one more `task_memory`. The night-wide check of §5.2 still runs first.
+- **Test detection lives in the runner only**, in the worktree at the task's base, so there is one implementation; `/night add` says the command is detected when the task runs, and the report and `/night show` print the command and where it came from. A worktree has no `.venv` of its own, so the main checkout's is used for pytest.
+- **The model id recorded at `add`** comes from `$CODEX_HOME/model_catalog.json` (`models[0].slug`), which the launcher writes at every start: the launcher module has no network code.
+- **The window shown by `/night list`** is the installed timer's (`night enable` writes it on a `# Night Shift window:` line of the timer unit), falling back to `[night] window` with a note that Night Shift is not enabled.
+- **The timer's service names everything absolutely.** A user service has neither `~/.local/bin` nor the virtualenv on its PATH: `ExecStart` is this environment's `ragon-admin`, `PATH` adds `~/.local/bin` (for `ragon-search`/`ragon-fetch`) and `~/.cargo/bin`, and the runner runs the installed `ragon` by path. `night enable` warns when lingering is off, because a user timer stops at logout.
+- **Every `ragon exec` is told the model server** the night was admitted against (`DREAMFERENCE_VLLM_HOST`),: the launcher otherwise looks for a Ragon node, which from a worktree could mean a browse of the network ([RAGON_NODE §18.2](./DREAMFERENCE_RAGON_NODE.md)). On a machine that is not a node, `/night add` is refused: nothing there would run the task.
+- **Every `ragon exec` gets `stdin` from `/dev/null`.** Without it, exec prints "Reading additional input from stdin..." and, under a service with no terminal, waits.
+- **Every `ragon exec` writes the worktree only** (`-c sandbox_workspace_write.writable_roots=[]`). A local task runs with the user's `CODEX_HOME`, and the launcher makes `~/.ragon/skills` writable when the config names no `writable_roots`: a task could plant a skill that every later session of the user's reads. The same reason as the test run's policy below; roots the user listed in the config are dropped for night tasks too.
+- **Each task's processes run under `choom -n 500`** inside the scope, so that if memory runs out anyway earlyoom picks them before the model server.
+- **`ragon-admin night run --ignore-open-sessions`** skips the TUI check (requests from open sessions still pause the run). It exists for testing beside an open session; the timer never passes it.
+- **The runner's test run is sandboxed, with a policy the runner fixes**. The command is `ragon sandbox -c 'sandbox_mode="workspace-write"' -c 'sandbox_workspace_write.writable_roots=[]' -c 'sandbox_workspace_write.network_access=<true|false>' -- bash -c <test>`, run with the worktree as its working directory inside the task's scope. Three things were found by running it:
+  - `-C <dir>` is refused without `--permission-profile`, so the working directory is the process's own;
+  - the user's `~/.ragon/config.toml` lists `~/.ragon/skills` as writable (the skill installer needs it), and a test run that inherited that could leave instructions behind for every later session, so `writable_roots` is set to empty: only the `/airgapped` level comes from outside the runner;
+  - Codex's sandbox helper applies `/airgapped` to `ragon sandbox` as it does to the agent's commands (patch `0019`; `DREAMFERENCE_RAGON_AIRGAPPED=on` with `network_access` left true still had no network), so at `on` the seal is applied twice.
+  The cost is the agent's own: a test command that writes outside the worktree and `/tmp`, needs the Docker socket, or needs Cargo or npm to download into `$HOME` fails in the sandbox with "Read-only file system", exactly as it did when the agent ran it. `[night] test_sandbox = false` is the way out, and the report names the sandbox beside each test result.
+- **A task's `/airgapped` level is fixed once, before the agent runs.** It is the strictest of: the level resolved as the launcher resolves it for the worktree (session file, `DREAMFERENCE_RAGON_AIRGAPPED`, then the configuration files), the main checkout's `dreamference.toml` (usually untracked, so the worktree has no copy and the sandbox helper alone would not see it), `[night] airgapped`, and the level an earlier night recorded for the task. The runner records it on the task and sets `DREAMFERENCE_RAGON_AIRGAPPED` to it for every command of the task, each `ragon exec` and the test run. Read again before the test run, it would be whatever the agent had by then written into the worktree's `dreamference.toml`.
+- **The code index is refreshed before the tasks start** ([CODE_INDEX §6.3](./DREAMFERENCE_RAGON_CODE_INDEX.md)). After admission and before the first task, the runner calls `ragon-code index --exact --wait` once per repository with queued tasks, so tasks begin with a fresh index and the executing indexers (Rust, Java, .NET, in a trusted repository) run when nobody is waiting. `ragon-code` admits and sandboxes its own runs. The outcome is a note of the morning report (`Code index of <repo>: 7 ok, 1 deferred (…)`). A refresh that passes `index_timeout` is stopped, and with it **every** scope of `ragon-index.slice`: admission refuses to start a night while an index scope is live, so whatever is in the slice then is the night's own. Without an installed `ragon-code` nothing runs and nothing is said.
+- **A night task's `ragon exec` also starts `ragon-code session`.** It maps the worktree onto the main checkout's index (code-index spec §4.1), and that index's session lock lets one session process own the repository, so parallel tasks do not each start an index run.
+
+### 11.2 Where the code is
+
+| Piece | Path |
+|---|---|
+| `/night`, `ragon night …`, startup line | `ragon-rs/src/night.rs` |
+| TUI hooks | `codex-patches/0018-night-slash-command.patch` |
+| Queue (shared format, per-task locks, `runner.lock`) | `dreamference/night_shift/night_shift_queue.py` |
+| Settings (`[night]`) | `dreamference/night_shift/night_shift_settings.py` |
+| Host probes (model server, memory, sessions, heavy jobs) | `dreamference/night_shift/night_shift_host.py` |
+| One task (worktree, exec, nudges, tests, commit) | `dreamference/night_shift/night_shift_task_run.py` |
+| Admission and scheduling | `dreamference/night_shift/night_shift_runner.py` |
+| Morning report | `dreamference/night_shift/night_shift_report.py` |
+| Timer | `dreamference/night_shift/night_shift_scheduler.py` |
+| Code index refresh before the tasks | `dreamference/night_shift/night_shift_index.py` |
+| Best-of-N attempts and chooser v1 | `dreamference/night_shift/night_shift_best_of_n.py`, `night_shift_chooser.py`, `chooser_candidate.py` |
+| Repeating tasks (`ragon-admin night every`) | `dreamference/night_shift/night_shift_recurring.py` |
+| Archive (`ragon-admin night archive`) | `dreamference/night_shift/night_shift_archive.py`, `archive_outcome.py` |
+| Autofill (`ragon-admin night autofill`) | `dreamference/night_shift/night_shift_autofill.py`, `autofill_candidate.py` |
+| Remote node hand-off and replica lanes | `dreamference/night_shift/night_shift_remote.py` |
+| Compaction summary audit | `dreamference/night_shift/night_shift_compaction_audit.py` |
+| Phone bridge endpoints (`/api/night/*`) | `ragon-rs/web/src/night_phone.rs` |
+| Refusals during a night run | `DreamferenceCLIController._refuse_during_night_run` (`index`, `codex build`, `server start`) |
+
+### 11.3 Tests
+
+- **Launcher** (`cargo test -p ragon-launcher` in the export): parsing of every `/night` form and of `ragon night …`; add, list, show and drop round trip, drop by id suffix, drop of a running task; uncommitted-change warning; refusal outside a repository; a linked worktree's tasks belong to the main checkout; 200 ids without a collision; the report section and the newest report; the startup line announced once; the window from the timer, then the config.
+- **Runner** (`tests/test_night_shift.py`, a scripted stand-in for `ragon`): a change committed on `night/<id>` with the user's checkout untouched; a failing test recorded; an announce-only reply nudged twice and then `stalled`; a nudge that works; `no-change`; an exec error; an interrupted task keeping its worktree and resuming its session the next time; cancellation before a start and while running; a vanished base; test detection in its order; metrics under both engines' names; parallelism never 0; TUI command lines; each admission check on its own; the idle wait counted from the last change; the window closing while waiting; round-robin; an outside request or session blocking a start; memory blocking a start; the test run sent through `ragon sandbox` with the runner's fixed policy and the task's session; no network for it at `/airgapped on`; the level fixed before the agent runs, so an agent that rewrites the worktree's config cannot loosen it, and kept by a resumed task; the main checkout's untracked level reaching its tasks; the launcher's resolution order; unsandboxed tests as an explicit choice, refused at `on`; a whole night of three tasks with its report; a refused admission keeping the queue; the index refresh (once per repository, before the first task; off; not installed; half the remaining window); a second runner refused; `codex build` refused while a night run holds the lock; the queue format shared with the launcher; the timer units; the report's rows.
+- **Not covered by the slash suite.** `tests/test_ragon_slash_commands.py` enumerates the slash commands of unpatched Codex, so a command a patch adds is invisible to it, as `/cavemode` was (before cave mode was removed). `/night` was checked in the TUI itself instead, driven through tmux (§11.4).
+- **Codex's own TUI snapshots** that list the slash-command popup change again with `/night` in it, as they did with `/cavemode`; they need new snapshots reviewed by hand.
+
+### 11.4 Measured runs
+
+One task, run for real against the default model (Qwen3.8-27B on SGLang), with the rebuilt `ragon` (16 patches):
+
+- **Queued from a shell.** In a throwaway repository (`calc.py` whose `add` subtracts, one failing test), `ragon night add "The test tests/test_calc.py::test_add fails. Find the bug in calc.py and fix it."` printed the id, the branch and the not-enabled note; `ragon night list` showed it `queued`; an unknown verb printed the usage line and exited 2.
+- **Run.** `ragon-admin night run --minutes 20 --idle-minutes 1`: admission passed (model answering, host-safety checks, memory, no heavy job, one idle minute), parallelism 3. The task took 7 s: `running` at 18:42:36, `done` at 18:42:43, no nudge. The whole command took 1 min 15 s, one minute of it the idle wait.
+- **Result.** Branch `night/20261101-1841-4fc`, one commit by the repository's own git identity, `return a - b` → `return a + b`; detected test command `python3 -m pytest -q`, passed (2 tests). The checkout stayed on `master` at its commit, the worktree was removed, and `ragon night show`, `ragon night report` and the report file agreed.
+- **Found and fixed.** The commit also carried `__pycache__/*.pyc`, which the test run had written in a repository with no `.gitignore`. The runner now stages the agent's changes *before* its own test run and commits what was staged; a test covers it. This removes only what the runner's test run writes: the agent is told to run the test command too, and what its own commands leave in a repository without a `.gitignore` is still committed with its changes.
+- **Not run live:** a stall and its nudges, an interrupted task resumed on a second night, two tasks in parallel, and the installed timer firing at 01:00. The second and third ran (below); a stall has still not been provoked live, and the timer has not yet fired.
+- **In the TUI** (a real `ragon` session in tmux, same repository): `/nig` shows `/night  queue a task for the overnight run` in the popup; `/night list`, `/night add --test "python3 -m pytest -q" …`, `/night show 4fc` (id suffix) and `/night report` each print at once, with no model turn; the quoted `--test` command is recorded verbatim.
+- **Closed: the runner's test run is sandboxed.** It used to execute the task's test command, and so code the agent wrote, with the user's full rights. Measured through the real path (`_prepare_worktree` and `_run_tests`, the real scope and binary, a probe as the test command):
+
+  | The test command tried to | `/airgapped off` | `/airgapped on` |
+  |---|---|---|
+  | write in the worktree | written | written |
+  | write in `/tmp` | written | written |
+  | write beside the worktree, in the user's checkout, in its `.git` | refused | refused |
+  | write in the home folder, `~/.ragon/skills`, beside `~/.bashrc` | refused | refused |
+  | reach the internet (`https://example.com`) | 200 | no connection |
+  | reach the model server | 200 | no connection |
+
+  The probe's exit status (7) came back as the test result, and a test run cut off by `test_timeout` (6 s against `sleep 987`) left no process behind. `on` gave the same result whether it came from the environment variable or only from the main checkout's untracked `dreamference.toml`. One task then ran end to end against the model in 35 s: the agent fixed `calc.py`, the sandboxed `python3 -m pytest -q` passed, including a test that passes only if the home folder cannot be written, and the fix was committed on its branch. This repository's own tests pass inside the sandbox (57 of 57 in the two files tried) once `tests/conftest.py` stopped following the `CODEX_HOME` that `ragon` exports to every command.
+- **Not run:** `cargo test` and `npm test` inside the sandbox. A Rust test run needs its crates already in `~/.cargo/registry`, and `npm test` needs `node_modules` in the worktree, which a fresh worktree does not have.
+
+**Resumed and parallel, run for real** against the default model, the 11:59 `ragon` build (17 patches), three throwaway repositories with a neutral git identity:
+
+- **The night run gives way, as designed.** Three other tasks kept the model server busy all day (6 to 8 running and 2 to 20 queued requests). Unmodified, `night run` first refused because a `ragon` session was open, and with `--ignore-open-sessions` waited out its two-minute window ("the model was in use until the window closed"). To exercise the rest, the runs below used the real `NightShiftRunner` with one change, made in a driver script and not in the code: the host's metrics read the running gauge and the prompt-token counter as idle. Admission, host safety, memory, scopes, the sandboxed test run, commits and the report were the shipped code.
+- **Interrupted, then resumed, then finished.** One task asked for a twelve-function module with three tests per function. Night 1 (`--minutes 2`): `interrupted` at the window's end after one command, worktree and branch kept, session id recorded. Night 2 (`--minutes 40`): the code-index refresh waited 19 min 54 s (another task's index run held the host-wide index lock while waiting for an idle model), then the task restarted as `ragon exec … resume <the same session> "This task was cut off by the end of last night's window. Continue it where you left off and finish it."` with `-c model_auto_compact_token_limit=49152`. In 20 minutes it wrote `textstats.py` and its tests (13 passing) and was `interrupted` again, the work left uncommitted in the kept worktree; the stream once hit "idle timeout waiting for SSE" with 20 requests queued. Night 3: `done` in 16 min 4 s, one commit (3 files, +319), the sandboxed `python3 -m pytest -q` passed 42 tests, worktree removed.
+- **Parallel, and the memory gate.** Night 3 also ran two one-line tasks in two other repositories (`max_parallel` 3, parallelism 3 from the KV pool). Two started together at 13:42:18. The third waited: with about 27 GiB available and two tasks' 8 GiB allowances outstanding, 11.6 to 11.8 GiB was left against the 16 needed, and it started at 13:43:34, when the first finished. All three `done`; the report listed each with its branch, diff and sandboxed test result.
+- **Found and fixed:** the report noted that one wait eight times in a minute, because the free-memory figure in the reason changed on every poll. A wait is now noted once per kind of reason (`reason_kind`), with a test.
+- **Found, not fixed** (the code index's area): each task's systemd scope outlived its task, holding a `ragon-code supervise` process that the agent's session had started to index the worktree and that was still waiting for the index lock. The scopes used about 1 MiB each and were stopped by hand. Until `ragon-code session` takes its supervisor down with it, a night leaves one such scope per task.
+- **Index refresh as a cost.** With another index run holding the lock, the refresh before tasks spent its whole budget (half the remaining window, capped at `index_timeout`) waiting. On a shared machine `[night] index = false` saves that wait; the runs above that needed it used it after the refresh had been exercised once.
+- **Not provoked:** a stall and its nudges. No task announced work without doing it.
+
+### 11.5 Several nodes
+
+Two additions from [RAGON_NODE §18.8](./DREAMFERENCE_RAGON_NODE.md), both inactive on a machine with no paired node:
+- **Replica lanes.** A paired node serving the same model is a second model server for the run (`[night] nodes`, default `"paired"`). Tasks still run here; each lane holds as many as its own KV pool allows, and an open `ragon` session here holds up this machine's lane only. The report says which tasks used another node's server.
+- **`/night add --on <node>`.** The task is handed to that node at night, worked by that node's own runner against its own model inside the job sandbox, and its branch is fetched back; meanwhile it is `sent` here. Waiting for it does not hold the runner lock.
+
+
+### 11.6 The sandbox from the timer
+
+Every task is a sandboxed `ragon exec` and its tests run under `ragon sandbox`, and on Ubuntu 24.04 (`kernel.apparmor_restrict_unprivileged_userns=1`) `bwrap` is refused a user namespace from a systemd unit unless an AppArmor profile allows it, so until recently a run started by the timer would have had every sandboxed command fail on this machine; runs by hand had passed only because their shells inherited the PyCharm snap's AppArmor label. `SandboxPrerequisite` (`vllm_server/sandbox_prerequisite.py`, SETUP §3.3) now checks `bwrap` from a throwaway user unit on every `ragon-admin` run: `night run` and `night enable` are refused while it fails and nobody is at a terminal (the timer), or while the user has chosen "turn off" (which also removes the timer, remembered in `~/.config/dreamference/sandbox.json`). `ragon-admin host setup` installs the profile (`/etc/apparmor.d/ragon-bwrap`); it was loaded on this machine, after which `bwrap` and `ragon sandbox -- true` succeed from a unit. A night run started by the timer with the profile in place has not yet been watched.
+
+### 11.7 Busy app servers and `ragon web`
+
+An app server is not an interactive session by its command line, so an idle desktop window or web UI left open never holds a night back. While a turn runs, its client keeps a marker named after the server's pid in `$CODEX_HOME/night/busy/`: the desktop app for its Work window's `ragon app-server` (`desktop/electron/src/bridge.ts`), and `ragon web serve` itself for every tab's Ask and Work turns (`ragon-rs/web/src/server.rs`, the threads that are running, as JSON). `NightShiftHost.busy_app_server_pids()` counts a marker whose pid is alive and is the installed `ragon` (which `ragon web serve` is; a server started before a build replaced it still counts) or a bundled `ragon` running `app-server`; any other marker was left by a client killed hard, or names a reused pid, and is deleted. A running turn in either counts as an open session (§5.5), so the run waits for it.
+
+
+### 11.8 `night pause` and `resume`
+
+The two commands belong to SWE-bench, not to the night queue: while a SWE-bench run holds the model gate it refuses every request that is not the run's, and `ragon-admin night pause [--for DURATION]` (default one hour) lets them through until it ends or `night resume` (RAGON_SWE_BENCH §18). They live under `night` because they are about the overnight use of the model. A Night Shift run holds no gate and is unchanged: it gives way to interactive use as §5.5 says. `night status` also says what the gate is doing.
+
+### 11.9 Best-of-N
+
+Backlog item 6, built on branch `night-shift/best-of-n` and merged into `main` (`/night add --best-of N`). **`best_of = 3` is the default** (the owner's decision, after a SWE-bench acceptance run; branch `night/best-of-3`): every task is attempted three times unless `[night] best_of` or its own `best_of` says otherwise, and `best_of = 1` is a single attempt exactly as before. Interactive `ragon` is not affected: one session, one attempt. Chosen by chooser v1 (v2 was measured on the same runs and not adopted). Code: `NightShiftBestOfN` (`night_shift_best_of_n.py`), chooser v1 in `NightShiftChooser` and `ChooserCandidate`, which `scripts/swe_bench_chooser_test.py` imports, so the chooser a SWE-bench night measures is the one Night Shift runs.
+
+- **Attempts run one after another in the task's one slot.** The scheduler counts a task as one scope and one model user; concurrent attempts would break its memory and request accounting. Each attempt is a whole `NightShiftTaskRun` (`attempt=k`) in `worktrees/<id>-a<k>` on `night/<id>-a<k>`, with a session of its own, its own nudges, its own test run and `task_timeout` (never past the window). With refine mode on, each attempt studies the task first.
+- **The choice.** Candidates are the attempts that left a change. The regression filter drops those whose test run failed or timed out, or that ran out of time before testing, unless every one did; untested ones are kept. More than one survivor goes to the pairwise judge (the task's text as the issue, the two staged diffs, the model server the night was admitted against, no proxy, seed from the task id); the judge counts as the task's model request while it runs. A judge call that fails or cannot be read is a tie at the floor, so a judge fault never stops the night; a tie at the top goes to the attempt whose tests passed, then the earliest.
+- **Only the chosen attempt is committed**, then renamed `night/<id>`; every worktree is removed, the other attempts' branches are deleted and their diffs kept as `logs/<id>-a<k>.diff`, the judge's answers as `logs/<id>.judge.jsonl`. Nothing is merged, pushed or rebased.
+- **The window.** No attempt starts after it closes, and an attempt after the first is not started when the window has less time left than the longest attempt so far took (it would be cut off and thrown away). The attempts that finished are chosen among and the record's `why` says why fewer ran ("2 of 3 attempts ran (attempt 3 was not started: 31 min of the window were left, less than the 44 min the longest attempt took)", or "the window closed during attempt 3, which was discarded"). With none finished the task is `interrupted` and starts over the next night: attempts are never resumed. The judge stops with the window too: each call waits at most until the window's end (60 s at the least), and a pair not yet judged when it closes counts as a tie at the floor (`judge_unmade`).
+- **Without a test command** (none given, none in `[night] test`, none detected) the regression filter has nothing to go on: every candidate goes to the judge, which alone decides, and the report's `Why` line says so.
+- **The judge is a direct call, not a `ragon exec` session.** It is the same served model, asked through `/v1/chat/completions` with chooser v1's prompt and sampling, because that is the chooser the SWE-bench acceptance runs measured (`scripts/swe_bench_chooser_test.py` sends the same messages); a `ragon exec` judge would be a different chooser, unmeasured.
+- **Not built: attempts at once.** Attempts run one after another in the task's slot (above); the scheduler already runs up to `max_parallel` tasks side by side, so a night with several tasks keeps the model server as busy as memory allows. A night with more queued tasks than its window fits now finishes fewer of them, three attempts each: those not started stay queued for the next night.
+- **One attempt, exactly as before,** for `best_of = 1`, a task resumed from an earlier night (a recorded session or a kept worktree) and a task from another machine (`remote`).
+- **The report** adds a `Best of N` line (what ran and, when fewer than N did, why; the chosen attempt, the stage that chose it, the points), a `Why` line in words (the only attempt that left a change; the only one the regression filter kept; the judge over the survivors, over all of them when every attempt's tests failed, or alone when there is no test command; a tie at the top and who won it; comparisons the window cut off), the judge's call count and answer file, and one line per attempt (status, changes, tests, time, the diff file of each alternative, its event log `logs/<id>-a<k>.jsonl` and test log `logs/<id>-a<k>.test.log`). A task none of whose attempts left a change still lists them all. Each attempt's test output is its own file; before, the attempts shared `logs/<id>.test.log` and only the last one's was kept.
+- **`/night add --best-of N`** (the launcher, `ragon-rs/src/night.rs`) writes the task's `best_of` key; without the option the key is `null` and `[night] best_of` applies. A count of 0 or a non-number is refused, and so is `--best-of` with `--on <node>`: the node records a handed-over task as `remote` and runs it once, so the count would be dropped without a word. `/night show` prints the task's own count.
+- **Tests:** the launcher's `night` unit tests (both forms of `--best-of`, the refusals, the key written and `null` without the option); `tests/test_night_shift_best_of_n.py` (a per-attempt stand-in for `ragon`, a stand-in judge, `server_judge` against a fake on a free loopback port; the default of 3, the `Why` line of each stage, no test command, every attempt's logs, an attempt that would not fit the window, the judge stopped by the window); `tests/test_night_shift.py`'s fixture pins the default at 1, since those tests are about one attempt.
+- **Measured:** a first SWE-bench acceptance run (best-of-3 against a single run, the harness's equivalent: three default rounds on one list, then the same chooser over them) showed best-of-3 ahead but not significantly, so the default stayed 1 (owner). A second run on 50 fresh Verified tasks, the same design, refine on, showed best-of-3 clearly ahead of the single run, with the judge deciding most choices, so the default is 3 (owner).
+- **What it costs.** A task takes about three times one attempt's wall time (each attempt runs its own session, refine study when on, and test run), plus up to three judge calls when all three attempts survive the filter, about 2 minutes each on the default model, fewer when the filter decides.
+
+### 11.10 Bringing a branch back: `ragon night apply`
+
+The runner still merges nothing; a task's result was a branch the user had to find and merge by hand, and a reader of the report could take "nothing changed in my checkout" for a failed run. Now (spec [RAGON_WORKTREE](./DREAMFERENCE_RAGON_WORKTREE.md) §3.8):
+
+- **`ragon night apply <id>`** (and `/night apply <id>` in a session; `ragon-rs/src/night.rs`) applies `base..night/<id>` to the checkout it is run in as uncommitted changes, all or nothing: when the changes do not apply cleanly it changes nothing and names the files, and says to commit or stash those changes or `git merge night/<id>`. The task records `applied` (`at`, `into`), and a second apply says it was applied before. The phone bridges do not offer it: a phone never edits the checkout.
+- **The report** says on each task's `Branch` line that it is not merged and names the command, and the Review section says nothing was merged and how to apply.
+- **The TUI's start line** names `/night apply <id>` when a task is done; the desktop app's inbox names the branch and the command on an opened finished task.
+- The worktrees stay: an unattended queue must not edit the checkout while the user works in it, and best-of-N needs one per attempt.
+
+### 11.11 Repeating tasks, archive and autofill
+
+- **Repeating tasks (`dreamference/night_shift/night_shift_recurring.py`).** `ragon-admin night every add --daily|--weekly <day>|--days <days>|--every <N>|--monthly <D> [--test cmd] -- <task>` (and `night every list|drop`) manages templates under `$CODEX_HOME/night/recurring/r<12 hex>.json` ([DESKTOP_PARITY §9.5](./DREAMFERENCE_RAGON_DESKTOP_PARITY.md), [DESKTOP §16](./DREAMFERENCE_RAGON_DESKTOP.md) B42). Each `night run` queues due templates through `ragon night add` before reading the queue.
+- **Archive (`dreamference/night_shift/night_shift_archive.py`).** `ragon-admin night archive [--weeks N]` (default `4`, `DEFAULT_ARCHIVE_WEEKS`) moves finished tasks older than `N` weeks, their logs and old reports into `$CODEX_HOME/night/archive/{tasks,logs,reports}/` under `runner.lock` and per-task locks ([DESKTOP §16](./DREAMFERENCE_RAGON_DESKTOP.md) B41).
+- **Autofill (`dreamference/night_shift/night_shift_autofill.py`, `tests/test_night_shift_autofill.py`).** When `[night] autofill = true` (off by default) or via `ragon-admin night autofill [--dry-run] [--max N]`, up to `autofill_max` (default `5`) bounded tasks (`[autofill:<key>]`) are queued through `ragon night add` from failing `main` CI tests (repository's own runs only), failing desktop QA checks, the open Windows QA issue (number only), and unchecked `- [ ]` / `TODO:` lines in `specs/*.md`, skipping security-sensitive paths, recently queued keys (`night/autofill.json`, 14 days) and benchmark nights (`docs/dev/night-shift.md`).
+
+

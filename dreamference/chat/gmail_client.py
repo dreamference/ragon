@@ -1,0 +1,120 @@
+"""Gmail Client for the Ragon terminal agent.
+
+This module provides the GmailClient class, the HTTP client behind `ragon-admin gmail`. It talks to
+the Google service (`dreamference-gmail`, `ragon-admin google start`, published on loopback), so
+the terminal agent reads the same mailboxes with the same credentials and opens no IMAP connection
+of its own. The service is the one component that unseals credentials and fans out across
+accounts; a second IMAP path on the host would give two chances to disagree about the same sealed
+file, and would put the mailbox token inside the agent's process.
+
+Every method returns the service's JSON, or a dict with `error` and `hint` in the shape
+`WebTools` uses, so the CLI formats both the same way.
+"""
+
+import json
+import os
+import pathlib
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Final
+
+from dreamference.chat.gmail_credentials import CREDENTIALS_DIR
+from dreamference.chat.gmail_search_service import IMAP_TIMEOUT_SECONDS, MAX_RESULT_LIMIT
+from dreamference.chat.google_service import GMAIL_AUTH_HEADER, GOOGLE_HOST_PORT, SECRET_FILE_NAME
+
+GMAIL_SERVICE_URL: Final[str] = f"http://127.0.0.1:{GOOGLE_HOST_PORT}"
+
+# The file GoogleService.secret() creates and hands the container as RAGON_GMAIL_SECRET. Only
+# read here: a client that created one would hold a secret the running service does not know.
+SERVICE_SECRET_PATH: Final[str] = os.path.join(CREDENTIALS_DIR, SECRET_FILE_NAME)
+
+NOT_RUNNING_ERROR: Final[dict[str, str]] = {
+    "error": "Gmail service is not running.",
+    "hint": "Start it with: ragon-admin google start",
+}
+# Accounts are searched one after another, so with several a search can outlast the timeout.
+SLOW_ERROR: Final[dict[str, str]] = {
+    "error": "Gmail service did not answer in time.",
+    "hint": "Try a narrower query, or again in a moment",
+}
+NOT_SET_UP_ERROR: Final[dict[str, str]] = {
+    "error": "Gmail has not been set up.",
+    "hint": "Run: ragon-admin google start, then connect Gmail with /apps in ragon",
+}
+
+
+class GmailClient:
+    """Reads mail through the running Gmail search service."""
+
+    @classmethod
+    def status(cls) -> dict[str, Any]:
+        """Asks which accounts are connected. Needs no secret: the endpoint exposes no mail.
+
+        Returns:
+            dict[str, Any]: `connected` and `email` (comma-separated addresses), or an error.
+        """
+        return cls._get("/status", authenticated=False)
+
+    @classmethod
+    def search(cls, query: str, limit: int = 10) -> dict[str, Any]:
+        """Searches every connected mailbox with Gmail's own query syntax.
+
+        Args:
+            query (str): A Gmail query, e.g. `from:alice invoice newer_than:7d`.
+            limit (int): How many messages to return; clamped to the service's maximum.
+
+        Returns:
+            dict[str, Any]: `messages`, newest first, and `errors` for accounts that failed.
+        """
+        limit = max(1, min(limit, MAX_RESULT_LIMIT))
+        return cls._get("/search?" + urllib.parse.urlencode({"query": query, "limit": limit}))
+
+    @classmethod
+    def read(cls, message_id: str) -> dict[str, Any]:
+        """Reads one message, by the opaque id `search` printed.
+
+        Args:
+            message_id (str): The service's `"<account>|<X-GM-MSGID>"` id, as printed.
+
+        Returns:
+            dict[str, Any]: Headers and `body`, or an error.
+        """
+        # `@` and `|` stay literal: the id is "<account>|<id>", and a service started before it
+        # learned to decode its path would look up the encoded form and find nothing.
+        return cls._get("/message/" + urllib.parse.quote(message_id, safe="@|"))
+
+    @classmethod
+    def _secret(cls) -> str | None:
+        try:
+            with pathlib.Path(SERVICE_SECRET_PATH).open() as handle:
+                return handle.read().strip() or None
+        except OSError:
+            return None
+
+    @classmethod
+    def _get(cls, path: str, authenticated: bool = True) -> dict[str, Any]:
+        headers = {}
+        if authenticated:
+            secret = cls._secret()
+            if secret is None:
+                return dict(NOT_SET_UP_ERROR)
+            headers[GMAIL_AUTH_HEADER] = secret
+        request = urllib.request.Request(GMAIL_SERVICE_URL + path, headers=headers)
+        try:
+            # IMAP is the slow part, and the service allows it this long per connection.
+            with urllib.request.urlopen(request, timeout=IMAP_TIMEOUT_SECONDS) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            try:
+                body = json.load(error)
+            except ValueError:
+                body = {}
+            message = body.get("error") if isinstance(body, dict) else None
+            return {"error": message or f"Gmail service answered HTTP {error.code}."}
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            # urlopen wraps a timeout while connecting in URLError, but not one while reading.
+            reason = getattr(error, "reason", error)
+            return dict(SLOW_ERROR if isinstance(reason, TimeoutError) else NOT_RUNNING_ERROR)
+        except ValueError:
+            return {"error": "Gmail service returned something that is not JSON."}

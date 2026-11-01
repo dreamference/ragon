@@ -1,0 +1,132 @@
+"""Local Semantic Embedding Calculator using sentence-transformers.
+
+Provides EmbeddingCalculator for generating dense vectors from code/text
+and computing cosine similarity. Designed for GB10 unified memory (loads
+~100-300 MB model alongside vLLM).
+"""
+
+import importlib
+from typing import TYPE_CHECKING, Any, Final, Optional
+
+import numpy as np
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer as SentenceTransformerType
+
+# sentence-transformers pulls in torch and transformers (about 2.5 s), so it is imported on first
+# use. The attribute keeps its old meaning once resolved: the class, or None when the package is
+# missing. Until then it is the _NOT_LOADED sentinel; tests may set it to a stand-in or to None.
+_NOT_LOADED: Final = object()
+SentenceTransformer: Any = _NOT_LOADED
+
+EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5"
+
+# The model loads with trust_remote_code, which runs the Hub's Python in this process, so it is
+# fetched at a fixed commit. Its config takes the modeling code from another repository
+# (nomic-ai/nomic-bert-2048), which transformers fetches at that repository's default branch unless
+# code_revision names a commit: both are pinned. Commits as on the Hub.
+EMBEDDING_REVISION: Final[str] = "e9b6763023c676ca8431644204f50c2b100d9aab"
+EMBEDDING_CODE_REVISION: Final[str] = "7710840340a098cfb869c4f65e87cf2b1b70caca"
+
+# nomic-embed-text was trained with task prefixes and retrieves noticeably worse without them:
+# documents are embedded as "search_document: ...", queries as "search_query: ...".
+DOCUMENT_PREFIX = "search_document: "
+QUERY_PREFIX = "search_query: "
+
+# The model runs on the CPU. On GB10 the GPU is vLLM's: with it resident CUDA refuses even this
+# model (out of memory, with gigabytes of host memory free), and a failed attempt still leaves a
+# CUDA context behind in unified memory.
+EMBEDDING_DEVICE: Final[str] = "cpu"
+
+# Attention memory grows with the square of the sequence: at nomic's full 8,192 tokens and a batch
+# of 32 it runs to gigabytes and pushed the host towards earlyoom's limit beside a resident vLLM.
+# A file's first 1,024 tokens carry its imports, docstring and leading definitions.
+MAX_SEQUENCE_TOKENS: Final[int] = 1024
+ENCODE_BATCH_SIZE: Final[int] = 8
+
+
+class EmbeddingCalculator:
+    """Generates and scores dense semantic embeddings for hybrid search."""
+
+    _model = None  # lazy singleton
+    _unavailable = False  # set once loading has failed, so it is not retried per call
+
+    @classmethod
+    def _get_model(cls) -> Optional["SentenceTransformerType"]:
+        """Loads the embedding model once, or reports that it cannot be loaded.
+
+        Loading fetches the model from the HuggingFace cache, and from the network if it is not
+        cached. On a machine without either, indexing used to fail outright; it now continues with
+        keyword search only and says so once.
+
+        Returns:
+            Optional[SentenceTransformer]: The model, or None when it is unavailable.
+        """
+        global SentenceTransformer
+        if SentenceTransformer is _NOT_LOADED and cls._model is None and not cls._unavailable:
+            try:
+                SentenceTransformer = importlib.import_module(
+                    "sentence_transformers"
+                ).SentenceTransformer
+            except ImportError:
+                SentenceTransformer = None
+        if cls._model is None and not cls._unavailable and SentenceTransformer is not None:
+            try:
+                cls._model = SentenceTransformer(
+                    EMBEDDING_MODEL,
+                    trust_remote_code=True,
+                    revision=EMBEDDING_REVISION,
+                    config_kwargs={"code_revision": EMBEDDING_CODE_REVISION},
+                    model_kwargs={"code_revision": EMBEDDING_CODE_REVISION},
+                    device=EMBEDDING_DEVICE,
+                )
+                cls._model.max_seq_length = MAX_SEQUENCE_TOKENS
+            except Exception as error:
+                cls._unavailable = True
+                print(
+                    f"⚠️  Embedding model {EMBEDDING_MODEL} is unavailable ({type(error).__name__}); "
+                    "searching by keyword only."
+                )
+        return cls._model
+
+    @classmethod
+    def embed_texts(cls, texts: list[str], prefix: str = DOCUMENT_PREFIX) -> np.ndarray | None:
+        """Encodes texts into normalised embeddings.
+
+        Args:
+            texts (List[str]): The texts to embed.
+            prefix (str): The task prefix, DOCUMENT_PREFIX or QUERY_PREFIX.
+
+        Returns:
+            Optional[np.ndarray]: Shape (n_texts, dim), or None when no model is available. Not
+                zeros: a zero vector scores every document equally and hides that search is
+                keyword-only.
+        """
+        model = cls._get_model()
+        if model is None:
+            return None
+        embeddings = model.encode(
+            [prefix + text for text in texts],
+            batch_size=ENCODE_BATCH_SIZE,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+        )
+        return embeddings.astype(np.float32)
+
+    @classmethod
+    def compute_embeddings(cls, doc_contents: dict[str, str]) -> dict[str, np.ndarray]:
+        """Computes document embeddings for all files.
+
+        Args:
+            doc_contents (Dict[str, str]): File path to file content.
+
+        Returns:
+            Dict[str, np.ndarray]: File path to embedding; empty when no model is available.
+        """
+        if not doc_contents:
+            return {}
+        rel_paths = list(doc_contents.keys())
+        embeddings = cls.embed_texts([doc_contents[p] for p in rel_paths], DOCUMENT_PREFIX)
+        if embeddings is None:
+            return {}
+        return {p: embeddings[i] for i, p in enumerate(rel_paths)}

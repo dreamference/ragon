@@ -1,0 +1,6 @@
+# Ragon's release signing keys (specs/DREAMFERENCE_RELEASE_SIGNING.md). Every release from
+# 0.9.0 on carries SHA256SUMS.sig, an OpenSSH signature (`ssh-keygen -Y sign -n ragon-release`)
+# of SHA256SUMS by one of these keys. `ragon update` compiles this file in (src/release_signature.rs),
+# install.sh embeds the same lines (a test compares them), and the release job checks its own
+# signature against it before publishing. One OpenSSH public key per line; '#' starts a comment.
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII9boVZe01adX9jSk8Hh/GAJURmqzCznictI3meZX0/i ragon-release-2026-11

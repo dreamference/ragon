@@ -1,0 +1,260 @@
+"""`ragon-admin` entry point.
+
+`ragon`, the terminal agent, is the Rust binary (see ragon-rs/ and
+tests/test_codex_branded_builder.py); there is no Python entry point of that name, and no `ragon-
+admin chat` either.
+"""
+
+import pathlib
+from unittest.mock import patch
+
+from dreamference.cli import main
+from dreamference.cli.dreamference_cli_controller import DreamferenceCLIController
+
+
+def test_ragon_admin_still_reads_sys_argv():
+    with patch.object(DreamferenceCLIController, "run_cli") as run_cli:
+        main()
+    run_cli.assert_called_once_with(None)
+
+
+def test_there_is_no_python_ragon_entry_point():
+    import dreamference.cli as cli
+
+    assert not hasattr(cli, "ragon_main")
+    assert "ragon=" not in pathlib.Path("setup.py").open().read()
+
+
+def test_unknown_arguments_are_rejected(capsys):
+    import pytest
+
+    with pytest.raises(SystemExit):
+        DreamferenceCLIController.run_cli(["status", "--bogus"])
+    assert "unrecognized arguments: --bogus" in capsys.readouterr().err
+
+
+def test_a_command_group_without_a_subcommand_prints_its_help(capsys):
+    # These used to match no dispatch branch and exit 0 having printed nothing (desktop and
+    # the web chat's group hit a NameError instead).
+    import pytest
+
+    # `diffusion-model` is absent while diffusion is switched off (tests/test_diffusion_switched_off.py).
+    for group in (
+        "server",
+        "clear",
+        "model",
+        "main-model",
+        "desktop",
+        "images",
+        "voice",
+        "adapter",
+    ):
+        with pytest.raises(SystemExit) as exit_info:
+            DreamferenceCLIController.run_cli([group])
+        assert exit_info.value.code == 1, group
+        assert f"usage: ragon-admin {group}" in capsys.readouterr().out, group
+
+
+def test_model_list_runs(capsys):
+    # A `from rich.table import Table` inside another branch of run_cli made `Table` local to the
+    # whole function, so `model list` failed with UnboundLocalError before printing anything.
+    import pytest
+
+    with pytest.raises(SystemExit) as exit_info:
+        DreamferenceCLIController.run_cli(["model", "list"])
+    assert exit_info.value.code == 0
+    assert "Available Ragon Models" in capsys.readouterr().out
+
+
+def test_audit_egress_docs_takes_json_and_refuses_a_prompt(capsys):
+    # `--docs` used to drop `--prompt` and `--json` silently: `--json` now writes its result, and
+    # `--prompt`, which no part of that scenario could use, is refused.
+    import pytest
+
+    from dreamference.audit import DocsEgressAudit, EgressAudit
+
+    with (
+        patch.object(DocsEgressAudit, "run", return_value=0) as docs_run,
+        patch.object(EgressAudit, "run", side_effect=AssertionError("not the session audit")),
+    ):
+        with pytest.raises(SystemExit) as exit_info:
+            DreamferenceCLIController.run_cli(["audit", "egress", "--docs", "--json"])
+        assert exit_info.value.code == 0
+        docs_run.assert_called_once_with(ragon_docs=None, write_json=True)
+        docs_run.reset_mock()
+        with pytest.raises(SystemExit) as exit_info:
+            DreamferenceCLIController.run_cli(["audit", "egress", "--docs", "--prompt", "hello"])
+        assert exit_info.value.code == 2
+        docs_run.assert_not_called()
+        assert "--prompt has no effect with --docs" in capsys.readouterr().out
+
+
+def test_logs_mcp_prints_its_heading_without_markup(tmp_path, capsys):
+    # The heading went through the builtin print with rich markup, which printed `[bold]` as is.
+    import sqlite3
+
+    import pytest
+
+    from dreamference.runner import CodexInstaller
+
+    with sqlite3.connect(tmp_path / "logs_2.sqlite") as conn:
+        conn.execute("CREATE TABLE logs (message TEXT)")
+        conn.execute(
+            "INSERT INTO logs VALUES ('mcp{server_name=search} Service initialized as client')"
+        )
+    conn.close()
+    with (
+        patch.object(CodexInstaller, "home_dir", return_value=str(tmp_path)),
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        DreamferenceCLIController.run_cli(["logs", "mcp"])
+    assert exit_info.value.code == 0
+    out = capsys.readouterr().out
+    assert "MCP server lifecycle (most recent first)" in out and "[bold]" not in out
+    assert "search" in out and "Service initialized as client" in out
+
+
+def test_a_failed_benchmark_exits_with_an_error(capsys):
+    # `vllm bench serve` failing was printed and the command still exited 0, so a script or a
+    # night job took the failed run for a finished one.
+    import subprocess
+
+    import pytest
+
+    failed = subprocess.CalledProcessError(1, ["docker", "exec"])
+    with (
+        patch("dreamference.hardware.resolve_model_hf_repo", return_value="org/model"),
+        patch.object(subprocess, "run", side_effect=failed) as run,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        DreamferenceCLIController.run_cli(
+            ["benchmark_server", "--dataset-path", "/data/sonnet.txt"]
+        )
+    assert run.call_count == 1 and exit_info.value.code == 1
+    assert "Benchmark failed" in capsys.readouterr().out
+
+
+def test_server_start_exits_with_an_error_when_the_server_stopped_before_it_answered(
+    monkeypatch, capsys
+):
+    # The failure was printed and `server start` still exited 0, so a script went on to use a
+    # server that was not there.
+    import pytest
+
+    from dreamference.chat.google_service import GoogleService
+    from dreamference.chat.image_search_sidecar import ImageSearchSidecar
+    from dreamference.chat.speech_sidecar import SpeechSidecar
+    from dreamference.cli import dreamference_cli_controller as controller
+    from dreamference.node import NodeAdvertiser
+    from dreamference.vllm_server import DiffusionServerManager, VLLMServerManager
+
+    class Monitor:
+        server_ready = False
+        fatal = None
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    stopped = []
+    for sidecar in (GoogleService, SpeechSidecar):
+        monkeypatch.setattr(sidecar, "ensure_on_node", classmethod(lambda cls, *a, **k: None))
+    monkeypatch.setattr(
+        ImageSearchSidecar, "ensure_on_node", classmethod(lambda cls, *a, **k: None)
+    )
+    monkeypatch.setattr(
+        NodeAdvertiser, "on_server_starting", classmethod(lambda cls, *a, **k: None)
+    )
+    monkeypatch.setattr(
+        NodeAdvertiser, "on_server_stopped", classmethod(lambda cls, *a, **k: stopped.append(True))
+    )
+    monkeypatch.setattr(controller, "create_model_loading_monitor", lambda *a, **k: Monitor())
+    # The container ran and its log stream ended without the server answering.
+    monkeypatch.setattr(VLLMServerManager, "start_server", lambda self, **_: None)
+    monkeypatch.setattr(
+        DiffusionServerManager, "remove_leftover", classmethod(lambda cls, port=8001: None)
+    )
+    with pytest.raises(SystemExit) as exit_info:
+        DreamferenceCLIController.run_cli(
+            ["server", "start", "--no-diffusion", "--engine", "ragon"]
+        )
+    assert exit_info.value.code == 1 and stopped == [True]
+    assert "The model server stopped before it answered" in capsys.readouterr().out
+
+
+def test_codex_stop_reports_a_daemon_that_did_not_stop(capsys):
+    # The stop command's exit code was ignored: "stopped" was printed and the command exited 0.
+    import subprocess
+
+    import pytest
+
+    from dreamference.runner import CodexInstaller
+
+    with (
+        patch.object(CodexInstaller, "install_if_missing", return_value=True),
+        patch.object(CodexInstaller, "get_codex_executable", return_value="/opt/ragon/bin/ragon"),
+        patch.object(subprocess, "call", return_value=3) as call,
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        DreamferenceCLIController.run_cli(["codex", "stop"])
+    call.assert_called_once_with(["/opt/ragon/bin/ragon", "app-server", "daemon", "stop"])
+    assert exit_info.value.code == 3
+    assert "daemon stopped" not in capsys.readouterr().out
+
+
+def test_a_global_hf_token_reaches_the_subcommands_that_also_take_one():
+    # Each subcommand's own --hf-token defaulted to None, which overwrote the token given before
+    # the subcommand: `ragon-admin --hf-token T server start` started anonymously.
+    parser = DreamferenceCLIController.build_parser()
+    for command in (["init"], ["server", "start"], ["adapter", "install", "rust", "--repo", "o/r"]):
+        assert parser.parse_args(["--hf-token", "T", *command]).hf_token == "T", command
+        assert parser.parse_args([*command, "--hf-token", "U"]).hf_token == "U", command
+        assert parser.parse_args(command).hf_token is None, command
+    assert parser.parse_args(["--hf-token", "T", "run", "hello"]).hf_token == "T"
+
+
+def _inspect_main_model(monkeypatch, capsys, model: str) -> tuple[str, list]:
+    """Runs `main-model inspect` with every probe failing and Hugging Face answering 404.
+
+    Returns what it printed and the commands it ran, none of them for real.
+    """
+    import subprocess
+    from unittest.mock import MagicMock
+
+    import pytest
+    import requests
+
+    session = MagicMock()
+    session.get.return_value.status_code = 200
+    session.get.return_value.json.return_value = {"data": [{"id": model}]}
+    session.post.side_effect = requests.ConnectionError("down")
+    monkeypatch.setattr(requests, "Session", lambda: session)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: MagicMock(status_code=404))
+    runs: list = []
+
+    def run(cmd, **kwargs):
+        runs.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(SystemExit):
+        DreamferenceCLIController.run_cli(["main-model", "inspect"])
+    return capsys.readouterr().out, runs
+
+
+def test_main_model_inspect_gives_nvidia_smi_a_timeout(monkeypatch, capsys):
+    # A wedged driver makes nvidia-smi hang; inspect waited with it for ever.
+    _, runs = _inspect_main_model(monkeypatch, capsys, "org/m")
+    smi = [kwargs for cmd, kwargs in runs if cmd[0] == "nvidia-smi"]
+    assert smi and all(kwargs.get("timeout") for kwargs in smi)
+
+
+def test_main_model_inspect_guesses_moe_from_the_name_when_hugging_face_has_no_config(
+    monkeypatch, capsys
+):
+    # The name heuristic ran only when the request raised: a 404 (an alias, a private repo)
+    # left the architecture "Unknown" for a Mixtral.
+    out, _ = _inspect_main_model(monkeypatch, capsys, "org/Mixtral-8x7B-Instruct")
+    assert "Yes (heuristic) (MoE)" in out

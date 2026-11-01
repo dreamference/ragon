@@ -1,0 +1,1038 @@
+//! `ragon-docs`: the local file index's command line (spec §8.1). `ragon docs <command>` runs it.
+
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use anyhow::{bail, Context, Result};
+use clap::{Parser, Subcommand};
+
+use ragon_docs::collections::DocsToml;
+use ragon_docs::config::{self, Settings};
+use ragon_docs::host::SystemdHost;
+use ragon_docs::requests::{self, Request};
+use ragon_docs::search::{Filters, Searcher};
+use ragon_docs::{index, mcp, prompt, read, search, store};
+
+#[derive(Parser)]
+#[command(
+    name = "ragon-docs",
+    about = "Search the user's own documents, indexed on this machine",
+    version
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Index a folder as a collection.
+    Add {
+        folder: PathBuf,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Remove a collection and delete its index (not the files).
+    Remove { name: String },
+    /// List the collections.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Collections, documents, chunks, failures, pages that need OCR, last run, disk used.
+    Status {
+        name: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Search every collection (or one) by meaning and keywords.
+    Search {
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+        #[arg(long)]
+        collection: Option<String>,
+        #[arg(long, default_value_t = search::DEFAULT_K)]
+        k: usize,
+        /// Only documents whose path in the collection matches this glob.
+        #[arg(long)]
+        path: Option<String>,
+        /// Only documents of this type (pdf, docx, odt, html, eml, mbox, csv, markdown, text, rst, org, tex) or extension.
+        #[arg(long = "type")]
+        kind: Option<String>,
+        /// Only documents modified on or after this date (YYYY-MM-DD).
+        #[arg(long)]
+        after: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read a document a search found: by page, by lines, or at a locator a search gave.
+    Read {
+        doc_id: String,
+        #[arg(long, conflicts_with_all = ["lines", "at"])]
+        page: Option<u32>,
+        /// A range such as 120-180 (of lines, paragraphs or rows, as the document numbers them).
+        #[arg(long, conflicts_with = "at")]
+        lines: Option<String>,
+        /// Any locator a search gave: `para 12-30`, `rows 2-21`, `msg 3`.
+        #[arg(long)]
+        at: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a file's text by page, storing nothing (PDFs through the extractor's sandbox).
+    Extract {
+        file: PathBuf,
+        #[arg(long, conflicts_with = "pages")]
+        page: Option<u32>,
+        /// A range such as 12-15.
+        #[arg(long)]
+        pages: Option<String>,
+        /// Characters to print when no page is named.
+        #[arg(long, default_value_t = 8000)]
+        max_chars: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// The file a document id or citation link names (`documents:42`, `docs:documents/42`), only
+    /// inside its collection: what the desktop app opens and `ragon web` serves.
+    Locate {
+        doc: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rebuild a collection's index from its files.
+    Reindex { name: String },
+    /// Index now, in the foreground (outside the agent's sandbox).
+    Index {
+        #[arg(long)]
+        collection: Option<String>,
+        #[arg(long)]
+        rebuild: bool,
+    },
+    /// Keep the collections indexed while a session lives (the launcher starts this).
+    #[command(hide = true)]
+    Session {
+        #[arg(long)]
+        parent_pid: Option<i32>,
+    },
+    /// Serve docs_search and docs_read over MCP on stdio.
+    Mcp,
+    /// Print the prompt block for the model (empty without collections).
+    #[command(hide = true)]
+    PromptBlock {
+        #[arg(long)]
+        tools: bool,
+    },
+    #[command(hide = true)]
+    ExtractWorker {
+        jobs: PathBuf,
+        out: PathBuf,
+        #[arg(long)]
+        lib_dir: PathBuf,
+    },
+    #[command(hide = true)]
+    IndexWorker {
+        #[arg(long)]
+        collection: String,
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        events: PathBuf,
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+        #[arg(long)]
+        lib_dir: PathBuf,
+        #[arg(long)]
+        model_dir: PathBuf,
+        #[arg(long)]
+        test_embedder: bool,
+        /// An OCR page under this mean confidence counts as poorly read (§20).
+        #[arg(long, default_value_t = ragon_docs::ocr::SEND_BELOW as f64)]
+        send_below: f64,
+    },
+    #[command(hide = true)]
+    OcrWorker {
+        jobs: PathBuf,
+        out: PathBuf,
+        #[arg(long)]
+        lib_dir: PathBuf,
+        #[arg(long)]
+        ocr_dir: PathBuf,
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+    },
+    /// Prints the embeddings of lines of text read from stdin, one JSON array per line (checks).
+    #[command(hide = true)]
+    Embed {
+        /// Embed as queries (`query: ` prefix).
+        #[arg(long)]
+        query: bool,
+    },
+    /// Reads a scanned page or an image with OCR, in this process, and prints each page's text,
+    /// confidence, route and time as JSON lines (the measurements of spec §20).
+    #[command(hide = true)]
+    OcrFile {
+        file: PathBuf,
+        /// Render PDF pages at this resolution instead of their images' own.
+        #[arg(long)]
+        dpi: Option<f32>,
+        /// Take this route instead of asking Tesseract (latin, han, cyrillic, hangul, arabic).
+        #[arg(long)]
+        route: Option<String>,
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+    },
+    /// Runs many searches in one process and records the ranked chunks and the latency of each
+    /// (the evaluation of spec §12).
+    #[command(hide = true)]
+    BenchSearch {
+        questions: PathBuf,
+        out: PathBuf,
+        #[arg(long, default_value_t = 10)]
+        k: usize,
+        #[arg(long)]
+        no_merge: bool,
+    },
+}
+
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("ragon-docs: {error:#}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// Whether a session process keeps the index (it holds `docs/session.lock`).
+fn session_running() -> bool {
+    index::lock_held(&config::docs_dir().join("session.lock"))
+}
+
+/// Asks for indexing: through the session when one runs, else by starting a run in the
+/// background.
+fn request_index(request: Request) -> Result<String> {
+    if session_running() {
+        requests::append(&config::docs_dir(), &request)?;
+        return Ok("indexing starts in the background".to_string());
+    }
+    let mut args = vec!["index".to_string()];
+    match &request {
+        Request::All => {}
+        Request::One(name) => args.extend(["--collection".to_string(), name.clone()]),
+        Request::Rebuild(name) => args.extend([
+            "--collection".to_string(),
+            name.clone(),
+            "--rebuild".to_string(),
+        ]),
+    }
+    store::create_private_dir(&config::docs_dir())?;
+    let log = std::fs::File::create(config::docs_dir().join("index.log"))?;
+    ragon_docs::session::spawn_detached(&std::env::current_exe()?, &args, log)?;
+    Ok("indexing runs in the background".to_string())
+}
+
+/// `docs.toml` with the default collections added when their folders exist (best effort: inside
+/// the agent's sandbox the file cannot be written, and nothing is added there). Only in the
+/// user's own agent home, or when asked for explicitly ([`config::indexes_unasked`]).
+fn load_docs() -> Result<DocsToml> {
+    let docs = DocsToml::load()?;
+    let mut probe = docs.clone();
+    if config::indexes_unasked() && !probe.ensure_defaults(&config::user_home()).is_empty() {
+        // Added under the file's lock, read afresh, so a change made meanwhile is kept.
+        if let Ok((docs, _)) =
+            DocsToml::update(|docs| Ok(docs.ensure_defaults(&config::user_home())))
+        {
+            return Ok(docs);
+        }
+    }
+    Ok(docs)
+}
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn parse_date(text: &str) -> Result<i64> {
+    let parts: Vec<i64> = text
+        .split('-')
+        .map(|p| p.parse::<i64>())
+        .collect::<std::result::Result<_, _>>()
+        .with_context(|| format!("`{text}` is not a date (YYYY-MM-DD)"))?;
+    let [y, m, d] = parts[..] else {
+        bail!("`{text}` is not a date (YYYY-MM-DD)")
+    };
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days_in_month = match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => bail!("`{text}` is not a date (YYYY-MM-DD): there is no month {m}"),
+    };
+    if !(1..=days_in_month).contains(&d) {
+        bail!("`{text}` is not a date (YYYY-MM-DD): that month has {days_in_month} days");
+    }
+    Ok(days_from_civil(y, m, d) * 86400)
+}
+
+fn human_bytes(n: u64) -> String {
+    match n {
+        n if n >= 1 << 30 => format!("{:.1} GB", n as f64 / (1u64 << 30) as f64),
+        n if n >= 1 << 20 => format!("{:.1} MB", n as f64 / (1u64 << 20) as f64),
+        n => format!("{} KB", n >> 10),
+    }
+}
+
+fn run(cli: Cli) -> Result<ExitCode> {
+    let mut out = std::io::stdout();
+    match cli.command {
+        Command::Add { folder, name } => {
+            load_docs()?;
+            let (_, collection) =
+                DocsToml::update(|docs| docs.add(&folder, name.as_deref(), &config::user_home()))?;
+            writeln!(
+                out,
+                "Added `{}`: {}",
+                collection.name,
+                collection.root.display()
+            )?;
+            if let Some(missing) = config::missing_runtime() {
+                writeln!(out, "Indexing waits: {missing}.")?;
+            } else {
+                writeln!(
+                    out,
+                    "{}; `ragon docs status` shows progress.",
+                    request_index(Request::One(collection.name.clone()))?
+                )?;
+            }
+        }
+        Command::Remove { name } => {
+            let (_, removed) = DocsToml::update(|docs| docs.remove(&name))?;
+            index::remove_database(&name)?;
+            writeln!(out, "Removed `{name}` ({}); its index, which held the documents' text, is deleted. The files are untouched.", removed.root.display())?;
+            if removed.default {
+                writeln!(
+                    out,
+                    "It is a default collection: it will not be added back."
+                )?;
+            }
+        }
+        Command::List { json } => {
+            let docs = load_docs()?;
+            if json {
+                writeln!(out, "{}", serde_json::to_string_pretty(&docs.collections)?)?;
+            } else if docs.collections.is_empty() {
+                writeln!(
+                    out,
+                    "No collections. Add one with `ragon docs add <folder>`."
+                )?;
+            } else {
+                for c in &docs.collections {
+                    writeln!(
+                        out,
+                        "{:<16} {}{}",
+                        c.name,
+                        c.root.display(),
+                        if c.enabled { "" } else { " (disabled)" }
+                    )?;
+                }
+            }
+        }
+        Command::Status { name, json } => {
+            let docs = load_docs()?;
+            let mut rows = Vec::new();
+            for c in docs
+                .collections
+                .iter()
+                .filter(|c| name.as_ref().is_none_or(|n| *n == c.name))
+            {
+                let path = config::db_path(&c.name);
+                let conn = store::open_ro(&path)?;
+                let counts = conn
+                    .as_ref()
+                    .map(store::counts)
+                    .transpose()?
+                    .unwrap_or_default();
+                let meta = |key: &str| {
+                    conn.as_ref()
+                        .and_then(|c| store::get_meta(c, key).ok().flatten())
+                };
+                let size = ["", "-journal"]
+                    .iter()
+                    .filter_map(|s| std::fs::metadata(format!("{}{s}", path.display())).ok())
+                    .map(|m| m.len())
+                    .sum::<u64>();
+                rows.push(serde_json::json!({
+                    "name": c.name, "root": c.root, "enabled": c.enabled, "default": c.default,
+                    "counts": counts, "last_status": meta("last_status"), "last_run": meta("last_run").and_then(|v| v.parse::<i64>().ok()),
+                    "skipped_unopened": meta("skipped_unopened").and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok()),
+                    "extract_peak_mb": meta("extract_peak_mb"), "embed_peak_mb": meta("embed_peak_mb"),
+                    "disk_bytes": size,
+                }));
+            }
+            let missing = config::missing_runtime();
+            let settings = Settings::load();
+            let ocr_missing = if !settings.ocr {
+                Some("OCR is switched off (docs_ocr = false)".to_string())
+            } else {
+                ragon_docs::ocr::missing(&config::lib_dir(), &config::ocr_dir())
+            };
+            if json {
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "collections": rows, "runtime_missing": missing, "ocr_missing": ocr_missing, "network": "none: local only, unaffected by /airgapped" })
+                    )?
+                )?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            if rows.is_empty() {
+                writeln!(
+                    out,
+                    "No collections. Add one with `ragon docs add <folder>`."
+                )?;
+            }
+            for row in &rows {
+                let n = |key: &str| row["counts"][key].as_i64().unwrap_or(0);
+                writeln!(
+                    out,
+                    "{} — {}",
+                    row["name"].as_str().unwrap_or(""),
+                    row["root"].as_str().unwrap_or("")
+                )?;
+                writeln!(
+                    out,
+                    "  documents {} indexed, {} pending, {} failed, {} duplicates, {} skipped",
+                    n("indexed"),
+                    n("pending"),
+                    n("failed"),
+                    n("duplicates"),
+                    n("skipped")
+                )?;
+                writeln!(
+                    out,
+                    "  chunks {} ({} embedded); index {}",
+                    n("chunks"),
+                    n("embedded"),
+                    human_bytes(row["disk_bytes"].as_u64().unwrap_or(0))
+                )?;
+                if n("ocr_pages") > 0 {
+                    writeln!(
+                        out,
+                        "  OCR: {} scanned pages and images read, {} of them with low confidence",
+                        n("ocr_pages"),
+                        n("ocr_low_pages")
+                    )?;
+                }
+                if n("needs_ocr_pages") > 0 {
+                    let why = match &ocr_missing {
+                        Some(why) => format!("not read: {why}"),
+                        None if n("ocr_waiting_documents") > 0 => {
+                            format!("{} documents wait for OCR", n("ocr_waiting_documents"))
+                        }
+                        None => "past docs_ocr_max_pages, or unreadable".to_string(),
+                    };
+                    writeln!(
+                        out,
+                        "  without text: {} scanned pages in {} documents ({why})",
+                        n("needs_ocr_pages"),
+                        n("needs_ocr_documents")
+                    )?;
+                }
+                if n("ocr_failed_documents") > 0 {
+                    writeln!(
+                        out,
+                        "  OCR could not read {} documents (not retried until they change)",
+                        n("ocr_failed_documents")
+                    )?;
+                }
+                if let Some(status) = row["last_status"].as_str() {
+                    let ago = row["last_run"]
+                        .as_i64()
+                        .map(|t| format!(", {} min ago", (index::now() - t) / 60))
+                        .unwrap_or_default();
+                    writeln!(out, "  last run: {status}{ago}")?;
+                }
+                if let Some(skipped) = row["skipped_unopened"]
+                    .as_object()
+                    .filter(|m| !m.is_empty())
+                {
+                    let parts: Vec<String> =
+                        skipped.iter().map(|(k, v)| format!("{v} {k}")).collect();
+                    writeln!(out, "  left out without opening: {}", parts.join(", "))?;
+                }
+            }
+            if let Some(missing) = missing {
+                writeln!(out, "Indexing waits: {missing}.")?;
+            }
+            let cache = ragon_docs::pdf_search::entries();
+            if !cache.is_empty() {
+                writeln!(
+                    out,
+                    "pdf_search cache: {} PDFs, {}",
+                    cache.len(),
+                    human_bytes(cache.iter().map(|(_, size, _)| size).sum())
+                )?;
+            }
+            writeln!(
+                out,
+                "Network: none. The index is local only, unaffected by /airgapped."
+            )?;
+        }
+        Command::Search {
+            query,
+            collection,
+            k,
+            path,
+            kind,
+            after,
+            json,
+        } => {
+            let query = query.join(" ");
+            let collections = search::collections()?;
+            let filters = Filters {
+                collection,
+                path_glob: path,
+                kind,
+                modified_after: after.as_deref().map(parse_date).transpose()?,
+            };
+            let mut searcher = Searcher::default();
+            searcher.refresh(&collections)?;
+            for c in &collections {
+                if !config::db_path(&c.name).is_file() {
+                    let _ = requests::append(&config::docs_dir(), &Request::One(c.name.clone()));
+                }
+            }
+            let embedder = mcp::query_embedder().ok();
+            let answer = searcher.search(
+                &query,
+                k.clamp(1, 50),
+                &filters,
+                embedder.as_deref(),
+                Settings::load().bm25_weight,
+            )?;
+            if json {
+                writeln!(out, "{}", serde_json::to_string_pretty(&answer)?)?;
+            } else {
+                for note in &answer.notes {
+                    writeln!(out, "Note: {note}.")?;
+                }
+                if answer.hits.is_empty() {
+                    writeln!(out, "No passage matched.")?;
+                }
+                for (i, hit) in answer.hits.iter().enumerate() {
+                    writeln!(
+                        out,
+                        "{}. {}  {}  {}  [{}]",
+                        i + 1,
+                        hit.doc_id,
+                        hit.path,
+                        hit.loc,
+                        format_args!("{:.4}", hit.score)
+                    )?;
+                    writeln!(out, "   {}", hit.snippet)?;
+                }
+            }
+        }
+        Command::Read {
+            doc_id,
+            page,
+            lines,
+            at,
+            json,
+        } => {
+            let collections = search::collections()?;
+            let locator = page
+                .map(|p| format!("p.{p}"))
+                .or(lines.map(|l| format!("lines {l}")))
+                .or(at);
+            let result = read::read(
+                &collections,
+                &doc_id,
+                locator.as_deref(),
+                read::BUDGET_TOKENS,
+            )?;
+            if json {
+                writeln!(out, "{}", serde_json::to_string_pretty(&result)?)?;
+            } else {
+                writeln!(out, "{} {} ({})", result.doc_id, result.path, result.loc)?;
+                writeln!(out, "{}", result.text.trim_end())?;
+                if let Some(next) = result.next {
+                    writeln!(
+                        out,
+                        "-- more: ragon docs read {} {}",
+                        result.doc_id,
+                        if let Some(page) = next.strip_prefix("p.") {
+                            format!("--page {page}")
+                        } else {
+                            format!("--at '{next}'")
+                        }
+                    )?;
+                }
+            }
+        }
+        Command::Locate { doc, json } => {
+            let located = ragon_docs::locate::locate(&search::collections()?, &doc)?;
+            if json {
+                writeln!(out, "{}", serde_json::to_string(&located)?)?;
+            } else {
+                writeln!(out, "{}", located.path.display())?;
+            }
+        }
+        Command::Reindex { name } => {
+            let docs = DocsToml::load()?;
+            if docs.get(&name).is_none() {
+                bail!("no collection named `{name}`");
+            }
+            writeln!(
+                out,
+                "Rebuilding `{name}`: {}.",
+                request_index(Request::Rebuild(name.clone()))?
+            )?;
+        }
+        Command::Index {
+            collection,
+            rebuild,
+        } => {
+            let docs = load_docs()?;
+            // `RAGON_DOCS_TEST_HOST=direct`, as for pdf_search: the workers as plain children
+            // under `RLIMIT_AS`, without bwrap, inside whatever scope runs this (measurements in a
+            // CPU-capped scope of their own; never the product's path).
+            let direct = std::env::var("RAGON_DOCS_TEST_HOST").as_deref() == Ok("direct");
+            let systemd = SystemdHost;
+            let rlimit = ragon_docs::host::RlimitHost::in_temp();
+            let host: &dyn ragon_docs::host::Host = if direct { &rlimit } else { &systemd };
+            let mut env = index::Env::real(host)?;
+            env.sandbox = !direct;
+            let mut failed = false;
+            for (name, outcome) in index::run(&env, &docs, collection.as_deref(), rebuild)? {
+                writeln!(out, "{name}: {}", outcome.status())?;
+                failed |= matches!(outcome, index::Outcome::Failed(_));
+            }
+            if failed {
+                return Ok(ExitCode::from(1));
+            }
+        }
+        Command::Session { parent_pid } => ragon_docs::session::run(parent_pid)?,
+        Command::Mcp => mcp::serve()?,
+        Command::PromptBlock { tools } => {
+            let settings = Settings::load();
+            if settings.enabled {
+                let collections = search::collections().unwrap_or_default();
+                let mut blocks = vec![prompt::block(&collections, tools)];
+                // pdf_search is a tool only (PDF_SEARCH §3.8).
+                if tools && mcp::pdf_available() {
+                    blocks.push(prompt::pdf_block());
+                }
+                let blocks: Vec<String> = blocks.into_iter().filter(|b| !b.is_empty()).collect();
+                if !blocks.is_empty() {
+                    writeln!(out, "{}", blocks.join("\n\n"))?;
+                }
+            }
+        }
+        Command::Extract {
+            file,
+            page,
+            pages,
+            max_chars,
+            json,
+        } => return extract_command(&file, page, pages.as_deref(), max_chars, json),
+        Command::ExtractWorker {
+            jobs,
+            out: events,
+            lib_dir,
+        } => ragon_docs::extract::worker(&jobs, &events, &lib_dir)?,
+        Command::OcrWorker {
+            jobs,
+            out: events,
+            lib_dir,
+            ocr_dir,
+            threads,
+        } => ragon_docs::ocr::worker::worker(&jobs, &events, &lib_dir, &ocr_dir, threads)?,
+        Command::IndexWorker {
+            collection,
+            db,
+            events,
+            threads,
+            lib_dir,
+            model_dir,
+            test_embedder,
+            send_below,
+        } => {
+            let mut log = std::io::stderr();
+            if test_embedder {
+                let embedder = ragon_docs::embed::HashEmbedder { dim: 64 };
+                index::index_worker_with(
+                    &collection,
+                    &db,
+                    &events,
+                    &embedder,
+                    &ragon_docs::chunk::Words,
+                    send_below,
+                    &mut log,
+                )?;
+            } else {
+                let embedder =
+                    ragon_docs::embed::OnnxEmbedder::load(&model_dir, &lib_dir, threads)?;
+                index::index_worker_with(
+                    &collection,
+                    &db,
+                    &events,
+                    &embedder,
+                    &embedder.tokenizer,
+                    send_below,
+                    &mut log,
+                )?;
+            }
+        }
+        Command::BenchSearch {
+            questions,
+            out: path,
+            k,
+            no_merge,
+        } => bench_search(&questions, &path, k, no_merge)?,
+        Command::OcrFile {
+            file,
+            dpi,
+            route,
+            threads,
+        } => ocr_file(&file, dpi, route.as_deref(), threads)?,
+        Command::Embed { query } => {
+            use std::io::BufRead;
+            let embedder =
+                ragon_docs::embed::OnnxEmbedder::load(&config::model_dir(), &config::lib_dir(), 4)?;
+            for line in std::io::stdin().lock().lines() {
+                // Each line is a JSON string, so texts may hold newlines.
+                let text: String = serde_json::from_str(&line?)?;
+                let text = if query {
+                    format!("{}{text}", ragon_docs::embed::QUERY_PREFIX)
+                } else {
+                    text
+                };
+                use ragon_docs::embed::Embed;
+                writeln!(out, "{}", serde_json::to_string(&embedder.embed(&text)?)?)?;
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `ragon-docs extract` (PDF_SEARCH §4): the extractor in a capped scope and bwrap where the user's
+/// systemd is reachable, else (inside the agent's sandbox) a plain child under `RLIMIT_AS`.
+/// Units shown by `extract`: the page (a PDF) and the text.
+type Shown = Vec<(Option<u32>, String)>;
+
+/// The units `extract` prints, by page (a PDF) or the file's sections (text): the requested ones
+/// only, in order. Returns them, the page to go on from, and whether any was left out.
+fn select_units(
+    units: &[ragon_docs::extract::Unit],
+    range: Option<(u32, u32)>,
+    max_chars: usize,
+) -> (Shown, Option<u32>, bool) {
+    let mut shown: Shown = Vec::new();
+    let mut used = 0;
+    let mut next = None;
+    for unit in units {
+        if let (Some((a, b)), Some(p)) = (range, unit.page) {
+            if p < a || p > b {
+                continue;
+            }
+        }
+        // Within the cap once one is shown, a range asked for as well (PDF_SEARCH §4).
+        if used > 0 && used + unit.text.chars().count() > max_chars {
+            next = unit.page;
+            return (shown, next, true);
+        }
+        used += unit.text.chars().count();
+        shown.push((unit.page, unit.text.clone()));
+    }
+    (shown, next, false)
+}
+
+fn extract_command(
+    file: &std::path::Path,
+    page: Option<u32>,
+    pages: Option<&str>,
+    max_chars: usize,
+    json: bool,
+) -> Result<ExitCode> {
+    let mut out = std::io::stdout();
+    let range = match (page, pages) {
+        (Some(p), _) => Some((p, p)),
+        (None, Some(text)) => {
+            let (a, b) = text.split_once('-').unwrap_or((text, text));
+            let (a, b) = (a.trim().parse::<u32>().ok(), b.trim().parse::<u32>().ok());
+            match (a, b) {
+                (Some(a), Some(b)) if a >= 1 && b >= a => Some((a, b)),
+                _ => bail!("`{text}` is not a page range (12-15)"),
+            }
+        }
+        (None, None) => None,
+    };
+    if ragon_docs::discover::Kind::of(&file.to_string_lossy())
+        == Some(ragon_docs::discover::Kind::Pdf)
+        && !config::lib_dir().join("libpdfium.so").is_file()
+    {
+        writeln!(out, "failed: reading PDFs needs PDFium, which is not installed (run `ragon-admin docs setup` on a node)")?;
+        return Ok(ExitCode::from(1));
+    }
+    let systemd = SystemdHost;
+    let fallback = ragon_docs::host::RlimitHost::in_temp();
+    use ragon_docs::host::Host;
+    let scoped = systemd.can_create_scopes();
+    let mut env = index::Env::real(if scoped { &systemd } else { &fallback })?;
+    env.sandbox = scoped;
+    let settings = Settings::load();
+    env.settings.extract_timeout_s = settings.pdf_timeout_s;
+    let extracted = match index::extract_one(&env, file, range.map(|(_, b)| b))? {
+        Ok(extracted) => extracted,
+        Err(why) => {
+            writeln!(out, "{why}")?;
+            return Ok(ExitCode::from(1));
+        }
+    };
+    let count = extracted.pages.unwrap_or(0);
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let (shown, next, cut) = select_units(&extracted.units, range, max_chars);
+    let scans: Vec<u32> = extracted
+        .needs_ocr
+        .iter()
+        .copied()
+        .filter(|p| range.is_none_or(|(a, b)| *p >= a && *p <= b))
+        .collect();
+    let returned = match (
+        shown.first().and_then(|s| s.0),
+        shown.last().and_then(|s| s.0),
+    ) {
+        (Some(a), Some(b)) if a == b => format!("p.{a}"),
+        (Some(a), Some(b)) => format!("pp.{a}-{b}"),
+        _ => String::new(),
+    };
+    if json {
+        let pages: Vec<serde_json::Value> = shown
+            .iter()
+            .map(|(p, t)| serde_json::json!({ "page": p, "text": t }))
+            .collect();
+        writeln!(
+            out,
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "file": name, "title": extracted.title, "page_count": extracted.pages, "returned": returned,
+                "pages": pages, "needs_ocr": scans, "next_page": next, "truncated": cut,
+            }))?
+        )?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let title = extracted
+        .title
+        .as_ref()
+        .map(|t| format!(" — \"{t}\""))
+        .unwrap_or_default();
+    if extracted.pages.is_some() {
+        writeln!(
+            out,
+            "{name}{title}, {count} pages{}",
+            if returned.is_empty() {
+                String::new()
+            } else {
+                format!("; {returned} returned")
+            }
+        )?;
+        if extracted.units.is_empty() {
+            writeln!(
+                out,
+                "No page has a text layer (a scan, or only images): OCR is not offered here."
+            )?;
+        }
+        for (page, text) in &shown {
+            writeln!(out, "--- page {} of {count} ---", page.unwrap_or(0))?;
+            writeln!(out, "{}", text.trim_end())?;
+        }
+        for p in scans {
+            writeln!(
+                out,
+                "p.{p}: no text layer (scanned?); OCR is not offered here"
+            )?;
+        }
+        if let Some(n) = next {
+            writeln!(
+                out,
+                "-- more: ragon-docs extract {} --pages {n}-{}",
+                file.display(),
+                range.map_or(n + 4, |(_, b)| b).min(count)
+            )?;
+        }
+    } else {
+        for (_, text) in &shown {
+            writeln!(out, "{}", text.trim_end())?;
+        }
+        if cut {
+            writeln!(
+                out,
+                "-- cut at --max-chars {max_chars}: the rest of {name} is not shown"
+            )?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// One JSON line per question: its id, the ranked chunks (document path and text) and the
+/// search's wall time, with the model and the databases loaded once, as a query process would.
+fn bench_search(questions: &PathBuf, path: &PathBuf, k: usize, no_merge: bool) -> Result<()> {
+    use std::io::BufRead;
+    let collections = search::collections()?;
+    let mut searcher = Searcher::default();
+    searcher.merge_adjacent = !no_merge;
+    searcher.refresh(&collections)?;
+    let embedder = mcp::query_embedder()?;
+    let weight = Settings::load().bm25_weight;
+    let mut sink = std::fs::File::create(path)?;
+    // One warm-up query loads the vectors, as the first query of a session does.
+    let _ = searcher.search(
+        "warm up",
+        1,
+        &Filters::default(),
+        Some(embedder.as_ref()),
+        weight,
+    )?;
+    for line in std::io::BufReader::new(std::fs::File::open(questions)?).lines() {
+        let q: serde_json::Value = serde_json::from_str(&line?)?;
+        let text = q["question"].as_str().unwrap_or("");
+        let started = std::time::Instant::now();
+        let answer = searcher.search(
+            text,
+            k,
+            &Filters::default(),
+            Some(embedder.as_ref()),
+            weight,
+        )?;
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let hits: Vec<serde_json::Value> = answer.hits.iter().map(|h| serde_json::json!({ "rel": h.rel, "collection": h.collection, "loc": h.loc, "text": h.text })).collect();
+        writeln!(
+            sink,
+            "{}",
+            serde_json::json!({ "id": q["id"], "ms": ms, "hits": hits })
+        )?;
+    }
+    Ok(())
+}
+
+/// `ragon-docs ocr-file`: every page of a PDF (or the image) through the OCR, one JSON line each.
+fn ocr_file(
+    file: &std::path::Path,
+    dpi: Option<f32>,
+    route: Option<&str>,
+    threads: usize,
+) -> Result<()> {
+    use ragon_docs::ocr::{self, image::Image, osd::Script};
+    let mut out = std::io::stdout();
+    let mut engine = ocr::Ocr::load(&config::lib_dir(), &config::ocr_dir(), threads)?;
+    let route = route.map(|r| match r {
+        "han" => Script::Han,
+        "cyrillic" => Script::Cyrillic,
+        "hangul" => Script::Hangul,
+        "arabic" => Script::Arabic,
+        _ => Script::Latin,
+    });
+    let mut read = |page: u32, img: &Image| -> Result<()> {
+        let started = std::time::Instant::now();
+        let text = match route {
+            Some(script) => engine.read_as(img, script)?,
+            None => engine.read_page(img)?,
+        };
+        let seconds = started.elapsed().as_secs_f64();
+        writeln!(
+            out,
+            "{}",
+            serde_json::json!({ "page": page, "seconds": seconds, "width": img.width, "height": img.height, "route": text.route, "tesseract_script": text.tesseract_script, "confidence": text.confidence, "lines": text.lines, "text": text.text() })
+        )?;
+        Ok(())
+    };
+    if ragon_docs::discover::Kind::of(&file.to_string_lossy())
+        == Some(ragon_docs::discover::Kind::Pdf)
+    {
+        let pdf = ragon_docs::extract::pdf::Pdf::load(&config::lib_dir())?;
+        let count = pdf.extract(file, Some(0))?.page_count;
+        let pages: Vec<u32> = (1..=count).collect();
+        let mut render = |number: u32, w: usize, h: usize, gray: &[u8]| -> Result<()> {
+            let img = Image::from_gray(w, h, gray);
+            read(number, &img)
+        };
+        match dpi {
+            Some(dpi) => pdf.render_gray_at(
+                ragon_docs::extract::pdf::Source::Path(file),
+                &pages,
+                dpi,
+                &mut render,
+            )?,
+            None => pdf.render_gray(
+                ragon_docs::extract::pdf::Source::Path(file),
+                &pages,
+                &mut render,
+            )?,
+        }
+    } else {
+        let img = ocr::decode_image(&std::fs::read(file)?)?;
+        read(1, &img)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_date_that_is_not_on_the_calendar_is_refused() {
+        assert_eq!(parse_date("1970-01-02").unwrap(), 86400);
+        assert!(parse_date("2028-02-29").is_ok(), "a leap day");
+        for bad in [
+            "2026-13-45",
+            "2026-00-10",
+            "2015-04-31",
+            "2015-02-29",
+            "2015-05-00",
+        ] {
+            let err = parse_date(bad).expect_err(bad).to_string();
+            assert!(err.contains("is not a date"), "{bad}: {err}");
+        }
+    }
+
+    fn unit(page: Option<u32>, text: &str) -> ragon_docs::extract::Unit {
+        ragon_docs::extract::Unit {
+            loc: String::new(),
+            page,
+            line_first: None,
+            line_last: None,
+            heading: String::new(),
+            group: None,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn extract_keeps_to_max_chars_and_says_what_it_left_out() {
+        // A text file: the sections after the cap are left out, and that is said.
+        let text = [unit(None, &"a".repeat(60)), unit(None, &"b".repeat(60))];
+        let (shown, next, cut) = select_units(&text, None, 100);
+        assert_eq!((shown.len(), next, cut), (1, None, true));
+        // A page range is kept to the cap too, and says where to go on.
+        let pdf: Vec<_> = (1..=4).map(|p| unit(Some(p), &"x".repeat(60))).collect();
+        let (shown, next, cut) = select_units(&pdf, Some((2, 4)), 100);
+        assert_eq!((shown.len(), next, cut), (1, Some(3), true));
+        let (shown, next, cut) = select_units(&pdf, Some((2, 3)), 1000);
+        assert_eq!((shown.len(), next, cut), (2, None, false));
+    }
+}

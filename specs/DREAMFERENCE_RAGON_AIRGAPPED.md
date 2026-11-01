@@ -1,0 +1,559 @@
+# Ragon Airgapped — `/airgapped`
+
+**Status:** Phase 1 partly implemented: the levels, `/airgapped` and `ragon airgapped`, the sandbox enforcement of `on`, the web commands, and the configuration field. §14 records what was built, where it departs from the design below (the enforcement hook is in the sandbox helper, not in core), what ran live, and what is not built. The rest of this document is the design as specified; §9 lists what was checked before the build. **Once the `duckduckgo` level was removed** (§14.6): DuckDuckGo answered SearXNG with a CAPTCHA, so the level searched nothing. The design below still describes it; where it does, it is history.
+**Goal:** one command that says how much of a `ragon` session may reach the internet, with two levels: everything (the default) and nothing at all. (A third, search through DuckDuckGo only, was removed; §14.6.)
+**Target:** the `ragon` terminal agent (and, since §14.9, `ragon web`, the desktop app and the phone bridges).
+**Builds on:**
+- the web commands `ragon-search` and `ragon-fetch` ([RAGON_CODEX §4.1](./DREAMFERENCE_RAGON_CODEX.md)), and the SearXNG instance on `127.0.0.1:8888` they search through;
+- Codex's command sandbox, which already runs a command with no network when its policy says so (`bwrap --unshare-net`);
+- the pattern `/cavemode` set for a per-session level: a file keyed by the session, configuration tiers, a World State section (CAVE_MODE §3, §5 (spec removed));
+- the airlock of [RAGON_EGRESS §4](./DREAMFERENCE_RAGON_EGRESS.md), which becomes the second layer of this spec's strictest level (§5.4).
+
+**One hook patch**, `0019-airgapped` (§6.4, as built in §14), which raised the patch-size cap explicitly.
+
+---
+
+## 1. Levels
+
+| Level | Search | `ragon-fetch` | Gmail | Network for commands the agent runs | Enforced by |
+|---|---|---|---|---|---|
+| `off` (default) | Every engine SearXNG has enabled | Any page | Yes | Yes | Nothing to enforce: this is today's behaviour |
+| ~~`duckduckgo`~~ | DuckDuckGo only | Any page | Yes | Yes | The web commands (§4). A preference, not a barrier. **Removed** (§14.6) |
+| `on` | None | None | None | None | The kernel (§5) |
+
+**`off` is today's `ragon`.** A general search goes to the general engines listed in §14.10 (Brave, Google through `google cse`, Startpage, DuckDuckGo's API endpoint, Mwmbl, Yep, Seznam, GMX, search.ch, Wikipedia and Wikidata, plus small answer engines); `ragon-search --category` sends a search to one of the other categories there instead. Earlier, the list was Brave, DuckDuckGo, Google, Startpage, Wikipedia and Wikidata, and that day all four web engines among them refused this machine. SearXNG sends the engines the query text; they see SearXNG's address, not an account. A query repeated within the hour is answered from `ragon-search`'s cache and sent nowhere.
+
+**`duckduckgo` changed who read the queries, and nothing else** (removed, §14.6). Search goes to DuckDuckGo alone. Fetching a page, Gmail and the agent's own commands (`git`, `pip`, `cargo`, `curl`) work as at `off`: the level is about which search company sees what the session is looking for.
+
+**`on` is the only level that may be called air-gapped.** Nothing the agent runs can open a connection to anything, on the internet or on this machine. Search, fetch and Gmail are off because each sends something out: a query to an engine, a URL to a site, a mail search to Google.
+
+**What still talks at `on`,** all of it on this machine:
+- `ragon` itself to the model server (`vllm_host`). If that is another machine on the LAN, prompts go there, as the user configured. A repository's own `./dreamference.toml` cannot choose it: `vllm_host` there is ignored, whatever it names.
+- The launcher's check of the Gmail service on `127.0.0.1:8767` is skipped at `on`, since Gmail is not offered.
+- The code index reads its files; it has no network code.
+
+**Names.** The command is `/airgapped`, so `on` and `off` read as answers to it. No document, message or prompt text may call `off` or `duckduckgo` air-gapped; [RAGON_EGRESS](./DREAMFERENCE_RAGON_EGRESS.md) already holds the docs to that.
+
+---
+
+## 2. The command
+
+`/airgapped` is a built-in slash command of the `ragon` TUI. It writes one small file (§6.1) and prints a few lines. It never calls the model, so it answers at once, including while a turn is running.
+
+| Form | Effect |
+|---|---|
+| `/airgapped` | Shows the level in force, where it came from, the levels with one line each, and what is and is not enforced right now |
+| `/airgapped <level>` | Sets `off` or `on` for this session. Applies to the next command the agent starts, mid-turn included |
+| `/airgapped default <level>` | Also writes `ragon_airgapped = "<level>"` to the user-level configuration file (§6.1), so new sessions start at it |
+| anything else | Prints the usage line. Nothing changes |
+
+What `/airgapped` prints at the default:
+
+```
+Airgapped: off (default)
+  off         search through every engine SearXNG has enabled; pages fetched directly   ← in force
+  on          no network for anything the agent runs: no search, no fetch, no Gmail
+Not covered at any level: the web chat, MCP servers you configured.
+Change: /airgapped on (this session) or /airgapped default on (new sessions).
+```
+
+At `on` it adds one line saying whether the level is enforced, for example `Enforced: commands run with no network (workspace-write sandbox).` or, in the cases of §5.3, a warning that starts `NOT ENFORCED:` and names the reason.
+
+**Rules:**
+- **The level belongs to the session and to everything it starts.** `ragon resume` keeps it. Subagents, forks and side conversations take their parent's level: a restriction that a subagent could step around is not one. (This differs from cave mode, where a subagent starts at the default.)
+- **The model cannot change it.** The session file lives under `$CODEX_HOME`, which the command sandbox cannot write, with one exception that §5.3 closes: a session whose working directory contains `$CODEX_HOME`. A configuration file in the repository can only tighten the level (§6.1), because the agent, or a clone, can write there.
+- **A switch does not reach back.** A command already running when the level changes keeps the network it started with. Going to `on` mid-turn applies from the next command. What the session already read from the web stays in its history.
+- **`ragon exec` and scripts** take the configured level, or `DREAMFERENCE_RAGON_AIRGAPPED=on ragon exec …` for one run.
+- **From a shell:** `ragon airgapped` prints the same status for the configured level, and `ragon airgapped default <level>` sets it, as `ragon night …` mirrors `/night`.
+
+---
+
+## 3. What the model is told
+
+The system prompt stays one text for every level, so the prefix cache survives a switch (CAVE_MODE §5.1 (spec removed)). The level reaches the model as a World State section, `airgapped`, whose value is the level name. A fragment is added to the conversation only when the value changes:
+
+| Change | Fragment |
+|---|---|
+| Session starts at `off` | None. The session is exactly today's |
+| To `duckduckgo` | Search uses DuckDuckGo only. If it does not answer, say so; there is no other engine at this level and nothing to restart |
+| To `on` | This session has no network. `ragon-search`, `ragon-fetch`, `ragon-admin gmail`, `curl`, `git fetch`/`push` and package installs fail by design. Do not try them, and do not ask to run a command outside the sandbox to get around it. Work from the files here; when an answer needs something you cannot look up, say which part is from memory and may be out of date |
+| Back to `off` | The earlier restriction no longer applies; web access is as the system prompt describes |
+
+The exact texts go in an appendix when they are written, and are checked against the live model first (§10, Phase 0).
+
+**One change to the system prompt.** `WEB_ACCESS_INSTRUCTIONS` says "Do not say you cannot browse the web. You can". It gains one clause: unless a later message says web access is off for this session. Without it, the two instructions contradict each other at `on`. This is a one-time change of the prompt text, not a per-level one.
+
+**Gmail.** The launcher adds the Gmail section to the prompt at start when an account is connected. A session that starts at `on` does not get it. A session switched to `on` later still has it in its prompt, and the `on` fragment says Gmail is unavailable.
+
+**After compaction** the fragment must still be in the history, so the section uses a retained-fragment matcher, as cave mode's does. Unlike cave mode there is no per-turn reminder: the level is enforced outside the model at `on` and by the web commands at `duckduckgo`, so the model forgetting it costs a failed command, not a leak.
+
+---
+
+## 4. `duckduckgo`: the web commands follow the level
+
+> **Removed** (§14.6). The web commands now send `categories=general` at `off` and refuse at `on`; the rest of this section is the design as it was.
+
+`ragon-search` reads the level before it sends anything (§6.2):
+
+- **`off`:** as today, `GET /search?q=…&format=json&categories=general&language=en`.
+- **`duckduckgo`:** `GET /search?q=…&format=json&engines=duckduckgo&language=en`, with **no `categories` parameter**. SearXNG adds the engines of a named category to the ones in `engines`: with both parameters it queried all five general engines here, and with `engines` alone only DuckDuckGo (§9).
+- **`on`:** it refuses before any request, exits non-zero and prints `Web access is off in this session (/airgapped on). Only the user can change that, with /airgapped.`
+
+`ragon-fetch` refuses the same way at `on` and is unchanged at the other two levels.
+
+**The error texts change with the level.** Today an unreachable SearXNG prints the `docker run` line that starts it, and a search in which every engine failed suggests restarting the container. Both would send the model off to repair something that is not broken:
+- at `on`, neither hint is ever printed (the refusal above comes first);
+- at `duckduckgo`, when DuckDuckGo does not answer, the error is `DuckDuckGo did not answer (<reason>). This session searches through DuckDuckGo only (/airgapped duckduckgo).` with no restart hint.
+
+**`--json` output** gains `"airgapped": "<level>"`, so a script can tell a refused search from an empty one, and each result gains `"engines"`, the full list SearXNG reports for it. Today a result carries only `engine`, the first of them, which cannot show that no other engine contributed.
+
+**This level is a preference, and the spec says so everywhere it is described.** A command the agent runs could still ask SearXNG for another engine directly (`curl '127.0.0.1:8888/search?engines=google…'`). The threat this level answers is a search company reading the queries of a model that is doing what it was told, not a model working against its user. A user who needs a barrier uses `on`.
+
+**Risk: one engine is less reliable than five.** DuckDuckGo rate-limits SearXNG instances from time to time, and at this level nothing else can step in. Phase 0 measures how often (§10).
+
+**Gmail stays on at this level.** The user connected the account on purpose, and a Gmail search goes to the user's own mailbox, not to a search engine. If that turns out to be the wrong line, it is a one-word change in the table of §1.
+
+---
+
+## 5. `on`: enforced by the kernel
+
+### 5.1 The command sandbox
+
+Every command the agent runs goes through Codex's sandbox. Under `workspace-write`, the launcher today sets `[sandbox_workspace_write] network_access = true`, so the web commands work. At `on` the sandbox policy for a command is the restricted one whatever the configuration says, so `bwrap` gives the command a network namespace of its own with nothing in it. `curl`, `git fetch`, `pip install`, `ragon-search` and a hand-written socket all fail the same way, because none of them has an interface to send on.
+
+**How it composes with the user's own sandbox choice.** `on` forces the restricted policy. *Superseded (§14.11):* below `on` every sandbox has the network, the read-only one included (`ragon exec` without `-s`, the TUI's Read Only); the user's own `network_access = false` still holds. The design read: at the other levels the sandbox's own answer stands, so `ragon exec` without `-s` (read-only) had no network at any level.
+
+**One hook decides it, per command.** The session's network policy is computed in one place in Codex's core (`TurnContext::network_sandbox_policy()`, from the permission profile). The patch adds one line there: when `ragon_launcher::airgapped::sealed(session)` is true, the answer is `Restricted`. `session` is the same root-session key the level file uses (§6.1), so the hook and `/airgapped` can never read different files. That covers the TUI, `ragon exec`, a resumed session, a subagent and a switch in the middle of a turn, because it is asked again for every command. Phase 0 confirms that this is the only path a command's network policy takes, and that the core crate can depend on the launcher crate without a cycle (§9). If the dependency would be a cycle, the resolution moves into a leaf crate, `ragon-airgapped`, with no dependency beyond the standard library, which both the core and the launcher use; the hook stays one line. The other route, in which the launcher passes `-c sandbox_workspace_write.network_access=false` at start and `/airgapped on` sends what `/permissions` sends, is rejected: it misses a session resumed under a different configured level, and it turns the slash command's one-line arm into policy construction inside a patch.
+
+### 5.2 What `on` switches off beside the sandbox
+
+- **`ragon update`** keeps working at `on` (decided). The level is about what a session's commands may reach; an update is the user replacing the binaries from a shell, outside any session and its sandbox, so it is not refused. `update` is one of the launcher's offline subcommands and reads no level. From inside a session at `on` it fails like any other command, since the sandbox has no network.
+- **`/node`** keeps working at `on` (decided): it is a deliberate exception for the local network only. Like a `!` command, it is the user's own and runs outside the agent's sandbox: the TUI suspends itself and runs `ragon-admin node …` in the terminal, and nothing it prints or asks for reaches the model. Before it runs it prints `airgapped is on: /node talks to machines on your local network only`, so the user knows why it is allowed. Everything this machine sends for it goes to machines on the LAN (mDNS, SSH, the other node's `ragon-admin`). `node provision` installs Ragon on the *new* node, which may then reach PyPI and its image registry **from that node**, not from this one; this machine's own traffic stays on the LAN. Under the app server or `ragon exec`, where there is no terminal to hand over, `/node` refuses and says to run `ragon-admin node …` in a shell (§14.8).
+- **The Gmail check at start** is skipped, and Gmail is not advertised (§3).
+- **`ragon-code session`** is unaffected: indexing already runs in a network-less sandbox.
+
+### 5.3 Where the sandbox alone is not enough
+
+`/airgapped` reports each of these with its reason (`NOT ENFORCED:` for the ones that leave a way out), and the launcher's start-up line says the same when a session starts at `on`:
+
+- **Full Access.** With `-s danger-full-access` or `--dangerously-bypass-approvals-and-sandbox` there is no sandbox to take the network away, so `on` and Full Access are **incompatible and never allowed together** (§14.7). The launcher refuses to start a session at `on` with Full Access chosen by a flag, a `-c` override or a configuration file; inside a session, `/permissions` shows Full Access disabled while the level is `on`, and `/airgapped on` is refused while the session runs in Full Access. Each refusal says why.
+- **`$CODEX_HOME` inside a writable root.** The sandbox lets commands write the working directory, `/tmp` and `$TMPDIR`. `ragon` started in the home directory therefore makes `~/.ragon` and `~/.config/dreamference` writable, and a command could rewrite the session's level file or the user-level configuration file (measured, §14.5). The level is therefore **held outside those folders**: a session seen at `on` gets a seal, a file under the user's runtime directory (`$XDG_RUNTIME_DIR/ragon-airgapped/<thread-id>`), which the sandbox mounts read-only. While the seal exists the level is `on` whatever the files say. It is written by the `ragon` process (when the World State section sees `on`, before the turn's first command, and by `/airgapped on`), removed by `/airgapped off` or `/airgapped duckduckgo` typed by the user, and pruned at the next launch once the process that wrote it has exited. Where there is no runtime directory, the first design applies as a fallback: an exposed session file may tighten the configured level and not loosen it, and `/airgapped` reports the hole as `NOT ENFORCED`.
+- **A command the user approves to run outside the sandbox** has the network. The `on` fragment tells the model not to ask (§3), and the approval prompt is the user's own decision, but nothing stops it.
+- **MCP servers** the user configured run outside the command sandbox, with the network.
+- **Plugins** (allowed at `off`): `git` fetches a marketplace or a plugin in `ragon`'s own process, and a plugin's MCP servers and hooks run outside the sandbox. A session that starts at `on` loads none and refuses installs (§14.12); a session switched to `on` later keeps those it loaded until restarted, and `/airgapped` says so.
+- **`ragon` itself.** Its known channels to the upstream vendor and GitHub are closed at their call sites (patches `0013`, `0015`, `0016`), and a traced session reaches only the model server and the Gmail service. A channel a future Codex release adds would not be stopped by the command sandbox.
+
+### 5.4 The airlock closes those
+
+[RAGON_EGRESS §4](./DREAMFERENCE_RAGON_EGRESS.md) describes running the whole `ragon` process tree in a network namespace where only allowlisted local ports are reachable. That is the second layer of `on`, not a separate feature:
+
+- **One knob.** `ragon --airlock` and `airlock = true` are dropped from that spec in favour of this level. A session whose configured level is `on` at launch starts inside the airlock, once it exists.
+- **Its allowlist at `on` is the model server only.** EGRESS allowed SearXNG (`8888`) and Gmail (`8767`) because its airlock was a mode that kept search. At `on` neither is reachable.
+- **Switching inside a running session.** A process cannot be moved into or out of a namespace after it starts. `/airgapped on` typed in a session that started at another level gets the command sandbox at once and prints that the whole-process layer needs a restart (`ragon resume`). `/airgapped off` typed in a session that started inside the airlock prints that the session must be restarted to get the network back, and changes nothing until then.
+- **The audit** (`ragon-admin audit egress`, EGRESS Phase 1) gains `--airgapped on`, which must show the model server as the only destination.
+
+Until the airlock is built, `on` means: nothing the agent runs has a network, with the exceptions of §5.3 stated on screen.
+
+---
+
+## 6. How it is built
+
+### 6.1 Where the level comes from
+
+Resolved before every command and every model request. First match wins:
+
+1. **This session:** `$CODEX_HOME/airgapped/<root-session-id>`, a file holding the level name, written by `/airgapped <level>`. Keyed by the root session, not the thread, so subagents and forks read their parent's file (Codex exports the root session's id to commands as `CODEX_SESSION_ID`; whether the World State input and the hook of §5.1 can reach it is a Phase 0 check, and the fallback is to write one file per thread when a child thread starts).
+2. **`DREAMFERENCE_RAGON_AIRGAPPED`**, from the environment `ragon` was started in.
+3. **`ragon_airgapped` in the configuration files, strictest wins.** The repository's `./dreamference.toml` (or the file `DREAMFERENCE_CONFIG_PATH` names) and the user-level `~/.config/dreamference/config.toml` are both read, and the stricter level is taken (`on` over `duckduckgo` over `off`). Every other key takes the first file that exists; this one does not, because the agent can write `./dreamference.toml`, and a file it can write must not be able to loosen the level.
+4. **`DEFAULT_RAGON_AIRGAPPED`**, `"off"`.
+
+- **`/airgapped default <level>` always writes the user-level file,** with `toml_edit`, creating it if needed. If the repository's file or the environment variable would still give a different result, it says which and why.
+- **What cannot be read counts as `on`** (§6.5): an invalid value at any tier, a file that exists but cannot be read, and a configuration file that is not TOML the resolver can follow. `/airgapped` names each and where it was. A file that does not exist is not a tier.
+- **Every other component asks this resolver** (§6.5): Python and the desktop app run `ragon airgapped --json`. `DreamferenceConfig.ragon_airgapped` stays the setting as one configuration file holds it, written by `save_config()` only when it differs from the default; it decides nothing.
+- **Session files** older than 30 days are deleted by the launcher at start, as cave mode's are.
+
+### 6.2 How the web commands learn the level
+
+`ragon-search` and `ragon-fetch` run inside the command sandbox, as children of the agent's shell. They resolve the level by the same four tiers, finding the session file through `CODEX_SESSION_ID` and `$CODEX_HOME` (default `~/.ragon`), both of which the sandbox can read and not write. They link the resolver crate itself (`ragon-airgapped = { path = "../ragon-rs/airgapped" }`, §6.5).
+
+**A second signal: the sandbox's own.** Codex sets `CODEX_SANDBOX_NETWORK_DISABLED=1` for a command it runs without a network. That happens at `on` under the read-only sandbox, and below `on` only where the user switched the sandbox's network off (§14.11; until recently, at any level under a read-only sandbox). When either web command sees the variable it sends nothing and prints no restart hint, and the message depends on the level it resolved:
+- **`on`:** the message of §4.
+- **Another level, or none found:** `This command has no network: the user switched the sandbox's network off (sandbox_workspace_write.network_access = false, or DREAMFERENCE_RAGON_READ_ONLY_NETWORK=off). Only the user can change that.` Saying `/airgapped on` here would name a setting nobody chose. (Originally it named the read-only sandbox and sent the user to `ragon exec -s workspace-write`.)
+
+**Finding `$CODEX_HOME`.** The launcher sets `CODEX_HOME` in `ragon`'s own environment (`use_ragon_home()`), and Codex's default policy passes the environment on to commands, so the variable is normally there. A user's `shell_environment_policy` can strip it; the web commands then fall back to `~/.ragon`.
+
+Run by hand from a terminal, outside any session, the commands follow tiers 2–4.
+
+### 6.3 Launcher module `ragon-rs/src/airgapped.rs`
+
+- the three levels, their aliases and their order of strictness;
+- resolution (§6.1) and `sealed(session)` for the hook (§5.1);
+- `command(args, session)`, which returns the lines `/airgapped` prints, and `run_cli` for `ragon airgapped …`;
+- the World State section and its fragments (§3);
+- the enforcement report: which of the cases in §5.3 applies now;
+- the refusals of §5.2 and §5.3 in `prepare_args`.
+
+### 6.4 Patch `0019-airgapped`
+
+Modelled on `0017-cave-mode` (removed) and `0018-night-slash-command`:
+- `codex-rs/tui/src/slash_command.rs`: the variant `Airgapped`, placed after `Permissions`, since both set what the agent may reach; its description, "set how much of the internet this session may use"; membership in `supports_inline_args()` and `available_during_task()`;
+- `codex-rs/tui/src/chatwidget/slash_dispatch.rs`: one arm in each of the two dispatch functions, calling `ragon_launcher::airgapped::command(…)`, and membership in the list of commands that run at once when queued;
+- `codex-rs/app-server/src/extensions.rs` and `codex-rs/cli/src/main.rs`: one `install` line each for the World State section (where cave mode's also sat before its removal);
+- `codex-rs/core`: the one-line hook of §5.1, and one path dependency in its manifest: `ragon-launcher`, or the leaf crate `ragon-airgapped` if Phase 0 finds a cycle.
+
+**Budget.** When `0019` was designed, the series stood at 26,933 bytes under a 27,500-byte cap (`test_the_patches_stay_small`; the cap is 64,000 bytes today). `0018` cost 2,133 bytes for the slash command alone; the two `install` lines and the core hook add about 1.2 KB, so `0019` was estimated at 3.3 KB and the series at about 30.2 KB. The cap was raised in the same commit, explicitly, to the measured size rounded up to the next 500 bytes, as cave mode and `/night` did.
+
+### 6.5 One reader
+
+The owner's decision: one reader, the Rust resolver asked through `ragon airgapped`, and everything else fails closed when it cannot get an answer.
+
+**The reader is the crate `ragon-rs/airgapped/`.** Every Rust component links it: the launcher, Codex's sandbox helper (patch `0019`), `ragon web` and the app server's policy, the apps, the messenger bridges, `ragon sync`, `ragon-search` and `ragon-fetch`, and `ragon-docs`. The web and docs crates, built outside the Codex workspace with their own lockfiles, take it as a path dependency (`ragon-airgapped = { path = "../ragon-rs/airgapped" }`, as `ragon-code-rs` takes `ragon-safegit`). The byte-identical copy in `ragon-web-rs/src/airgapped.rs` is gone; in its place a test checks that both crates name the path dependency and carry no resolver of their own, and that `CodexBrandedBuilder.crate_key` covers a crate's path dependencies, so a change to the resolver rebuilds `ragon-search`, `ragon-fetch` and `ragon-docs`.
+
+**Everything else asks `ragon airgapped --json`.** The answer is one line of JSON:
+
+```json
+{"level":"on","tier":"config","source":"ragon_airgapped in /repo/dreamference.toml","invalid":[]}
+```
+
+`tier` is `session`, `sealed`, `environment`, `config` or `default`; `source` is the label the status line shows; `invalid` names what was taken as `on` or passed over. Options: `--thread <id>` (a session's file and seal, as the text form), `--cwd <dir>` (the repository whose `dreamference.toml` is read, without changing folder) and `--sealed-by <pid>` (also `on` when a seal written by process `pid` holds its session, for an MCP server whose parent runs the session and which knows no thread id). `ragon airgapped` is answered before the launcher looks for a model server or a node, so it needs neither and sends no multicast query. The text form is unchanged.
+
+**What cannot be read counts as `on`:**
+
+| At a tier that is consulted | Result |
+| --- | --- |
+| A value that is not a level (`duckduckgo`, `nope`, an empty session file or `ragon_airgapped = ""`) | `on`, named |
+| A file that exists but cannot be read (permissions, not UTF-8) | `on`, named |
+| A configuration file the resolver cannot follow as TOML up to the key or the first table header (YAML, JSON, broken TOML) | `on`, named |
+| A file that does not exist; an empty `DREAMFERENCE_RAGON_AIRGAPPED` | not a tier |
+
+Tiers keep their order and first match wins; among the configuration files the strictest wins, so one unreadable file is enough for `on`. A seal still holds `on` (§5.3). The resolver still reads a configuration file only up to the key or the first table header: a fault after that is not seen, because a TOML parser stays out of the sandbox helper.
+
+**Callers fail closed.** `AirgappedResolver` (`dreamference/config/airgapped_resolver.py`) is the Python side: it runs the built `ragon` (`CodexBrandedBuilder.executable_path()`, or the binary it is given) with a five-second timeout and returns `on` when there is no binary, the command fails or times out, or the answer is not the JSON above. `DreamferenceConfig.resolve_airgapped_level`, the MCP server's web tools, the forge's mirrors, the image search MCP and Night Shift ask through it; the desktop app (`desktop/electron/src/airgapped.ts`) asks the same command and shows and enforces `on` when it gets no answer.
+
+- **Night Shift** asks twice, with `--cwd` at the task's worktree and at the main checkout, the session's id in `--thread`, and takes the stricter, as it read both files before.
+- **Dropped:** the forge read `ragon_airgapped` from `~/.ragon/config.toml` as well; nothing writes the key there (`/airgapped default` writes the user-level file), so that read is gone.
+- **A YAML or JSON file named by `DREAMFERENCE_CONFIG_PATH`** now gives `on`: the resolver reads TOML only. Point the variable at a TOML file, or set the level in the user-level file.
+
+**The conformance cases** are `ragon-rs/airgapped/cases.json`, two kinds. `resolve` cases give the tiers as read (a session file's text or that it could not be read, the environment, each configuration file's text or that it could not be read, whether a seal holds the session and whether the level files are exposed) and the expected level, tier and number of notes; the crate's tests run them. `answer` cases give what `ragon airgapped --json` printed (or that it printed nothing, failed or timed out) and the level a caller must act on; `tests/test_airgapped.py` runs them against `AirgappedResolver` and `desktop/electron/src/airgapped.test.ts` against the app's reader. A new reader passes both kinds or is not added.
+
+---
+
+## 7. Other things that run `ragon`
+
+- **Night Shift.** A night task runs at the configured level, fixed once per task before the agent starts and exported as `DREAMFERENCE_RAGON_AIRGAPPED` to every command of the task, so the agent's edit of the worktree's `dreamference.toml` cannot loosen it for its own tests. `[night] airgapped = "<level>"` in the user-level file may set a stricter one for night runs alone; a looser one is ignored. The runner's own test command goes through the same sandbox helper as the agent's commands (`ragon sandbox`), so at `on` it has no network either: tests of code the agent just wrote are the agent's code running. With `[night] test_sandbox = false` and level `on` the tests are not run, and the report says why. (Built by the Night Shift sandboxing change; see [NIGHT_SHIFT](./DREAMFERENCE_RAGON_NIGHT_SHIFT.md).) This replaces NIGHT_SHIFT §6's "night runs use the airlock by default": a night at `on` cannot install a missing dependency or read documentation, which is the user's choice to make, not a default.
+- **`ragon-admin run`** with Codex as the agent goes through the launcher, so it follows the configured level. The other agents (Cline, Continue, OpenHands) are not covered.
+- **`ragon-admin mcp`.** Its `web_search` and `web_fetch` tools (`WebTools`) follow tiers 2–4, resolved on every call, with the same three behaviours: at `on` nothing is sent, at `duckduckgo` the search names that engine and no category, at `off` nothing changes. There is no session there and no slash command in an IDE, so the `on` message names the setting (`ragon_airgapped = on`) and `ragon airgapped default off`, not `/airgapped`.
+
+---
+
+## 8. What this does not cover
+
+Stated in the command's own output (§2), so nobody takes `on` for more than it is:
+
+- **`ragon-admin`'s own downloads:** models from Hugging Face, Docker images, the Codex build's crates and V8, the fonts.
+- **Inbound connections.** The model server listens on every interface by design ([README](./README.md), "Accepted by design").
+- **What the user runs** in their own terminal.
+
+---
+
+## 9. Checked and not checked
+
+**Checked on this machine:**
+- **SearXNG's engine parameter.** `engines=duckduckgo` with `categories=general` queried five engines (Brave, DuckDuckGo, Google CSE, Startpage, Wikipedia); `engines=duckduckgo` alone queried DuckDuckGo only. Read from `unresponsive_engines`, because the SearXNG container had no outbound connectivity at the time (the host had just restarted) and every engine failed. So which engines are *asked* is verified; that results then carry only `duckduckgo` is not.
+- **The enabled general engines** are the ones §1 lists (`GET /config`).
+- **The sandbox's writable roots** are the working directory, `/tmp` and `$TMPDIR` (`SandboxPolicy::get_writable_roots_with_cwd`), so `$CODEX_HOME` is not writable from a command.
+- **`CODEX_THREAD_ID` and `CODEX_SESSION_ID`** are set for the agent's commands (`core/src/exec_env.rs`).
+- **`CODEX_HOME`** is set in `ragon`'s own environment by `use_ragon_home()` (`ragon-rs/src/home.rs`), and Codex's default shell-environment policy inherits the environment, leaving out only a short list of its own token variables (`protocol/src/shell_environment.rs`).
+- **`ragon-search --json`** carries one `engine` per result today, not the list.
+
+**Read from the code, not run:**
+- a restricted network policy becomes `bwrap --unshare-net` (`linux-sandbox`, tests `inserts_unshare_net_when_network_isolation_requested`);
+- `TurnContext::network_sandbox_policy()` is where a turn's network policy is read;
+- `/permissions` changes a running session's policy through `OverrideTurnContext { permission_profile, … }`.
+
+**Not checked:**
+- whether hooking `network_sandbox_policy()` covers every way a command is started (the unified exec path, the legacy `SandboxPolicy` conversion beside it, `apply_patch`, Code Mode);
+- whether `codex-core` can depend on `ragon-launcher` without a dependency cycle (the launcher depends on `codex-extension-api` and `codex-models-manager`);
+- whether the root session's id is available where the level is resolved;
+- that `CODEX_SANDBOX_NETWORK_DISABLED` is set on Linux in this Codex release, and not only on macOS (`core/src/spawn.rs` sets it; under which conditions was not read);
+- that `CODEX_HOME` and `CODEX_SESSION_ID` are in fact present in a sandboxed command's environment here (run `env` through the agent);
+- that the model obeys the `on` fragment against the system prompt's "you can browse the web".
+
+---
+
+## 10. Phases
+
+**Phase 0, check (no product code).**
+- The items under "Not checked" in §9, each by a scratch export or a traced run.
+- The `on` and `duckduckgo` fragments against the live model with `ragon debug prompt-input` and `ragon exec`: at `on`, asked for today's weather, the model answers that it has no network in this session and does not run a web command or ask for one outside the sandbox.
+- DuckDuckGo alone, 50 varied queries through SearXNG over a day: how many are answered, and what the failures say. If fewer than nine in ten are answered, the level's line in `/airgapped` says so.
+
+**Phase 1, build.** `airgapped.rs`, patch `0019` with the cap raise, the level module and messages in `ragon-web-rs/`, `ragon_airgapped` in `DreamferenceConfig`, the one clause in `WEB_ACCESS_INSTRUCTIONS`, the Night Shift test wrapper, `WebTools`, and the docs: [RAGON_CODEX](./DREAMFERENCE_RAGON_CODEX.md), `README.md`, `AGENTS.md`, `docs/`.
+
+**Phase 2, the airlock for `on`** ([RAGON_EGRESS §4](./DREAMFERENCE_RAGON_EGRESS.md)), after which the cases of §5.3 are closed and the status line at `on` has no exceptions to list.
+
+**Phase 3, optional.** A status-line item showing the level when it is not `off`.
+
+---
+
+## 11. Tests and acceptance
+
+**Launcher unit tests** (`cargo test --release -p ragon-launcher`, in the export): parsing of every form; resolution through the tiers, including an invalid value and the strictest-wins rule between the two files; a repository file saying `off` does not loosen a user-level `on`; `default` writes the user-level file and keeps its other keys; each fragment for each change of level; the refusal of Full Access at `on`; the enforcement report for each case of §5.3; a level file under a writable root cannot loosen `on`.
+
+**Web command tests** (`ragon-web-rs/`, against the local stand-in server): at `duckduckgo` the request carries `engines=duckduckgo` and no `categories`; at `on` no request is sent and the message is the level's; with `CODEX_SANDBOX_NETWORK_DISABLED=1` at `off` or with no level file, no request is sent and the message names the sandbox, not `/airgapped`; neither restart hint appears at `duckduckgo` or `on`; `--json` carries the level.
+
+**Python:** `DreamferenceConfig.ragon_airgapped` through its tiers; `WebTools` at each level; the Night Shift runner wraps the test command at `on` (asserted on the command line, no real namespace in the suite).
+
+**Acceptance, live against the model:**
+- **`off`:** a search and a fetch work exactly as before the change, and `ragon debug prompt-input` shows no `airgapped` fragment.
+- **`duckduckgo`:** every result of `ragon-search --json` has `engines` equal to `["duckduckgo"]`, and there are no answers or infoboxes from another engine.
+- **`on`, in a `workspace-write` session:**
+  - the agent's `curl https://example.com` fails;
+  - `ragon-search` prints the level's message and no restart hint;
+  - `ragon-admin gmail search` fails;
+  - a strace of the session shows no connection from any command;
+  - the model, asked something that needs the web, says it cannot look it up in this session.
+- **Mid-turn:** `/airgapped on` typed while the agent works applies to its next command.
+- **Inheritance:** a subagent started in an `on` session cannot fetch a page.
+- **The model cannot loosen it:** asked to, it cannot write the session file, and writing `ragon_airgapped = "off"` into `./dreamference.toml` changes nothing under a user-level `on`.
+- **Resume:** a session set to `on` and resumed is still `on`, whatever the configured level.
+- **Docs:** nothing calls `off` or `duckduckgo` air-gapped, and every description of `duckduckgo` says it is a preference.
+
+---
+
+## 12. Alternatives considered
+
+- **Rewrite SearXNG's settings for `duckduckgo`,** so that no other engine exists. That would be a barrier, not a preference, but SearXNG is shared with the web chat and with every other session, so one session's level would change search for all of them. It is the right mechanism for a machine-wide level (§13), not for a session's.
+- **A second SearXNG with only DuckDuckGo enabled.** A real barrier per session only if the sandbox could allow one port and not another, which it cannot; without that it is the same preference with one more container.
+- **Codex's managed network proxy** (the sandbox's proxy-only mode with a domain allowlist) could let `duckduckgo` allow only chosen hosts. It would also break `pip`, `git` and `cargo` at that level, which the level is not meant to touch, and it is a large upstream feature this fork has never run.
+- **Per-level system prompts.** Changing the catalog's prompt mid-session re-reads the whole conversation (CAVE_MODE §5.2 (spec removed)), and the catalog file is shared by sessions at different levels.
+- **`ragon --airlock` as its own switch,** as EGRESS proposed. Two switches for one question ("may this session reach the internet?") would need a rule for every combination. The airlock is the mechanism; the level is the knob.
+- **Only tool-level refusal at `on`,** with no kernel enforcement. Then `curl` works and the level's name is false.
+
+---
+
+## 13. Open questions
+
+- **A machine-wide level.** "Air-gap this machine" would also mean its sidecars and `ragon-admin`'s downloads (§8). The natural form is `ragon-admin airgapped <level>`: SearXNG's engine list rewritten for `duckduckgo`; at `on`, SearXNG and the Gmail and image-search sidecars stopped, downloads refused. Left out of this spec because every part of it is a different mechanism from a session's level; `ragon_airgapped` is named so that a later `airgapped` key can sit above it.
+- **Should `duckduckgo` also switch Gmail off?** §4 keeps it on.
+- **Fetch at `duckduckgo`.** A fetched page's site sees this machine's address and the URL. A user who wants search results without any direct visit has no level for that today; a fourth level between `duckduckgo` and `on` (search only, no fetch) is easy to add if asked for.
+- **The model server on another machine.** At `on` the prompts still go to `vllm_host`. If that host is not on this machine, `/airgapped` should say so in its status; whether `on` should refuse a non-loopback `vllm_host` is undecided.
+
+---
+
+## 14. As built
+
+### 14.1 Departures from the design
+
+- **The enforcement hook is in the sandbox helper, not in core.** §5.1's premise was wrong: a command's network policy is not read in one place. `network_sandbox_policy()` has twelve call sites in `codex-core`, three of which take it from a permission profile directly (`exec.rs`, `sandboxing/mod.rs`, `tools/orchestrator.rs`), and `to_legacy_sandbox_policy` reads the profile's field without it. Every sandboxed command on Linux does pass through one function, `resolve_permission_profile` in `codex-rs/linux-sandbox` (the helper `ragon` re-executes itself as, for the outer bubblewrap stage and the inner seccomp stage alike). Patch `0019` adds three lines there: when `ragon_airgapped::sealed_for_command()` is true, the profile's network is `Restricted`, so the helper builds `bwrap --unshare-net` and installs the network seccomp filter whatever the session's policy says.
+- **The helper finds the session by itself.** It runs in the command's own environment (`spawn_child_async` clears the environment and sets the command's), which carries `CODEX_THREAD_ID`, `CODEX_SESSION_ID` and `CODEX_HOME`. So the question is asked per command, in the process that builds the sandbox, with no channel from the TUI: a switch mid-turn, `ragon exec`, a resumed session and another process's app server are all the same case. The model cannot change that environment: it belongs to the helper, which Codex starts, not to the shell inside it.
+- **The level file is keyed by thread id** (`$CODEX_HOME/airgapped/<thread-id>`), because that is the only id the TUI's hook and the World State input carry. The resolver looks under `CODEX_THREAD_ID` first and `CODEX_SESSION_ID` second, which is how a subagent with no file of its own takes its parent's level (§2); a test of the web commands covers that order. Whether the root session's id equals the root thread's id on every path was checked only for `ragon exec` (§14.3).
+- **A leaf crate, as §5.1 allowed for, but for the helper.** `ragon-rs/airgapped/` (`ragon-airgapped`) holds the levels and the resolution with no dependency beyond the standard library: `linux-sandbox` must not depend on the launcher. The launcher depends on it too. `ragon_airgapped` is read from TOML by a line scan (a top-level `ragon_airgapped = "<level>"` before the first table), which keeps a TOML parser out of the helper; `/airgapped default` writes it with `toml_edit`.
+- **`CODEX_SANDBOX_NETWORK_DISABLED` is not set by the hook.** Core sets it from the session's policy before the helper runs, so at `on` under `workspace-write` a command does not see it. The web commands do not need it there: they resolve the level themselves and refuse first. It remains the second signal for a read-only sandbox (§6.2).
+- **What the model is told about the sandbox is unchanged at `on`:** core still describes the session's own policy. The `on` fragment (§3) is what tells it.
+- **`/airgapped` sits after `/permissions` in the popup;** in the membership lists it is beside `/night`.
+- **The patch is 4,242 bytes, not 3.3 KB:** seven hunks for the slash command, two `install` lines, and the helper's dependency and hook. The series is 17 patches and 31,175 bytes; the cap went from 27,500 to 31,500 in the same commit.
+
+### 14.2 What is built
+
+| Piece | Path |
+|---|---|
+| Levels, tiers, strictest-of-two-files, `sealed_for_command()`, the seals and the exposure check | `ragon-rs/airgapped/src/lib.rs` |
+| `/airgapped`, `ragon airgapped`, status, `default`, World State fragments, Full Access refusal, 30-day prune | `ragon-rs/src/airgapped.rs`, `ragon-rs/src/lib.rs` |
+| Slash command, section registration, helper hook, host socket mask | `codex-patches/0019-airgapped.patch` |
+| App-server Full Access refusal at `on`, Windows elevated sandbox network clear, read-only sandbox network below `on` | `codex-patches/0023-airgapped-app-server.patch`, `0024-airgapped-windows.patch`, `0031-read-only-network.patch` |
+| Plugin refusal at `on` | `ragon-rs/src/plugins.rs`, `ragon-rs/web/policy.json` |
+| `ragon-search` and `ragon-fetch` following the level; `--json` gains `airgapped` and `engines` | `ragon-web-rs/src/{airgapped,lib,search}.rs`, `src/bin/` |
+| `DreamferenceConfig.ragon_airgapped`, `resolve_airgapped_level()` | `dreamference/config/dreamference_config.py` |
+| `web_search` and `web_fetch` over MCP following the level | `dreamference/mcp_server/web_tools.py` |
+| The one clause in `WEB_ACCESS_INSTRUCTIONS` | `ragon-rs/src/lib.rs` |
+
+### 14.3 Run live
+
+All, with the rebuilt `ragon` (17 patches) against the default model (Qwen3.8-27B on SGLang), in a throwaway repository, `ragon exec -s workspace-write` unless said otherwise. Each command line was given to the model to run verbatim, and its output read from the `--json` events, not from the model's account of it.
+
+- **`off`:** `curl https://example.com` answers 200, `/proc/net/dev` lists the host's interfaces, the model server on `127.0.0.1:8000` answers 200, `ragon-search` returns results (`"airgapped": "off"`, each result with its `engines` list), and the session contains no `<airgapped>` fragment.
+- **`on` from the environment** (`DREAMFERENCE_RAGON_AIRGAPPED=on`): `curl https://example.com` exits 6, and `ragon-search` prints the level's message with no hint.
+- **`on` from the session file, on a resumed session.** A session run at `off`, then its file written as `/airgapped on` writes it, then `ragon exec resume <id>`: `/proc/net/dev` lists `lo` only; `curl https://1.1.1.1` and `curl http://127.0.0.1:8000/v1/models` both exit 7; `ragon-fetch` prints the level's message. The rollout holds the `on` fragment once. `ragon` itself still reached the model server, as §1 says it does.
+- **The agent cannot loosen it.** From inside that session, `echo off > $CODEX_HOME/airgapped/$CODEX_THREAD_ID` fails with "Read-only file system", and the next `curl` still exits 7. (The same command also wrote `ragon_airgapped = "off"` into `./dreamference.toml`, but that proves nothing: the session's file said `on` and is read first. The strictest-of-two-files rule is covered by the resolver's unit test and by the web commands' test with `HOME` swapped, not live through the sandbox helper.)
+- **A repository file tightens.** With only `./dreamference.toml` saying `on`, `ragon airgapped` names that file as the source and a command's `curl` exits 7.
+- **Ids.** `CODEX_THREAD_ID` and `CODEX_SESSION_ID` are equal in a root `ragon exec` session, and `CODEX_SANDBOX_NETWORK_DISABLED` is unset under `workspace-write` at both levels.
+- **Full Access at `on`:** `DREAMFERENCE_RAGON_AIRGAPPED=on ragon exec -s danger-full-access …` is refused before anything starts, naming both ways out.
+- **In the TUI** (a real session in tmux, `-s workspace-write`): `/airg` shows `/airgapped  set how much of the internet this session may use`; `/airgapped on` typed before the first message is accepted and printed its two lines; the next turn's `curl https://1.1.1.1` printed `ip=000rc=7`; asked for Lisbon's weather, the model answered that it could not check in this session and that anything it gave would be from memory, and ran no command; `/airgapped` showed `on` in force with the `Enforced:` and `NOT ENFORCED for:` lines.
+- **Found and fixed: the message that lifts the restriction.** After `/airgapped off` the fragment was delivered, and the model still refused to run `curl`, quoting the `on` message. The first wording ("the earlier restriction on web access no longer applies") was too weak against the `on` text still in its history; the fragment now says the user lifted it and names the commands that work again. Retested in a fresh session after the rebuild: `on`, `curl` printed `ip=000rc=7`; `/airgapped off`; asked to run it again, the model ran it and got `ip=301rc=0`.
+- **`duckduckgo`:** not shown live. DuckDuckGo answered SearXNG with a CAPTCHA at the time, so `ragon-search` printed `DuckDuckGo did not answer (duckduckgo: CAPTCHA). This session searches through DuckDuckGo only (/airgapped duckduckgo).` with no hint: the risk §4 names, on the first try. SearXNG's `unresponsive_engines` named `duckduckgo` alone, which fits only that engine having been asked. That the request names the engine and no category is covered by the stand-in-server test; that results then carry only `duckduckgo` is still unverified.
+- **Not run live:** a subagent in an `on` session, `/airgapped default` (it writes the user's real configuration file; unit-tested), a switch to `on` while a turn is running, and the strace of §11.
+
+### 14.4 Not built
+
+- ~~**The Gmail check at start is not skipped**~~ Closed: a session that starts at a configured `on` gets no Gmail section (`offers_gmail`, `ragon-rs/src/airgapped.rs`). A session switched to `on` later keeps it, and the `on` fragment says Gmail is unavailable. (`ragon update` is not refused at `on`, and that is the design, §5.2.)
+- ~~**A session switched to Full Access through `/permissions`** shows no warning.~~ Closed: the two are refused together (§14.7).
+- **A tampered level takes effect at the next restart.** A seal lasts as long as the `ragon` process that wrote it. If a command rewrote the level's files while the session was held, a later `ragon resume` reads those files and starts at what they say. Keeping seals across restarts would close it, at the price of a session nobody can loosen without the TUI; left as it is.
+- **`writable_roots` the user adds** are not known to the exposure check, which looks at the working directory, `/tmp` and `$TMPDIR`. The seal does not depend on that check, so this only affects what `/airgapped` reports where there is no runtime directory.
+- **The airlock** (§5.4, Phase 2) and the strace of an `on` session (§11). (The 50-query DuckDuckGo measurement of Phase 0 is moot: the level was removed, §14.6.)
+- **Codex's own TUI snapshots** that list the slash-command popup change again with `/airgapped` in it.
+
+### 14.4a Added: the start-up line
+
+A session that starts at a configured `on` (environment or configuration file; the level is read before Codex parses its arguments, so a `ragon resume` of a session whose own file says `on` gets no line, though the session is still held) prints, before the wait for the model server:
+
+```
+🔒 Airgapped: on (<source>). Enforced: sandboxed commands run with no network.
+NOT ENFORCED for: a command you approve to run outside the sandbox, MCP servers you configured.
+```
+
+with `/airgapped`'s `NOT ENFORCED against a command rewriting the level` between the two when the level files are inside a writable root and there is no runtime directory for a seal. Nothing is printed at `off`. Full Access is not listed: it is refused at launch and disabled in `/permissions` (§14.7). It goes to stderr for `ragon exec` too. `startup_lines` in `ragon-rs/src/airgapped.rs`, unit-tested.
+
+**Watched in tmux.** A TUI session started in tmux with `DREAMFERENCE_RAGON_AIRGAPPED=on` and `-s workspace-write` wrote both lines to stderr (`🔒 Airgapped: on (DREAMFERENCE_RAGON_AIRGAPPED). Enforced: …` and the `NOT ENFORCED for:` line), captured by redirecting stderr to a file. **They are not visible in the interface:** with stderr on the terminal, the TUI's first frame starts at the top of the pane and the scrollback holds neither line (nor the skills line printed just after). Printed to stderr before Codex draws, they are drawn over. Fixed on branch `fix/startup-lines-app-server` (merged into `main`): every start-up line the launcher prints (this one, the skills line, the night line, a prompt other than `default`) is also kept, and for a TUI session (`ragon`, `ragon resume`, `ragon fork`) written to `$CODEX_HOME/notice/<hash>.txt` and registered as a trusted `SessionStart` hook, `<ragon> notice <hash>`, under matcher `startup|resume` (`ragon-rs/src/notice.rs`). Codex shows the hook's `systemMessage` in the history at the start of the first turn, above the first answer, not on the empty screen before it. No patch. For `exec` the hook is removed, since `exec` prints every hook run and the lines are on stderr already; `ragon exec` shows them, since it does not take over the screen.
+
+### 14.5 Added: the three gaps of "not built"
+
+**`ragon-admin mcp`'s web tools follow the level** (§7). Checked against the live SearXNG with the real `WebTools`, recording each request: at `on`, no request left the process and both tools returned the level's message; at `duckduckgo`, the one search request carried `engines=duckduckgo` and no `categories` (DuckDuckGo answered with a CAPTCHA, so the tool returned "DuckDuckGo did not answer (duckduckgo: CAPTCHA)…" with no hint) and `web_fetch` returned `example.com`; at `off`, the request carried `categories=general` and three results came back.
+
+**The level is held outside the folders a command can write** (§5.3).
+- **The hole, measured.** From the home directory, a command under the workspace-write sandbox created `~/.ragon/airgapped/<file>`, a file in `~/.ragon` and a file in `~/.config/dreamference/`: all three succeeded. So not only the session's file but tier 3's user-level file was the agent's to rewrite, and "the session file may not loosen the configured level" would not have been enough.
+- **The place, measured.** In the same sandbox, from the home directory and from a project folder, `touch /run/user/1000/<file>` failed with "Read-only file system", and `XDG_RUNTIME_DIR` was present in the command's environment. Inside the sandbox `/proc/self` belongs to uid 65534, so the runtime directory is taken from `XDG_RUNTIME_DIR` first and from the uid only as a fallback.
+- **Departure from §5.3's first wording:** `/airgapped off` typed by the user does lift the hold, because the TUI is a process no command controls; "sealed until `ragon` is restarted" applies to everything a command can do.
+- **The resolver run inside the real sandbox; the helper not yet.** The new resolver, compiled into a small probe binary, was run under `ragon sandbox` (workspace-write) from a stand-in home directory with a seal in place. The command rewrote its session's level file to `off` (succeeded), wrote `ragon_airgapped = "off"` into the user-level config file (succeeded) and tried to delete the seal ("Read-only file system"); the resolver still answered `on`, source `Sealed`, `sealed_for_command() = true`, with a note naming the ignored `off`. With the seal removed, as `/airgapped off` does, the same files gave `off`. The launcher's side (writing the seal when the World State section sees `on`, lifting it on `/airgapped off`, pruning seals of exited processes, what the status prints) is unit-tested. The installed `ragon` predates this change, so its sandbox helper still uses the old resolver: a TUI session in the home directory at `on` whose command rewrites its level file, followed by a `curl` that must still fail, is the live check owed after the next `ragon-admin codex build`.
+- **The live check, done** with the installed build (which carries the seal). A TUI session from `~` at `on` wrote its seal under `/run/user/1000/ragon-airgapped/`. A sandboxed command with the session's thread id (run through `ragon sandbox`, because the model **refused twice** to run the tampering script) rewrote the level file to `off` (succeeded) and could not delete the seal ("Read-only file system"); the next command's `curl` failed with exit 7 for the internet and the model server alike. The same call for an unsealed thread id reached the internet, so the cut came from the seal. In the TUI, `/airgapped` said `on ← in force`, `Held`, and `Note: ignored "off" from this session`; after `/airgapped off` the same session reached the internet. Not seen: a rewrite issued by the model itself, which it would not do.
+
+**A night task's tests have no network at `on`** (§7): closed by the Night Shift change that runs the runner's test command through `ragon sandbox` (the `[night] airgapped` key), measured there (level `off`: internet and model server reachable; `on`: neither). One departure for night tasks only: the runner exports `DREAMFERENCE_RAGON_AIRGAPPED` to every command of a task at every level, and the environment outranks the files, so an agent that writes `ragon_airgapped = "on"` into the worktree's `dreamference.toml` mid-task does not tighten its own later commands. The level is fixed at task start; a seal would still tighten it.
+
+### 14.6 Removed: the `duckduckgo` level
+
+DuckDuckGo answered SearXNG with a CAPTCHA when the level was first tried live (§14.3) and again when the MCP tools were checked (§14.5): a session at `duckduckgo` searched nothing, and the risk §4 names was the normal case, not the exception. The level is gone from every place that resolved or acted on it:
+
+- **The resolver** (`ragon-rs/airgapped/`): `Level` is `Off < On`; `duckduckgo` and `ddg` are unknown names. A session file, the environment or a configuration file holding `duckduckgo` is an invalid value like any other: it counts as `on` and is **named**, since the one reader fails closed (§6.5). No alias to `off` was added: it would hide the change.
+- **The launcher** (`ragon-rs/src/airgapped.rs`): the usage line, the status table and the fragments know two levels. A session resumed after having been at `duckduckgo` gets the `off` fragment, which says web access is back.
+- **The web commands and the MCP server's `web_search`**: always `categories=<category>`; the DuckDuckGo-only error text is gone, and every-engine-failed errors carry the restart hint at `off`.
+- **Python** (`RAGON_AIRGAPPED_LEVELS`, `NodeJob.AIRGAP_LEVELS`): two levels. A node job from an older sender that still names `duckduckgo` counts as `on`, because `NodeJob.stricter` treats an unknown name as the strictest.
+- **Not changed:** SearXNG's own engine list, which still includes DuckDuckGo for `off`.
+
+### 14.7 Added: `on` and Full Access are refused together
+
+Full Access has no sandbox, and the sandbox is the only thing that enforces `on`, so a session is never allowed to hold both. Every way of choosing one while the other is in force is refused, and each refusal says that the two are incompatible:
+
+- **At launch** (`full_access_conflict`, `ragon-rs/src/airgapped.rs`), at a configured `on`: Full Access from `--yolo` / `--dangerously-bypass-approvals-and-sandbox`, `-s`/`--sandbox danger-full-access` in every spelling, a `-c sandbox_mode=…` or `-c default_permissions=":danger-full-access"` override, or a configuration file: `/etc/codex/config.toml`, `$CODEX_HOME/config.toml` and each project's `.codex/config.toml` from the repository root down to the working directory, with the selected profile's keys (`-p`, `--profile`, or `profile =`) before the top level's and a later file before an earlier one, as Codex layers them. A sandbox named on the command line (`-s workspace-write`, `--full-auto`) overrides the files, as in Codex. A project file counts even where Codex would not trust the project: refusing there is the safe side to be wrong on.
+- **In the permissions picker** (patch `0019`, two one-line hooks in `permissions_menu.rs` and `permission_popups.rs`): while the session's level is `on`, the Full Access row is shown disabled, `Full Access (disabled) … (disabled: /airgapped is on, and Full Access has no sandbox to keep commands off the network; run /airgapped off first)`, and cannot be chosen. This covers both of Codex's pickers (the legacy one and the permission-profile one); the keyboard shortcut that cycles modes never offered Full Access.
+- **`/airgapped on` and `/airgapped default on` in a Full Access session** (`session_command`; the TUI passes whether the session's permission profile gets no sandbox, by `codex_sandboxing::policy_transforms::runs_without_platform_sandbox` (patch `0019`, over Codex's own `should_require_platform_sandbox`): Full Access, and also a `[permissions]` profile with `":root" = "write"` and the network on, which patch `0023` refuses the same way at a configured `on`; corrected, the check was `Disabled` only): refused with `Airgapped not changed: this session runs in Full Access. Full Access runs commands with no sandbox, and the sandbox is what takes their network away, so the two are incompatible.` and `To air-gap it, choose another mode with /permissions first, then /airgapped on.` Nothing is written and no seal is made.
+- **What remains possible**, and is reported, not refused: a session already in Full Access whose level turns `on` from outside it (another shell running `ragon airgapped default on`, or `ragon resume` of a session whose own level file says `on`, which the launch check, reading only the configured level, does not see). `/airgapped` in such a session adds `NOT ENFORCED in this session: it runs in Full Access.` with the same reason.
+
+**Watched in tmux:** `--yolo` at `DREAMFERENCE_RAGON_AIRGAPPED=on` ended with exit 1 and the launch message above; `/permissions` in a session at `on` listed `Full Access (disabled)` with the reason and offered only the other two rows; `/airgapped on` typed in a session started with `-s danger-full-access` printed the two refusal lines and changed nothing.
+
+Patch `0019` grew by 1,261 bytes (the series from 32,425 to 33,686; `test_the_patches_stay_small` raised to 33,750).
+
+### 14.8 Added: `/node` runs at `on`
+
+`/node` (patch `0025`, `ragon-rs/src/node_command.rs`, RAGON_NODE §18.9) suspends the TUI and runs `ragon-admin node …` in the terminal, outside the agent's sandbox. It is not refused at `on`: the user trusts the local network, and the command is the user's own, like a `!` command (§5.2). At `on` it first prints `airgapped is on: /node talks to machines on your local network only`, and the history keeps that line beside the summary. Whatever `node provision` installs reaches PyPI and an image registry from the new node, never from this one.
+
+**Watched in a build of this branch, in tmux,** with a scratch `HOME` and `CODEX_HOME` and a stand-in `ragon-admin` that asks for a password: at `DREAMFERENCE_RAGON_AIRGAPPED=on`, `/node status spark-1` printed the notice, ran the stand-in with `node status spark-1`, which read a password typed without echo, and after Enter the TUI came back with the notice and `node status spark-1: done (exit 0)` in the history. In the same check at `off`, the 13-character password reached the stand-in and appears nowhere under `CODEX_HOME` (its logs database included), and text typed at the "Press Enter" prompt did not reach the composer.
+
+### 14.9 The surfaces added since (recorded)
+
+Each later surface follows the same resolver (`ragon-airgapped`, the strictest of the repository's and the user's level) and is specified in its own document; this is the list in one place.
+
+| Surface | At `on` | Where |
+|---|---|---|
+| The app server (every client: the desktop app's Work window, `ragon web`) | Full Access is refused, as in the TUI (patch `0023`) | [RAGON_CODEX §3](./DREAMFERENCE_RAGON_CODEX.md) |
+| Windows | the elevated sandbox clears a command's network through its offline account (patch `0024`); only the elevated sandbox, set up, starts | [RAGON_WINDOWS_ARM §7.6](./DREAMFERENCE_RAGON_WINDOWS_ARM.md) |
+| `/apps` (Gmail, Drive, Calendar) | no server declared and no prompt section at a configured `on`; each tool call checks the level and the session's seal itself, so a switch mid-session also stops them; the rows show no link | [RAGON_APPS §8](./DREAMFERENCE_RAGON_APPS.md) |
+| `ragon web` and its Ask threads | the agent has no network, as any session; the UI says why search, apps and image search are unavailable; voice still works (transcription is local) | [RAGON_ASK](./DREAMFERENCE_RAGON_ASK.md) |
+| `ragon-docs` | unaffected: indexing and querying never touch the network, so the tools stay available | [RAGON_LOCAL_INDEX](./DREAMFERENCE_RAGON_LOCAL_INDEX.md) |
+| `ragon chat` | the Telegram adapter stops relaying and answers with one line saying why; Matrix keeps working (the whole path stays on the machine) | [RAGON_CHAT §3](./DREAMFERENCE_RAGON_CHAT.md) |
+| `ragon signal` | the bridge runs only at `off`, because Signal needs the internet | [RAGON_SIGNAL](./DREAMFERENCE_RAGON_SIGNAL.md) |
+| `/node` | runs, after a line saying it talks to the local network only (§14.8) | [RAGON_NODE §18.9](./DREAMFERENCE_RAGON_NODE.md) |
+| Codex plugins (`/plugins`, `ragon plugin`, the app's Plugins tab and Import) | a session started at `on` loads none; installs and marketplace changes that fetch are refused (§14.12) | this spec |
+
+### 14.10 Who sees a search
+
+`ragon-admin searxng start` writes SearXNG's settings (`dreamference/chat/searxng_settings.py`, version 3). Every engine of SearXNG's list was tried from this machine that day with one query; an engine is on when it answered, needs no key and is not run by a Russian or Chinese company. Those are removed from SearXNG outright, so not even a bang reaches them: Yandex (Russia); Baidu, Qihoo 360 (`360search`), Alibaba's Quark, Tencent's Sogou, Bilibili, AcFun, iQIYI (China); Habr (founded in Russia). Off for other reasons: DuckDuckGo's HTML endpoint (a CAPTCHA with a zero-second suspension, so it was asked on every search), Bing's web search (unrelated results, such as speed-test sites for a song question), engines that refused or failed that day (Qwant, Mojeek, Yahoo, TMDB, Vimeo, Rumble, Geizhals, Wolfram Alpha, PrivacyWall, TuskSearch and others), engines whose owner could not be established (fynd, ZapMeta, reloado; Gitea's `gitea.com`), Naver (Korean-language results) and the torrent indexes SearXNG ships on.
+
+A search asks only the engines of its category. Each sees the query text and SearXNG's address:
+
+| Category (`ragon-search -c`) | Engines on, and who runs them |
+| --- | --- |
+| `general` (default) | Brave (Brave Software, US); Google CSE (Google, US); Startpage (Startpage/System1, Netherlands and US); DuckDuckGo web (DuckDuckGo, US); Mwmbl (non-profit, UK); Yep (Ahrefs, Singapore); Seznam (Seznam.cz, Czech Republic); GMX (United Internet, Germany); search.ch (Switzerland); Wikipedia and Wikidata (Wikimedia Foundation, US); DuckDuckGo definitions; Lingva, MyMemory (Translated, Italy) and DictZone for translations; the currency converter |
+| `news` | Bing News (Microsoft, US); DuckDuckGo News; Google News; Startpage News; Brave News; Reuters (Thomson Reuters, Canada); Wikinews (Wikimedia); ANSA and Il Post (Italy); Tagesschau (ARD, Germany) |
+| `science` | arXiv (Cornell, US); PubMed (NIH, US); Semantic Scholar (Allen Institute for AI, US); OpenAlex (OurResearch, US); Crossref (non-profit, US and UK); Google Scholar; OpenAIRE publications and datasets (EU); PDBe (EMBL-EBI, UK); Wikispecies |
+| `it` | GitHub and npm (GitHub/Microsoft, US); GitLab (US); Codeberg (Codeberg e.V., Germany); SourceHut (Netherlands); Stack Overflow, Ask Ubuntu, Super User (Stack Exchange, US); MDN (Mozilla, US); Microsoft Learn; PyPI and discuss.python.org (Python Software Foundation, US); crates.io (Rust Foundation, US); lib.rs (UK); Hex (Elixir); Packagist (Netherlands); pub.dev (Google); Hoogle (Haskell); Hugging Face models, datasets and spaces (Hugging Face, US and France); Docker Hub (Docker, US); Hacker News (Y Combinator, US); the National Vulnerability Database (NIST, US); the Arch, Gentoo and NixOS wikis and the Alpine, CachyOS and Void package indexes (their projects); ManKier; the Caddy and Pi-hole forums |
+| `map` | OpenStreetMap (OSM Foundation, UK); Photon (komoot, owned by Bending Spoons, Italy); Apple Maps (Apple, US) |
+| `images` (also image search) | Bing, DuckDuckGo, Google CSE, Startpage and Brave images; Wikimedia Commons; Flickr (SmugMug, US); Openverse (WordPress, US); Unsplash, Pexels and Pixabay (Getty, Canva); DeviantArt (Wix, Israel); Pinterest (US); Imgur (US); 1x (Sweden); ipernity (France); Magnific (Freepik, Spain); Shopify Stock; StockSnap; picjumbo; the Art Institute of Chicago; Devicons, Lucide |
+| `videos` | YouTube (Google); Bing, DuckDuckGo and Brave videos; Dailymotion (Canal+, France); PeerTube and SepiaSearch (Framasoft, France); media.ccc.de (CCC, Germany); Odysee (US); Pixabay videos; INA (France); MediathekViewWeb (Germany); Vimeo; Wikimedia Commons |
+| `music` | Genius (US); Deezer (France); SoundCloud (Germany); Mixcloud (UK); Bandcamp (Songtradr, US); Radio Browser (community); Podchaser (US); Wikimedia Commons audio |
+| `files` | F-Droid (UK); Google Play (Google); the App Store (Apple); APKMirror (US); OpenRepos; Wikimedia Commons files |
+| `social` | Mastodon and Lemmy instances (the fediverse); Tootfinder; Boardreader (forums, US) |
+| `books`, `movies`, `dictionaries`, `wikimedia`, `weather` | Open Library (Internet Archive, US), Goodreads (Amazon); IMDb (Amazon), Rotten Tomatoes (Fandango, US), Moviepilot (Webedia, France), SensCritique (France); Wiktionary (Wikimedia), Wordnik (US), Duden (Germany), Etymonline, Jisho (Japan); Wikivoyage, Wikiquote, Wikibooks, Wikisource, Wikiversity; DuckDuckGo weather, Open-Meteo (Switzerland), wttr.in |
+
+Ownership is as published by each company and is not re-checked automatically; an engine whose owner changes hands to a Russian or Chinese company belongs in `REMOVED_ENGINES`.
+
+### 14.11 Below `on`, every sandbox has the network
+
+Owner decision: sandboxed commands (`pip install`, `npm install`, `curl`, `git fetch`) have the network whenever `/airgapped` is off; `on` is unchanged. Until then only the workspace-write sandbox had it (the launcher's `network_access = true`); Codex's read-only sandbox had none, and it is what these surfaces run:
+
+| Surface | What decided it before |
+|---|---|
+| `ragon exec` without `-s` | no `sandbox_mode` and no trust decision: `ConfigToml::derive_permission_profile` picks read-only |
+| the TUI's Read Only, an untrusted-and-undecided folder, `/permissions` | the built-in `:read-only` profile, `PermissionProfile::read_only()` |
+| the desktop app's Work, `ragon web` | the picker's `:read-only` row, or an app-server `sandbox: "read-only"` (`thread_processor.rs`); `ragon web`'s Ask threads are pinned to workspace-write (`policy.json`'s `scratchSandbox`) and had the network |
+| the phone bridges' `chat` threads | `thread/start` names no sandbox, so the config's default: read-only unless the folder is trusted |
+| Night Shift | `ragon exec -s workspace-write` and `ragon sandbox -c …network_access=true`: had it |
+| macOS (Seatbelt), Windows | the same profiles; the launcher's config reaches workspace-write on both, nothing reached read-only |
+
+No configuration reaches read-only: the profile is hard-wired, `-s read-only` and an app-server `read-only` bypass `[permissions]` profiles, and a `default_permissions` profile would also replace the trusted-folder default. So patch `0031` (1,004 bytes) adds one line to `SandboxManager::transform` (`codex-rs/sandboxing`), which every platform's sandbox takes its profile from and whose result core reads back to set `CODEX_SANDBOX_NETWORK_DISABLED`: a profile exactly `PermissionProfile::read_only()` becomes read-only with `NetworkSandboxPolicy::Enabled` when `ragon_airgapped::read_only_network` agrees, that is not at `on` (resolved from the command's environment) and not with `DREAMFERENCE_RAGON_READ_ONLY_NETWORK=off`. The launcher sets that variable when the user chose `sandbox_workspace_write.network_access = false` (`-c` or a configuration layer), so an explicit "no network" holds for both sandboxes; a workspace-write `false` is untouched, since only the exact read-only profile is widened. The catalog's `model_messages.permissions.read_only` tells the model "Network access is enabled" at a configured `off`. `0019`'s helper hook still forces `Restricted` at `on` and, at `on` (§14.13), denies the host's control sockets. Not covered: `ragon sandbox` (the debug command builds its bwrap arguments without `transform`), and a user's `[permissions]` profile that only extends `:read-only` is widened like the built-in one. The patch series stays under its cap: the 59 `index` lines were dropped (1,770 bytes).
+
+Measured on the development GB10 against the default model, `curl https://pypi.org/simple/` run verbatim by the model, in a scratch folder:
+
+| Run | Installed build | With `0031` |
+|---|---|---|
+| `ragon exec` (default, read-only) | `000`, exit 6 (no DNS) | `200`, `CODEX_SANDBOX_NETWORK_DISABLED` unset |
+| `ragon exec -s read-only` | "Could not resolve host" (owner's run) | `200` |
+| `ragon exec -s workspace-write` | `200` | `200` |
+| `DREAMFERENCE_RAGON_AIRGAPPED=on ragon exec` | exit 6 (`-s workspace-write`) | exit 6 (default read-only), variable set |
+| `ragon exec -c sandbox_workspace_write.network_access=false` | — | exit 6, variable set |
+| `ragon-search` in `ragon exec` (default) | refused: "the sandbox it runs in does not allow it" | results (PyPI's page first) |
+| `curl --unix-socket /var/run/docker.sock` (read-only) | — | exit 7 (masked by `0019`; measured at `off` before §14.13, which masks the sockets only at `on`) |
+
+The egress audit (`ragon exec`, no network call) passed on the new build.
+
+### 14.12 Plugins: allowed at `off`, refused at `on`
+
+**The decision.** The owner reversed the blanket refusal of Codex plugins: marketplaces, plugin installs, and a plugin's skills, MCP servers, hooks and apps are allowed whenever the level is `off`, on every surface (the TUI, `exec`, the desktop app's Work, `ragon web`). At `on` they are refused. The upstream vendor's channels stay closed at every level.
+
+**What was blocked before, and why** (the inventory of that day):
+
+| Where | What | Why |
+|---|---|---|
+| `ragon-rs/web/policy.json` | `refusedImportItems: ["PLUGINS"]`: an import lost its plugin items | network: the importer can `git clone` a marketplace or plugin and `npm pack` one, untraced by the audit |
+| `ragon-rs/web/policy.json` | `marketplace/add|remove|upgrade`, `plugin/read`, `plugin/installed` not in `allowedRequests` (`plugin/list|install|uninstall` were) | not yet added (DESKTOP_PARITY row 30), not a refusal |
+| Launcher config | nothing: `features.plugins` was on (Codex's default), `/plugins` and `ragon plugin` worked at every level, `on` included | — |
+| Launcher config | `chatgpt_base_url` at a closed port | vendor channel: the remote catalogue, sharing and featured list go to the vendor's backend |
+| Patch 0015 | the curated catalogue's startup `git ls-remote`/clone of the vendor's repository and the featured-plugins request | vendor channel |
+| Patch 0012 | `/import` hidden | network: its plugin step clones marketplaces |
+| Patch 0030 | "OpenAI Curated" renamed "Curated" | branding |
+| Patch 0013 | plugin install analytics, with all analytics | privacy |
+| `ragon web` | the same policy as the app | as above |
+
+So the paper draft's "Ragon Desktop explicitly enforces `refusedImportItems: ["PLUGINS"]` … no external code executes inside the agent core" described only the import path: plugins were installable from configured marketplaces at every level, `on` included.
+
+**As built** (no new patch; `ragon-rs/src/plugins.rs`, the policy, the app):
+- `config.toml`: `features.remote_plugin = false` and `features.plugin_sharing = false`, forced on every start (vendor-only features; they reached the closed port anyway, and now the remote sections are not offered).
+- A session started at a configured `on` gets `-c features.plugins=false`: no plugin loads, `/plugins` is hidden; a user's `-c features.plugins=true` or `--enable plugins` is refused at launch.
+- `ragon plugin` at a configured `on` runs only `list`, `remove`, `marketplace list|remove` and help; the rest is refused before Codex parses it, with `Plugins not changed: airgapped is on (<source>). …`.
+- `policy.json`: `plugin/read`, `plugin/installed` and `marketplace/add|remove|upgrade` allowed; `refusedImportItems` empty; at `on` (the configured level, asked of `ragon airgapped` by the app and resolved by `ragon-airgapped` in `ragon web`) `airgappedRefusedRequests` (`plugin/install`, `marketplace/add`, `marketplace/upgrade`) are refused, `airgappedRefusedImportItems` (`PLUGINS`) dropped, and every thread opener gets `airgappedThreadConfig` (`features.plugins = false`), so a thread opened at `on` has no plugins even in an app server started at `off`. Fifteen conformance cases, at both levels, run in both enforcers.
+- The app: Skills and tools › Plugins adds a marketplace (`owner/repo`, a git URL or a folder) and says the vendor's catalogue is closed; Import offers plugins unticked.
+- The TUI's Curated tab (the vendor's marketplace, never synced: 0015) reads `Vendor catalogue closed in Ragon` (0030, 33 bytes; the series at 57,556 of 58,000).
+
+**Decided, and why.** Installed plugins are refused at `on`, not only fenced: a session started at `on` loads none, so their MCP servers and hooks never start. A session switched to `on` mid-way is the exception: Codex loaded its plugins already, and its app server gates neither `plugin/install` nor `marketplace/add` on the feature, so refusing those mid-session needs a hook in the plugin manager, which the 58,000-byte cap has no room for. The commands a plugin's skills run are sandboxed and get the empty namespace like any other; its MCP servers keep the network they started with, as servers the user configured do. `/airgapped` at `on` prints `Plugins: off in a session started at on; a session switched to on keeps the plugins it loaded (their MCP servers keep the network) until it is restarted.` `/import` stays hidden for the same reason.
+
+**Run live** with a build of this branch (scratch `HOME` and `CODEX_HOME`, `DREAMFERENCE_VLLM_HOST=http://localhost:8000`, the served Qwen3.8-27B): `ragon plugin marketplace add andrehuang/research-companion` cloned a third-party marketplace from GitHub, and `ragon plugin add research-companion@andrehuang-research-companion` installed its plugin (skills only). A `ragon exec -s workspace-write` turn listed `research-companion:research-companion` among its skills, read its `SKILL.md` and answered in the skill's format (a verdict and one question to resolve next). With `DREAMFERENCE_RAGON_AIRGAPPED=on`: `ragon plugin add …` and `ragon plugin marketplace upgrade` ended with exit 1 and the `Plugins not changed: airgapped is on (DREAMFERENCE_RAGON_AIRGAPPED).` message, `ragon plugin list` still listed the marketplace, the same `exec` question listed the built-in skills only and said research-companion was not among them, and `ragon -c features.plugins=true exec …` was refused at launch.
+
+**The egress audits** run with no plugin installed and no marketplace added, so they still prove the vendor's channels closed; a user's plugin's traffic is the user's choice (docs/dev/egress-audit.md).
+
+### 14.13 Strict confinement only at `on` (owner's decision)
+
+The owner decided that the confinement Ragon adds to Codex is needed only at `on`; at `off` Ragon behaves like Codex.
+
+- **The host's control sockets** (Docker, containerd, Podman, the D-Bus buses, the systemd user manager, snapd, `$XDG_RUNTIME_DIR/ragon`) are masked **only at `on`**. Patch `0019` resolves the command's level once, in the sandbox helper (`let on = ragon_airgapped::sealed_for_command()`), and both the network and the sockets follow it: `ragon_airgapped::host_sockets_at(on)` is every socket that exists at `on` and none at `off`. At `on` nothing changed. **At `off` the workspace-write sandbox is Codex's own and does not protect the host from anything that can use Docker: a command can reach the Docker socket if the user can, and Docker access is root on the host.** Codex upstream does not mask these sockets either. Full Access has no sandbox at either level (Codex never starts the helper for it), so it reaches them too. Tests: `tests/test_sandbox_host_sockets.py` (the patched helper resolves once and masks through `host_sockets_at(on)`), the crate's `the_host_control_sockets_are_masked_only_at_on`.
+- **The agent's sandbox stays the user's choice**, as in Codex: Read only, Workspace (workspace-write) or Full Access, in the TUI's `/permissions`, the desktop app's picker and `ragon web`'s. Full Access is refused only at `on` (§14.7); no surface refuses it at `off`. Ask threads keep their scratch folder and workspace-write sandbox at every level (RAGON_ASK §3), which is what an Ask thread is, not an air-gap rule; the phone bridges start only Ask threads, and the Signal bridge declines requests for wider permissions from a phone at every level.
+- **The `!` command in the app and `ragon web`** (`thread/shellCommand`) is allowed at `off` and refused at `on`. It is user-initiated: the user types `!command` in the composer and Codex runs it in the user's own shell, unsandboxed, in the thread's folder, with its output shown in the thread; the agent cannot issue it. `ragon-rs/web/policy.json` lists it in `airgappedRefusedRequests` beside the plugin installs (§14.12), with its reason in `airgappedRefusalReasons`; unlike an install, it is judged by the level of the thread it names, not only the configured one: `ragon web` and the desktop app's main process ask the launcher's resolver for the level of the thread the request names (`ragon_airgapped::resolve`, `ragon airgapped --thread <id>` in Electron, which fails closed), in their own folder and in the thread's (`ragon_airgapped::resolve_in`), the stricter winning, so the thread's repository's `dreamference.toml` counts. The conformance cases cover both levels (`"airgapped": "on"`). The TUI's `!` is Codex's, unpatched, and runs at either level, like `/node` (§5.2).
+- **The egress audits** (`ragon-admin audit egress`, exec, tui, `--app`, `--web`) are unchanged by this: they trace the agent's own traffic, which `!` commands and the host's sockets do not add to.

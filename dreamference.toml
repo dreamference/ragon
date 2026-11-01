@@ -1,0 +1,2 @@
+agent_runner = "codex"
+model = "qwen3.8-27b-nvfp4-dflash2"
