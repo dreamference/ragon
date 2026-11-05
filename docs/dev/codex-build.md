@@ -67,7 +67,7 @@ On the GB10, under `flock ~/.ragon-build.lock nice -n 10` and `-j 12`, keep the 
 
 ### The patches are one-line hooks and nothing else
 
-32 patches, ~57.6 KB in all (57,571 bytes); `test_the_patches_stay_small` caps them at 64 KB. The cap's history:
+33 patches, ~62.8 KB in all (62,774 bytes); `test_the_patches_stay_small` caps them at 64 KB. The cap's history:
 
 - raised from 20 KB for the last on-screen Codex names;
 - to 25 KB for `0017-cave-mode` (removed; its bytes stay in the cap's history);
@@ -97,6 +97,7 @@ On the GB10, under `flock ~/.ragon-build.lock nice -n 10` and `-j 12`, keep the 
 - to 64 KB by the owner: headroom for Windows and compat fixes (59,496 in all then);
 - not raised for `0035-code-mode-host-beside-resolved-exe` (640 bytes: `install-context`'s `code_mode_host_program_from_exe` canonicalizes the running executable before looking for `codex-code-mode-host` beside it, so `ragon` reached through the `~/.local/bin` symlink finds the helper in the install folder; 60,136 in all);
 - down the same day when cave mode was removed: `0017-cave-mode` (2,834 bytes) deleted and `0018`, `0019`, `0025` and `0028` re-cut against the tree without it (2,065 → 1,808, 5,637 → 5,891, 3,382 → 3,520 and 1,849 → 1,983 bytes; `0019` also took over the `app-server/Cargo.toml` dependency line from `0017`); 57,571 in all;
+- not raised for `0036-macos-trust-evaluation-agent` (554 bytes: the network policy allows `com.apple.TrustEvaluationAgent`, which Apple's curl asks when `/etc/ssl/cert.pem` cannot build the chain); 62,774 after;
 - and to be raised again, explicitly, for each hook that needs it.
 
 Not raised, when plugins were allowed at `/airgapped off`: the launcher and the bridge policy do it (`ragon-rs/src/plugins.rs`), and the only patch change is 0030's empty Curated tab, which now says the vendor's catalogue is closed in Ragon (33 bytes; overlay `0004-tests-neutral-vendor-names`).

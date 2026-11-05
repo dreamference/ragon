@@ -307,7 +307,7 @@ ragon-rs/prompts/                              # data: the named system prompts 
 ragon-web-rs/src/{lib,search,fetch,read,html_text,airgapped,node_locator}.rs, src/bin/   # ragon-search, ragon-fetch
 ragon-code-rs/src/                             # ragon-code, the code index (router, SCIP stores, submodules, session, MCP)
 ragon-docs-rs/src/                             # ragon-docs, the local document index (collections, extraction, embeddings, MCP)
-codex-patches/00NN-*.patch                    # patch series for the codex/ submodule (32 patches, 0001–0035; 0003–0004 and 0017 retired)
+codex-patches/00NN-*.patch                    # patch series for the codex/ submodule (33 patches, 0001–0036; 0003–0004 and 0017 retired)
 desktop/electron/src/                         # the Electron desktop app (main process, bridge, egress, Work)
 desktop/ui/src/                               # the Ragon UI (Ask and Work), served by ragon web and app://
 ```

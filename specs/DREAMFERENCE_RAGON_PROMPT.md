@@ -189,7 +189,7 @@ Three pieces, the first two with no dependency beyond the standard library, as `
 
 ### 4.4 Budget
 
-The patch series is 32 patches and 57,571 bytes under a 64,000-byte cap. Phase 1 costs nothing. Phase 2's `/prompt` patch was estimated at 3.0 KB: the seven TUI hunks cost 2.1 KB for `/night`, and the core hook is two hunks (the manifest line and the call). The cap is raised in the same commit, with the test's comment saying why, as each earlier hook did. If another patch lands first, the numbers move and the rule does not.
+The patch series is 33 patches and 62,774 bytes under a 64,000-byte cap. Phase 1 costs nothing. Phase 2's `/prompt` patch was estimated at 3.0 KB: the seven TUI hunks cost 2.1 KB for `/night`, and the core hook is two hunks (the manifest line and the call). The cap is raised in the same commit, with the test's comment saying why, as each earlier hook did. If another patch lands first, the numbers move and the rule does not.
 
 ---
 

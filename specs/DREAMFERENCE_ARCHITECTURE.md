@@ -156,7 +156,7 @@ A stdio MCP server (`ragon-admin mcp`) with `ide_*` tools over an in-process `ID
 | Path | What |
 | --- | --- |
 | `codex/` | Submodule: the `dreamference/codex` fork, pinned to `rust-v0.158.0`, never edited |
-| `codex-patches/` | Patch series applied to an exported copy at build time (32 patches, `0001`–`0035` with `0003`, `0004` and `0017` removed; 57,571 bytes against a 64,000-byte cap) |
+| `codex-patches/` | Patch series applied to an exported copy at build time (33 patches, `0001`–`0036` with `0003`, `0004` and `0017` removed; 62,774 bytes against a 64,000-byte cap) |
 | `ragon-rs/` | The launcher crate compiled into `ragon`: the model-server resolution, the catalog and prompts, `update`, `/usage`, `/night`, `/airgapped`, `/node`, `/adapter`, `/worktree`, compatibility mode (`--compat claude` / `ragon-claude`), `ragon skill`, `ragon prompt`, `ragon docs`, refine, the compaction ledger, and the subcommands `ragon web`, `ragon chat`, `ragon signal`, `ragon sync`, `ragon monitor` and `ragon delegate` (`/cavemode` was removed). Member crates: `airgapped/` and `node-locator/` (standard library only), `safegit/`, `loop-guard/`, `masking/`, `skills/`, `apps/`, `tools/`, `monitor/`, `delegate/`, `sync/`, `web/` (`ragon web`), `signal/` (also the `ragon-signal` daemon) and `chat/` |
 | `ragon-web-rs/` | `ragon-search` and `ragon-fetch`, the agent's web commands: a standalone crate installed beside `ragon`. It carries byte-identical copies of the two leaf crates' sources |
 | `ragon-code-rs/` | `ragon-code`, the code index: a standalone crate installed beside `ragon` |

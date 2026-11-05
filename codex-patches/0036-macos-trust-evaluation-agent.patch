@@ -1,0 +1,8 @@
+Apple's curl (LibreSSL) asks com.apple.TrustEvaluationAgent when /etc/ssl/cert.pem cannot build the chain; denied, https fails only inside the sandbox. This policy is added only with network access.
+diff --git a/codex-rs/sandboxing/src/seatbelt_network_policy.sbpl b/codex-rs/sandboxing/src/seatbelt_network_policy.sbpl
+--- a/codex-rs/sandboxing/src/seatbelt_network_policy.sbpl
++++ b/codex-rs/sandboxing/src/seatbelt_network_policy.sbpl
+@@ -22,2 +22,3 @@
+     (global-name "com.apple.trustd.agent")
++    (global-name "com.apple.TrustEvaluationAgent")
+ 

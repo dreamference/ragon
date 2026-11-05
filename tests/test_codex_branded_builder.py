@@ -299,7 +299,8 @@ def test_the_patches_stay_small():
     # Raised to 64,000 by the owner: headroom for Windows and compat fixes; 59,496 then.
     # Not raised for 0035 (640 bytes: the code-mode host found beside the resolved
     # executable); 60,136 after. Down the same day when cave mode was removed: 0017 (2,834 bytes)
-    # deleted and 0018, 0019, 0025 and 0028 re-cut; 57,571 after.
+    # deleted and 0018, 0019, 0025 and 0028 re-cut; 57,571 after. Not raised for 0036 (554 bytes:
+    # the trust evaluation agent in the macOS network policy); 62,774 after.
     assert sum(Path(p).stat().st_size for p in CodexBrandedBuilder.patches()) < 64_000
 
 
