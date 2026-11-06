@@ -536,10 +536,7 @@
    "PLR2004": 21,
    "PTH118": 5,
    "PTH119": 1,
-   "PTH206": 1,
-   "UP006": 22,
-   "UP035": 2,
-   "UP045": 7
+   "PTH206": 1
   },
   "dreamference/swe_bench/swe_bench_issue_targets.py": {
    "C901": 3,
@@ -943,5 +940,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1980
+ "total": 1949
 }
