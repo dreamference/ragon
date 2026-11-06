@@ -382,7 +382,7 @@ def test_a_rustup_installed_this_run_is_put_on_path():
     from dreamference.chat.desktop_installer import CARGO_BIN
 
     with (
-        patch("os.path.isdir", return_value=True),
+        patch("pathlib.Path.is_dir", return_value=True),
         patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=False),
     ):
         environment = DesktopRunner._environment()
@@ -393,7 +393,10 @@ def test_a_rustup_installed_this_run_is_put_on_path():
 def test_cargo_is_found_in_the_rustup_location_as_well_as_on_path():
     from dreamference.chat.desktop_installer import CARGO_BIN
 
-    with patch("os.path.isfile", return_value=True), patch("os.access", return_value=True):
+    with (
+        patch("pathlib.Path.is_file", return_value=True),
+        patch("os.access", return_value=True),
+    ):
         assert DesktopInstaller.cargo_path() == os.fspath(Path(CARGO_BIN, "cargo"))
 
 
@@ -545,7 +548,7 @@ def test_cache_is_cleared_without_signing_the_user_out():
     assert WEBVIEW_CACHE_DIR_NAME == "Cache"
     with (
         patch.object(DesktopRunner, "_app_identifier", return_value="dev.dreamference.ragon"),
-        patch("os.path.isdir", return_value=True),
+        patch("pathlib.Path.is_dir", return_value=True),
         patch("shutil.rmtree") as rmtree,
     ):
         assert DesktopRunner.clear_webview_cache() is True

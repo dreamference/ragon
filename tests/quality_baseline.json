@@ -56,28 +56,10 @@
    "RUF001": 1
   },
   "dreamference/chat/desktop_installer.py": {
-   "D205": 2,
    "E501": 1,
-   "PLR2004": 7,
-   "PTH111": 1,
-   "PTH113": 2,
-   "PTH117": 1,
-   "PTH118": 2,
-   "PTH123": 2,
-   "PTH208": 1,
    "T201": 17
   },
   "dreamference/chat/desktop_runner.py": {
-   "D205": 3,
-   "PTH100": 1,
-   "PTH103": 2,
-   "PTH111": 3,
-   "PTH112": 3,
-   "PTH113": 2,
-   "PTH118": 6,
-   "PTH119": 1,
-   "PTH120": 3,
-   "PTH123": 3,
    "T201": 22
   },
   "dreamference/chat/docker_bridge.py": {
@@ -748,5 +730,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1659
+ "total": 1614
 }

@@ -29,9 +29,7 @@ LOCK_STAMP: Final[str] = ".ragon-lock-sha256"
 
 # The project lives beside the Python package rather than inside it: it has its own build system,
 # and `pip install -e .` has no business copying it around.
-DESKTOP_PROJECT_DIR: Final[str] = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "desktop"
-)
+DESKTOP_PROJECT_DIR: Final[str] = str(Path(__file__).resolve().parent.parent.parent / "desktop")
 
 # The Electron project and Work's UI.
 ELECTRON_DIR: Final[Path] = Path(DESKTOP_PROJECT_DIR) / "electron"
@@ -49,8 +47,8 @@ BUNDLED_BINARIES: Final[tuple] = ("ragon", "codex-code-mode-host")
 
 # Where a desktop entry and its icon go for the current user. A deb puts these under /usr;
 # running from a source checkout, they belong in the XDG user directories instead.
-DESKTOP_ENTRY_DIR: Final[str] = os.path.expanduser("~/.local/share/applications")
-ICON_DIR: Final[str] = os.path.expanduser("~/.local/share/icons/hicolor/256x256/apps")
+DESKTOP_ENTRY_DIR: Final[str] = str(Path("~/.local/share/applications").expanduser())
+ICON_DIR: Final[str] = str(Path("~/.local/share/icons/hicolor/256x256/apps").expanduser())
 DESKTOP_ENTRY_NAME: Final[str] = "ragon-app.desktop"
 ICON_NAME: Final[str] = "ragon-app"
 
@@ -88,7 +86,7 @@ class DesktopRunner:
             dict: A copy of the current environment.
         """
         environment = dict(os.environ)
-        if os.path.isdir(CARGO_BIN) and CARGO_BIN not in environment.get("PATH", ""):
+        if Path(CARGO_BIN).is_dir() and CARGO_BIN not in environment.get("PATH", ""):
             environment["PATH"] = f"{CARGO_BIN}{os.pathsep}{environment.get('PATH', '')}"
         return environment
 
@@ -152,9 +150,9 @@ class DesktopRunner:
         Args:
             directory (Path): The npm project.
         """
-        modules = os.path.join(directory, "node_modules")
-        if os.path.isdir(modules):
-            with open(os.path.join(modules, LOCK_STAMP), "w") as stamp:
+        modules = Path(directory) / "node_modules"
+        if modules.is_dir():
+            with (modules / LOCK_STAMP).open("w") as stamp:
                 stamp.write(cls.lock_hash(directory) + "\n")
 
     @classmethod
@@ -221,7 +219,8 @@ class DesktopRunner:
 
     @classmethod
     def copy_bundled_binaries(cls) -> bool:
-        """Copies `ragon` and `codex-code-mode-host` from the installed build into `resources/`, where
+        """Copy `ragon` and `codex-code-mode-host` from the installed build into `resources/`.
+
         Forge packages them beside the app (the Codex app bundles its agent the same way). A
         `rg` on PATH rides along too, for the agent's fuzzy file search.
 
@@ -303,7 +302,7 @@ class DesktopRunner:
     @classmethod
     def _app_config(cls) -> dict:
         try:
-            with open(APP_CONFIG) as handle:
+            with APP_CONFIG.open() as handle:
                 return json.load(handle)
         except (OSError, ValueError):
             return {}
@@ -330,12 +329,10 @@ class DesktopRunner:
         identifier = cls._app_identifier()
         if not identifier:
             return False
-        cache = os.path.join(
-            os.path.expanduser("~/.local/share"), identifier, WEBVIEW_CACHE_DIR_NAME
-        )
-        if not os.path.isdir(cache):
+        cache = Path("~/.local/share").expanduser() / identifier / WEBVIEW_CACHE_DIR_NAME
+        if not cache.is_dir():
             return False
-        shutil.rmtree(cache, ignore_errors=True)
+        shutil.rmtree(str(cache), ignore_errors=True)
         return True
 
     @classmethod
@@ -359,8 +356,9 @@ class DesktopRunner:
 
     @classmethod
     def packaged_binary_path(cls) -> str:
-        """Where `electron-forge package` writes the app's binary on this machine, whether or not it
-        has been written yet: `out/<productName>-linux-<arch>/<executable>`.
+        """Return where `electron-forge package` writes the app's binary on this machine.
+
+        Whether or not it has been written yet: `out/<productName>-linux-<arch>/<executable>`.
 
         Returns:
             str: The absolute path.
@@ -387,7 +385,7 @@ class DesktopRunner:
                 path always, and another packaged binary found under `out/` (if any).
         """
         electron = str(ELECTRON_DIR / "node_modules" / "electron" / "dist" / "electron")
-        binaries = [electron] if os.path.isfile(electron) else []
+        binaries = [electron] if Path(electron).is_file() else []
         for packaged in (cls.packaged_binary_path(), cls.binary_path()):
             if packaged and packaged not in binaries:
                 binaries.append(packaged)
@@ -395,8 +393,9 @@ class DesktopRunner:
 
     @classmethod
     def warn_uncovered(cls, binaries: list[str]) -> bool:
-        """Says, with the fix, when a binary about to be started has no AppArmor profile on a machine
-        that needs one. From PyCharm's terminal (a permissive profile) it still starts; from the
+        """Warn, with the fix, when a binary about to be started has no AppArmor profile.
+
+        Only on a machine that needs one. From PyCharm's terminal (a permissive profile) it still starts; from the
         launcher or a plain terminal Chromium aborts with "No usable sandbox!".
 
         Args:
@@ -451,10 +450,10 @@ class DesktopRunner:
             print("❌ The desktop app has not been built yet — nothing to register.")
             return False
 
-        icon = os.path.join(ICON_DIR, f"{ICON_NAME}.png")
+        icon = str(Path(ICON_DIR) / f"{ICON_NAME}.png")
         try:
-            os.makedirs(DESKTOP_ENTRY_DIR, exist_ok=True)
-            os.makedirs(ICON_DIR, exist_ok=True)
+            Path(DESKTOP_ENTRY_DIR).mkdir(parents=True, exist_ok=True)
+            Path(ICON_DIR).mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             print(f"⚠️  Could not create the XDG directories: {exc}")
             return False
@@ -481,7 +480,7 @@ class DesktopRunner:
             f"StartupWMClass={WINDOW_CLASS}\n"
         )
         try:
-            with open(os.path.join(DESKTOP_ENTRY_DIR, DESKTOP_ENTRY_NAME), "w") as handle:
+            with (Path(DESKTOP_ENTRY_DIR) / DESKTOP_ENTRY_NAME).open("w") as handle:
                 handle.write(entry)
         except OSError as exc:
             print(f"⚠️  Could not write the desktop entry: {exc}")
@@ -518,9 +517,7 @@ class DesktopRunner:
             ours = [
                 binary
                 for binary in binaries
-                if os.path.basename(
-                    DesktopInstaller.covering_profile(binary) or APPARMOR_PROFILE_NAME
-                )
+                if Path(DesktopInstaller.covering_profile(binary) or APPARMOR_PROFILE_NAME).name
                 == APPARMOR_PROFILE_NAME
             ]
             if not DesktopInstaller.install_apparmor_profile(ours):
@@ -539,7 +536,7 @@ class DesktopRunner:
         from dreamference.runner.codex_branded_builder import CodexBrandedBuilder
 
         ragon = CodexBrandedBuilder.executable_path()
-        built = os.path.isfile(ragon)
+        built = Path(ragon).is_file()
         print(
             f"{'✅' if built else '❌'} ragon, which the app bundles for Work and Ask"
             f"{f' ({ragon})' if built else ' — build it with: ragon-admin codex build'}"

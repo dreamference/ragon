@@ -196,7 +196,7 @@ def test_an_unreadable_profile_file_is_skipped(tmp_path):
     (tmp_path / "p").write_text('profile p "/opt/x/Ragon" {\n  userns,\n}\n')
     with (
         patch.object(desktop_installer, "APPARMOR_DIR", str(tmp_path)),
-        patch("builtins.open", side_effect=PermissionError("denied")),
+        patch("pathlib.Path.open", side_effect=PermissionError("denied")),
     ):
         assert DesktopInstaller.covering_profile("/opt/x/Ragon") is None
 

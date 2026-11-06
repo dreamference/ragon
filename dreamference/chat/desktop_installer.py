@@ -26,10 +26,11 @@ needs Rust.
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Final
 
 # Where rustup puts the toolchain, and the installer that puts it there (used by the Codex build).
-CARGO_BIN: Final[str] = os.path.expanduser("~/.cargo/bin")
+CARGO_BIN: Final[str] = str(Path("~/.cargo/bin").expanduser())
 RUSTUP_URL: Final[str] = "https://sh.rustup.rs"
 
 # The oldest Node the build accepts: Electron Forge 8 declares `node >= 22.13.0` (its packages are
@@ -43,6 +44,11 @@ APPARMOR_PROFILE_NAME: Final[str] = "ragon-desktop-dev"
 # Where every AppArmor profile is read from, and the switch under which a program without one is
 # refused a user namespace (Ubuntu 24.04 and later set it to 1).
 APPARMOR_DIR: Final[str] = "/etc/apparmor.d"
+USERNS_RESTRICTED: Final[str] = "1"
+USERNS_RULE: Final[str] = "userns,"
+MISSING_NODE: Final[str] = "node"
+MISSING_NPM: Final[str] = "npm"
+MISSING_DPKG: Final[str] = "dpkg"
 USERNS_SYSCTL: Final[str] = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
 
 
@@ -116,8 +122,8 @@ class DesktopInstaller:
         Returns:
             Optional[str]: Absolute path to cargo, or None.
         """
-        candidate = os.path.join(CARGO_BIN, "cargo")
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        candidate = str(Path(CARGO_BIN) / "cargo")
+        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate
         return shutil.which("cargo")
 
@@ -154,8 +160,9 @@ class DesktopInstaller:
 
     @classmethod
     def userns_allowed(cls) -> bool:
-        """Reports whether a program started from this shell may create a user namespace, which is
-        what Chromium's sandbox does first. Under a terminal with a permissive AppArmor profile
+        """Report whether a program started from this shell may create a user namespace.
+
+        That is what Chromium's sandbox does first. Under a terminal with a permissive AppArmor profile
         (PyCharm's) it may; from a plain terminal or the launcher it may not, until a profile
         names the binary.
 
@@ -187,8 +194,8 @@ class DesktopInstaller:
             bool: True if `kernel.apparmor_restrict_unprivileged_userns` is 1.
         """
         try:
-            with open(USERNS_SYSCTL) as handle:
-                return handle.read().strip() == "1"
+            with Path(USERNS_SYSCTL).open() as handle:
+                return handle.read().strip() == USERNS_RESTRICTED
         except OSError:
             return False
 
@@ -208,26 +215,27 @@ class DesktopInstaller:
         """
         needle = f'"{binary}"'
         try:
-            names = sorted(os.listdir(APPARMOR_DIR))
+            names = sorted(entry.name for entry in Path(APPARMOR_DIR).iterdir())
         except OSError:
             return None
         for name in names:
-            path = os.path.join(APPARMOR_DIR, name)
-            if not os.path.isfile(path):
+            path = str(Path(APPARMOR_DIR) / name)
+            if not Path(path).is_file():
                 continue
             try:
-                with open(path, encoding="utf-8", errors="replace") as handle:
+                with Path(path).open(encoding="utf-8", errors="replace") as handle:
                     text = handle.read()
             except OSError:
                 continue
-            if needle in text and "userns," in text:
+            if needle in text and USERNS_RULE in text:
                 return path
         return None
 
     @classmethod
     def uncovered(cls, binaries: list[str]) -> list[str]:
-        """The binaries that would be refused their sandbox when started from the launcher or a
-        plain terminal: none where the kernel does not restrict user namespaces, else those no
+        """List the binaries that would be refused their sandbox from the launcher or a terminal.
+
+        That is none where the kernel does not restrict user namespaces, else those no
         profile names.
 
         Args:
@@ -279,7 +287,7 @@ class DesktopInstaller:
         Returns:
             bool: True once the profile is loaded, or when nothing needed doing.
         """
-        binaries = [binary for binary in binaries if os.path.isabs(binary)]
+        binaries = [binary for binary in binaries if Path(binary).is_absolute()]
         if not binaries:
             return cls.userns_allowed()
         if not shutil.which("sudo") or not shutil.which("apparmor_parser"):
@@ -336,17 +344,17 @@ class DesktopInstaller:
             return True, missing
 
         print("⚠️  The Ragon desktop toolchain is incomplete:")
-        if "node" in missing:
+        if MISSING_NODE in missing:
             print(
                 f"   • Node.js {MIN_NODE_VERSION[0]}.{MIN_NODE_VERSION[1]} or later is needed (Electron, Vite and Forge run on it)."
             )
-        if "npm" in missing:
+        if MISSING_NPM in missing:
             print("   • npm is needed to install the app's packages.")
-        if "dpkg" in missing:
+        if MISSING_DPKG in missing:
             print(
                 "   • dpkg and dpkg-deb are needed to make the .deb (a Debian or Ubuntu system has both)."
             )
-        if "node" in missing or "npm" in missing:
+        if MISSING_NODE in missing or MISSING_NPM in missing:
             print(
                 "💡 Install Node.js from your distribution or nodejs.org, then `ragon-admin desktop install`."
             )
