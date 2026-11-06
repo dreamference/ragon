@@ -69,6 +69,55 @@ SONNET_HOST_PATH: Final[str] = "/tmp/dreamference-sonnet.txt"
 SONNET_CONTAINER_PATH: Final[str] = "/tmp/sonnet.txt"
 # `ragon-admin remote` (dreamference/remote/).
 REMOTE_COMMAND: Final[str] = "remote"
+# Literals the argument dispatch compares against, named once.
+_SERVER_ERROR_MARKER: Final[str] = "391"
+_ARG_ANTARTIFACT: Final[str] = "<antArtifact"
+_ARG_BUILD: Final[str] = "build"
+_ARG_CLEAR: Final[str] = "clear"
+_ARG_CLINE: Final[str] = "cline"
+_ARG_CONTINUE: Final[str] = "continue"
+_ARG_DATA_DONE: Final[str] = "data: [DONE]"
+_ARG_DESKTOP: Final[str] = "desktop"
+_ARG_DIFFUSION_MODEL: Final[str] = "diffusion-model"
+_ARG_DOWNLOAD: Final[str] = "download"
+_CODE_FENCE: Final[str] = "```"
+_ARG_ENABLE_PREFIX_CACHING: Final[str] = "--enable-prefix-caching"
+_ARG_GMAIL: Final[str] = "gmail"
+_ARG_IMAGES: Final[str] = "images"
+_ARG_IM_START: Final[str] = "<|im_start|>"
+_ARG_INIT: Final[str] = "init"
+_ARG_INSPECT: Final[str] = "inspect"
+_ARG_INSTALL: Final[str] = "install"
+_ARG_KWARGS: Final[str] = "kwargs"
+_ARG_LIST: Final[str] = "list"
+_ARG_LOGS: Final[str] = "logs"
+_ARG_MAIN_MODEL: Final[str] = "main-model"
+_ARG_MCP: Final[str] = "mcp"
+_ARG_MODEL: Final[str] = "model"
+_ARG_MODEL_CACHE: Final[str] = "model-cache"
+_ARG_MOE: Final[str] = "moe"
+_ARG_NO_ENABLE_PREFIX_CACHING: Final[str] = "--no-enable-prefix-caching"
+_ARG_NO_THINKING: Final[str] = "No Thinking"
+_ARG_OPENHANDS: Final[str] = "openhands"
+_ARG_READ: Final[str] = "read"
+_ARG_RED_BLACK_TREES: Final[str] = "red-black trees"
+_ARG_RICHARD_FEYNMAN: Final[str] = "richard feynman"
+_ARG_RUN: Final[str] = "run"
+_ARG_RUNNING: Final[str] = "running"
+_ARG_SEARCH: Final[str] = "search"
+_ARG_SERVER_NAME: Final[str] = "server_name="
+_ARG_SERVICE_INITIALIZED_AS_CLIENT: Final[str] = "Service initialized as client"
+_ARG_SET: Final[str] = "set"
+_ARG_START: Final[str] = "start"
+_ARG_STATUS: Final[str] = "status"
+_ARG_STOP: Final[str] = "stop"
+_ARG_SWE_BENCH: Final[str] = "SWE-bench"
+_ARG_TENSORIZER: Final[str] = "tensorizer"
+_ARG_TENSORIZE_CACHE: Final[str] = "tensorize-cache"
+_ARG_THINK: Final[str] = "<think>"
+_SLOT_BUSY_FRACTION: Final[float] = 0.5
+_HTTP_OK: Final[int] = 200
+_MIN_FENCE_PARTS: Final[int] = 2
 
 
 class DreamferenceCLIController:
@@ -236,7 +285,7 @@ class DreamferenceCLIController:
                 row["category"],
                 f"{row['acceptance']:.1f}%",
                 f"{row['tau']:.2f}",
-                str(sum(1 for s in row["slots"] if s >= 0.5)),
+                str(sum(1 for s in row["slots"] if s >= _SLOT_BUSY_FRACTION)),
                 str(row["suggested_n"]),
             )
         out_console.print(table)
@@ -292,7 +341,7 @@ class DreamferenceCLIController:
                 payload["tool_choice"] = "auto"
             try:
                 response = session.post(api_base, json=payload, headers=headers, timeout=90)
-                if response.status_code != 200:
+                if response.status_code != _HTTP_OK:
                     return None
                 return response.json()["choices"][0]["message"]
             except Exception:
@@ -301,7 +350,7 @@ class DreamferenceCLIController:
         arithmetic = ask("What is 17 * 23? Reply with only the number.", max_tokens=16)
         if arithmetic is None:
             rows["Canary: arithmetic"] = "[red]unreachable[/red]"
-        elif "391" in (arithmetic.get("content") or ""):
+        elif _SERVER_ERROR_MARKER in (arithmetic.get("content") or ""):
             rows["Canary: arithmetic"] = "[green]pass[/green] (17*23=391)"
         else:
             rows["Canary: arithmetic"] = (
@@ -311,10 +360,10 @@ class DreamferenceCLIController:
         code = ask("Write a Python function add(a, b) returning their sum. Code only, no prose.")
         content = (code or {}).get("content") or ""
         snippet = content
-        if "```" in snippet:
+        if _CODE_FENCE in snippet:
             # Strip one fenced block, which is how this model formats code.
             parts = snippet.split("```")
-            if len(parts) >= 2:
+            if len(parts) >= _MIN_FENCE_PARTS:
                 snippet = parts[1]
                 if snippet.startswith("python"):
                     snippet = snippet[len("python") :]
@@ -842,9 +891,9 @@ class DreamferenceCLIController:
         facts["KV Cache Dtype"] = flag("--kv-cache-dtype") or "auto"
         facts["Max Model Len"] = flag("--max-model-len") or "Unknown"
 
-        if "--no-enable-prefix-caching" in cmd:
+        if _ARG_NO_ENABLE_PREFIX_CACHING in cmd:
             facts["Prefix Caching"] = "Off (recipe)"
-        elif "--enable-prefix-caching" in cmd:
+        elif _ARG_ENABLE_PREFIX_CACHING in cmd:
             facts["Prefix Caching"] = "On"
         else:
             facts["Prefix Caching"] = "vLLM default"
@@ -871,7 +920,7 @@ class DreamferenceCLIController:
         facts.update(cls._read_kv_pool_facts(container, facts.get("Max Model Len")))
 
         load_format = flag("--load-format")
-        facts["Tensorizer"] = "Active" if load_format == "tensorizer" else "Not used"
+        facts["Tensorizer"] = "Active" if load_format == _ARG_TENSORIZER else "Not used"
 
         # A cold compile is 8-12 minutes, so whether the cache survived the last restart is worth
         # knowing before deciding a slow startup is a problem.
@@ -977,7 +1026,7 @@ class DreamferenceCLIController:
             ImageSearchSidecar,
         )
 
-        if args.images_command == "start":
+        if args.images_command == _ARG_START:
             if not ImageSearchSidecar.start(
                 config.vllm_host, config.model, siglip=not args.no_siglip
             ):
@@ -989,9 +1038,9 @@ class DreamferenceCLIController:
                 "(`ragon-admin searxng start`) and the model server."
             )
             return 0
-        if args.images_command == "stop":
+        if args.images_command == _ARG_STOP:
             return 0 if ImageSearchSidecar.stop() else 1
-        if args.images_command == "status":
+        if args.images_command == _ARG_STATUS:
             for line in ImageSearchSidecar.status_lines():
                 print(line)
             return 0
@@ -1010,16 +1059,16 @@ class DreamferenceCLIController:
         """
         from dreamference.chat.speech_sidecar import STT_HOST_PORT, SpeechSidecar
 
-        if command == "start":
+        if command == _ARG_START:
             if not SpeechSidecar.start():
                 print(f"❌ Speech-to-text did not start. {SpeechSidecar.problem}")
                 return 1
             print(f"✅ Speech-to-text is running on http://127.0.0.1:{STT_HOST_PORT}")
             print("💡 The microphone button in the app and in `ragon web` on this machine uses it.")
             return 0
-        if command == "stop":
+        if command == _ARG_STOP:
             return 0 if SpeechSidecar.stop() else 1
-        if command == "status":
+        if command == _ARG_STATUS:
             for line in SpeechSidecar.status_lines():
                 print(line)
             return 0
@@ -1257,7 +1306,7 @@ class DreamferenceCLIController:
 
         holder = NightShiftQueue.runner_holder()
         if holder:
-            where = "swe-bench status" if "SWE-bench" in holder else "night status"
+            where = "swe-bench status" if _ARG_SWE_BENCH in holder else "night status"
             print(
                 f"❌ {holder[0].upper()}{holder[1:]} is in progress, so `ragon-admin {what}` waits: "
                 f"see `ragon-admin {where}`."
@@ -1440,9 +1489,9 @@ class DreamferenceCLIController:
 
         from dreamference.chat.gmail_client import GmailClient
 
-        if args.gmail_command == "search":
+        if args.gmail_command == _ARG_SEARCH:
             payload = GmailClient.search(" ".join(args.query), limit=args.max_results)
-        elif args.gmail_command == "read":
+        elif args.gmail_command == _ARG_READ:
             payload = GmailClient.read(args.message_id)
         else:
             payload = GmailClient.status()
@@ -1458,7 +1507,7 @@ class DreamferenceCLIController:
             print(_json.dumps(payload, indent=2))
             return 0
 
-        if args.gmail_command == "status":
+        if args.gmail_command == _ARG_STATUS:
             if not payload.get("connected"):
                 print("❌ No Gmail account is connected.")
                 print(
@@ -1469,7 +1518,7 @@ class DreamferenceCLIController:
             print(f"connected: {payload.get('email')}")
             return 0
 
-        if args.gmail_command == "read":
+        if args.gmail_command == _ARG_READ:
             for header in ("from", "to", "date", "subject"):
                 if payload.get(header):
                     print(f"{header.capitalize()}: {payload[header]}")
@@ -2857,7 +2906,7 @@ class DreamferenceCLIController:
 
         # The image_search tool's MCP server: stdout is the protocol, and Codex starts it for a
         # session, so nothing below (the sandbox check) may print or ask.
-        if args.command == "images" and args.images_command == "mcp":
+        if args.command == _ARG_IMAGES and args.images_command == _ARG_MCP:
             from dreamference.chat.image_search_mcp import ImageSearchMcp
 
             sys.exit(ImageSearchMcp.serve())
@@ -2871,7 +2920,7 @@ class DreamferenceCLIController:
             sys.exit(1)
 
         # Handle stdio MCP server command immediately
-        if args.command == "mcp":
+        if args.command == _ARG_MCP:
             run_mcp_server()
             sys.exit(0)
 
@@ -2909,11 +2958,11 @@ class DreamferenceCLIController:
 
         # Instantiate selected runner (Codex by default, or Cline/Continue/OpenHands)
         runner: ClineRunner | ContinueRunner | OpenHandsRunner | CodexRunner
-        if config.agent_runner == "cline":
+        if config.agent_runner == _ARG_CLINE:
             runner = ClineRunner(config=config)
-        elif config.agent_runner == "continue":
+        elif config.agent_runner == _ARG_CONTINUE:
             runner = ContinueRunner(config=config)
-        elif config.agent_runner == "openhands":
+        elif config.agent_runner == _ARG_OPENHANDS:
             runner = OpenHandsRunner(config=config)
         else:
             runner = CodexRunner(config=config)
@@ -2925,8 +2974,8 @@ class DreamferenceCLIController:
         console = rich_console()
 
         # Dispatch subcommand logic
-        if args.command == "model":
-            if args.model_command == "list":
+        if args.command == _ARG_MODEL:
+            if args.model_command == _ARG_LIST:
                 cls.display_header()
 
                 table = Table(title="Available Ragon Models")
@@ -2940,7 +2989,7 @@ class DreamferenceCLIController:
                 console.print(table)
                 sys.exit(0)
 
-            elif args.model_command == "download":
+            elif args.model_command == _ARG_DOWNLOAD:
                 cls.display_header()
                 auto_t = getattr(args, "tensorize", False)
                 if getattr(args, "all", False):
@@ -2966,8 +3015,8 @@ class DreamferenceCLIController:
                         )
                 sys.exit(0)
 
-        elif args.command == "diffusion-model":
-            if args.diffusion_model_command == "set":
+        elif args.command == _ARG_DIFFUSION_MODEL:
+            if args.diffusion_model_command == _ARG_SET:
                 cls.display_header()
                 out_console = Console()
                 # The mirror of main-model set's refusal: an autoregressive checkpoint handed to
@@ -2993,8 +3042,8 @@ class DreamferenceCLIController:
                 out_console.print(f"   [cyan]Config saved to:[/cyan] {saved_path}")
                 sys.exit(0)
 
-        elif args.command == "main-model":
-            if args.main_model_command == "set":
+        elif args.command == _ARG_MAIN_MODEL:
+            if args.main_model_command == _ARG_SET:
                 cls.display_header()
                 out_console = Console()
                 # A diffusion checkpoint pointed at vLLM fails only at launch, with an error that
@@ -3024,13 +3073,13 @@ class DreamferenceCLIController:
                 # (the vision re-rank), so a running one is restarted with the new model in mind.
                 from dreamference.chat.image_search_sidecar import ImageSearchSidecar
 
-                if ImageSearchSidecar.state() == "running":
+                if ImageSearchSidecar.state() == _ARG_RUNNING:
                     out_console.print(
                         "[cyan]💡 Image search runs with the previous model: "
                         "`ragon-admin images start` once the new one is served.[/cyan]"
                     )
                 sys.exit(0)
-            elif args.main_model_command == "inspect":
+            elif args.main_model_command == _ARG_INSPECT:
                 cls.display_header()
                 import requests
 
@@ -3068,7 +3117,7 @@ class DreamferenceCLIController:
                 max_model_len = "Unknown"
                 try:
                     models_response = session.get(f"{vllm_host}/v1/models", timeout=5)
-                    if models_response.status_code == 200:
+                    if models_response.status_code == _HTTP_OK:
                         models_data = models_response.json()
                         if models_data.get("data"):
                             model_name = models_data["data"][0]["id"]
@@ -3103,11 +3152,11 @@ class DreamferenceCLIController:
                     r_response = session.post(
                         api_base, json=payload_reasoning, headers=headers, timeout=15
                     )
-                    if r_response.status_code == 200:
+                    if r_response.status_code == _HTTP_OK:
                         msg = r_response.json().get("choices", [{}])[0].get("message", {})
                         content = msg.get("content") or ""
                         if (
-                            "<think>" in content
+                            _ARG_THINK in content
                             or msg.get("reasoning_content")
                             or msg.get("reasoning")
                         ):
@@ -3152,7 +3201,7 @@ class DreamferenceCLIController:
                     }
                     try:
                         resp = session.post(api_base, json=payload_role, headers=headers, timeout=5)
-                        if resp.status_code == 200:
+                        if resp.status_code == _HTTP_OK:
                             supported_roles.append(role)
                     except Exception:
                         pass
@@ -3176,10 +3225,10 @@ class DreamferenceCLIController:
                     c_response = session.post(
                         api_base, json=payload_chatml, headers=headers, timeout=15
                     )
-                    if c_response.status_code == 200:
+                    if c_response.status_code == _HTTP_OK:
                         msg = c_response.json().get("choices", [{}])[0].get("message", {})
                         content = msg.get("content") or ""
-                        if "<|im_start|>" in content:
+                        if _ARG_IM_START in content:
                             supports_chatml = True
                 except Exception:
                     pass
@@ -3202,10 +3251,10 @@ class DreamferenceCLIController:
                     a_response = session.post(
                         api_base, json=payload_artifact, headers=headers, timeout=15
                     )
-                    if a_response.status_code == 200:
+                    if a_response.status_code == _HTTP_OK:
                         msg = a_response.json().get("choices", [{}])[0].get("message", {})
                         content = msg.get("content") or ""
-                        if "<antArtifact" in content:
+                        if _ARG_ANTARTIFACT in content:
                             supports_artifact = True
                 except Exception:
                     pass
@@ -3230,7 +3279,7 @@ class DreamferenceCLIController:
                     t_response = session.post(
                         api_base, json=payload_tags, headers=headers, timeout=15
                     )
-                    if t_response.status_code == 200:
+                    if t_response.status_code == _HTTP_OK:
                         msg = t_response.json().get("choices", [{}])[0].get("message", {})
                         content = msg.get("content") or ""
                         import re
@@ -3274,7 +3323,7 @@ class DreamferenceCLIController:
                     with session.post(
                         api_base, json=payload_stream, headers=headers, timeout=15, stream=True
                     ) as s_response:
-                        if s_response.status_code == 200:
+                        if s_response.status_code == _HTTP_OK:
                             import json as _json
 
                             for line in s_response.iter_lines():
@@ -3283,7 +3332,7 @@ class DreamferenceCLIController:
                                 decoded_line = line.decode("utf-8")
                                 if not decoded_line.startswith("data: "):
                                     continue
-                                if decoded_line == "data: [DONE]":
+                                if decoded_line == _ARG_DATA_DONE:
                                     break
                                 if not supports_streaming:
                                     ttft = time.time() - start_stream
@@ -3313,7 +3362,7 @@ class DreamferenceCLIController:
                     hf_resp = requests.get(
                         f"https://huggingface.co/{model_name}/raw/main/config.json", timeout=3
                     )
-                    if hf_resp.status_code == 200:
+                    if hf_resp.status_code == _HTTP_OK:
                         model_cfg = hf_resp.json()
                         moe_keys = [
                             "num_experts_per_tok",
@@ -3324,7 +3373,7 @@ class DreamferenceCLIController:
                         ]
                         if (
                             any(k in model_cfg for k in moe_keys)
-                            or "moe" in model_cfg.get("model_type", "").lower()
+                            or _ARG_MOE in model_cfg.get("model_type", "").lower()
                         ):
                             is_moe = "Yes"
                         else:
@@ -3372,7 +3421,7 @@ class DreamferenceCLIController:
                     tool_resp = session.post(
                         api_base, json=payload_tool_test, headers=headers, timeout=15
                     )
-                    if tool_resp.status_code == 200:
+                    if tool_resp.status_code == _HTTP_OK:
                         msg = tool_resp.json().get("choices", [{}])[0].get("message", {})
                         if msg.get("tool_calls"):
                             supports_tools = True
@@ -3398,7 +3447,7 @@ class DreamferenceCLIController:
                     json_resp = session.post(
                         api_base, json=payload_json, headers=headers, timeout=5
                     )
-                    if json_resp.status_code == 200:
+                    if json_resp.status_code == _HTTP_OK:
                         supports_json = True
                 except Exception:
                     pass
@@ -3407,7 +3456,7 @@ class DreamferenceCLIController:
                 kv_cache_usage = "Unknown"
                 try:
                     metrics_resp = session.get(f"{vllm_host}/metrics", timeout=2)
-                    if metrics_resp.status_code == 200:
+                    if metrics_resp.status_code == _HTTP_OK:
                         import re
 
                         match = re.search(
@@ -3551,11 +3600,11 @@ class DreamferenceCLIController:
                         "model": model_name,
                         "messages": chat_msgs,
                         "max_tokens": 8192,
-                        "temperature": 0.1 if "No Thinking" not in prompt else 0,
+                        "temperature": 0.1 if _ARG_NO_THINKING not in prompt else 0,
                         "stream": True,
                         "stream_options": {"include_usage": True},
                     }
-                    if "kwargs" in p_data:
+                    if _ARG_KWARGS in p_data:
                         payload.update(p_data["kwargs"])
                     # Acceptance is only meaningful against a known workload, so it is measured
                     # as a delta around this one request rather than read as a running total.
@@ -3571,7 +3620,7 @@ class DreamferenceCLIController:
                         response = session.post(
                             api_base, json=payload, headers=headers, timeout=15, stream=True
                         )
-                        if response.status_code == 200:
+                        if response.status_code == _HTTP_OK:
                             import json
 
                             full_content = ""
@@ -3581,7 +3630,7 @@ class DreamferenceCLIController:
                             for line in response.iter_lines():
                                 if line:
                                     decoded = line.decode("utf-8")
-                                    if decoded.startswith("data: ") and decoded != "data: [DONE]":
+                                    if decoded.startswith("data: ") and decoded != _ARG_DATA_DONE:
                                         try:
                                             chunk = json.loads(decoded[6:])
                                             # Grab usage if present
@@ -3621,7 +3670,7 @@ class DreamferenceCLIController:
                             # silently drop out of this branch.
                             lowered = prompt.lower()
                             if (
-                                "richard feynman" in lowered or "red-black trees" in lowered
+                                _ARG_RICHARD_FEYNMAN in lowered or _ARG_RED_BLACK_TREES in lowered
                             ) and latency > 0:
                                 completions_per_sec = 1.0 / latency
                                 tps_str = f"{tps_str} ({completions_per_sec:.2f} completions/s)"
@@ -3681,7 +3730,7 @@ class DreamferenceCLIController:
                 session.close()
                 sys.exit(0)
 
-        elif args.command == "logs" and getattr(args, "target", None) == "mcp":
+        elif args.command == _ARG_LOGS and getattr(args, "target", None) == _ARG_MCP:
             # Codex's TUI writes tracing into a SQLite database rather than a log file, which makes
             # the one question worth asking -- did my MCP servers actually come up? -- annoyingly
             # hard to answer. This pulls out just the lifecycle lines.
@@ -3704,7 +3753,7 @@ class DreamferenceCLIController:
             seen = []
             for row in rows:
                 text = " ".join(str(x) for x in row)
-                if "server_name=" not in text:
+                if _ARG_SERVER_NAME not in text:
                     continue
                 marker = next(
                     (
@@ -3734,13 +3783,13 @@ class DreamferenceCLIController:
             else:
                 console.print("[bold]MCP server lifecycle (most recent first)[/bold]\n")
                 for name, marker in seen:
-                    icon = "✅" if marker == "Service initialized as client" else "⚠️ "
+                    icon = "✅" if marker == _ARG_SERVICE_INITIALIZED_AS_CLIENT else "⚠️ "
                     print(f"   {icon} {name:16} {marker}")
                 print("\nNote: a server can initialize and then be cancelled — ragon still reports")
                 print("      it as 'not initialized' in its startup banner.")
             sys.exit(0)
 
-        elif args.command == "desktop":
+        elif args.command == _ARG_DESKTOP:
             from dreamference.chat import DesktopRunner
 
             # `ragon-admin` exists only on a node: the window built here then shows this
@@ -3749,19 +3798,19 @@ class DreamferenceCLIController:
 
             NodeIdentity.ensure()
 
-            if args.desktop_command == "install":
+            if args.desktop_command == _ARG_INSTALL:
                 sys.exit(DesktopRunner.install())
-            elif args.desktop_command == "run":
+            elif args.desktop_command == _ARG_RUN:
                 sys.exit(DesktopRunner.run())
-            elif args.desktop_command == "build":
+            elif args.desktop_command == _ARG_BUILD:
                 sys.exit(DesktopRunner.build())
-            elif args.desktop_command == "status":
+            elif args.desktop_command == _ARG_STATUS:
                 sys.exit(DesktopRunner.status())
 
-        elif args.command == "gmail":
+        elif args.command == _ARG_GMAIL:
             sys.exit(cls.handle_gmail(args))
 
-        elif args.command == "init":
+        elif args.command == _ARG_INIT:
             cls.display_header()
             auto_t = config.use_tensorizer
             if config.model:
@@ -3804,7 +3853,7 @@ class DreamferenceCLIController:
                 f"   [cyan]Indexed Files:[/cyan]   {summary['total_indexed_files']} ({summary['total_ast_symbols']} AST symbols)"
             )
 
-        elif args.command == "run":
+        elif args.command == _ARG_RUN:
             if args.compat is not None:
                 if not isinstance(runner, CodexRunner):
                     print(
@@ -3816,15 +3865,15 @@ class DreamferenceCLIController:
                 )
             sys.exit(runner.run_session(prompt=args.prompt, debug=args.debug))
 
-        elif args.command == "status":
+        elif args.command == _ARG_STATUS:
             cls.handle_status()
 
-        elif args.command == "clear":
-            if args.clear_command == "model-cache":
+        elif args.command == _ARG_CLEAR:
+            if args.clear_command == _ARG_MODEL_CACHE:
                 cls.display_header()
                 sys.exit(0 if clear_model_cache() else 1)
 
-            elif args.clear_command == "tensorize-cache":
+            elif args.clear_command == _ARG_TENSORIZE_CACHE:
                 cls.display_header()
                 sys.exit(0 if clear_tensorizer_cache() else 1)
 
