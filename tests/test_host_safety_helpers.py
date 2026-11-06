@@ -2,6 +2,7 @@
 
 import io
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -12,13 +13,13 @@ from dreamference.vllm_server.vllm_server_manager import VLLMServerManager
 def _fake_files(monkeypatch, files):
     """Makes the module's open() read `files` (path -> text or bytes, or an exception to raise)."""
 
-    def fake_open(path, mode="r", *args, **kwargs):
-        content = files.get(path, FileNotFoundError(path))
+    def fake_open(self, mode="r", *args, **kwargs):
+        content = files.get(str(self), FileNotFoundError(str(self)))
         if isinstance(content, BaseException):
             raise content
         return io.BytesIO(content) if "b" in mode else io.StringIO(content)
 
-    monkeypatch.setattr(vsm, "open", fake_open, raising=False)
+    monkeypatch.setattr(Path, "open", fake_open)
 
 
 SWAPS_HEADER = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"

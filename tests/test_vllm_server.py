@@ -550,13 +550,26 @@ def test_vllm_environment_checks_real():
     assert isinstance(docker_available, bool)
 
 
-def test_vllm_real_health_check():
+def _no_server(monkeypatch):
+    """Make every request to the model server fail the way a closed port does."""
+    import requests
+
+    def refuse(*args, **kwargs):
+        raise ConnectionError("no server")
+
+    monkeypatch.setattr("urllib.request.urlopen", refuse)
+    monkeypatch.setattr(requests, "get", refuse)
+
+
+def test_vllm_real_health_check(monkeypatch):
+    _no_server(monkeypatch)
     mgr = VLLMServerManager(host="http://localhost:8000")
     health = mgr.check_health(timeout=0.2)
     assert isinstance(health, bool)
 
 
-def test_vllm_server_status_reporting_real():
+def test_vllm_server_status_reporting_real(monkeypatch):
+    _no_server(monkeypatch)
     mgr = VLLMServerManager(host="http://localhost:8000")
     status = mgr.get_server_status()
     assert "host" in status

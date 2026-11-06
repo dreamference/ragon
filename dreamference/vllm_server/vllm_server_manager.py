@@ -6,6 +6,7 @@ polling HTTP health checks, and capturing logs.
 """
 
 import contextlib
+import http.client
 import os
 import re
 import shutil
@@ -13,7 +14,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar, Final, TypeVar
 
 from dreamference.config.dreamference_config import (
     DEFAULT_GUIDED_DECODING_BACKEND,
@@ -33,6 +34,8 @@ from dreamference.vllm_server.ragon_serve_launch_builder import (
 from dreamference.vllm_server.sglang_launch_builder import SGLangLaunchBuilder
 from dreamference.vllm_server.vllm_log_streamer import VLLMLogStreamer
 from dreamference.vllm_server.vllm_server_status import VLLMServerStatus
+
+_T = TypeVar("_T")
 
 DEFAULT_MAX_MODEL_LEN: Final[int] = 16384
 DEFAULT_GPU_MEMORY_UTILIZATION: Final[float] = 0.50
@@ -253,7 +256,7 @@ class VLLMServerManager:
             )
             with urllib.request.urlopen(req, timeout=timeout) as chat_resp:
                 return chat_resp.status == HTTP_OK
-        except Exception:
+        except (OSError, ValueError, http.client.HTTPException):
             return False
 
     def get_models(self, timeout: float = 2.0) -> list[str]:
@@ -273,7 +276,7 @@ class VLLMServerManager:
             if resp.status_code == HTTP_OK:
                 data = resp.json()
                 return [m.get(MODEL_ID_KEY) for m in data.get("data", []) if MODEL_ID_KEY in m]
-        except Exception:
+        except (requests.RequestException, ValueError, AttributeError, TypeError):
             pass
         return []
 
@@ -332,7 +335,7 @@ class VLLMServerManager:
         try:
             res = subprocess.run([sys.executable, "-c", "import vllm"], capture_output=True)
             return res.returncode == 0
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             return False
 
     def is_docker_available(self) -> bool:
@@ -346,7 +349,7 @@ class VLLMServerManager:
         try:
             res = subprocess.run(["docker", "ps"], capture_output=True)
             return res.returncode == 0
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             return False
 
     def is_image_present(self, docker_image: str) -> bool:
@@ -367,7 +370,7 @@ class VLLMServerManager:
                 stderr=subprocess.DEVNULL,
             )
             return res.returncode == 0
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             return False
 
     def ensure_docker_image(self, docker_image: str = DEFAULT_VLLM_IMAGE) -> bool:
@@ -436,7 +439,7 @@ class VLLMServerManager:
                     return True
             except subprocess.CalledProcessError as e:
                 print(f"❌ Failed to build Docker image '{docker_image}': {e}")
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 print(f"❌ Unexpected error building Docker image '{docker_image}': {e}")
 
         elif not dockerfile_path.is_file():
@@ -511,7 +514,7 @@ class VLLMServerManager:
                         )
                     elif line.startswith("tensorizer="):
                         result["has_tensorizer"] = line.split("=", 1)[1].strip() == TENSORIZER_TRUE
-        except Exception:
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
             pass
 
         self._image_probe_cache[docker_image] = result
@@ -720,7 +723,7 @@ class VLLMServerManager:
         if ragon_sessions:
             recipe = self.with_ragon_sessions(recipe, ragon_sessions)
 
-        def resolved(value: Any, key: str, fallback: Any) -> Any:
+        def resolved(value: _T | None, key: str, fallback: _T) -> _T:
             """Explicit caller argument wins; otherwise the model recipe; otherwise the module default."""
             if value is not None:
                 return value
@@ -1297,7 +1300,7 @@ class VLLMServerManager:
             if not entry.isdigit():
                 continue
             try:
-                with open(f"/proc/{entry}/cmdline", "rb") as f:
+                with Path(f"/proc/{entry}/cmdline").open("rb") as f:
                     raw = f.read()
             except OSError:
                 # Process exited between listdir and open, or belongs to another user.
@@ -1389,7 +1392,7 @@ class VLLMServerManager:
             Optional[int]: The value, or None if the knob is absent or unreadable.
         """
         try:
-            with open("/proc/sys/" + name.replace(".", "/")) as f:
+            with Path("/proc/sys/" + name.replace(".", "/")).open() as f:
                 return int(f.read().strip())
         except (OSError, ValueError):
             return None
@@ -1408,7 +1411,7 @@ class VLLMServerManager:
             from /proc/meminfo; 0.0 if neither can.
         """
         try:
-            with open("/proc/swaps") as f:
+            with Path("/proc/swaps").open() as f:
                 lines = f.read().splitlines()[1:]
             total_kb = 0
             for line in lines:
@@ -1421,7 +1424,7 @@ class VLLMServerManager:
         except (OSError, ValueError):
             pass
         try:
-            with open("/proc/meminfo") as f:
+            with Path("/proc/meminfo").open() as f:
                 for line in f:
                     if line.startswith("SwapTotal:"):
                         return int(line.split()[1]) / (1024**2)
@@ -1452,7 +1455,7 @@ class VLLMServerManager:
 
         try:
             snapshot_dir = ModelDownloader.get_model_snapshot_dir(model)
-        except Exception:
+        except (OSError, ValueError, KeyError):
             snapshot_dir = None
         if not snapshot_dir:
             return 0.0
@@ -1497,7 +1500,7 @@ class VLLMServerManager:
 
         try:
             snapshot_dir = ModelDownloader.get_model_snapshot_dir(model)
-        except Exception:
+        except (OSError, ValueError, KeyError):
             snapshot_dir = None
 
         if snapshot_dir:
@@ -1515,7 +1518,7 @@ class VLLMServerManager:
 
         try:
             spec = ModelMatrixRegistry.get_spec(model)
-        except Exception:
+        except (KeyError, ValueError):
             spec = None
         return float(spec.min_memory_gb) if spec else 0.0
 
@@ -1975,7 +1978,7 @@ class VLLMServerManager:
                     ["ps", "-eo", "pid,user,%mem,rss,cmd", "--sort=-%mem"], text=True
                 )
                 top_procs = "\n".join(ps_output.splitlines()[:11])
-            except Exception:
+            except (OSError, subprocess.SubprocessError):
                 top_procs = "Could not retrieve process list."
             print(f"\n❌ {headline}\n{detail}\n\nTop memory consuming processes:\n{top_procs}\n")
             sys.exit(1)
@@ -2477,7 +2480,7 @@ class VLLMServerManager:
                             break
                     if not loading_status:
                         loading_status = "Initializing container..."
-            except Exception:
+            except (OSError, ValueError, subprocess.SubprocessError):
                 pass
 
         status = VLLMServerStatus(

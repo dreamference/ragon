@@ -5,6 +5,7 @@ estimate in the start-up memory gate for this model only, with the PSI watchdog 
 """
 
 import json
+import subprocess
 from pathlib import Path
 from typing import ClassVar
 
@@ -187,9 +188,12 @@ def start(monkeypatch):
         classmethod(lambda cls, *a: Path("/nonexistent/chat_template.jinja")),
     )
     monkeypatch.setattr(mgr, "build_launch_command", lambda **kwargs: ["docker", "run", IMAGE])
-    monkeypatch.setattr(
-        vllm_server_manager.subprocess, "run", lambda *a, **k: seen.__setitem__("launched", True)
-    )
+
+    def fake_run(*a, **k):
+        seen["launched"] = True
+        return subprocess.CompletedProcess(a, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(vllm_server_manager.subprocess, "run", fake_run)
     monkeypatch.setattr(vllm_server_manager, "MemoryPressureWatchdog", FakeWatchdog)
     FakeWatchdog.started = []
 
