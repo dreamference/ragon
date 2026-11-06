@@ -429,6 +429,30 @@ def test_start_stops_at_the_first_arm_that_fails_its_smoke(tmp_path):
     )
 
 
+@pytest.mark.parametrize(("extra", "expected"), [({}, 2), ({"MAX_PARALLEL": "1"}, 1)])
+def test_max_parallel_reaches_the_nights_config_and_not_the_smoke(tmp_path, extra, expected):
+    result, _, _, _, folder = start(tmp_path, "default", **extra)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"max_parallel = {expected}\n" in (folder / "dreamference.toml").read_text()
+    smoke_config = next((tmp_path / "smoke").glob("n7-*/dreamference.toml")).read_text()
+    assert "max_parallel = 1\n" in smoke_config
+
+
+def test_the_verified357_shards_partition_the_whole_list():
+    folder = pathlib.Path(ROOT, "docs", "dev", "swe-bench")
+    tasks = lambda name: [  # noqa: E731
+        line.strip()
+        for line in (folder / name).read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    shards = [tasks(f"verified357-{slice_number}.txt") for slice_number in range(1, 6)]
+    assert [len(shard) for shard in shards] == [39, 80, 80, 79, 79]
+    assert sorted(task for shard in shards for task in shard) == sorted(
+        tasks("verified357-all.txt")
+    )
+    assert len(set(tasks("verified357-all.txt"))) == 357
+
+
 def test_the_drop_outputs_arm_reaches_only_its_round_and_stacks(tmp_path):
     status, recorded, folder = night(tmp_path, "default drop-outputs")
     assert status == 0 and (folder / "done").exists()

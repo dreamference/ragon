@@ -131,6 +131,8 @@ REMOTE_AB_DIR=${REMOTE_AB_DIR:-}
 LOCAL_ARMS=${LOCAL_ARMS:-0}
 LOCAL_PROD_STOP=${LOCAL_PROD_STOP:-}
 LOCAL_RESTORE_ENGINE=${LOCAL_RESTORE_ENGINE:-sglang}
+# MAX_PARALLEL: tasks at once in the night's rounds (the smoke stays at 1); 1 on a machine that also carries a user's work.
+MAX_PARALLEL=${MAX_PARALLEL:-2}
 # LOCAL_STEP_TRACE=1: an engine arm writes its step trace (ragon-serve's RAGON_STEP_TRACE, one JSON line per unit) to
 # ~/.cache/dreamference/night-traces/<run>.jsonl, kept in $D/step-trace/ once production is back. An arm part
 # `engine-<flag>-<value>` passes `--<flag> <value>` to the arm's engine (LOCAL_ARMS=1 only).
@@ -587,7 +589,7 @@ print(f'🧹 {len(removed)} cached image(s) removed to make room for the night.'
         mv "$D" "$aside" && echo "ℹ️  Previous night moved to $aside"
     fi
     mkdir -p "$D"
-    { cat "$WT/dreamference.toml"; printf '\n[swe_bench]\nmax_parallel = 2\ndisk_reserve = "%sG"\nnodes = "none"\n' "$RESERVE_GB"
+    { cat "$WT/dreamference.toml"; printf '\n[swe_bench]\nmax_parallel = %s\ndisk_reserve = "%sG"\nnodes = "none"\n' "$MAX_PARALLEL" "$RESERVE_GB"
       [ -n "$TASK_TIMEOUT" ] && printf 'task_timeout = "%s"\n' "$TASK_TIMEOUT"; cache_toml; } \
         > "$D/dreamference.toml"
     if [ "$BEST_OF" -gt 1 ]; then
