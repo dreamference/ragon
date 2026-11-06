@@ -62,6 +62,12 @@ A job (`node run <node> -- <command>`) is a systemd user unit with a mandatory m
 
 Root files travel base64-encoded on sudo's command line (they hold no secret) into a `mktemp` file, never a fixed name under `/tmp`. Every step reads first and changes nothing when it is done; `--dry-run` only reads (sudo included) and prints `would:` lines.
 
+## Updating a node: `ragon update` is not the whole update
+
+`ragon update` (`ragon-rs/src/update.rs`) replaces the **binaries** only: `ragon`, `codex-code-mode-host`, `ragon-search`, `ragon-fetch`, `ragon-code` and, on Linux, `ragon-docs` and `ragon-signal`. It does not touch the Python wheel (`ragon-admin`) and does not restart the model gate. A rollout that ran only `ragon update` therefore reads a new `ragon --version` beside a stale `ragon-admin` and a gate still running the old file.
+
+The full update of a node, binaries, wheel and gate together, is the re-run of provisioning from the main node: `ragon-admin node provision <node>` (or `--all`). Its install step (`_step_install`) compares the bundle version and the wheel flag the probe read, and when either is stale runs `install.sh --from <bundle> --role node` on the node, which installs the binaries and the wheel into the node's venv in one run. The gate is a copy of `model_gate_service.py` from that wheel, bind-mounted when `server start` creates its container, so it changes at the node's next `server start` (restart the model server there to move it). After an update, check all three: `ragon --version`, the wheel's version (`pip show dreamference` in the node's venv) and the gate container's start time against the install. A current node runs nothing (`test_an_install_of_the_current_version_runs_nothing`); a stale one runs the single install (`test_a_stale_node_is_updated_by_one_install_of_the_whole_bundle`).
+
 ## Keep when touching this
 
 - Every unattended caller of `ragon` (Night Shift, the egress audit, SWE-bench, the Codex test runner) names the model server in `DREAMFERENCE_VLLM_HOST`, because a browse is a multicast DNS query and the audit counts one as a failure.

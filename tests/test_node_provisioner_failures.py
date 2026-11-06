@@ -102,3 +102,16 @@ def test_a_machine_that_does_not_return_from_the_reboot_fails_the_wait(provision
     session = SimpleNamespace(open=lambda: False)
     assert provisioner._wait_for_ssh(session, timeout=0) is False
     assert provisioner._wait_for_ssh(SimpleNamespace(open=lambda: True)) is True
+
+
+def test_a_stale_node_is_updated_by_one_install_of_the_whole_bundle(provisioner):
+    """The fleet update replaces the binaries and the wheel in one `install.sh --role node` run."""
+    provisioner.results["node-b"]["probe"].update(bundle="old", admin="1")
+    session = _Session(_answer(0), _answer(0))
+    session.reprobe_called = False
+    provisioner._reprobe = lambda host, sess: True
+    assert provisioner._step_install("node-b", session) is True
+    (command,) = session.ran
+    assert "install.sh --from" in command
+    assert "--role node" in command
+    assert "--no-model" in command
