@@ -61,11 +61,7 @@
    "T201": 1
   },
   "dreamference/chat/gmail_search_service.py": {
-   "C901": 1,
-   "D102": 2,
-   "D205": 1,
-   "D301": 1,
-   "E501": 1
+   "C901": 1
   },
   "dreamference/chat/image_search_mcp.py": {
    "D205": 3,
@@ -624,5 +620,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1099
+ "total": 1094
 }

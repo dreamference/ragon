@@ -531,6 +531,15 @@ class GmailSearchService:
 
     @classmethod
     def delete_token(cls, address: str, directory: str | None = None) -> bool:
+        """Forgets one account's tokens.
+
+        Args:
+            address (str): The account to disconnect.
+            directory (Optional[str]): Credentials directory; the mounted one by default.
+
+        Returns:
+            bool: Whether the account was stored and is now gone.
+        """
         with CREDENTIALS_LOCK:
             accounts = cls._raw(directory).get("accounts", {})
             if address not in accounts:
@@ -548,6 +557,19 @@ class GmailSearchService:
         refresh_token: str | None = None,
         scopes: list[str] | None = None,
     ) -> bool:
+        """Stores one account's sealed tokens, with their expiry and what Google granted.
+
+        Args:
+            address (str): The account to store under.
+            token (str): The access token to seal.
+            lifetime (int): Its life in seconds, as Google reported it.
+            directory (Optional[str]): Credentials directory; the mounted one by default.
+            refresh_token (Optional[str]): The refresh token to seal, when Google gave one.
+            scopes (Optional[List[str]]): What Google granted; Gmail's scope when not named.
+
+        Returns:
+            bool: Whether the account was written back.
+        """
         with CREDENTIALS_LOCK:
             accounts = cls._raw(directory).get("accounts", {})
             acc = accounts.get(address, {"email": address})
@@ -941,7 +963,7 @@ class GmailSearchService:
 
     @classmethod
     def _all_mail_folder(cls, connection: imaplib.IMAP4_SSL) -> str:
-        """Finds the folder holding every message once, by its special-use attribute.
+        r"""Finds the folder holding every message once, by its special-use attribute.
 
         The English name `[Gmail]/All Mail` is what most examples hard-code, and it is wrong for
         every account whose interface language is not English. The `\\All` attribute in the LIST
@@ -1174,8 +1196,10 @@ class GmailSearchService:
 
     @classmethod
     def workspace(cls, path: str, query: dict[str, list[str]]) -> dict[str, Any]:
-        """Answers the read-only Drive and Calendar endpoints (specs/DREAMFERENCE_RAGON_APPS.md §9,
-        §9a): `/drive/search`, `/drive/file/<id>`, `/calendar/events`, `/calendar/event/<calendar>/<id>`.
+        """Answers the read-only Drive and Calendar endpoints (specs/DREAMFERENCE_RAGON_APPS.md §9, §9a).
+
+        Serves `/drive/search`, `/drive/file/<id>`, `/calendar/events` and
+        `/calendar/event/<calendar>/<id>`.
 
         Args:
             path (str): The request path.
@@ -1510,7 +1534,9 @@ class GmailSearchService:
                     f"""
                     <h2>Connect {name}</h2>
                     <p>Ragon authenticates directly with Google. What it reads stays on this machine.</p>
-                    <p class="note">ⓘ The consent screen will say <b style="display:inline">GNOME</b> — Ragon authenticates through the GNOME desktop's Google integration. No Ragon credentials are sent to Google.</p>
+                    <p class="note">ⓘ The consent screen will say <b style="display:inline">GNOME</b> —
+                    Ragon authenticates through the GNOME desktop's Google integration.
+                    No Ragon credentials are sent to Google.</p>
                     {full_access}
                     <button id="start-btn" class="btn-primary">Authorize with Google</button>
                     <div class="divider">
