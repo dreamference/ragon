@@ -951,6 +951,77 @@ def test_the_sender_copies_signed_adapters_of_the_model_only(monkeypatch):
     assert NodeAdapterSync.after(1, "second", DEFAULT_MODEL_ALIAS, None) == (1, [])
 
 
+def test_an_adapter_a_node_received_is_the_one_its_engine_is_started_for(
+    tmp_path, keys, monkeypatch, roomy_disk
+):
+    from dreamference.node.node_adapter_sync import NodeAdapterSync
+    from dreamference.vllm_server.adapter_serving import AdapterServing
+
+    monkeypatch.setattr(
+        AdapterVerifier, "served_base", classmethod(lambda cls, h, m: served(base_snapshot()))
+    )
+    monkeypatch.setattr("sys.stdin", Stdin(adapter_tar(staged_repo(tmp_path, keys))))
+    assert NodeAdapterSync.receive(["rust", ADAPTER_REPO, COMMIT, "100000"]) == 0
+    monkeypatch.setattr(
+        ModelMatrixRegistry,
+        "engine_has_feature",
+        classmethod(lambda cls, key, engine, feature: feature == "lora-adapters"),
+    )
+    assert [a["name"] for a in AdapterServing.launch_adapters(DEFAULT_MODEL_ALIAS)] == ["rust"]
+    assert (
+        DreamferenceCLIController._engine_for_adapters(DEFAULT_MODEL_ALIAS, None, from_flag=False)
+        is None
+    )
+
+
+def test_a_node_refuses_an_adapter_whose_file_changed_in_transit_and_cleans_up(
+    tmp_path, keys, monkeypatch, roomy_disk
+):
+    from dreamference.node.node_adapter_sync import NodeAdapterSync
+
+    folder = staged_repo(tmp_path, keys)
+    weights = next(p for p in (folder / "snapshots" / COMMIT).iterdir() if p.is_file())
+    weights.write_bytes(weights.read_bytes() + b"x")
+    monkeypatch.setattr("sys.stdin", Stdin(adapter_tar(folder)))
+    assert NodeAdapterSync.receive(["rust", ADAPTER_REPO, COMMIT, "100000"]) != 0
+    assert AdapterStore.entries() == {}
+    hub = ModelDownloader.get_hf_cache_dir()
+    assert not (hub / folder.name).exists()
+    assert not list(hub.glob(".ragon-adapter-sync-*"))
+
+
+def test_the_sender_reports_an_adapter_the_node_refused(monkeypatch):
+    from dreamference.node.node_adapter_sync import NodeAdapterSync
+
+    AdapterStore.put(
+        {
+            "name": "rust",
+            "trust": "dreamference",
+            "base_repo": BASE_REPO,
+            "repo": "x/rust",
+            "commit": COMMIT,
+        }
+    )
+
+    class Process:
+        returncode = 1
+        stdout = None
+
+        def __init__(self, command, **kwargs):
+            pass
+
+        def wait(self):
+            return 1
+
+    monkeypatch.setattr("dreamference.node.node_adapter_sync.subprocess.Popen", Process)
+    monkeypatch.setattr(
+        "dreamference.node.node_pairing.NodePairing.ssh_command",
+        classmethod(lambda cls, record, request: ["ssh", "node", request]),
+    )
+    code, lines = NodeAdapterSync.send({"name": "second"}, DEFAULT_MODEL_ALIAS)
+    assert code == 1 and any("did not reach" in line for line in lines)
+
+
 def test_an_installed_set_that_cannot_be_read_is_not_replaced_by_one_entry():
     # Read as empty, the file used to be rewritten with the new entry alone: every adapter installed
     # before it was forgotten (and its snapshot left behind, unremovable by `adapter remove`).
