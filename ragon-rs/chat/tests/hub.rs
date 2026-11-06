@@ -53,6 +53,7 @@ struct Rig {
     events: mpsc::UnboundedSender<Value>,
     telegram: mpsc::UnboundedReceiver<Outbound>,
     matrix: mpsc::UnboundedReceiver<Outbound>,
+    discord: mpsc::UnboundedReceiver<Outbound>,
     dir: std::path::PathBuf,
 }
 
@@ -180,10 +181,12 @@ fn rig_with(tag: &str, script: Script, airgap: Box<dyn Fn() -> bool + Send>, twe
     let (mx_tx, matrix) = mpsc::unbounded_channel();
     hub.add_adapter("telegram", tg_tx);
     hub.add_adapter("matrix", mx_tx);
+    let (dc_tx, discord) = mpsc::unbounded_channel();
+    hub.add_adapter("discord", dc_tx);
     let (inbound, inbound_rx) = mpsc::unbounded_channel();
     let (events, events_rx) = mpsc::unbounded_channel();
     tokio::spawn(hub.run(inbound_rx, events_rx));
-    Rig { log, inbound, events, telegram, matrix, dir }
+    Rig { log, inbound, events, telegram, matrix, discord, dir }
 }
 
 const CHAT: &str = "telegram:7";
@@ -196,6 +199,9 @@ fn repo_web(path: &str, body: Option<&Value>) -> Option<Result<Value, String>> {
         json!({ "repo": "org/widget", "topic_repo_names": [], "checkout": {
             "thread": thread, "repo": "org/widget", "branch": format!("phone/{thread}"), "base": "main", "notified": notified } })
     };
+    if path.starts_with("/api/repos/current?bridge=discord&chat=90") {
+        return Some(Ok(checkout("co-1", false)));
+    }
     if path.starts_with("/api/repos/current?bridge=telegram&chat=70") {
         return Some(Ok(checkout("co-1", false)));
     }
@@ -1269,6 +1275,62 @@ async fn push_asks_with_counts_only_and_pushes_once_only_when_pressed_in_its_cha
         Outbound::Notice { chat: chat.into(), text: "That request is no longer open.".into() }
     );
     assert_eq!(repo_posts(&rig, "/api/repos/push").len(), 1);
+}
+
+/// Discord's `/push` and `/merge` carry the same confirmation as Telegram's (CHAT_REPOS G14b): the
+/// counts only, the nonce sent once and only on the press in the same chat, Cancel sends nothing,
+/// and a press at `/airgapped on` sends nothing.
+#[tokio::test]
+async fn discord_push_and_merge_confirm_like_telegram() {
+    let mut rig = rig("repo-discord", default_script(), false, |_| {});
+    let chat = "discord:90";
+    rig.inbound.send(text(chat, "/push")).unwrap();
+    let Outbound::Approval { id, text: prompt, options, .. } = next_for(&mut rig.discord, chat).await else {
+        panic!("no confirmation asked")
+    };
+    assert_eq!(prompt, "Push 2 commits of org/widget (phone/co-1) to the forge?");
+    assert_eq!(options.len(), 2);
+    settle().await;
+    assert!(repo_posts(&rig, "/api/repos/push").is_empty(), "nothing is pushed before the press");
+    rig.inbound.send(Inbound::Answer { chat: "discord:91".into(), approval: id.clone(), choice: 0 }).unwrap();
+    settle().await;
+    assert!(repo_posts(&rig, "/api/repos/push").is_empty(), "another chat's press does nothing");
+    rig.inbound.send(Inbound::Answer { chat: chat.into(), approval: id.clone(), choice: 0 }).unwrap();
+    assert_eq!(
+        next_for(&mut rig.discord, chat).await,
+        Outbound::ApprovalClosed { chat: chat.into(), id, outcome: "Pushing.".into() }
+    );
+    settle().await;
+    assert_eq!(repo_posts(&rig, "/api/repos/push").len(), 1);
+
+    let Outbound::Notice { text: said, .. } = next_for(&mut rig.discord, chat).await else { panic!("no outcome said") };
+    assert!(said.starts_with("Pushed"), "{said}");
+    rig.inbound.send(text(chat, "/merge")).unwrap();
+    let Outbound::Approval { id, text: prompt, .. } = next_for(&mut rig.discord, chat).await else { panic!("no confirmation asked") };
+    assert_eq!(prompt, "Merge 3 commits of org/widget (phone/co-1) into main?");
+    rig.inbound.send(Inbound::Answer { chat: chat.into(), approval: id, choice: 1 }).unwrap();
+    assert!(matches!(next_for(&mut rig.discord, chat).await, Outbound::ApprovalClosed { outcome, .. } if outcome == "Cancelled."));
+    settle().await;
+    assert!(repo_posts(&rig, "/api/repos/merge").is_empty(), "Cancel sends nothing");
+}
+
+/// At `/airgapped on` the press on Discord sends nothing to `ragon web`.
+#[tokio::test]
+async fn discord_press_at_airgapped_on_sends_nothing() {
+    let on = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = on.clone();
+    let mut rig = rig_with("repo-discord-air", default_script(), Box::new(move || flag.load(std::sync::atomic::Ordering::SeqCst)), |_| {});
+    let chat = "discord:90";
+    rig.inbound.send(text(chat, "/push")).unwrap();
+    let Outbound::Approval { id, .. } = next_for(&mut rig.discord, chat).await else { panic!("no confirmation asked") };
+    on.store(true, std::sync::atomic::Ordering::SeqCst);
+    rig.inbound.send(Inbound::Answer { chat: chat.into(), approval: id.clone(), choice: 0 }).unwrap();
+    assert_eq!(
+        next_for(&mut rig.discord, chat).await,
+        Outbound::ApprovalClosed { chat: chat.into(), id, outcome: "Not sent: the air gap is on.".into() }
+    );
+    settle().await;
+    assert!(repo_posts(&rig, "/api/repos/push").is_empty());
 }
 
 /// Cancel sends nothing; a branch that moved is said in fixed words; a chat that gets the

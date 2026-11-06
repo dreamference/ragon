@@ -238,6 +238,8 @@ pub fn commands(front: bool) -> Value {
         command("threads", "List recent conversations", None),
         command("use", "Continue a listed conversation", Some(("n", "Its number in /threads", 4, true))),
         command("status", "What the machine is doing", None),
+        command("push", "Push this conversation's branch, after you confirm", None),
+        command("merge", "Merge its branch into the default branch, after you confirm", None),
         command("night", "Queue a task for Night Shift", Some(("task", "What to do overnight", 3, true))),
         command("help", "What this bot does", None),
         command("pair", "Pair with a code from `ragon chat discord pair`", Some(("code", "The pairing code", 3, true))),
@@ -1049,6 +1051,7 @@ mod tests {
             let commands = commands(front);
             let names: Vec<&str> = commands.as_array().unwrap().iter().filter_map(|c| c["name"].as_str()).collect();
             assert_eq!(names.contains(&"app"), front);
+            assert!(names.contains(&"push") && names.contains(&"merge"));
             assert!(commands.as_array().unwrap().iter().all(|c| c["contexts"] == json!([1])));
         }
         assert_eq!(command_text(&json!({ "name": "use", "options": [{ "name": "n", "type": 4, "value": 2 }] })), Some("/use 2".to_string()));
