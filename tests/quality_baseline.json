@@ -560,11 +560,7 @@
    "PLR2004": 1
   },
   "dreamference/swe_bench/swe_bench_report.py": {
-   "ANN401": 11,
-   "C901": 3,
-   "D205": 5,
-   "E501": 1,
-   "PLR2004": 20
+   "C901": 3
   },
   "dreamference/swe_bench/swe_bench_run_store.py": {
    "C901": 1,
@@ -752,5 +748,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1696
+ "total": 1659
 }

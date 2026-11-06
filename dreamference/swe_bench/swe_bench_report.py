@@ -6,6 +6,7 @@ on this machine and is not a leaderboard score.
 
 import math
 import statistics
+from collections.abc import Collection
 from typing import Any, Final
 
 from dreamference.swe_bench.swe_bench_evaluator import DROP_TEST_HUNKS, SweBenchEvaluator
@@ -18,6 +19,22 @@ CAVEATS: Final[str] = (
     "official x86_64 set; the agent has no network and the model is a quantised build; and one "
     "run is one sample."
 )
+
+_OFF: Final[str] = "off"
+_ON: Final[str] = "on"
+_AUTO: Final[str] = "auto"
+_EXACT: Final[str] = "exact"
+_TIMEOUT: Final[str] = "timeout"
+_SKIPPED: Final[str] = "skipped"
+_WALL_S: Final[str] = "wall_s"
+_FIX_S: Final[str] = "fix_s"
+_SECONDS: Final[str] = "seconds"
+_NAMES_STRIPPED: Final[str] = "names stripped"
+_IN_FORCE: Final[str] = "in force"
+_MANY_COUNT: Final[int] = 3
+_MAX_LISTED_HOOKS: Final[int] = 10
+_SECONDS_PER_HOUR: Final[int] = 3600
+_SECONDS_PER_MINUTE: Final[int] = 60
 
 # Manifest fields `--against` lists when they differ between two runs.
 COMPARED_FIELDS: Final[tuple] = (
@@ -123,7 +140,7 @@ class SweBenchReport:
         resolved = [i for i in instances if (results.get(i) or {}).get("resolved")]
         graded = [i for i in instances if i in results]
         walls = [
-            state["wall_s"] for i, state in states.items() if i in finished and "wall_s" in state
+            state["wall_s"] for i, state in states.items() if i in finished and _WALL_S in state
         ]
         stats = {i: store.log_stats(i) for i in instances if i in finished}
         index_seconds = [
@@ -211,7 +228,7 @@ class SweBenchReport:
         per_instance = {i: record for i in finished if (record := store.compactions(i)) is not None}
         by_count: dict[str, list[int]] = {key: [0, 0] for key in ("0", "1", "2", "3+")}
         for instance_id, record in per_instance.items():
-            bucket = by_count[str(record["count"]) if record["count"] < 3 else "3+"]
+            bucket = by_count[str(record["count"]) if record["count"] < _MANY_COUNT else "3+"]
             bucket[1] += 1
             bucket[0] += 1 if instance_id in resolved else 0
         return {
@@ -376,7 +393,7 @@ class SweBenchReport:
         return lines
 
     @classmethod
-    def nudge_counts(cls, states: dict[str, Any], finished: Any) -> dict[str, int]:
+    def nudge_counts(cls, states: dict[str, Any], finished: Collection[str]) -> dict[str, int]:
         """Counts the nudges that fired, by kind.
 
         `stall` (the tree unchanged and the last message announcing work) and `completion` (the tree
@@ -406,7 +423,7 @@ class SweBenchReport:
         store: SweBenchRunStore,
         manifest: dict[str, Any],
         states: dict[str, Any],
-        finished: Any,
+        finished: Collection[str],
     ) -> dict[str, Any] | None:
         """The refine arm's two steps, counted apart.
 
@@ -435,11 +452,11 @@ class SweBenchReport:
             "version": manifest.get("refine_version") or "v1",
             "instances": len(records),
             "refine_s": [record.get("refine_s", 0) for record in records.values()],
-            "fix_s": [record["fix_s"] for record in records.values() if "fix_s" in record],
+            "fix_s": [record["fix_s"] for record in records.values() if _FIX_S in record],
             "edited": sum(1 for record in records.values() if record.get("refine_edited")),
             "empty": sum(1 for record in records.values() if not record.get("refined_bytes")),
             "timeouts": sum(
-                1 for record in records.values() if record.get("refine_exec") == "timeout"
+                1 for record in records.values() if record.get("refine_exec") == _TIMEOUT
             ),
             "refine_tokens": first,
         }
@@ -450,7 +467,7 @@ class SweBenchReport:
         store: SweBenchRunStore,
         manifest: dict[str, Any],
         states: dict[str, Any],
-        finished: Any,
+        finished: Collection[str],
     ) -> dict[str, Any] | None:
         """What the review turn did (spec §19).
 
@@ -469,10 +486,10 @@ class SweBenchReport:
         if not manifest.get("review_turn"):
             return None
         records = {i: (states.get(i) or {}).get("review") for i in finished}
-        ran = {i: record for i, record in records.items() if record and "skipped" not in record}
+        ran = {i: record for i, record in records.items() if record and _SKIPPED not in record}
         skipped: dict[str, int] = {}
         for record in records.values():
-            if record and "skipped" in record:
+            if record and _SKIPPED in record:
                 skipped[record["skipped"]] = skipped.get(record["skipped"], 0) + 1
         tokens = dict.fromkeys(("input_tokens", "cached_input_tokens", "output_tokens"), 0)
         for instance_id, record in ran.items():
@@ -490,14 +507,14 @@ class SweBenchReport:
             "changed": changed,
             "added": sum(int(record.get("added") or 0) for record in ran.values()),
             "removed": sum(int(record.get("removed") or 0) for record in ran.values()),
-            "timeouts": sorted(i for i, record in ran.items() if record.get("exec") == "timeout"),
+            "timeouts": sorted(i for i, record in ran.items() if record.get("exec") == _TIMEOUT),
             "seconds": [int(record.get("seconds") or 0) for record in ran.values()],
             "tokens": tokens,
         }
 
     @classmethod
     def restart_summary(
-        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Any
+        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Collection[str]
     ) -> dict[str, Any] | None:
         """The restart arm's measures (spec §21).
 
@@ -578,14 +595,17 @@ class SweBenchReport:
             return f"{'Turn-end compaction':<20}off (the key pinned at 0 in every session)"
         how = (
             f"the launcher's rule, 70% of the {manifest.get('task_context')}-token limit"
-            if setting == "on"
+            if setting == _ON
             else "as asked"
         )
-        return f"{'Turn-end compaction':<20}{setting} ({percent}% of the usable window on every exec command line: {how})"
+        return (
+            f"{'Turn-end compaction':<20}{setting} "
+            f"({percent}% of the usable window on every exec command line: {how})"
+        )
 
     @classmethod
     def apply_patch_summary(
-        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Any
+        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Collection[str]
     ) -> dict[str, Any]:
         """The apply_patch arm's measures (spec §22).
 
@@ -599,10 +619,12 @@ class SweBenchReport:
 
     @classmethod
     def exec_tool_summary(
-        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Any
+        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Collection[str]
     ) -> dict[str, Any]:
-        """The Code Mode arm's measures (spec §23), as `apply_patch_summary` gives them for
-        `apply_patch`: the form `exec` was offered in and how much the agent called it.
+        """The Code Mode arm's measures (spec §23).
+
+        Given as `apply_patch_summary` gives them for `apply_patch`: the form `exec` was offered
+        in and how much the agent called it.
 
         Returns:
             Dict[str, Any]: `form`, `instances`, `recorded`, `users` (ids that called it), `calls`.
@@ -611,7 +633,7 @@ class SweBenchReport:
 
     @classmethod
     def tool_summary(
-        cls, key: str, manifest: dict[str, Any], states: dict[str, Any], finished: Any
+        cls, key: str, manifest: dict[str, Any], states: dict[str, Any], finished: Collection[str]
     ) -> dict[str, Any]:
         """A tool arm's measures.
 
@@ -635,11 +657,12 @@ class SweBenchReport:
 
     @classmethod
     def drop_compaction_summary(
-        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Any
+        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Collection[str]
     ) -> dict[str, Any]:
-        """What the finished instances spent on compaction, and what drop-first compaction did
-        (compaction spec §13), from each state's `compaction` record. The survey's acceptance rule
-        for the drop arm reads it: resolved not lower, compaction time down.
+        """What the finished instances spent on compaction, and what drop-first compaction did.
+
+        Read from each state's `compaction` record (compaction spec §13). The survey's acceptance
+        rule for the drop arm reads it: resolved not lower, compaction time down.
 
         Returns:
             Dict[str, Any]: `drop` (whether the run dropped first), `instances`, `recorded`,
@@ -658,7 +681,7 @@ class SweBenchReport:
             "recorded": len(recorded),
             "compacting": sorted(i for i, r in recorded.items() if r.get("compactions")),
             **{
-                key: (round(value, 1) if key == "seconds" else int(value))
+                key: (round(value, 1) if key == _SECONDS else int(value))
                 for key, value in totals.items()
             },
         }
@@ -899,7 +922,7 @@ class SweBenchReport:
             str: The line.
         """
         head = f"{label:<20}{summary['form']}"
-        if summary["form"] == "auto":
+        if summary["form"] == _AUTO:
             head += f" (the launcher's choice: {auto})"
         if not summary["recorded"]:
             return (
@@ -947,7 +970,7 @@ class SweBenchReport:
 
     @classmethod
     def hooks_summary(
-        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Any
+        cls, manifest: dict[str, Any], states: dict[str, Any], finished: Collection[str]
     ) -> dict[str, Any] | None:
         """What the hooks did (spec §20).
 
@@ -1004,8 +1027,7 @@ class SweBenchReport:
 
     @classmethod
     def hooks_lines(cls, hooks: dict[str, Any] | None) -> list[str]:
-        """Says whether hooks were on and, when they were, what they held and whether the agent
-        complied.
+        """Says whether hooks were on, what they held and whether the agent complied.
 
         Args:
             hooks: The summary's `hooks` entry; None when the run had none.
@@ -1022,7 +1044,7 @@ class SweBenchReport:
         if hooks["never_ran"]:
             lines.append(
                 f"  never ran in {len(hooks['never_ran'])} ({', '.join(hooks['never_ran'][:10])}"
-                + (", ..." if len(hooks["never_ran"]) > 10 else "")
+                + (", ..." if len(hooks["never_ran"]) > _MAX_LISTED_HOOKS else "")
                 + "): those ran as without hooks (an untrusted hook is skipped in silence)"
             )
         edit, stop = hooks["edit_hold"], hooks["stop_hold"]
@@ -1111,7 +1133,7 @@ class SweBenchReport:
         )
         lines.append(cls.code_index_line(summary))
         lines += cls.gate_lines(store, summary["states"], manifest.get("instances", []))
-        if manifest.get("issue_text") == "names stripped":
+        if manifest.get("issue_text") == _NAMES_STRIPPED:
             stripped = manifest.get("stripped_issues") or {}
             changed = sum(1 for entry in stripped.values() if entry.get("replaced"))
             lines.append(
@@ -1165,7 +1187,7 @@ class SweBenchReport:
         Returns:
             str: One line of the report.
         """
-        if summary["code_index"] == "off":
+        if summary["code_index"] == _OFF:
             return "Code index          off: the agent had no ragon-code and navigated with grep and find"
         seconds = summary["index_seconds"]
         built = (
@@ -1177,7 +1199,7 @@ class SweBenchReport:
             else "no index time recorded"
         )
         arm = summary["code_index"]
-        if arm == "exact":
+        if arm == _EXACT:
             indexes = [
                 state.get("index") or {}
                 for state in summary["states"].values()
@@ -1225,8 +1247,9 @@ class SweBenchReport:
 
     @classmethod
     def write(cls, store: SweBenchRunStore, variant: str | None = None) -> str | None:
-        """Renders a run's report and writes it to `report.md` in the run directory
-        (`report-<variant>.md` for another grading series).
+        """Renders a run's report and writes it to `report.md` in the run directory.
+
+        Another grading series goes to `report-<variant>.md`.
 
         Args:
             store: The run.
@@ -1359,7 +1382,7 @@ class SweBenchReport:
             f"{'':<22}{name:>18}{other:>18}",
         ]
 
-        def row(label: str, first: Any, second: Any) -> str:
+        def row(label: str, first: object, second: object) -> str:
             return f"{label:<22}{first!s:>18}{second!s:>18}"
 
         def column(summary: dict[str, Any]) -> dict[str, Any]:
@@ -1408,9 +1431,7 @@ class SweBenchReport:
                 "commands": f"{sum(s.get('commands', 0) for s in stats):,}",
                 "ragon-code calls": sum(s.get("ragon_code_calls", 0) for s in stats),
                 "instances using it": sum(1 for s in stats if s.get("ragon_code_calls")),
-                "index time": cls.duration(sum(index))
-                if summary["code_index"] != "off"
-                else "none",
+                "index time": cls.duration(sum(index)) if summary["code_index"] != _OFF else "none",
             }
 
         first, second = column(ours), column(theirs)
@@ -1433,7 +1454,7 @@ class SweBenchReport:
                 calls = summary["stats"].get(instance_id, {}).get("ragon_code_calls", 0)
                 cells.append(
                     f"{state.get('status', '?')} {state.get('wall_s', '?')} s"
-                    + (f", {calls} ragon-code" if summary["code_index"] != "off" else "")
+                    + (f", {calls} ragon-code" if summary["code_index"] != _OFF else "")
                     + (", broke P2P" if instance_id in summary["causes"]["broke"] else "")
                 )
             table.append(f"  {instance_id:<34} {verdict:<16} {cells[0]:<28} {cells[1]}")
@@ -1445,7 +1466,7 @@ class SweBenchReport:
             )
         )
         for summary, run in ((ours, name), (theirs, other)):
-            if summary["code_index"] != "off":
+            if summary["code_index"] != _OFF:
                 users = sum(1 for i in both if summary["stats"].get(i, {}).get("ragon_code_calls"))
                 if users == 0:
                     lines.append(
@@ -1539,7 +1560,7 @@ class SweBenchReport:
             lines = [
                 "Model gate          in force: requests from anything but the run were refused"
             ]
-        elif "in force" in kinds:
+        elif _IN_FORCE in kinds:
             lines = [
                 "Model gate          in force for part of the run only; in the rest other requests were "
                 "served beside it and held its starts back"
@@ -1580,15 +1601,17 @@ class SweBenchReport:
 
     @classmethod
     def duration(cls, seconds: float) -> str:
-        """Args:
+        """Formats a duration for the report.
+
+        Args:
             seconds: A duration.
 
         Returns:
             str: `6 min 40 s`, `17 h 10 min`.
         """
         seconds = int(seconds)
-        if seconds >= 3600:
+        if seconds >= _SECONDS_PER_HOUR:
             return f"{seconds // 3600} h {seconds % 3600 // 60} min"
-        if seconds >= 60:
+        if seconds >= _SECONDS_PER_MINUTE:
             return f"{seconds // 60} min {seconds % 60} s"
         return f"{seconds} s"
