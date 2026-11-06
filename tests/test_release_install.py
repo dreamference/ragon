@@ -1693,18 +1693,17 @@ def test_zram_is_neither_counted_nor_in_the_way_of_the_swap_file(host):
 
 
 def test_the_swap_check_counts_only_swap_on_disk(tmp_path, monkeypatch):
-    real_open = open
+    real_open = Path.open
     (tmp_path / "swaps").write_text(
         "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
         "/swap.img                               file\t\t67108860\t4334852\t\t-2\n"
         "/dev/zram0                              partition\t67108860\t0\t\t100\n"
     )
-    monkeypatch.setattr(
-        "builtins.open",
-        lambda path, *a, **k: real_open(
-            tmp_path / "swaps" if path == "/proc/swaps" else path, *a, **k
-        ),
-    )
+
+    def fake_open(self, *a, **k):
+        return real_open(tmp_path / "swaps" if str(self) == "/proc/swaps" else self, *a, **k)
+
+    monkeypatch.setattr(Path, "open", fake_open)
     assert round(VLLMServerManager._swap_total_gb()) == 64  # not 128: zram is not counted
 
 
