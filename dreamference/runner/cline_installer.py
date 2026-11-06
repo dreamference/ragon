@@ -54,8 +54,8 @@ class ClineInstaller:
             if res.returncode == 0:
                 installed = [line.strip().lower() for line in res.stdout.splitlines()]
                 return CLINE_EXTENSION_ID.lower() in installed
-        except Exception:
-            pass
+        except (OSError, subprocess.SubprocessError):
+            return False
 
         return False
 
@@ -82,7 +82,7 @@ class ClineInstaller:
             if res.returncode == 0 or cls.is_cline_extension_installed():
                 print("✅ Cline VS Code extension installed successfully!")
                 return True
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             print(f"⚠️ Failed to install Cline extension: {e}")
 
         return cls.is_cline_extension_installed()

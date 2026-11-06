@@ -419,14 +419,9 @@
    "D205": 6
   },
   "dreamference/runner/cline_installer.py": {
-   "BLE001": 2,
-   "S110": 1,
    "T201": 6
   },
   "dreamference/runner/cline_runner.py": {
-   "BLE001": 1,
-   "D205": 1,
-   "PTH109": 2,
    "T201": 11
   },
   "dreamference/runner/codex_branded_builder.py": {
@@ -456,24 +451,12 @@
    "T201": 18
   },
   "dreamference/runner/continue_installer.py": {
-   "BLE001": 2,
-   "S110": 1,
    "T201": 6
   },
   "dreamference/runner/continue_runner.py": {
-   "BLE001": 2,
-   "D205": 1,
-   "PTH109": 1,
-   "S110": 1,
    "T201": 5
   },
   "dreamference/runner/docs_index_setup.py": {
-   "B007": 1,
-   "E501": 2,
-   "PLR1702": 1,
-   "PTH118": 7,
-   "PTH119": 1,
-   "PTH120": 3,
    "T201": 1
   },
   "dreamference/runner/openhands_installer.py": {
@@ -481,14 +464,9 @@
    "T201": 4
   },
   "dreamference/runner/openhands_runner.py": {
-   "BLE001": 1,
-   "D205": 1,
-   "PTH109": 1,
    "T201": 6
   },
   "dreamference/runner/vllm_readiness_waiter.py": {
-   "BLE001": 1,
-   "PLR2004": 2,
    "T201": 6
   },
   "dreamference/swe_bench/swe_bench_arm_smoke.py": {
@@ -973,5 +951,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 2236
+ "total": 2200
 }

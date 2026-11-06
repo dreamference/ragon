@@ -39,15 +39,9 @@
    "assignment": 1,
    "var-annotated": 1
   },
-  "dreamference/runner/cline_runner.py": {
-   "list-item": 1
-  },
   "dreamference/runner/codex_branded_builder.py": {
    "attr-defined": 2,
    "union-attr": 1
-  },
-  "dreamference/runner/continue_runner.py": {
-   "list-item": 1
   },
   "dreamference/swe_bench/swe_bench_arm_smoke.py": {
    "union-attr": 4
@@ -74,5 +68,5 @@
   }
  },
  "mypy": "2.4.0",
- "total": 43
+ "total": 41
 }

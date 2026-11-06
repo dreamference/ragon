@@ -6,7 +6,6 @@ and launches VS Code.
 """
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -31,8 +30,7 @@ class ContinueRunner:
         self.vllm_manager: VLLMServerManager = VLLMServerManager(host=self.config.vllm_host)
 
     def ensure_continue_config(self) -> Path:
-        """Ensures `~/.continue/config.json` is updated with local vLLM OpenAI endpoint settings
-        and tab completion configuration.
+        """Ensures `~/.continue/config.json` holds the local endpoint and tab completion settings.
 
         Returns:
             Path: Path object pointing to `~/.continue/config.json`.
@@ -76,8 +74,8 @@ class ContinueRunner:
                     existing["tabAutocompleteModel"] = config_data["tabAutocompleteModel"]
                     config_data = existing
                     merged = True
-            except Exception:
-                pass
+            except (OSError, ValueError):
+                merged = False
             if not merged:
                 # Continue reads JSON with comments, which json.load cannot: keep the user's file
                 # rather than lose it to ours.
@@ -120,7 +118,9 @@ class ContinueRunner:
             f"🚀 Launching VS Code with Continue extension ({self.config.model} + Tab Autocomplete)..."
         )
         try:
-            return subprocess.call([code_bin, os.getcwd()])
-        except Exception as e:
+            if code_bin is None:
+                raise FileNotFoundError("no `code` or `codium` found")
+            return subprocess.call([code_bin, str(Path.cwd())])
+        except OSError as e:
             print(f"❌ Failed to launch VS Code: {e}")
             return 1

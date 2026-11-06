@@ -4,7 +4,6 @@ This module provides the ClineRunner class which configures workspace `.clinerul
 ensures local vLLM server readiness, provisions the Cline extension, and launches VS Code.
 """
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -32,7 +31,7 @@ class ClineRunner:
         Returns:
             Path: Path to written `.clinerules` file.
         """
-        rules_path = Path(os.getcwd()) / ".clinerules"
+        rules_path = Path.cwd() / ".clinerules"
         hf_model = VLLMReadinessWaiter.served_model(self.vllm_manager, self.config.model)
 
         content = (
@@ -55,8 +54,9 @@ class ClineRunner:
         return rules_path
 
     def run_session(self, prompt: str | None = None, debug: bool = False) -> int:
-        """Configures workspace, checks vLLM health, installs Cline extension if missing,
-        and launches VS Code.
+        """Configures the workspace, installs the Cline extension if missing and launches VS Code.
+
+        It checks the model server health first.
 
         Args:
             prompt (Optional[str]): Task prompt text.
@@ -96,7 +96,9 @@ class ClineRunner:
         code_bin = ClineInstaller.get_vscode_executable()
         print(f"\n🚀 Launching VS Code with Cline extension for {self.config.model}...")
         try:
-            return subprocess.call([code_bin, os.getcwd()])
-        except Exception as e:
+            if code_bin is None:
+                raise FileNotFoundError("no `code` or `codium` found")
+            return subprocess.call([code_bin, str(Path.cwd())])
+        except OSError as e:
             print(f"❌ Failed to launch VS Code: {e}")
             return 1

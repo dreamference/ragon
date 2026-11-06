@@ -5,8 +5,8 @@ the OpenHands image, mounts workspace directory into container sandbox, configur
 and launches the OpenHands web UI.
 """
 
-import os
 import subprocess
+from pathlib import Path
 from typing import Final
 
 from dreamference.config import DreamferenceConfig
@@ -49,8 +49,9 @@ class OpenHandsRunner:
         return 1
 
     def run_session(self, prompt: str | None = None, debug: bool = False) -> int:
-        """Ensures local vLLM server is running, checks Docker daemon, pulls OpenHands image,
-        and launches the OpenHands web UI container on http://localhost:3001 (this machine only).
+        """Runs the OpenHands web UI container on http://localhost:3001 (this machine only).
+
+        It ensures the model server is running, checks the Docker daemon and pulls the image.
 
         Args:
             prompt (Optional[str]): Task prompt text.
@@ -60,7 +61,7 @@ class OpenHandsRunner:
             int: Subprocess exit code (0 for success).
         """
         # Docker would refuse the mount with an error about its mode rather than the path.
-        cwd = os.getcwd()
+        cwd = str(Path.cwd())
         if DOCKER_VOLUME_SEPARATOR in cwd:
             return self._refuse(
                 f"OpenHands cannot mount {cwd}: Docker reads a ':' in it as a separator.",
@@ -133,6 +134,6 @@ class OpenHandsRunner:
 
         try:
             return subprocess.call(cmd)
-        except Exception as e:
+        except OSError as e:
             print(f"❌ Failed to launch OpenHands: {e}")
             return 1

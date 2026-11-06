@@ -39,11 +39,14 @@ from typing import Final
 
 from dreamference.runner.codex_branded_builder import INSTALL_DIR
 
-DOCS_LIB_DIR: Final[str] = os.path.join(INSTALL_DIR, "lib", "ragon-docs")
+DOCS_LIB_DIR: Final[str] = str(pathlib.Path(INSTALL_DIR) / "lib" / "ragon-docs")
 DOCS_MODEL_NAME: Final[str] = "snowflake-arctic-embed-m-v2.0-int8"
-DOCS_MODEL_DIR: Final[str] = os.path.join(INSTALL_DIR, "models", DOCS_MODEL_NAME)
+DOCS_MODEL_DIR: Final[str] = str(pathlib.Path(INSTALL_DIR) / "models" / DOCS_MODEL_NAME)
 
 PDFIUM_RELEASE: Final[str] = "chromium/8076"
+PDFIUM_BASE_URL: Final[str] = (
+    f"https://github.com/bblanchon/pdfium-binaries/releases/download/{PDFIUM_RELEASE.replace('/', '%2F')}"
+)
 ONNXRUNTIME_VERSION: Final[str] = "1.30.0"
 MODEL_REPO: Final[str] = "Snowflake/snowflake-arctic-embed-m-v2.0"
 MODEL_REVISION: Final[str] = "95c2741480856aa9666782eb4afe11959938017f"
@@ -52,7 +55,7 @@ MODEL_REVISION: Final[str] = "95c2741480856aa9666782eb4afe11959938017f"
 LIBRARIES: Final[dict[str, list[tuple[str, str, str, str]]]] = {
     "aarch64": [
         (
-            f"https://github.com/bblanchon/pdfium-binaries/releases/download/{PDFIUM_RELEASE.replace('/', '%2F')}/pdfium-linux-arm64.tgz",
+            f"{PDFIUM_BASE_URL}/pdfium-linux-arm64.tgz",
             "d7247b33ae5545615a5e877235dd97afc879e3a8805689684f528cae3339d352",
             "lib/libpdfium.so",
             "libpdfium.so",
@@ -66,7 +69,7 @@ LIBRARIES: Final[dict[str, list[tuple[str, str, str, str]]]] = {
     ],
     "x86_64": [
         (
-            f"https://github.com/bblanchon/pdfium-binaries/releases/download/{PDFIUM_RELEASE.replace('/', '%2F')}/pdfium-linux-x64.tgz",
+            f"{PDFIUM_BASE_URL}/pdfium-linux-x64.tgz",
             "d9d67bc40af03aef4fe28a60b19b1086f28ace019c8c9caf19cb7fe3d14ceca3",
             "lib/libpdfium.so",
             "libpdfium.so",
@@ -226,8 +229,8 @@ class DocsIndexSetup:
     @classmethod
     def _install_bytes(cls, data: bytes, target: str) -> None:
         """Writes `target` through a temporary file renamed over it, so a running query keeps its copy."""
-        pathlib.Path(os.path.dirname(target)).mkdir(exist_ok=True, parents=True)
-        fd, staging = tempfile.mkstemp(dir=os.path.dirname(target), prefix=".ragon-docs-")
+        pathlib.Path(target).parent.mkdir(exist_ok=True, parents=True)
+        fd, staging = tempfile.mkstemp(dir=pathlib.Path(target).parent, prefix=".ragon-docs-")
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
@@ -244,9 +247,27 @@ class DocsIndexSetup:
         print(message)
 
     @classmethod
+    def _install_library(cls, url: str, sha: str, member: str, name: str) -> None:
+        """Downloads one library archive, installs `member` as `name` and records the pin.
+
+        Raises:
+            ValueError: If the archive lacks `member`.
+        """
+        cls._say(f"⬇️  {name} ({url.rsplit('/', 1)[-1]})...")
+        with tarfile.open(fileobj=io.BytesIO(cls.fetch(url, sha)), mode="r:gz") as archive:
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise ValueError(f"{member} is not in {url}")
+            target = str(pathlib.Path(DOCS_LIB_DIR) / name)
+            cls._install_bytes(extracted.read(), target)
+        with pathlib.Path(cls.stamp_path(target)).open("w") as handle:
+            handle.write(sha + "\n")
+
+    @classmethod
     def stamp_path(cls, target: str) -> str:
         """Where the pin a library was installed from is recorded (the archive's hash, not the file's)."""
-        return os.path.join(os.path.dirname(target), f".{os.path.basename(target)}.pin")
+        path = pathlib.Path(target)
+        return str(path.parent / f".{path.name}.pin")
 
     @classmethod
     def missing(cls, machine: str | None = None) -> list[str]:
@@ -260,8 +281,8 @@ class DocsIndexSetup:
         """
         machine = machine or platform.machine()
         out = []
-        for url, sha, _, name in LIBRARIES.get(machine, []):
-            target = os.path.join(DOCS_LIB_DIR, name)
+        for _url, sha, _, name in LIBRARIES.get(machine, []):
+            target = str(pathlib.Path(DOCS_LIB_DIR) / name)
             stamp = cls.stamp_path(target)
             if (
                 not pathlib.Path(target).is_file()
@@ -270,7 +291,7 @@ class DocsIndexSetup:
             ):
                 out.append(name)
         for _, sha, name in MODEL_FILES:
-            target = os.path.join(DOCS_MODEL_DIR, name)
+            target = str(pathlib.Path(DOCS_MODEL_DIR) / name)
             if not pathlib.Path(target).is_file() or cls.sha256(target) != sha:
                 out.append(name)
         return out + cls.missing_ocr(machine)
@@ -386,23 +407,14 @@ class DocsIndexSetup:
             return True
         try:
             for url, sha, member, name in LIBRARIES[machine]:
-                if name not in todo:
-                    continue
-                cls._say(f"⬇️  {name} ({url.rsplit('/', 1)[-1]})...")
-                with tarfile.open(fileobj=io.BytesIO(cls.fetch(url, sha)), mode="r:gz") as archive:
-                    extracted = archive.extractfile(member)
-                    if extracted is None:
-                        raise ValueError(f"{member} is not in {url}")
-                    target = os.path.join(DOCS_LIB_DIR, name)
-                    cls._install_bytes(extracted.read(), target)
-                with pathlib.Path(cls.stamp_path(target)).open("w") as handle:
-                    handle.write(sha + "\n")
+                if name in todo:
+                    cls._install_library(url, sha, member, name)
             for path, sha, name in MODEL_FILES:
                 if name not in todo:
                     continue
                 url = f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}/{path}"
                 cls._say(f"⬇️  {name} ({MODEL_REPO}, {path})...")
-                cls._install_bytes(cls.fetch(url, sha), os.path.join(DOCS_MODEL_DIR, name))
+                cls._install_bytes(cls.fetch(url, sha), str(pathlib.Path(DOCS_MODEL_DIR) / name))
         except (OSError, ValueError, tarfile.TarError) as error:
             cls._say(f"❌ ragon-docs setup failed: {error}")
             return False

@@ -53,8 +53,8 @@ class ContinueInstaller:
             if res.returncode == 0:
                 installed = [line.strip().lower() for line in res.stdout.splitlines()]
                 return CONTINUE_EXTENSION_ID.lower() in installed
-        except Exception:
-            pass
+        except (OSError, subprocess.SubprocessError):
+            return False
 
         return False
 
@@ -85,7 +85,7 @@ class ContinueInstaller:
             if res.returncode == 0 or cls.is_continue_extension_installed():
                 print("✅ Continue extension installed successfully!")
                 return True
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             print(f"⚠️ Failed to install Continue extension: {e}")
 
         return cls.is_continue_extension_installed()

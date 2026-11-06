@@ -8,9 +8,13 @@ import json
 import sys
 import time
 import urllib.request
+from typing import Final
 
 from dreamference.config import DreamferenceConfig
 from dreamference.vllm_server import VLLMServerManager
+
+HTTP_OK: Final = 200
+GATE_CLOSED_STATE: Final = "closed"
 
 
 class VLLMReadinessWaiter:
@@ -53,7 +57,7 @@ class VLLMReadinessWaiter:
             from dreamference.vllm_server.model_gate import ModelGate
 
             gate = ModelGate.probe(self.config.vllm_host, timeout=1.0) or {}
-            if gate.get("state") == "closed":
+            if gate.get("state") == GATE_CLOSED_STATE:
                 print(f"\n⛔ {gate.get('message')}")
                 return False
 
@@ -108,6 +112,6 @@ class VLLMReadinessWaiter:
                 headers={"Content-Type": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.status == 200
-        except Exception:
+                return resp.status == HTTP_OK
+        except (OSError, ValueError):
             return False
