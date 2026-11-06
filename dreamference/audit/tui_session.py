@@ -1,5 +1,4 @@
-"""One interactive `ragon` session driven on a pseudo-terminal, for `ragon-admin audit egress --tui`
-(specs/DREAMFERENCE_RAGON_EGRESS.md §3.1 step 3).
+"""One interactive `ragon` session on a pseudo-terminal, for `audit egress --tui` (spec §3.1 step 3).
 
 This module provides the TuiSession class. `ragon exec` and the full-screen interface start
 different parts of Codex: the announcement tip that patch `0015` closed was fetched by the
@@ -11,7 +10,6 @@ do. Neither is a dependency of the package: their imports stay inside methods, a
 them when they are missing, the way it names a missing `strace`.
 """
 
-import glob
 import json
 import os
 import pathlib
@@ -53,15 +51,15 @@ class TuiSession:
 
     @classmethod
     def trust(cls, home: str, repo: str) -> None:
-        """Marks `repo` as trusted in a throwaway `CODEX_HOME`, so the interface opens on its
-        composer instead of on the question whether to trust the directory. The launcher edits
-        this file in place and keeps the table.
+        """Marks `repo` trusted in a throwaway `CODEX_HOME` so the composer opens instead of the trust question.
+
+        The launcher edits this file in place and keeps the table.
 
         Args:
             home (str): The throwaway `CODEX_HOME`.
             repo (str): The throwaway repository.
         """
-        with pathlib.Path(os.path.join(home, "config.toml")).open("a") as handle:
+        with (pathlib.Path(home) / "config.toml").open("a") as handle:
             handle.write(
                 f'[projects.{json.dumps(os.path.realpath(repo))}]\ntrust_level = "trusted"\n'
             )
@@ -78,7 +76,7 @@ class TuiSession:
         Returns:
             Optional[str]: The last message of a completed turn, or None while there is none.
         """
-        for path in glob.glob(os.path.join(home, "sessions", "**", "*.jsonl"), recursive=True):
+        for path in (pathlib.Path(home) / "sessions").rglob("*.jsonl"):
             try:
                 with pathlib.Path(path).open(errors="replace") as handle:
                     for line in handle:

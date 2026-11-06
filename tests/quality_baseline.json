@@ -35,11 +35,8 @@
   },
   "dreamference/audit/tui_session.py": {
    "C901": 1,
-   "D205": 2,
    "PLR1702": 3,
    "PLR2004": 3,
-   "PTH118": 2,
-   "PTH207": 1,
    "RUF001": 1
   },
   "dreamference/chat/desktop_installer.py": {
@@ -590,5 +587,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1029
+ "total": 1024
 }
