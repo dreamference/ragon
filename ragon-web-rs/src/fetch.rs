@@ -261,7 +261,14 @@ pub fn page(
     let decoded = decode(body, &content_type, is_html);
     let (title, text) = if is_html {
         let page = html_to_text(&decoded);
-        (page.title, page.text)
+        let text = if page.needs_javascript {
+            format!("{}\n\n{}", crate::html_text::JAVASCRIPT_NOTE, page.text)
+                .trim_end()
+                .to_string()
+        } else {
+            page.text
+        };
+        (page.title, text)
     } else {
         // Plain text, JSON, source files: handed back as they are rather than run through a markup
         // parser.

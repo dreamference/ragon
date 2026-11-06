@@ -986,7 +986,7 @@ fn read_searches_then_reads_the_top_pages_and_wraps_them() {
         "{text}"
     );
     assert!(
-        text.contains("# Docs\n\nDocs\nmenu\nThe answer is 42.\n</untrusted>"),
+        text.contains("# Docs\n\nDocs\nThe answer is 42.\n</untrusted>"),
         "{text}"
     );
     assert!(
