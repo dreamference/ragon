@@ -46,9 +46,6 @@
    "attr-defined": 2,
    "union-attr": 1
   },
-  "dreamference/runner/codex_test_runner.py": {
-   "union-attr": 2
-  },
   "dreamference/runner/continue_runner.py": {
    "list-item": 1
   },
@@ -77,5 +74,5 @@
   }
  },
  "mypy": "2.4.0",
- "total": 45
+ "total": 43
 }

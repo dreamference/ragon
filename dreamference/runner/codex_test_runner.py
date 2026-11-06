@@ -43,11 +43,11 @@ from dreamference.runner.codex_branded_builder import (
 from dreamference.runner.codex_installer import ADAPTER_ENV
 
 # The skip list: which Codex tests Ragon does not run, and why.
-SKIP_FILE: Final[str] = os.path.join(REPO_ROOT, "codex-tests", "ragon-skips.toml")
+SKIP_FILE: Final[str] = str(pathlib.Path(REPO_ROOT, "codex-tests", "ragon-skips.toml"))
 
 # Ragon's expectations for tests that check the on-screen name (see the module docstring).
-SNAPSHOT_OVERLAY_DIR: Final[str] = os.path.join(REPO_ROOT, "codex-tests", "snapshots")
-TEST_PATCHES_DIR: Final[str] = os.path.join(REPO_ROOT, "codex-tests", "patches")
+SNAPSHOT_OVERLAY_DIR: Final[str] = str(pathlib.Path(REPO_ROOT, "codex-tests", "snapshots"))
+TEST_PATCHES_DIR: Final[str] = str(pathlib.Path(REPO_ROOT, "codex-tests", "patches"))
 
 # What patch 0001 puts on screen in place of upstream's names. A snapshot is accepted only if it
 # equals upstream's once both are reduced by these (and by the padding the shorter name leaves).
@@ -55,12 +55,12 @@ UPSTREAM_NAMES: Final[tuple] = ("OpenAI Codex", "Codex")
 RAGON_NAME: Final[str] = "Ragon"
 
 # The export and its Cargo output, kept apart from the product build's `src/` and `target/`.
-TEST_SOURCE_DIR: Final[str] = os.path.join(BUILD_CACHE_DIR, "test-src")
-TEST_TARGET_DIR: Final[str] = os.path.join(BUILD_CACHE_DIR, "test-target")
+TEST_SOURCE_DIR: Final[str] = str(pathlib.Path(BUILD_CACHE_DIR, "test-src"))
+TEST_TARGET_DIR: Final[str] = str(pathlib.Path(BUILD_CACHE_DIR, "test-target"))
 # The HOME the tests see, emptied before each run: Codex's tests read `~/.codex`, `~/.config` and
 # git's global config, and must see neither the user's nor Ragon's.
-TEST_HOME_DIR: Final[str] = os.path.join(BUILD_CACHE_DIR, "test-home")
-TOOLS_DIR: Final[str] = os.path.join(BUILD_CACHE_DIR, "tools")
+TEST_HOME_DIR: Final[str] = str(pathlib.Path(BUILD_CACHE_DIR, "test-home"))
+TOOLS_DIR: Final[str] = str(pathlib.Path(BUILD_CACHE_DIR, "tools"))
 
 # The launcher crate, copied into the export by CodexBrandedBuilder.
 LAUNCHER_PACKAGE: Final[str] = "ragon-launcher"
@@ -72,6 +72,10 @@ CARGO_PROFILE: Final[str] = "ci-test"
 # The nextest release upstream's CI installs (`.github/workflows/rust-ci-full-nextest-platform.yml`),
 # pinned by the checksum its release publishes.
 NEXTEST_VERSION: Final[str] = "0.9.103"
+CARGO_TARGET_DIR_NAME: Final[str] = "target"
+TEST_TARGET_KIND: Final[str] = "test"
+NEXTEST_FILTER_FLAG: Final[str] = "-E"
+CARGO_BUILD_SUBCOMMAND: Final[str] = "build"
 NEXTEST_URL: Final[str] = (
     "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-{version}/"
     "cargo-nextest-{version}-{target}.tar.gz"
@@ -162,8 +166,8 @@ class CodexTestRunner:
         """
         import tarfile
 
-        binary = os.path.join(TOOLS_DIR, "cargo-nextest")
-        stamp = os.path.join(TOOLS_DIR, "cargo-nextest.version")
+        binary = str(pathlib.Path(TOOLS_DIR, "cargo-nextest"))
+        stamp = str(pathlib.Path(TOOLS_DIR, "cargo-nextest.version"))
         if pathlib.Path(binary).is_file() and pathlib.Path(stamp).is_file():
             with pathlib.Path(stamp).open() as handle:
                 if handle.read().strip() == NEXTEST_VERSION:
@@ -175,7 +179,7 @@ class CodexTestRunner:
             print(f"❌ No pinned cargo-nextest {NEXTEST_VERSION} checksum for {target}.")
             return None
         pathlib.Path(TOOLS_DIR).mkdir(exist_ok=True, parents=True)
-        archive = os.path.join(TOOLS_DIR, f"cargo-nextest-{NEXTEST_VERSION}.tar.gz")
+        archive = str(pathlib.Path(TOOLS_DIR, f"cargo-nextest-{NEXTEST_VERSION}.tar.gz"))
         print(f"📥 Fetching cargo-nextest {NEXTEST_VERSION}...")
         try:
             CodexBrandedBuilder.download(
@@ -194,7 +198,10 @@ class CodexTestRunner:
             return None
         with tarfile.open(archive) as tar:
             member = tar.getmember("cargo-nextest")
-            with tar.extractfile(member) as source, pathlib.Path(binary).open("wb") as out:
+            source = tar.extractfile(member)
+            if source is None:
+                return None
+            with source, pathlib.Path(binary).open("wb") as out:
                 shutil.copyfileobj(source, out)
         pathlib.Path(binary).chmod(0o755)
         pathlib.Path(archive).unlink()
@@ -214,7 +221,7 @@ class CodexTestRunner:
         Args:
             source_dir (str): The exported tree.
         """
-        manifest = os.path.join(source_dir, "codex-rs", "Cargo.toml")
+        manifest = str(pathlib.Path(source_dir, "codex-rs", "Cargo.toml"))
         with pathlib.Path(manifest).open() as handle:
             text = handle.read()
         text = re.sub(
@@ -236,12 +243,12 @@ class CodexTestRunner:
         Returns:
             bool: True if every overlay file had an original to replace and every diff applied.
         """
-        workspace_dir = os.path.join(source_dir, "codex-rs")
+        workspace_dir = str(pathlib.Path(source_dir, "codex-rs"))
         if pathlib.Path(SNAPSHOT_OVERLAY_DIR).is_dir():
             for root, _, files in os.walk(SNAPSHOT_OVERLAY_DIR):
                 for name in files:
-                    relative = os.path.relpath(os.path.join(root, name), SNAPSHOT_OVERLAY_DIR)
-                    target = os.path.join(workspace_dir, relative)
+                    relative = os.path.relpath(str(pathlib.Path(root, name)), SNAPSHOT_OVERLAY_DIR)
+                    target = str(pathlib.Path(workspace_dir, relative))
                     if not pathlib.Path(target).is_file():
                         # The test it belonged to was renamed or removed upstream.
                         print(f"❌ codex-tests/snapshots/{relative} replaces no upstream snapshot.")
@@ -249,10 +256,10 @@ class CodexTestRunner:
                             "💡 Regenerate the overlay with `ragon-admin codex test --accept-snapshots`."
                         )
                         return False
-                    shutil.copyfile(os.path.join(root, name), target)
+                    shutil.copyfile(str(pathlib.Path(root, name)), target)
         patches = (
             sorted(
-                os.path.join(TEST_PATCHES_DIR, name)
+                str(pathlib.Path(TEST_PATCHES_DIR, name))
                 for name in os.listdir(TEST_PATCHES_DIR)
                 if name.endswith(".patch")
             )
@@ -280,10 +287,10 @@ class CodexTestRunner:
         """
         hashes = {}
         for root, dirs, files in os.walk(workspace_dir):
-            dirs[:] = [d for d in dirs if d != "target"]
+            dirs[:] = [d for d in dirs if d != CARGO_TARGET_DIR_NAME]
             for name in files:
                 if name.endswith(".snap"):
-                    path = os.path.join(root, name)
+                    path = str(pathlib.Path(root, name))
                     with pathlib.Path(path).open("rb") as handle:
                         hashes[os.path.relpath(path, workspace_dir)] = hashlib.sha256(
                             handle.read()
@@ -325,19 +332,19 @@ class CodexTestRunner:
         Returns:
             int: 0 if every rewritten snapshot was accepted, 1 if any needs a person to look at it.
         """
-        workspace_dir = os.path.join(TEST_SOURCE_DIR, "codex-rs")
+        workspace_dir = str(pathlib.Path(TEST_SOURCE_DIR, "codex-rs"))
         commit = CodexBrandedBuilder.source_commit()
         after = cls.snapshot_hashes(workspace_dir)
         changed = sorted(path for path, digest in after.items() if before.get(path) != digest)
         refused = []
         for relative in changed:
-            with pathlib.Path(os.path.join(workspace_dir, relative)).open() as handle:
+            with pathlib.Path(str(pathlib.Path(workspace_dir, relative))).open() as handle:
                 ragon = handle.read()
             upstream = subprocess.run(
                 [
                     "git",
                     "-C",
-                    os.path.join(REPO_ROOT, "codex"),
+                    str(pathlib.Path(REPO_ROOT, "codex")),
                     "show",
                     f"{commit}:codex-rs/{relative}",
                 ],
@@ -348,12 +355,12 @@ class CodexTestRunner:
             if upstream.returncode != 0 or not cls.differs_only_by_name(upstream.stdout, ragon):
                 refused.append(relative)
                 continue
-            target = os.path.join(SNAPSHOT_OVERLAY_DIR, relative)
+            target = str(pathlib.Path(SNAPSHOT_OVERLAY_DIR, relative))
             pathlib.Path(os.path.dirname(target)).mkdir(exist_ok=True, parents=True)
             with pathlib.Path(target).open("w") as handle:
                 handle.write(ragon)
         pending = [
-            os.path.relpath(os.path.join(root, name), workspace_dir)
+            os.path.relpath(str(pathlib.Path(root, name)), workspace_dir)
             for root, dirs, files in os.walk(workspace_dir)
             for name in files
             if name.endswith(".pending-snap")
@@ -381,7 +388,7 @@ class CodexTestRunner:
             for root, _, files in os.walk(path):
                 for name in files:
                     with contextlib.suppress(OSError):
-                        total += os.lstat(os.path.join(root, name)).st_size
+                        total += os.lstat(str(pathlib.Path(root, name))).st_size
             return total / 2**30
 
         free = shutil.disk_usage(BUILD_CACHE_DIR).free / 2**30
@@ -403,9 +410,9 @@ class CodexTestRunner:
         """
         root = tempfile.gettempdir()
         return [
-            os.path.join(root, name)
+            str(pathlib.Path(root, name))
             for name in PROJECT_MARKERS
-            if os.path.lexists(os.path.join(root, name))
+            if os.path.lexists(str(pathlib.Path(root, name)))
         ]
 
     @classmethod
@@ -447,8 +454,11 @@ class CodexTestRunner:
 
         alphabet = string.ascii_lowercase + string.digits
         while True:
-            path = os.path.join(
-                tempfile.gettempdir(), "pct" + "".join(secrets.choice(alphabet) for _ in range(11))
+            path = str(
+                pathlib.Path(
+                    tempfile.gettempdir(),
+                    "pct" + "".join(secrets.choice(alphabet) for _ in range(11)),
+                )
             )
             try:
                 pathlib.Path(path).mkdir(mode=0o700)
@@ -481,8 +491,8 @@ class CodexTestRunner:
         real_home = os.path.expanduser("~")
         # Named before HOME moves, or rustup and Cargo would look for their toolchains in the
         # empty test home.
-        environment.setdefault("RUSTUP_HOME", os.path.join(real_home, ".rustup"))
-        environment.setdefault("CARGO_HOME", os.path.join(real_home, ".cargo"))
+        environment.setdefault("RUSTUP_HOME", str(pathlib.Path(real_home, ".rustup")))
+        environment.setdefault("CARGO_HOME", str(pathlib.Path(real_home, ".cargo")))
         environment["PATH"] = os.pathsep.join([tools_dir, environment.get("PATH", "")])
         environment.update(rusty_v8)
         linker_dir = cls.lld_dir()
@@ -545,14 +555,16 @@ class CodexTestRunner:
         """
         rustup_home = os.environ.get("RUSTUP_HOME", os.path.expanduser("~/.rustup"))
         target = CodexBrandedBuilder.host_target()
-        toolchains = os.path.join(rustup_home, "toolchains")
+        toolchains = str(pathlib.Path(rustup_home, "toolchains"))
         if not pathlib.Path(toolchains).is_dir():
             return None
         for name in sorted(os.listdir(toolchains)):
-            candidate = os.path.join(toolchains, name, "lib", "rustlib", target, "bin", "gcc-ld")
+            candidate = str(
+                pathlib.Path(toolchains, name, "lib", "rustlib", target, "bin", "gcc-ld")
+            )
             if (
                 name.startswith("1.95.0")
-                and pathlib.Path(os.path.join(candidate, "ld.lld")).is_file()
+                and pathlib.Path(str(pathlib.Path(candidate, "ld.lld"))).is_file()
             ):
                 return candidate
         return None
@@ -579,7 +591,7 @@ class CodexTestRunner:
         )
         for entry in json.loads(metadata.stdout)["packages"]:
             if entry["name"] == package:
-                return [t["name"] for t in entry["targets"] if "test" in t["kind"]]
+                return [t["name"] for t in entry["targets"] if TEST_TARGET_KIND in t["kind"]]
         raise ValueError(f"no package {package} in the upstream workspace")
 
     @classmethod
@@ -659,7 +671,11 @@ class CodexTestRunner:
                 if not user_filter
                 else f"package({package}) & ({user_filter})",
             )
-            commands.append(nextest[: nextest.index("-E")] if "-E" in nextest else list(nextest))
+            commands.append(
+                nextest[: nextest.index(NEXTEST_FILTER_FLAG)]
+                if NEXTEST_FILTER_FLAG in nextest
+                else list(nextest)
+            )
             commands[-1] += [
                 "-E",
                 only_this,
@@ -748,7 +764,7 @@ class CodexTestRunner:
             )
         for warning in warnings:
             print(warning)
-        with pathlib.Path(os.path.join(BUILD_CACHE_DIR, ".test.lock")).open("w") as lock:
+        with pathlib.Path(str(pathlib.Path(BUILD_CACHE_DIR, ".test.lock"))).open("w") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -767,7 +783,7 @@ class CodexTestRunner:
             pathlib.Path(TEST_HOME_DIR).mkdir(parents=True)
             temp_dir = cls.make_temp_dir()
             try:
-                before = cls.snapshot_hashes(os.path.join(TEST_SOURCE_DIR, "codex-rs"))
+                before = cls.snapshot_hashes(str(pathlib.Path(TEST_SOURCE_DIR, "codex-rs")))
                 status = cls._run_commands(
                     skips,
                     rusty_v8,
@@ -805,7 +821,7 @@ class CodexTestRunner:
             int: 0 if every test that ran passed, non-zero otherwise.
         """
         environment = cls.environment(rusty_v8, tools_dir, jobs, temp_dir, accept_snapshots)
-        workspace_dir = os.path.join(TEST_SOURCE_DIR, "codex-rs")
+        workspace_dir = str(pathlib.Path(TEST_SOURCE_DIR, "codex-rs"))
         skipped = sum(len(skips[kind]) for kind in skips)
         print(
             f"🧪 Running the upstream tests on Ragon's tree ({skipped} skip-list entries, "
@@ -823,7 +839,7 @@ class CodexTestRunner:
                 code = subprocess.call(
                     cls.scoped(command, memory_max), cwd=workspace_dir, env=environment
                 )
-                if command[1] == "build" and code != 0:
+                if command[1] == CARGO_BUILD_SUBCOMMAND and code != 0:
                     print(
                         "❌ Building the upstream test binaries failed; see the cargo output above."
                     )
