@@ -1252,13 +1252,38 @@ def test_what_the_forges_anonymity_check_refuses_is_held_and_any_other_refusal_f
         "failures": {
             "refs/heads/a": "Refused by the forge's anonymity check: replace it",
             "refs/heads/b": "fatal: the forge did not answer",
+            "refs/heads/c": "Refused by the forge: x brings a root commit this repository does"
+            " not have, an unrelated history.",
         },
         "backoff": "",
     }
     result = _mirror_one_with(monkeypatch, plan, brought=brought)
     assert result["ok"] is False
     assert result["failures"] == {"refs/heads/b": "fatal: the forge did not answer"}
-    assert set(result["held"]) == {"refs/heads/a", "refs/heads/d"}
+    assert set(result["held"]) == {"refs/heads/a", "refs/heads/c", "refs/heads/d"}
+
+
+def test_a_run_with_only_held_branches_exits_zero_and_prints_them(monkeypatch, capsys):
+    held = {"refs/heads/d": "diverged both ways: never forced"}
+    monkeypatch.setattr(ForgeGithubMirror, "airgapped", classmethod(lambda cls: False))
+    monkeypatch.setattr(ForgeGithubMirror, "write_status", classmethod(lambda cls, s: None))
+    monkeypatch.setattr(ForgeAccounts, "admin_token", classmethod(lambda cls: "t"))
+    monkeypatch.setattr(
+        ForgeRepositories, "all", classmethod(lambda cls, t: [{"full_name": "o/r"}])
+    )
+    monkeypatch.setattr(ForgeRepositories, "never_mirrored", classmethod(lambda cls, r: False))
+    monkeypatch.setattr(
+        ForgeRepositories,
+        "config",
+        classmethod(lambda cls: {"repositories": {"o/r": {"github": "https://github.com/o/r"}}}),
+    )
+    monkeypatch.setattr(
+        ForgeGithubMirror,
+        "mirror_one",
+        classmethod(lambda cls, *a: {"ok": True, "failures": {}, "held": held}),
+    )
+    assert ForgeGithubMirror.run_locked() == 0
+    assert "held: diverged both ways" in capsys.readouterr().out
 
 
 def test_a_rate_limit_in_capitals_still_backs_off(monkeypatch, tmp_path):

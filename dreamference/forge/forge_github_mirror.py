@@ -55,6 +55,10 @@ RATE_LIMIT_MARKERS: Final[tuple[str, ...]] = (
 REFUSAL_MARKERS: Final[tuple[str, ...]] = ("denied", "not granted")
 # The forge's anonymity hook quotes the offending line; only `added:<line>:<file>` is kept.
 ANONYMITY_REFUSAL: Final[str] = "anonymity"
+# The forge also refuses a branch whose history is unrelated to its own (a pre-rewrite root):
+# like the anonymity refusal it is the owner's to resolve, so it is held, not a failure.
+UNRELATED_HISTORY_REFUSAL: Final[str] = "brings a root commit this repository does not have"
+HELD_REFUSALS: Final[tuple[str, ...]] = (ANONYMITY_REFUSAL, UNRELATED_HISTORY_REFUSAL)
 HOOK_QUOTE: Final[re.Pattern[str]] = re.compile(r"(added:\d+:\S*?):\s.*")
 
 
@@ -260,9 +264,10 @@ class ForgeGithubMirror:
             outcome = cls.bring_back(work, full_name, plan["to_forge"], forge_environment)
             received = outcome["pushed"]
             for ref, cause in outcome["failures"].items():
-                # The forge's own anonymity check refusing what GitHub already has is the owner's
-                # to resolve (nothing is forced): reported, but it does not fail the run.
-                (held if ANONYMITY_REFUSAL in cause else failures)[ref] = cause
+                # The forge's own refusal (anonymity, unrelated history) of what GitHub already
+                # has is the owner's to resolve (nothing is forced): reported, but it does not
+                # fail the run.
+                (held if any(m in cause for m in HELD_REFUSALS) else failures)[ref] = cause
         for ref in plan["diverged"]:
             held[ref] = "diverged both ways: never forced"
         return {
