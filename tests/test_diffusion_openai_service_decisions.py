@@ -238,3 +238,101 @@ def test_the_runner_hands_the_tokenizers_own_ids_to_the_sampler(monkeypatch):
         "temperature": 0.3,
     }
     assert runner.tokenizer.decoded == [([5, 6], True)]
+
+
+def test_a_block_that_is_already_filled_stops_denoising_early():
+    class Filler(torch.nn.Module):
+        dtype = torch.float32
+
+        def forward(self, input_ids, attention_mask):
+            input_ids[0, input_ids[0] == 99] = 5  # the model fills the whole block at once
+            return types.SimpleNamespace(logits=torch.zeros(1, input_ids.shape[1], 100))
+
+    tokens = block_diffusion_sample(
+        Filler(),
+        torch.tensor([[3, 4]]),
+        mask_id=99,
+        eos_id=None,
+        max_new_tokens=4,
+        block_size=4,
+        steps=4,
+    )
+    assert len(tokens) == 4 and tokens[2:] == [5, 5], "the first step committed one position"
+
+
+def _fake_transformers(monkeypatch, cuda, move_fails=False):
+    import sys
+
+    from transformers import dynamic_module_utils
+
+    events = []
+
+    class Model:
+        def to(self, device):
+            if move_fails:
+                raise RuntimeError("arch mismatch")
+            events.append(("to", device))
+            return self
+
+        def eval(self):
+            events.append("eval")
+
+    class Auto:
+        @staticmethod
+        def from_pretrained(model_id, **kwargs):
+            assert kwargs.get("trust_remote_code") is True
+            events.append(("load", model_id, dynamic_module_utils.get_imports is not scan))
+            return Model()
+
+    scan = dynamic_module_utils.get_imports
+    fake = types.ModuleType("transformers")
+    fake.AutoModelForMaskedLM = fake.AutoTokenizer = Auto
+    fake.dynamic_module_utils = dynamic_module_utils
+    monkeypatch.setitem(sys.modules, "transformers", fake)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(dos, "_restore_layer_attention_types", lambda model: events.append("fix"))
+    return events, scan, dynamic_module_utils
+
+
+def test_load_patches_the_import_scan_only_while_loading_and_prefers_cuda(monkeypatch):
+    events, scan, utils = _fake_transformers(monkeypatch, cuda=True)
+    runner = DiffusionModelRunner("org/diffusion")
+    runner.load()
+    assert runner.ready and runner.device == "cuda" and runner.error is None
+    assert ("load", "org/diffusion", True) in events and ("to", "cuda") in events
+    assert utils.get_imports is scan, "the scan is put back"
+
+
+def test_load_falls_back_to_cpu_when_the_gpu_move_fails_and_reports_errors(monkeypatch):
+    _fake_transformers(monkeypatch, cuda=True, move_fails=True)
+    runner = DiffusionModelRunner("org/diffusion")
+    runner.load()
+    assert runner.ready and runner.device == "cpu"
+
+    monkeypatch.setattr(dos, "_restore_layer_attention_types", lambda m: 1 / 0)
+    broken = DiffusionModelRunner("org/diffusion")
+    broken.load()
+    assert not broken.ready and broken.error.startswith("ZeroDivisionError")
+
+
+def test_the_patched_import_scan_keeps_only_runtime_imports(monkeypatch):
+    _events, _scan, utils = _fake_transformers(monkeypatch, cuda=False)
+    seen = {}
+    monkeypatch.setattr(utils, "get_imports", lambda filename: ["dllm", "torch"])
+    monkeypatch.setattr(dos, "_imports_outside_main_guard", lambda path: {"torch"})
+
+    class Auto:
+        @staticmethod
+        def from_pretrained(model_id, **kwargs):
+            seen["imports"] = utils.get_imports("file.py")
+            return types.SimpleNamespace(
+                to=lambda d: None, eval=lambda: None, model=types.SimpleNamespace(layers=[])
+            )
+
+    import sys
+
+    sys.modules["transformers"].AutoModelForMaskedLM = Auto
+    sys.modules["transformers"].AutoTokenizer = Auto
+    runner = DiffusionModelRunner("org/diffusion")
+    runner.load()
+    assert seen["imports"] == ["torch"] and runner.ready
