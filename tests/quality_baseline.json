@@ -652,13 +652,11 @@
    "S110": 3
   },
   "dreamference/vllm_server/diffusion_openai_service.py": {
-   "ANN401": 8,
    "BLE001": 3,
    "C901": 1,
    "PLR0913": 1,
    "PLR1702": 2,
    "PLR2004": 4,
-   "PTH123": 1,
    "T201": 2
   },
   "dreamference/vllm_server/diffusion_server_manager.py": {
@@ -981,5 +979,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 2313
+ "total": 2304
 }

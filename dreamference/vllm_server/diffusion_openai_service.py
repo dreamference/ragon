@@ -18,11 +18,35 @@ surfaces).
 import ast
 import json
 import os
+import pathlib
 import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol
+
+if TYPE_CHECKING:
+    import torch
+
+
+class _MaskedLMOutput(Protocol):
+    """What a masked language model returns: the per-position logits."""
+
+    logits: "torch.Tensor"
+
+
+class _MaskedLM(Protocol):
+    """The slice of a transformers masked LM that the sampler uses."""
+
+    config: object
+    dtype: "torch.dtype"
+
+    def __call__(
+        self, *, input_ids: "torch.Tensor", attention_mask: "torch.Tensor"
+    ) -> _MaskedLMOutput:
+        """Runs one forward pass."""
+        ...
+
 
 SERVICE_PORT: Final[int] = 8001
 
@@ -174,7 +198,7 @@ def _imports_outside_main_guard(filename: str) -> set:
     Returns:
         set: Root package names, e.g. {"torch", "transformers"}.
     """
-    with open(filename, encoding="utf-8") as handle:
+    with pathlib.Path(filename).open(encoding="utf-8") as handle:
         tree = ast.parse(handle.read())
 
     def is_main_guard(node: ast.AST) -> bool:
@@ -197,11 +221,11 @@ def _imports_outside_main_guard(filename: str) -> set:
     return names
 
 
-def _restore_layer_attention_types(model: Any) -> None:
+def _restore_layer_attention_types(model: _MaskedLM) -> None:
     """Gives each decoder layer the ``attention_type`` older transformers set on it.
 
     Args:
-        model (Any): A loaded model whose ``model.layers`` are decoder layers.
+        model (_MaskedLM): A loaded model whose ``model.layers`` are decoder layers.
     """
     layers = getattr(getattr(model, "model", None), "layers", None) or []
     kinds = getattr(model.config, "layer_types", None) or ["full_attention"] * len(layers)
@@ -211,8 +235,8 @@ def _restore_layer_attention_types(model: Any) -> None:
 
 
 def block_diffusion_sample(
-    model: Any,
-    input_ids: Any,
+    model: _MaskedLM,
+    input_ids: "torch.Tensor",
     mask_id: int,
     eos_id: int | None,
     max_new_tokens: int,
@@ -231,8 +255,8 @@ def block_diffusion_sample(
     at the first block containing end-of-sequence.
 
     Args:
-        model (Any): A masked LM taking ``input_ids`` and a 4-D additive ``attention_mask``.
-        input_ids (Any): Prompt token ids, shape (1, prompt_length).
+        model (_MaskedLM): A masked LM taking ``input_ids`` and a 4-D additive ``attention_mask``.
+        input_ids (torch.Tensor): Prompt token ids, shape (1, prompt_length).
         mask_id (int): The tokenizer's mask token id.
         eos_id (Optional[int]): End-of-sequence id; generation is cut there.
         max_new_tokens (int): Upper bound on generated tokens.
@@ -283,19 +307,19 @@ def block_diffusion_sample(
 
 
 def _block_causal_mask(
-    length: int, prompt_length: int, block_size: int, dtype: Any, device: Any
-) -> Any:
+    length: int, prompt_length: int, block_size: int, dtype: "torch.dtype", device: "torch.device"
+) -> "torch.Tensor":
     """Builds the additive attention mask for block-causal attention.
 
     Args:
         length (int): Sequence length.
         prompt_length (int): Tokens in the prompt, which form block 0.
         block_size (int): Tokens per generated block.
-        dtype (Any): The model's dtype, for the mask's fill value.
-        device (Any): Where the mask lives.
+        dtype (torch.dtype): The model's dtype, for the mask's fill value.
+        device (torch.device): Where the mask lives.
 
     Returns:
-        Any: A (1, 1, length, length) tensor, 0 where attention is allowed.
+        torch.Tensor: A (1, 1, length, length) tensor, 0 where attention is allowed.
     """
     import torch
 
@@ -307,7 +331,7 @@ def _block_causal_mask(
     return mask[None, None]
 
 
-def _clamp_max_tokens(value: Any) -> int:
+def _clamp_max_tokens(value: str | int | float) -> int:
     """Coerces a request's max_tokens to a sane int within the service cap."""
     try:
         tokens = int(value)
@@ -329,7 +353,7 @@ def build_handler(runner: "DiffusionModelRunner") -> type:
     class Handler(BaseHTTPRequestHandler):
         server_version = "RagonDiffusion/1.0"
 
-        def log_message(self, fmt: str, *args: Any) -> None:
+        def log_message(self, fmt: str, *args: object) -> None:
             print(f"[diffusion] {self.address_string()} {fmt % args}", flush=True)
 
         def _json(self, status: int, payload: dict[str, Any]) -> None:
