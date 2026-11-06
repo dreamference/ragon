@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Final
@@ -37,6 +38,10 @@ from dreamference.audit.preview_page import PreviewPage
 from dreamference.audit.strace_parser import StraceParser
 from dreamference.audit.tui_session import TuiSession
 from dreamference.config.ports import SEARXNG_PORT
+
+# The loopback port each implemented search backend uses, by the name `[search] backends` gives it
+# (ragon-web-rs/src/backend.rs). Only a backend that is turned on is allowed and named.
+SEARCH_BACKEND_PORTS: Final[dict[str, tuple[int, str]]] = {"searxng": (SEARXNG_PORT, "SearXNG")}
 
 DEFAULT_PROMPT: Final[str] = "Reply with exactly: pong"
 # The second question of a `--web` audit, where image search is set up on this machine
@@ -140,6 +145,32 @@ class EgressAudit:
     preview_url: str | None = None
 
     @classmethod
+    def search_backends(cls) -> list[str]:
+        """The search backends turned on, as ragon-search reads them.
+
+        The names come from `[search] backends` in the user's own config, never the repository's.
+        A name nothing implements is skipped; with no usable name the answer is SearXNG.
+
+        Returns:
+            List[str]: Implemented backend names, in the order given.
+        """
+        path = Path.home() / ".config" / "dreamference" / "config.toml"
+        try:
+            names = (
+                tomllib.loads(path.read_text(encoding="utf-8"))
+                .get("search", {})
+                .get("backends", [])
+            )
+        except (OSError, tomllib.TOMLDecodeError, AttributeError):
+            names = []
+        if not isinstance(names, list):
+            names = []
+        chosen = [
+            n.lower() for n in names if isinstance(n, str) and n.lower() in SEARCH_BACKEND_PORTS
+        ]
+        return chosen or ["searxng"]
+
+    @classmethod
     def allowed_ports(cls, vllm_host: str, session: str = EXEC) -> dict[int, str]:
         """The loopback ports a session may connect to.
 
@@ -155,12 +186,15 @@ class EgressAudit:
         model_port = parsed.port or (
             HTTPS_DEFAULT_PORT if parsed.scheme == HTTPS_SCHEME else HTTP_DEFAULT_PORT
         )
-        return {
+        allowed = {
             model_port: "model server",
             GMAIL_PORT: "Gmail search service",
-            SEARXNG_PORT: "SearXNG",
             IMAGE_SEARCH_PORT: "image search service",
         }
+        for name in cls.search_backends():
+            port, label = SEARCH_BACKEND_PORTS[name]
+            allowed[port] = f"{label} (search backend)"
+        return allowed
 
     @classmethod
     def judge(

@@ -1591,3 +1591,18 @@ def test_the_preview_page_opens_a_peer_connection_with_a_stun_and_a_tcp_turn_ser
     assert "stun:" in PAGE
     assert "turn:" in PAGE and "transport=tcp" in PAGE
     assert PAGE.index("RTCPeerConnection") < PAGE.index('fetch("/seen")')
+
+
+def test_a_search_backend_is_allowed_and_named_only_when_it_is_turned_on(tmp_path, monkeypatch):
+    from dreamference.config.ports import SEARXNG_PORT
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    assert EgressAudit.search_backends() == ["searxng"]
+    config = tmp_path / ".config" / "dreamference"
+    config.mkdir(parents=True)
+    (config / "config.toml").write_text('[search]\nbackends = ["Nothing", "SearXNG"]\n')
+    assert EgressAudit.search_backends() == ["searxng"]
+    assert "search backend" in EgressAudit.allowed_ports("http://localhost:8000")[SEARXNG_PORT]
+    (config / "config.toml").write_text("[search\nbroken")
+    assert EgressAudit.search_backends() == ["searxng"]
