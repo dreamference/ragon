@@ -14,14 +14,13 @@ answer, or when it serves another model: a run measures one configuration.
 import json
 from typing import Any, Final
 
+from dreamference.config.ports import DEFAULT_MODEL_PORT
 from dreamference.node.node_identity import NodeIdentity
 from dreamference.node.node_pairing import NodePairing
 
 # What `[night] nodes` / `[swe_bench] nodes` may say besides a list of names.
 NODES_PAIRED: Final[str] = "paired"
 NODES_NONE: Final[tuple] = ("none", "off", "false", "")
-
-DEFAULT_MODEL_PORT: Final[int] = 8000
 
 
 class NodeLanes:

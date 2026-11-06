@@ -4,6 +4,8 @@ import subprocess
 from typing import Final
 from urllib.parse import urlparse
 
+from dreamference.config.ports import DEFAULT_MODEL_PORT
+
 RAM_HEALTHY_GB: Final[float] = 5.0
 RAM_UNHEALTHY_GB: Final[float] = 2.0
 IOWAIT_HEALTHY_PCT: Final[float] = 10.0
@@ -127,7 +129,7 @@ class ContainerDiagnostics:
             return None
         try:
             # Extract port from host for container name
-            port = urlparse(self.host).port or 8000
+            port = urlparse(self.host).port or DEFAULT_MODEL_PORT
             container_name = f"dreamference-vllm-{port}"
             result = subprocess.run(
                 [

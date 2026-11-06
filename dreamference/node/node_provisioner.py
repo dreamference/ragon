@@ -34,6 +34,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
+from dreamference.config.ports import DEFAULT_MODEL_PORT, SEARXNG_PORT
 from dreamference.node.fleet_askpass import FleetAskpass
 from dreamference.node.fleet_bundle import FleetBundle
 from dreamference.node.fleet_hub_fetch import FleetHubFetch
@@ -55,7 +56,6 @@ REMOTE_BUNDLE_DIR: Final[str] = "~/.cache/dreamference/fleet"
 # How long a started model server may take to answer (FLEET §7.1, step 11).
 DEFAULT_START_TIMEOUT_S: Final[int] = 20 * 60
 
-SEARXNG_PORT: Final[int] = 8888
 
 # What the probe prints for a reading that holds, and docker for a running container.
 PROBE_YES: Final[str] = "1"
@@ -692,7 +692,7 @@ class NodeProvisioner:
     def _start_and_verify(self, host: str) -> None:
         record = self.results[host]["paired_record"]
         info = self._info(record)
-        port = int(info.get("model_port") or 8000)
+        port = int(info.get("model_port") or DEFAULT_MODEL_PORT)
         if self.options.get("no_start"):
             self.results[host].update(state="stopped", complete=True)
             return

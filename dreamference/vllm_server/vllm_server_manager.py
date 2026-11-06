@@ -18,6 +18,7 @@ from typing import Any, ClassVar, Final
 from dreamference.config.dreamference_config import (
     DEFAULT_GUIDED_DECODING_BACKEND,
 )
+from dreamference.config.ports import DEFAULT_MODEL_PORT, DEFAULT_VLLM_HOST
 from dreamference.hardware.model_matrix_registry import DEFAULT_MODEL_ALIAS as DEFAULT_MODEL
 from dreamference.hardware.model_matrix_registry import (
     ENGINE_VLLM,
@@ -33,7 +34,6 @@ from dreamference.vllm_server.sglang_launch_builder import SGLangLaunchBuilder
 from dreamference.vllm_server.vllm_log_streamer import VLLMLogStreamer
 from dreamference.vllm_server.vllm_server_status import VLLMServerStatus
 
-DEFAULT_VLLM_HOST: Final[str] = "http://localhost:8000"
 DEFAULT_MAX_MODEL_LEN: Final[int] = 16384
 DEFAULT_GPU_MEMORY_UTILIZATION: Final[float] = 0.50
 # Memory held back from the vLLM container so the host keeps a responsive desktop and enough
@@ -602,7 +602,7 @@ class VLLMServerManager:
     def build_launch_command(
         self,
         model: str = DEFAULT_MODEL,
-        port: int = 8000,
+        port: int = DEFAULT_MODEL_PORT,
         quantization: str | None = None,
         max_model_len: int | None = None,
         gpu_memory_utilization: float | None = None,
@@ -1835,7 +1835,7 @@ class VLLMServerManager:
     def start_server(
         self,
         model: str = DEFAULT_MODEL,
-        port: int = 8000,
+        port: int = DEFAULT_MODEL_PORT,
         quantization: str | None = None,
         draft_model: str | None = None,
         num_speculative_tokens: int = 5,
@@ -2381,7 +2381,7 @@ class VLLMServerManager:
         with contextlib.suppress(OSError):
             ModelGate.stop(port)
 
-    def stop_server(self, port: int = 8000) -> None:
+    def stop_server(self, port: int = DEFAULT_MODEL_PORT) -> None:
         """Stops the vLLM Docker container for the given port.
 
         Safe no-op if container is not running.
@@ -2401,7 +2401,7 @@ class VLLMServerManager:
         ModelGate.stop(port)
         print(f"✅ Container {container_name} stopped.")
 
-    def remove_server(self, port: int = 8000) -> None:
+    def remove_server(self, port: int = DEFAULT_MODEL_PORT) -> None:
         """Removes the vLLM Docker container for the given port.
 
         Safe no-op if container does not exist.
@@ -2418,7 +2418,7 @@ class VLLMServerManager:
         ModelGate.remove(port)
         print(f"✅ Container {container_name} removed.")
 
-    def show_request_logs(self, port: int = 8000) -> None:
+    def show_request_logs(self, port: int = DEFAULT_MODEL_PORT) -> None:
         """Tails the vLLM Docker container logs for the given port."""
         container_name = f"dreamference-vllm-{port}"
         print(f"📄 Tailing logs for vLLM container: {container_name} (Ctrl+C to exit)")
@@ -2446,7 +2446,7 @@ class VLLMServerManager:
             import subprocess
             from urllib.parse import urlparse
 
-            port = urlparse(self.host).port or 8000
+            port = urlparse(self.host).port or DEFAULT_MODEL_PORT
             container_name = f"dreamference-vllm-{port}"
             try:
                 res = subprocess.run(

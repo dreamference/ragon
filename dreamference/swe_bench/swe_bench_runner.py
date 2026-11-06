@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Final, Optional
 from urllib.parse import urlparse
 
+from dreamference.config.ports import DEFAULT_MODEL_PORT
 from dreamference.night_shift.night_shift_host import NightShiftHost
 from dreamference.night_shift.night_shift_queue import NightShiftQueue
 from dreamference.night_shift.night_shift_runner import NightShiftRunner
@@ -849,7 +850,7 @@ class SweBenchRunner:
                     return 1
                 hold.update(manifest["instances"], parallel)
 
-                model_url = f"http://{gateway}:{urlparse(vllm_host).port or 8000}"
+                model_url = f"http://{gateway}:{urlparse(vllm_host).port or DEFAULT_MODEL_PORT}"
                 run_prompt = str(manifest.get("prompt") or DEFAULT_RUN_PROMPT)
                 lanes, lane_notes = cls.lanes(vllm_host, served, settings, parallel)
                 relays = cls.lane_relays(gateway, lanes, model_url, vllm_host if remote else None)
@@ -1254,7 +1255,7 @@ class SweBenchRunner:
         relays = []
         for lane in lanes:
             target = urlparse(lane["host"])
-            relay = SweBenchRelay(gateway, (target.hostname, target.port or 8000))
+            relay = SweBenchRelay(gateway, (target.hostname, target.port or DEFAULT_MODEL_PORT))
             lane["model_url"] = f"http://{gateway}:{relay.start()}"
             relays.append(relay)
         return relays

@@ -20,6 +20,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Final
 
+from dreamference.config.ports import ENGINE_PORT_OFFSET
 from dreamference.vllm_server.adapter_serving import AdapterServing
 from dreamference.vllm_server.model_gate_service import (
     PAUSE_FILE,
@@ -38,8 +39,6 @@ ADAPTERS_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_adapters.py"
 # The loop guard's rules (`ragon`'s length cap and sampling arm), copied beside it too.
 GUARD_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_guard.py")
 
-# The engine's port is the public one plus this, on loopback only (8000 -> 18000).
-ENGINE_PORT_OFFSET: Final[int] = 10000
 ENGINE_BIND_ADDRESS: Final[str] = "127.0.0.1"
 PUBLIC_BIND_ADDRESS: Final[str] = "0.0.0.0"
 

@@ -11,9 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from dreamference.config.ports import SEARXNG_PORT
 from dreamference.node import node_provisioner
 from dreamference.node.node_pairing import NodePairing
-from dreamference.node.node_provisioner import SEARXNG_PORT, NodeProvisioner
+from dreamference.node.node_provisioner import NodeProvisioner
 
 
 @pytest.fixture

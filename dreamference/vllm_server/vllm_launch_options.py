@@ -6,6 +6,7 @@ launching vLLM OpenAI API server processes on NVIDIA GB10 hardware.
 
 from dataclasses import dataclass
 
+from dreamference.config.ports import DEFAULT_MODEL_PORT
 from dreamference.hardware.model_matrix_registry import DEFAULT_MODEL_ALIAS
 
 
@@ -35,7 +36,7 @@ class VLLMLaunchOptions:
     """
 
     model: str = DEFAULT_MODEL_ALIAS
-    port: int = 8000
+    port: int = DEFAULT_MODEL_PORT
     quantization: str | None = None
     max_model_len: int = 16384
     gpu_memory_utilization: float = 0.50

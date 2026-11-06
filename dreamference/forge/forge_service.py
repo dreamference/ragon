@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 from typing import Final
 
+from dreamference.config.ports import WEB_PORT
 from dreamference.forge.forge_accounts import ForgeAccounts
 from dreamference.forge.forge_anonymity import ForgeAnonymity
 from dreamference.forge.forge_app_ini import ForgeAppIni
@@ -40,7 +41,6 @@ from dreamference.forge.forge_settings import (
     SERVICE_TYPE,
     UNIT,
     WEB_PATH,
-    WEB_PORT,
     ForgeSettings,
 )
 

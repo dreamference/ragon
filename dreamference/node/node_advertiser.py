@@ -23,18 +23,17 @@ import tempfile
 import urllib.request
 from urllib.parse import urlparse
 
+from dreamference.config.ports import DEFAULT_MODEL_PORT, WEB_PORT
 from dreamference.node.node_browser import NodeBrowser
 from dreamference.node.node_identity import NodeIdentity
 from dreamference.node.node_service_file import NodeServiceFile
 from dreamference.node.node_settings import LOOPBACK, NodeSettings
 
 # `ragon web`'s port (ragon-rs/web/src/server.rs DEFAULT_PORT): what the advert's `web` record names.
-WEB_PORT = 3100
 # `ragon web`'s user unit (ragon-rs/web/src/cli.rs UNIT_NAME), which `ragon web start` writes.
 WEB_UNIT = str(pathlib.Path("~/.config/systemd/user/ragon-web.service").expanduser())
 # Ubuntu puts the daemon in /usr/sbin, which is not on every user's PATH.
 AVAHI_DAEMON = "/usr/sbin/avahi-daemon"
-DEFAULT_MODEL_PORT = 8000
 HTTP_OK = 200
 LAN_FLAG = " --lan"
 SUDO_MODE = "sudo"

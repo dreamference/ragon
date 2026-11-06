@@ -8,13 +8,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
+from dreamference.config.ports import WEB_PORT
 from dreamference.forge.forge_settings import (
     HTTP_PORT,
     OWNER,
     ROLE_MIRROR,
     ROLE_RECORD,
     WEB_PATH,
-    WEB_PORT,
     ForgeSettings,
 )
 

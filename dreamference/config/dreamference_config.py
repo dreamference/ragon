@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Final
 from dreamference.config.airgapped_resolver import AirgappedResolver
 from dreamference.config.config_file_storage_manager import ConfigFileStorageManager
 from dreamference.config.config_path_resolver import ConfigPathResolver
+from dreamference.config.ports import DEFAULT_VLLM_HOST
 from dreamference.hardware import check_model_compatibility
 from dreamference.hardware.model_matrix_registry import (
     DEFAULT_DIFFUSION_MODEL_ALIAS,
@@ -20,7 +21,6 @@ from dreamference.hardware.model_matrix_registry import (
 )
 
 # System defaults
-DEFAULT_VLLM_HOST: Final[str] = "http://localhost:8000"
 DEFAULT_MODEL: Final[str] = DEFAULT_MODEL_ALIAS
 DEFAULT_DIFFUSION_MODEL: Final[str] = DEFAULT_DIFFUSION_MODEL_ALIAS
 DEFAULT_SPECULATIVE_TOKENS: Final[int] = 8

@@ -36,6 +36,7 @@ from dreamference.audit.egress_verdict import FAIL, PASS, TRACE_FAILED, EgressVe
 from dreamference.audit.preview_page import PreviewPage
 from dreamference.audit.strace_parser import StraceParser
 from dreamference.audit.tui_session import TuiSession
+from dreamference.config.ports import SEARXNG_PORT
 
 DEFAULT_PROMPT: Final[str] = "Reply with exactly: pong"
 # The second question of a `--web` audit, where image search is set up on this machine
@@ -56,7 +57,6 @@ SESSION_TIMEOUT_S: Final[int] = 300
 
 # Loopback services a session may reach besides the model server (spec §4.3).
 GMAIL_PORT: Final[int] = 8767
-SEARXNG_PORT: Final[int] = 8888
 # The image search sidecar (`ragon-admin images start`), which the `image_search` tool asks.
 IMAGE_SEARCH_PORT: Final[int] = 8768
 

@@ -32,7 +32,6 @@ SSH_PORT: Final[int] = 2222
 CONTAINER_HTTP_PORT: Final[int] = 3000
 # Browsers reach the forge through `ragon web`'s `/forge/` proxy, signed in (§2.2); its port and
 # that path are the forge's `ROOT_URL`. Git and the API also answer on HTTP_PORT, at its root.
-WEB_PORT: Final[int] = 3100
 WEB_PATH: Final[str] = "/forge/"
 CONTAINER_SSH_PORT: Final[int] = 2222
 # The cap counted by the model server's pre-load memory check (§2.6).

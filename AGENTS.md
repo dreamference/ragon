@@ -74,7 +74,7 @@ Fourteen packages under `dreamference/` (thirteen subsystems and `cli/`), each w
 
 | Package | Role |
 | --- | --- |
-| `config/` | 4-tier config resolution |
+| `config/` | 4-tier config resolution; `ports.py` holds the shared ports and default endpoints |
 | `hardware/` | Model matrix registry, HF downloads/tensorization, GB10 telemetry |
 | `vllm_server/` | Docker vLLM/SGLang lifecycle, launch-arg construction, host-safety guards |
 | `runner/` | Per-agent installer + runner pairs, sandbox prefixes, the `ragon` build (`codex_branded_builder.py`) and Codex's test runner |

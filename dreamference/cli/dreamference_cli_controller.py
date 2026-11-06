@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Final
 from dreamference.cli.adapter_command import ADAPTER_COMMAND, AdapterCommand
 from dreamference.config import DreamferenceConfig, ProxyBypass
 from dreamference.config.dreamference_config import DEFAULT_DIFFUSION_MODEL, DEFAULT_MODEL
+from dreamference.config.ports import DEFAULT_MODEL_PORT
 from dreamference.forge.forge_command import ForgeCommand
 from dreamference.hardware import (
     clear_model_cache,
@@ -254,7 +255,7 @@ class DreamferenceCLIController:
         from dreamference.cli.model_deep_inspector import ModelDeepInspector
         from dreamference.hardware import get_speculative_draft_repo
 
-        port = urlparse(api_base).port or 8000
+        port = urlparse(api_base).port or DEFAULT_MODEL_PORT
         container = f"dreamference-vllm-{port}"
 
         running_cmd: list[str] = []
@@ -1814,7 +1815,10 @@ class DreamferenceCLIController:
             help=f"Model name to serve (default: the configured main model; examples: {DEFAULT_MODEL}, llama-3.3-70b)",
         )
         start_server_parser.add_argument(
-            "--port", type=int, default=8000, help="Port for the model server's /v1 API"
+            "--port",
+            type=int,
+            default=DEFAULT_MODEL_PORT,
+            help="Port for the model server's /v1 API",
         )
         start_server_parser.add_argument(
             "--engine",
@@ -1946,7 +1950,7 @@ class DreamferenceCLIController:
             else "Stop the running model server",
         )
         stop_parser.add_argument(
-            "--port", type=int, default=8000, help="Port of the server to stop"
+            "--port", type=int, default=DEFAULT_MODEL_PORT, help="Port of the server to stop"
         )
         stop_parser.add_argument(
             "--diffusion-port",
@@ -1963,7 +1967,7 @@ class DreamferenceCLIController:
             else "Remove the model server's container",
         )
         remove_parser.add_argument(
-            "--port", type=int, default=8000, help="Port of the server to remove"
+            "--port", type=int, default=DEFAULT_MODEL_PORT, help="Port of the server to remove"
         )
         remove_parser.add_argument(
             "--diffusion-port",
@@ -1977,7 +1981,10 @@ class DreamferenceCLIController:
             "logs", help="Tail the model server Docker container logs"
         )
         server_logs_parser.add_argument(
-            "--port", type=int, default=8000, help="Port of the server to tail logs for"
+            "--port",
+            type=int,
+            default=DEFAULT_MODEL_PORT,
+            help="Port of the server to tail logs for",
         )
 
         # Command: ragon-admin logs
@@ -1992,7 +1999,10 @@ class DreamferenceCLIController:
             "read from ~/.ragon/logs_2.sqlite, or $CODEX_HOME (the TUI logs there, not to a file)",
         )
         logs_parser.add_argument(
-            "--port", type=int, default=8000, help="Port of the server to tail logs for"
+            "--port",
+            type=int,
+            default=DEFAULT_MODEL_PORT,
+            help="Port of the server to tail logs for",
         )
 
         # Command: ragon-admin codex
@@ -2605,7 +2615,7 @@ class DreamferenceCLIController:
             "benchmark_server", help="Run vLLM serve benchmark using Sonnet dataset"
         )
         bench_parser.add_argument(
-            "--port", type=int, default=8000, help="Port of the server to benchmark"
+            "--port", type=int, default=DEFAULT_MODEL_PORT, help="Port of the server to benchmark"
         )
         bench_parser.add_argument("--model", default=DEFAULT_MODEL, help="Model name to benchmark")
         bench_parser.add_argument(
@@ -3581,7 +3591,7 @@ class DreamferenceCLIController:
                 # could not answer its own questions.
                 from urllib.parse import urlparse
 
-                port = urlparse(api_base).port or 8000
+                port = urlparse(api_base).port or DEFAULT_MODEL_PORT
                 engine_facts = cls._collect_engine_facts(port, vllm_host, config.model)
 
                 out_console.print(f"   [cyan]Model:[/cyan]    {model_name}")
@@ -4022,8 +4032,8 @@ class DreamferenceCLIController:
             cred_table = Table(title="OpenAPI-compatible Credentials", show_header=False)
             cred_table.add_column("Key", style="bold cyan")
             cred_table.add_column("Value", style="white")
-            cred_table.add_row("Base URL (localhost)", "http://localhost:8000/v1")
-            cred_table.add_row("Base URL (LAN IP)", f"http://{local_ip}:8000/v1")
+            cred_table.add_row("Base URL (localhost)", f"http://localhost:{DEFAULT_MODEL_PORT}/v1")
+            cred_table.add_row("Base URL (LAN IP)", f"http://{local_ip}:{DEFAULT_MODEL_PORT}/v1")
             if ModelMatrixRegistry.diffusion_enabled():
                 cred_table.add_row(
                     "Diffusion model URL", f"http://localhost:{DEFAULT_DIFFUSION_PORT}/v1"

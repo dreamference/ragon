@@ -13,6 +13,7 @@ import secrets
 from pathlib import Path
 from typing import Final
 
+from dreamference.config.ports import WEB_PORT
 from dreamference.forge.forge_settings import (
     ARTEFACT_DAYS_MIRROR,
     ARTEFACT_DAYS_RECORD,
@@ -21,7 +22,6 @@ from dreamference.forge.forge_settings import (
     ROLE_RECORD,
     SSH_PORT,
     WEB_PATH,
-    WEB_PORT,
 )
 
 # Where the rootless image keeps everything (GITEA_WORK_DIR) and reads its config from.
