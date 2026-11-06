@@ -438,11 +438,7 @@
    "BLE001": 2,
    "C901": 2,
    "PLR0911": 1,
-   "PLR1702": 5,
-   "PLR2004": 21,
-   "PTH118": 5,
-   "PTH119": 1,
-   "PTH206": 1
+   "PLR1702": 5
   },
   "dreamference/swe_bench/swe_bench_issue_targets.py": {
    "C901": 3,
@@ -637,5 +633,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1139
+ "total": 1111
 }

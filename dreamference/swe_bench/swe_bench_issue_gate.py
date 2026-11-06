@@ -25,16 +25,21 @@ conditions the runner wrote, live in `<directory>` (the instance's scratch, on t
 import fcntl
 import json
 import os
-import pathlib
 import re
 import shlex
 import sys
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 CONDITIONS_FILE = "conditions.json"
 STATE_FILE = "state.json"
 LOCK_FILE = "lock"
+
+# The hook events, as Codex names them.
+EVENT_PRE_TOOL_USE = "pre-tool-use"
+EVENT_POST_TOOL_USE = "post-tool-use"
+EVENT_STOP = "stop"
 
 # The reasons the model is shown. Codex appends ". Command: <the command>" to a denied tool call's
 # reason (core/src/hook_runtime.rs), so the first ends without a full stop.
@@ -59,11 +64,42 @@ CALL = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 BACKSLASH = "\\"
 DOUBLE_QUOTE = '"'
 QUOTES = "'\""
+# The characters that break a shell command into segments.
+SEGMENT_BREAKS = ";|\n"
+# The character perl flags for in-place editing.
+PERL_IN_PLACE = "i"
 REDIRECT = re.compile(r"(?:^|[^0-9&<>])>>?\s*([^\s;|&<>()]+)")
 HEREDOC = re.compile(
     r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?[^\n]*\n(.*?)\n\s*\1\s*(?:\n|$)", re.S
 )
 PATCH_FILE = re.compile(r"^\*\*\* (Update|Delete|Add) File: (.+?)\s*$", re.M)
+
+
+# The marker that opens an apply_patch block.
+PATCH_MARKER = "*** Begin Patch"
+# The parts of an apply_patch hunk that change an existing file.
+PATCH_UPDATE = "Update"
+PATCH_DELETE = "Delete"
+# The directory that holds repository state, never a file to count.
+GIT_DIR = ".git"
+# A path that names a device or an option, not a file.
+DEV_PREFIX = "/dev/"
+# The flag a command uses to write in place.
+IN_PLACE_FLAG = "-i"
+# The flag that makes an interpreter run the code that follows.
+CODE_FLAG = "-c"
+# The target kinds the conditions name.
+TARGET_KIND_FILE = "file"
+EXAMPLE_KIND_PYTHON = "python"
+# The tool name that applies a patch block.
+TOOL_APPLY_PATCH = "apply_patch"
+# The programs the shell edit detectors name.
+PERL = "perl"
+GIT = "git"
+PATCH = "patch"
+TEE = "tee"
+# The state key the first edit writes.
+FIRST_EDIT_KEY = "first_edit"
 
 
 class SweBenchIssueGate:
@@ -132,7 +168,7 @@ class SweBenchIssueGate:
         """
         found = []
         for target in targets:
-            if target["kind"] == "file":
+            if target["kind"] == TARGET_KIND_FILE:
                 hit = cls.file_touched(target["path"], command, output)
             else:
                 pattern = r"\b(def|class)\s+" + re.escape(target["name"]) + r"\b"
@@ -158,19 +194,19 @@ class SweBenchIssueGate:
             Optional[str]: The path relative to the repository when it names a file that exists
             there (outside `.git`); None for anything else, `/tmp` and new files included.
         """
-        path = path.strip().strip("'\"")
-        if not path or path.startswith(("-", "/dev/")):
+        candidate = path.strip().strip("'\"")
+        if not candidate or candidate.startswith(("-", DEV_PREFIX)):
             return None
-        full = os.path.normpath(
-            path if pathlib.Path(path).is_absolute() else os.path.join(cwd or root, path)
-        )
-        root = os.path.normpath(root)
-        if not full.startswith(root + os.sep):
+        base = Path(os.path.normpath(cwd or root))
+        full = Path(os.path.normpath(base / candidate))
+        root_path = Path(os.path.normpath(root))
+        try:
+            relative = full.relative_to(root_path)
+        except ValueError:
             return None
-        relative = full[len(root) + 1 :]
-        if relative.split(os.sep)[0] == ".git" or not pathlib.Path(full).is_file():
+        if GIT_DIR in relative.parts[:1] or not full.is_file():
             return None
-        return relative
+        return str(relative)
 
     @classmethod
     def quoted_mask(cls, command: str) -> "list[bool]":
@@ -217,15 +253,15 @@ class SweBenchIssueGate:
             if quote:
                 if char == quote:
                     quote = None
-                elif char == "\\" and quote == '"' and index + 1 < len(command):
+                elif char == BACKSLASH and quote == DOUBLE_QUOTE and index + 1 < len(command):
                     current.append(char)
                     index += 1
                     char = command[index]
                 current.append(char)
-            elif char in "'\"":
+            elif char in QUOTES:
                 quote = char
                 current.append(char)
-            elif char in ";|\n" or command.startswith("&&", index):
+            elif char in SEGMENT_BREAKS or command.startswith("&&", index):
                 pieces.append("".join(current))
                 current = []
                 if command.startswith(("&&", "||"), index):
@@ -265,11 +301,11 @@ class SweBenchIssueGate:
         Returns:
             Optional[Dict[str, Any]]: `{"kind", "paths"}`, or None when it is not an edit.
         """
-        if tool_name == "apply_patch" or "*** Begin Patch" in command:
+        if tool_name == TOOL_APPLY_PATCH or PATCH_MARKER in command:
             paths = [
                 cls.repository_file(match.group(2), cwd, root)
                 for match in PATCH_FILE.finditer(command)
-                if match.group(1) != "Add"
+                if match.group(1) in (PATCH_UPDATE, PATCH_DELETE)
             ]
             paths = [path for path in paths if path]
             return {"kind": "apply_patch", "paths": paths} if paths else None
@@ -278,22 +314,22 @@ class SweBenchIssueGate:
             words = cls.words(segment)
             if not words:
                 continue
-            program = os.path.basename(words[0])
+            program = Path(words[0]).name
             if program in ("sed", "perl") and any(
-                word == "-i"
+                word == IN_PLACE_FLAG
                 or word.startswith(("-i", "--in-place"))
-                or (program == "perl" and word.startswith("-") and "i" in word[1:])
+                or (program == PERL and word.startswith("-") and PERL_IN_PLACE in word[1:])
                 for word in words[1:]
             ):
                 paths = [cls.repository_file(word, cwd, root) for word in words[1:]]
                 paths = [path for path in paths if path]
                 if paths:
                     return {"kind": program + " -i", "paths": paths}
-            if program == "git" and len(words) > 1 and words[1] in ("apply", "am"):
+            if program == GIT and len(words) > 1 and words[1] in ("apply", "am"):
                 return {"kind": "git " + words[1], "paths": []}
-            if program == "patch":
+            if program == PATCH:
                 return {"kind": "patch", "paths": []}
-            if program == "tee":
+            if program == TEE:
                 paths = [cls.repository_file(word, cwd, root) for word in words[1:]]
                 paths = [path for path in paths if path]
                 if paths:
@@ -372,20 +408,16 @@ class SweBenchIssueGate:
                 if not python and not pytest:
                     continue
                 rest = words[index + 1 :]
-                if python and "-c" in rest and rest.index("-c") + 1 < len(rest):
-                    pieces.append(rest[rest.index("-c") + 1])
+                if python and CODE_FLAG in rest and rest.index(CODE_FLAG) + 1 < len(rest):
+                    pieces.append(rest[rest.index(CODE_FLAG) + 1])
                     break
                 for argument in rest:
                     script = argument.split("::")[0]
                     if script.startswith("-") or not script.endswith(".py"):
                         continue
-                    path = (
-                        script
-                        if pathlib.Path(script).is_absolute()
-                        else os.path.join(cwd or "/", script)
-                    )
+                    path = script if Path(script).is_absolute() else str(Path(cwd or "/") / script)
                     try:
-                        with pathlib.Path(path).open(errors="replace") as handle:
+                        with Path(path).open(errors="replace") as handle:
                             pieces.append(handle.read(SCRIPT_LIMIT))
                     except OSError:
                         pieces.append(None)
@@ -413,7 +445,7 @@ class SweBenchIssueGate:
         """
         pieces = None
         for example in examples:
-            if example["kind"] == "python":
+            if example["kind"] == EXAMPLE_KIND_PYTHON:
                 if pieces is None:
                     pieces = cls.ran_code(command, cwd)
                 if any(piece is None or cls.code_matches(piece, example) for piece in pieces):
@@ -452,7 +484,8 @@ class SweBenchIssueGate:
             if isinstance(tool_input, dict) and isinstance(tool_input.get("command"), str)
             else cls.text_of(tool_input)
         )
-        cwd = payload.get("cwd") or conditions.get("root", "/testbed")
+        command = command if isinstance(command, str) else ""
+        cwd = str(payload.get("cwd") or conditions.get("root", "/testbed"))
         edit = cls.edit_of(
             payload.get("tool_name", ""), command, cwd, conditions.get("root", "/testbed")
         )
@@ -469,8 +502,8 @@ class SweBenchIssueGate:
                 state["example_runs"] = ([*state.get("example_runs", []), seq])[-KEEP:]
             return None
         unread = [target for target in targets if target["id"] not in reads]
-        if "first_edit" not in state:
-            state["first_edit"] = {
+        if FIRST_EDIT_KEY not in state:
+            state[FIRST_EDIT_KEY] = {
                 "seq": seq,
                 "kind": edit["kind"],
                 "paths": edit["paths"][:10],
@@ -519,6 +552,7 @@ class SweBenchIssueGate:
             if isinstance(tool_input, dict) and isinstance(tool_input.get("command"), str)
             else cls.text_of(tool_input)
         )
+        command = command if isinstance(command, str) else ""
         seq = state.get("seq", 0)
         reads = state.setdefault("reads", {})
         for target in cls.reads(
@@ -576,17 +610,18 @@ class SweBenchIssueGate:
         Returns:
             Optional[str]: The reason to block, or None.
         """
-        with pathlib.Path(os.path.join(directory, LOCK_FILE)).open("a") as lock:
+        base = Path(directory)
+        with (base / LOCK_FILE).open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            state_path = os.path.join(directory, STATE_FILE)
+            state_path = base / STATE_FILE
             try:
-                with pathlib.Path(state_path).open() as handle:
+                with state_path.open() as handle:
                     state = json.load(handle)
             except (OSError, ValueError):
                 state = {}
             counts = state.setdefault("invocations", {})
             try:
-                with pathlib.Path(os.path.join(directory, CONDITIONS_FILE)).open() as handle:
+                with (base / CONDITIONS_FILE).open() as handle:
                     conditions = json.load(handle)
             except (OSError, ValueError):
                 # No conditions yet (the refine arm's study step): counted, never held.
@@ -596,20 +631,20 @@ class SweBenchIssueGate:
             if conditions is not None:
                 counts[event] = counts.get(event, 0) + 1
                 try:
-                    if event == "pre-tool-use":
+                    if event == EVENT_PRE_TOOL_USE:
                         reason = cls.pre_tool_use(state, conditions, payload)
-                    elif event == "post-tool-use":
+                    elif event == EVENT_POST_TOOL_USE:
                         cls.post_tool_use(state, conditions, payload)
-                    elif event == "stop":
+                    elif event == EVENT_STOP:
                         reason = cls.stop(state, conditions, payload)
                 except Exception as error:  # Never hold a call on a fault of the gate's own.
                     state["errors"] = ([*state.get("errors", []), f"{event}: {error!r}"])[-KEEP:]
                     reason = None
             state["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-            temporary = state_path + ".tmp"
-            with pathlib.Path(temporary).open("w") as handle:
+            temporary = Path(str(state_path) + ".tmp")
+            with temporary.open("w") as handle:
                 json.dump(state, handle)
-            pathlib.Path(temporary).replace(state_path)
+            temporary.replace(state_path)
             return reason
 
     @classmethod

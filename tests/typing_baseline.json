@@ -25,13 +25,10 @@
   "dreamference/swe_bench/swe_bench_images.py": {
    "assignment": 1
   },
-  "dreamference/swe_bench/swe_bench_issue_gate.py": {
-   "arg-type": 4
-  },
   "dreamference/swe_bench/swe_bench_relay.py": {
    "union-attr": 1
   }
  },
  "mypy": "2.4.0",
- "total": 19
+ "total": 15
 }
