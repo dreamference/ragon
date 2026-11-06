@@ -93,6 +93,19 @@ _PROBE_ERRORS: Final[tuple[type[BaseException], ...]] = (
     TypeError,
     AttributeError,
 )
+# Capability probes ask a short factual question and grep the answer, so the
+# model's thinking channel is not merely wasted budget — it silently breaks them.
+# A reasoning model opens <think> immediately, the reasoning parser buffers that
+# span until its closing tag, and a probe capped at 50-100 tokens truncates first.
+# The parser then flushes nothing: both `content` and `reasoning_content` come back
+# empty with finish_reason='length', and every probe reads that as "unsupported".
+# Measured on Qwen3.5-122B: the antArtifact probe reported No at 100 and 400
+# tokens, and the correct answer in 34 with thinking off. `Tags: None detected`
+# was the same false negative at max_tokens 50.
+#
+# Unknown chat_template_kwargs are simply unused variables to a Jinja template, so
+# this is inert on models that do not have a thinking channel to disable.
+_INSPECT_NO_THINKING: Final[dict[str, Any]] = {"chat_template_kwargs": {"enable_thinking": False}}
 _ARG_IM_START: Final[str] = "<|im_start|>"
 _ARG_INIT: Final[str] = "init"
 _ARG_INSPECT: Final[str] = "inspect"
@@ -2993,6 +3006,938 @@ class DreamferenceCLIController:
         return argv
 
     @classmethod
+    def _inspect_resolve_model(
+        cls, session, vllm_host: str, configured_model: str
+    ) -> tuple[str, str]:
+        """Asks the server which model it runs, falling back to the configured one.
+
+        Args:
+            session: The shared requests session for the local server.
+            vllm_host (str): The model server's base URL.
+            configured_model (str): The model named in the configuration.
+
+        Returns:
+            tuple[str, str]: The model name and its context length, or "Unknown".
+        """
+        import requests
+
+        # Try to get the running model from the server first
+        model_name = configured_model
+        max_model_len = "Unknown"
+        try:
+            models_response = session.get(f"{vllm_host}/v1/models", timeout=5)
+            if models_response.status_code == _HTTP_OK:
+                models_data = models_response.json()
+                if models_data.get("data"):
+                    model_name = models_data["data"][0]["id"]
+                    max_model_len = str(models_data["data"][0].get("max_model_len", "Unknown"))
+        except requests.exceptions.RequestException:
+            pass  # Fallback to config.model
+        return model_name, max_model_len
+
+    @classmethod
+    def _inspect_probe_reasoning(
+        cls, session, api_base: str, model_name: str, headers: dict
+    ) -> bool:
+        """Checks whether the model answers with a thinking channel.
+
+        Args:
+            session: The shared requests session for the local server.
+            api_base (str): The server's chat completions URL.
+            model_name (str): The served model's id.
+            headers (dict): The request headers.
+
+        Returns:
+            bool: True if a reasoning span came back.
+        """
+        # Check reasoning capability
+        is_reasoning = False
+        payload_reasoning: dict[str, Any] = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "How many Rs are in strawberry? Think step by step.",
+                }
+            ],
+            "max_tokens": 50,
+            "temperature": 0.1,
+        }
+        try:
+            r_response = session.post(api_base, json=payload_reasoning, headers=headers, timeout=15)
+            if r_response.status_code == _HTTP_OK:
+                msg = r_response.json().get("choices", [{}])[0].get("message", {})
+                content = msg.get("content") or ""
+                if _ARG_THINK in content or msg.get("reasoning_content") or msg.get("reasoning"):
+                    is_reasoning = True
+        except _PROBE_ERRORS:
+            pass
+        return is_reasoning
+
+    @classmethod
+    def _inspect_probe_roles(cls, session, api_base: str, model_name: str, headers: dict) -> str:
+        """Checks which chat roles the server accepts.
+
+        Args:
+            session: The shared requests session for the local server.
+            api_base (str): The server's chat completions URL.
+            model_name (str): The served model's id.
+            headers (dict): The request headers.
+
+        Returns:
+            str: The accepted roles, comma separated, or "Unknown".
+        """
+        # Check supported roles
+        supported_roles = []
+        test_roles = {
+            "system": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Hi"},
+            ],
+            "user": [{"role": "user", "content": "Hi"}],
+            "assistant": [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello"},
+                {"role": "user", "content": "Next"},
+            ],
+            "tool": [
+                {"role": "user", "content": "Do it"},
+                {
+                    "role": "assistant",
+                    "content": "doing",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "test", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "content": "done", "tool_call_id": "call_1"},
+            ],
+        }
+        for role, msgs in test_roles.items():
+            payload_role: dict[str, Any] = {
+                "model": model_name,
+                "messages": msgs,
+                "max_tokens": 1,
+            }
+            try:
+                resp = session.post(api_base, json=payload_role, headers=headers, timeout=5)
+                if resp.status_code == _HTTP_OK:
+                    supported_roles.append(role)
+            except _PROBE_ERRORS:
+                pass
+        return ", ".join(supported_roles) if supported_roles else "Unknown"
+
+    @classmethod
+    def _inspect_probe_chatml(cls, session, api_base: str, model_name: str, headers: dict) -> bool:
+        """Checks whether the model can print a ChatML tag.
+
+        Args:
+            session: The shared requests session for the local server.
+            api_base (str): The server's chat completions URL.
+            model_name (str): The served model's id.
+            headers (dict): The request headers.
+
+        Returns:
+            bool: True if the tag came back.
+        """
+        # Check ChatML tag support
+        supports_chatml = False
+        payload_chatml: dict[str, Any] = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Print the ChatML tag '<|im_start|>' exactly as written.",
+                }
+            ],
+            "max_tokens": 100,
+            "temperature": 0,
+            **_INSPECT_NO_THINKING,
+        }
+        try:
+            c_response = session.post(api_base, json=payload_chatml, headers=headers, timeout=15)
+            if c_response.status_code == _HTTP_OK:
+                msg = c_response.json().get("choices", [{}])[0].get("message", {})
+                content = msg.get("content") or ""
+                if _ARG_IM_START in content:
+                    supports_chatml = True
+        except _PROBE_ERRORS:
+            pass
+        return supports_chatml
+
+    @classmethod
+    def _inspect_probe_artifact(
+        cls, session, api_base: str, model_name: str, headers: dict
+    ) -> bool:
+        """Checks whether the model uses antArtifact tags.
+
+        Args:
+            session: The shared requests session for the local server.
+            api_base (str): The server's chat completions URL.
+            model_name (str): The served model's id.
+            headers (dict): The request headers.
+
+        Returns:
+            bool: True if the tag came back.
+        """
+        # Check antArtifact support
+        supports_artifact = False
+        payload_artifact: dict[str, Any] = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Create a one line python script and wrap it in <antArtifact> tags.",
+                }
+            ],
+            "max_tokens": 100,
+            "temperature": 0,
+            **_INSPECT_NO_THINKING,
+        }
+        try:
+            a_response = session.post(api_base, json=payload_artifact, headers=headers, timeout=15)
+            if a_response.status_code == _HTTP_OK:
+                msg = a_response.json().get("choices", [{}])[0].get("message", {})
+                content = msg.get("content") or ""
+                if _ARG_ANTARTIFACT in content:
+                    supports_artifact = True
+        except _PROBE_ERRORS:
+            pass
+        return supports_artifact
+
+    @classmethod
+    def _inspect_probe_tags(cls, session, api_base: str, model_name: str, headers: dict) -> str:
+        """Asks the model which XML tags it uses.
+
+        Args:
+            session: The shared requests session for the local server.
+            api_base (str): The server's chat completions URL.
+            model_name (str): The served model's id.
+            headers (dict): The request headers.
+
+        Returns:
+            str: The tags, comma separated, or "None detected".
+        """
+        # Check tags supported by the model by asking it directly
+        supported_tags = []
+        payload_tags: dict[str, Any] = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Analyze your own architecture and output the exact XML tags you use for tool "
+                    "calling, reasoning, and artifacts (e.g. <tool_call>, <think>, "
+                    "<answer>). Output ONLY a comma "
+                    "separated list of tags, with no other text.",
+                }
+            ],
+            "max_tokens": 50,
+            "temperature": 0,
+            "top_p": 0.01,
+            "seed": 42,
+            **_INSPECT_NO_THINKING,
+        }
+        try:
+            t_response = session.post(api_base, json=payload_tags, headers=headers, timeout=15)
+            if t_response.status_code == _HTTP_OK:
+                msg = t_response.json().get("choices", [{}])[0].get("message", {})
+                content = msg.get("content") or ""
+                import re
+
+                tags = re.findall(r"<\|?[a-zA-Z0-9_]+\|?>", content)
+                unique_tags = sorted(list(set(tags)))
+                supported_tags = unique_tags
+        except _PROBE_ERRORS:
+            pass
+        return ", ".join(supported_tags) if supported_tags else "None detected"
+
+    @classmethod
+    def _inspect_probe_streaming(
+        cls, session, api_base: str, model_name: str, headers: dict
+    ) -> dict[str, Any]:
+        """Checks streaming and measures time to first token and the decode rate.
+
+        Args:
+            session: The shared requests session for the local server.
+            api_base (str): The server's chat completions URL.
+            model_name (str): The served model's id.
+            headers (dict): The request headers.
+
+        Returns:
+            dict[str, Any]: "supports", "ttft" and "decode_tps".
+        """
+        #
+        # One stream yields all three, so the decode figure is free. The prompt is a coding
+        # task on purpose: on a speculative-decoding server the workload decides the
+        # number, because acceptance on code runs roughly twice what it does on prose, and
+        # a figure taken from "Say 'Test'" would describe nothing this project does.
+        # A dict the reader fills as it goes: an error part way through the stream keeps what it
+        # had measured by then.
+        stream: dict[str, Any] = {"supports": False, "ttft": 0.0, "decode_tps": 0.0}
+        payload_stream: dict[str, Any] = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Write a Python function that reverses a linked list. Code only.",
+                }
+            ],
+            "max_tokens": 128,
+            "temperature": 0,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        try:
+            start_stream = time.time()
+            # `with` rather than a bare call: this probe measures time-to-first-token and
+            # then breaks, deliberately abandoning the rest of the body. A streamed
+            # response whose body is never finished holds its connection open, and the
+            # server's FIN then leaves the socket in CLOSE-WAIT for the life of the
+            # process — `ragon-admin main-model inspect` was leaking one per probe.
+            with session.post(
+                api_base, json=payload_stream, headers=headers, timeout=15, stream=True
+            ) as s_response:
+                if s_response.status_code == _HTTP_OK:
+                    cls._inspect_read_stream(s_response, start_stream, stream)
+        except _PROBE_ERRORS:
+            pass
+        return stream
+
+    @classmethod
+    def _inspect_read_stream(cls, s_response, start_stream: float, stream: dict[str, Any]) -> None:
+        """Reads a streamed completion and records what it shows in `stream`.
+
+        Args:
+            s_response: The open streamed response.
+            start_stream (float): When the request was sent, from `time.time()`.
+            stream (dict[str, Any]): Updated in place: "supports", "ttft" and "decode_tps".
+        """
+        import json as _json
+
+        decode_tokens = 0
+        for line in s_response.iter_lines():
+            if not line:
+                continue
+            decoded_line = line.decode("utf-8")
+            if not decoded_line.startswith("data: "):
+                continue
+            if decoded_line == _ARG_DATA_DONE:
+                break
+            if not stream["supports"]:
+                stream["ttft"] = time.time() - start_stream
+                stream["supports"] = True
+            # The usage chunk arrives last and carries the authoritative token
+            # count, which beats counting deltas: with speculative decoding a
+            # single chunk can carry several accepted tokens.
+            try:
+                chunk = _json.loads(decoded_line[len("data: ") :])
+            except ValueError:
+                continue
+            usage = chunk.get("usage") or {}
+            if usage.get("completion_tokens"):
+                decode_tokens = int(usage["completion_tokens"])
+        elapsed = time.time() - start_stream
+        # Subtract TTFT so this reports decode rate rather than end-to-end
+        # throughput; prefill is a separate cost and already shown above.
+        if decode_tokens > 1 and elapsed > stream["ttft"]:
+            stream["decode_tps"] = (decode_tokens - 1) / (elapsed - stream["ttft"])
+
+    @classmethod
+    def _inspect_probe_moe(cls, model_name: str) -> str:
+        """Tells whether the model is MoE, from its Hugging Face config or else its name.
+
+        Args:
+            model_name (str): The served model's id.
+
+        Returns:
+            str: "Yes", "No", "Yes (heuristic)" or "Unknown".
+        """
+        import requests
+
+        # Check if model is MoE via HF config
+        unknown = "Unknown"
+        is_moe = unknown
+        try:
+            hf_resp = requests.get(
+                f"https://huggingface.co/{model_name}/raw/main/config.json", timeout=3
+            )
+            if hf_resp.status_code == _HTTP_OK:
+                model_cfg = hf_resp.json()
+                moe_keys = [
+                    "num_experts_per_tok",
+                    "num_local_experts",
+                    "moe_dim",
+                    "n_routed_experts",
+                    "num_experts",
+                ]
+                if (
+                    any(k in model_cfg for k in moe_keys)
+                    or _ARG_MOE in model_cfg.get("model_type", "").lower()
+                ):
+                    is_moe = "Yes"
+                else:
+                    is_moe = "No"
+        except _PROBE_ERRORS:
+            pass
+        # No config read (no network, or a 404 for an alias or a private repo): the name.
+        if is_moe == unknown:
+            name_lower = model_name.lower()
+            if any(
+                x in name_lower
+                for x in [
+                    "moe",
+                    "mixtral",
+                    "deepseek-coder-v2",
+                    "deepseek-v3",
+                    "deepseek-r1",
+                ]
+            ):
+                is_moe = "Yes (heuristic)"
+        return is_moe
+
+    @classmethod
+    def _inspect_probe_tools(cls, session, api_base: str, model_name: str, headers: dict) -> bool:
+        """Checks whether the model makes a tool call when offered a tool.
+
+        Args:
+            session: The shared requests session for the local server.
+            api_base (str): The server's chat completions URL.
+            model_name (str): The served model's id.
+            headers (dict): The request headers.
+
+        Returns:
+            bool: True if a tool call came back.
+        """
+        # Check Tool Calling Capability
+        supports_tools = False
+        payload_tool_test: dict[str, Any] = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": "What is the weather in Tokyo?"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get current weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"location": {"type": "string"}},
+                            "required": ["location"],
+                        },
+                    },
+                }
+            ],
+            "max_tokens": 150,
+            "temperature": 0,
+        }
+        try:
+            tool_resp = session.post(api_base, json=payload_tool_test, headers=headers, timeout=15)
+            if tool_resp.status_code == _HTTP_OK:
+                msg = tool_resp.json().get("choices", [{}])[0].get("message", {})
+                if msg.get("tool_calls"):
+                    supports_tools = True
+        except _PROBE_ERRORS:
+            pass
+        return supports_tools
+
+    @classmethod
+    def _inspect_probe_json(cls, session, api_base: str, model_name: str, headers: dict) -> bool:
+        """Checks whether the server accepts JSON mode.
+
+        Args:
+            session: The shared requests session for the local server.
+            api_base (str): The server's chat completions URL.
+            model_name (str): The served model's id.
+            headers (dict): The request headers.
+
+        Returns:
+            bool: True if the request succeeded.
+        """
+        # Check JSON Mode
+        supports_json = False
+        payload_json: dict[str, Any] = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Output a JSON object with key 'hello' and value 'world'.",
+                }
+            ],
+            "response_format": {"type": "json_object"},
+            "max_tokens": 50,
+            "temperature": 0,
+            **_INSPECT_NO_THINKING,
+        }
+        try:
+            json_resp = session.post(api_base, json=payload_json, headers=headers, timeout=5)
+            if json_resp.status_code == _HTTP_OK:
+                supports_json = True
+        except _PROBE_ERRORS:
+            pass
+        return supports_json
+
+    @classmethod
+    def _inspect_probe_kv_cache(cls, session, vllm_host: str) -> str:
+        """Reads the KV cache usage from the server's /metrics.
+
+        Args:
+            session: The shared requests session for the local server.
+            vllm_host (str): The model server's base URL.
+
+        Returns:
+            str: The usage as a percentage, or "Unknown".
+        """
+        # Check KV Cache metrics
+        kv_cache_usage = "Unknown"
+        try:
+            metrics_resp = session.get(f"{vllm_host}/metrics", timeout=2)
+            if metrics_resp.status_code == _HTTP_OK:
+                import re
+
+                match = re.search(
+                    r"vllm:kv_cache_usage_perc\{[^}]+\}\s+([0-9.]+)", metrics_resp.text
+                )
+                if match:
+                    val = float(match.group(1)) * 100
+                    kv_cache_usage = f"{val:.1f}%"
+        except _PROBE_ERRORS:
+            pass
+        return kv_cache_usage
+
+    @classmethod
+    def _inspect_probe_capabilities(
+        cls, session, api_base: str, vllm_host: str, model_name: str, headers: dict
+    ) -> dict[str, Any]:
+        """Runs every capability probe, in this order, one after the other.
+
+        Args:
+            session: The shared requests session for the local server.
+            api_base (str): The server's chat completions URL.
+            vllm_host (str): The model server's base URL.
+            model_name (str): The served model's id.
+            headers (dict): The request headers.
+
+        Returns:
+            dict[str, Any]: What each probe found, by probe.
+        """
+        target = (session, api_base, model_name, headers)
+        return {
+            "reasoning": cls._inspect_probe_reasoning(*target),
+            "roles": cls._inspect_probe_roles(*target),
+            "chatml": cls._inspect_probe_chatml(*target),
+            "artifact": cls._inspect_probe_artifact(*target),
+            "tags": cls._inspect_probe_tags(*target),
+            "stream": cls._inspect_probe_streaming(*target),
+            "moe": cls._inspect_probe_moe(model_name),
+            "tools": cls._inspect_probe_tools(*target),
+            "json": cls._inspect_probe_json(*target),
+            "kv_cache": cls._inspect_probe_kv_cache(session, vllm_host),
+        }
+
+    @classmethod
+    def _inspect_print_capabilities(cls, out_console, capabilities: dict[str, Any]) -> None:
+        """Prints what the capability probes found.
+
+        Args:
+            out_console: The console to print on.
+            capabilities (dict[str, Any]): The result of `_inspect_probe_capabilities`.
+        """
+        out_console.print(f"   [cyan]KV Cache:[/cyan]    {capabilities['kv_cache']}")
+        out_console.print(f"   [cyan]Architecture:[/cyan] {capabilities['moe']} (MoE)")
+        out_console.print(f"   [cyan]Roles:[/cyan]       {capabilities['roles']}")
+        out_console.print(f"   [cyan]Tags:[/cyan]        {capabilities['tags']}")
+        out_console.print(
+            f"   [cyan]Reasoning:[/cyan] {'Yes' if capabilities['reasoning'] else 'No'}"
+        )
+        out_console.print(
+            f"   [cyan]Tool Calls:[/cyan]  {'Yes' if capabilities['tools'] else 'No'}"
+        )
+        out_console.print(f"   [cyan]JSON Mode:[/cyan]   {'Yes' if capabilities['json'] else 'No'}")
+        out_console.print(
+            f"   [cyan]antArtifact:[/cyan] {'Yes' if capabilities['artifact'] else 'No'}"
+        )
+        out_console.print(
+            f"   [cyan]ChatML:[/cyan]      {'Yes' if capabilities['chatml'] else 'No'}"
+        )
+        stream = capabilities["stream"]
+        if stream["supports"]:
+            decode_tps = stream["decode_tps"]
+            decode_str = f", decode: {decode_tps:.1f} tok/s on code" if decode_tps else ""
+            out_console.print(
+                f"   [cyan]Streaming:[/cyan]   Yes (TTFT: {stream['ttft']:.3f}s{decode_str})"
+            )
+        else:
+            out_console.print("   [cyan]Streaming:[/cyan]   No")
+        out_console.print("")
+
+    @classmethod
+    def _inspect_gpu_names(cls) -> list[str]:
+        """Lists the GPUs `nvidia-smi` sees.
+
+        Returns:
+            list[str]: The GPU names, empty if it could not tell.
+        """
+        hardware_gpus = []
+        try:
+            import subprocess
+
+            smi_res = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if smi_res.returncode == 0:
+                hardware_gpus = [g.strip() for g in smi_res.stdout.strip().split("\n") if g.strip()]
+        except _PROBE_ERRORS:
+            pass
+        return hardware_gpus
+
+    @classmethod
+    def _inspect_sample_payload(cls, p_data: dict[str, Any], model_name: str) -> dict[str, Any]:
+        """Builds the streamed request for one sample prompt.
+
+        Args:
+            p_data (dict[str, Any]): The sample prompt.
+            model_name (str): The served model's id.
+
+        Returns:
+            dict[str, Any]: The request's JSON body.
+        """
+        prompt = p_data["prompt"]
+        sys_prompt = p_data.get("system")
+        chat_msgs: list[dict[str, Any]] = []
+        if sys_prompt:
+            chat_msgs.append({"role": "system", "content": sys_prompt})
+        chat_msgs.append({"role": "user", "content": prompt})
+
+        payload: dict[str, Any] = {
+            "model": model_name,
+            "messages": chat_msgs,
+            "max_tokens": 8192,
+            "temperature": 0.1 if _ARG_NO_THINKING not in prompt else 0,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if _ARG_KWARGS in p_data:
+            payload.update(p_data["kwargs"])
+        return payload
+
+    @classmethod
+    def _inspect_read_sample_stream(cls, response) -> tuple[str, str, int]:
+        """Reads a streamed sample completion to its end.
+
+        Args:
+            response: The open streamed response.
+
+        Returns:
+            tuple[str, str, int]: The content, the reasoning and the completion tokens.
+        """
+        import json
+
+        full_content = ""
+        full_reasoning = ""
+        comp_tokens = 0
+
+        for line in response.iter_lines():
+            if not line:
+                continue
+            decoded = line.decode("utf-8")
+            if not decoded.startswith("data: ") or decoded == _ARG_DATA_DONE:
+                continue
+            try:
+                chunk = json.loads(decoded[6:])
+                # Grab usage if present
+                if chunk.get("usage"):
+                    comp_tokens = chunk["usage"].get("completion_tokens", 0)
+
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                c = delta.get("content", "")
+                r = delta.get("reasoning_content", "") or delta.get("reasoning", "")
+
+                if r:
+                    full_reasoning += r
+                if c:
+                    full_content += c
+            except _PROBE_ERRORS:
+                pass
+        return full_content, full_reasoning, comp_tokens
+
+    @classmethod
+    def _inspect_acceptance(
+        cls, spec_before: dict[str, Any] | None, spec_after: dict[str, Any] | None
+    ) -> str:
+        """Formats the speculative acceptance across one request.
+
+        Args:
+            spec_before (dict[str, Any] | None): The counters before the request.
+            spec_after (dict[str, Any] | None): The counters after it.
+
+        Returns:
+            str: The acceptance rate and tau, or "N/A".
+        """
+        accept_str = "N/A"
+        if spec_before and spec_after:
+            d_drafts = spec_after["drafts"] - spec_before["drafts"]
+            d_drafted = spec_after["drafted"] - spec_before["drafted"]
+            d_accepted = spec_after["accepted"] - spec_before["accepted"]
+            if d_drafts > 0 and d_drafted > 0:
+                accept_str = (
+                    f"{100 * d_accepted / d_drafted:.1f}% / {1 + d_accepted / d_drafts:.2f}"
+                )
+        return accept_str
+
+    @classmethod
+    def _inspect_read_sample_row(
+        cls,
+        response,
+        prompt: str,
+        start_time: float,
+        spec_before: dict[str, Any] | None,
+        vllm_host: str,
+    ) -> tuple[str, ...]:
+        """Reads a successful sample completion into its table row.
+
+        Args:
+            response: The open streamed response.
+            prompt (str): The sample prompt.
+            start_time (float): When the request was sent, from `time.time()`.
+            spec_before (dict[str, Any] | None): The speculation counters before the request.
+            vllm_host (str): The model server's base URL.
+
+        Returns:
+            tuple[str, ...]: The row's cells.
+        """
+        from dreamference.cli.model_deep_inspector import ModelDeepInspector
+
+        full_content, full_reasoning, comp_tokens = cls._inspect_read_sample_stream(response)
+        latency = time.time() - start_time
+
+        display_text = ""
+        if full_reasoning:
+            display_text += f"<think>{full_reasoning}</think> "
+        display_text += full_content
+        if not display_text.strip():
+            display_text = "Empty response"
+
+        snippet = display_text.replace("\n", " ").strip()
+        tps = comp_tokens / latency if latency > 0 else 0
+        tps_str = f"{tps:.1f}" if comp_tokens > 0 else "N/A"
+
+        # The long-form prompts are the ones worth a whole-completion rate; the
+        # short ones finish too fast for it to mean anything. Matched
+        # case-insensitively so a prompt reworded in the list above does not
+        # silently drop out of this branch.
+        lowered = prompt.lower()
+        if (_ARG_RICHARD_FEYNMAN in lowered or _ARG_RED_BLACK_TREES in lowered) and latency > 0:
+            completions_per_sec = 1.0 / latency
+            tps_str = f"{tps_str} ({completions_per_sec:.2f} completions/s)"
+
+        spec_after = ModelDeepInspector._spec_counters(vllm_host)
+        accept_str = cls._inspect_acceptance(spec_before, spec_after)
+
+        return (prompt, "[green]OK[/green]", f"{latency:.2f}", tps_str, accept_str, snippet)
+
+    @classmethod
+    def _inspect_run_sample_prompts(
+        cls, out_console, session, vllm_host: str, model_name: str, headers: dict
+    ) -> None:
+        """Runs the long-form sample prompts and prints their table.
+
+        Args:
+            out_console: The console to print on.
+            session: The shared requests session for the local server.
+            vllm_host (str): The model server's base URL.
+            model_name (str): The served model's id.
+            headers (dict): The request headers.
+        """
+        import requests
+        from rich.table import Table
+
+        from dreamference.cli.model_deep_inspector import ModelDeepInspector
+
+        api_base = f"{vllm_host}/v1/chat/completions"
+
+        # Trimmed to the prompts whose value is in reading the output. The short probes
+        # ("Say 'Hello, World!'", "What is 2 + 2?") moved to the correctness canary above,
+        # which asserts a specific answer rather than printing something for a human to
+        # eyeball, and the instruction-hierarchy prompt was dropped as well. What remains
+        # are two long-form pairs: one prose, one code, each run with and without thinking.
+        # Both halves of each pair state enable_thinking explicitly. Leaving the plain
+        # variant silent used to mean "thinking on", but the server now defaults it off via
+        # --default-chat-template-kwargs, so silence made the pair render an identical
+        # prompt twice and the comparison measured nothing. Stating it on both sides keeps
+        # the contrast real regardless of what the server's default becomes.
+        sample_prompts: list[dict[str, Any]] = [
+            {
+                "prompt": "Write a Wikipedia article on Richard Feynman (Thinking).",
+                "kwargs": {"chat_template_kwargs": {"enable_thinking": True}},
+            },
+            {
+                "prompt": "Write a Wikipedia article on Richard Feynman (No Thinking).",
+                "kwargs": {"chat_template_kwargs": {"enable_thinking": False}},
+            },
+            {
+                "prompt": "Write a Python implementation of red-black trees (Thinking).",
+                "kwargs": {"chat_template_kwargs": {"enable_thinking": True}},
+            },
+            {
+                "prompt": "Write a Python implementation of red-black trees (No Thinking).",
+                "kwargs": {"chat_template_kwargs": {"enable_thinking": False}},
+            },
+        ]
+
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Prompt")
+        table.add_column("Status")
+        table.add_column("Latency (s)")
+        table.add_column("Tokens/sec")
+        table.add_column("Accept / tau")
+        table.add_column("Response snippet")
+
+        for p_data in sample_prompts:
+            prompt = p_data["prompt"]
+            payload = cls._inspect_sample_payload(p_data, model_name)
+            # Acceptance is only meaningful against a known workload, so it is measured
+            # as a delta around this one request rather than read as a running total.
+            spec_before = ModelDeepInspector._spec_counters(vllm_host)
+            start_time = time.time()
+            # Bound before the try so the finally below can close it unconditionally —
+            # if the post itself raises, the name would otherwise be undefined there.
+            response = None
+            try:
+                out_console.print(f"[bold green]▶ Running Prompt:[/bold green] {prompt}")
+                response = session.post(
+                    api_base, json=payload, headers=headers, timeout=15, stream=True
+                )
+                if response.status_code == _HTTP_OK:
+                    table.add_row(
+                        *cls._inspect_read_sample_row(
+                            response, prompt, start_time, spec_before, vllm_host
+                        )
+                    )
+                else:
+                    latency = time.time() - start_time
+                    out_console.print(f"[red]Error {response.status_code}[/red]\n")
+                    table.add_row(
+                        prompt,
+                        f"[red]Error {response.status_code}[/red]",
+                        f"{latency:.2f}",
+                        "N/A",
+                        "N/A",
+                        response.text.replace("\n", " ")[:50],
+                    )
+            except requests.exceptions.RequestException as e:
+                latency = time.time() - start_time
+                out_console.print(f"[red]Failed: {e}[/red]\n")
+                table.add_row(
+                    prompt,
+                    "[red]Failed[/red]",
+                    f"{latency:.2f}",
+                    "N/A",
+                    "N/A",
+                    str(e).replace("\n", " ")[:50],
+                )
+            finally:
+                # Streamed responses do not release their connection until the body is
+                # finished or the response is closed, and neither is guaranteed here: a
+                # non-200 skips the iteration entirely, and a mid-stream error leaves it
+                # part-read. Without this the sockets sit in CLOSE-WAIT until the process
+                # exits — harmless for one run, unbounded for anything that loops.
+                if response is not None:
+                    response.close()
+
+        out_console.print(table)
+
+    @classmethod
+    def _inspect_main_model(cls, args: argparse.Namespace, config: DreamferenceConfig) -> None:
+        """Runs `main-model inspect`: every probe, the report, then the sample prompts.
+
+        Args:
+            args (argparse.Namespace): The parsed command line.
+            config (DreamferenceConfig): The resolved configuration.
+        """
+        cls.display_header()
+        import requests
+        from rich.console import Console
+
+        out_console = Console()
+        out_console.print("[bold cyan]🔍 Inspecting Main Model[/bold cyan]")
+
+        # One session for every probe against the local server, rather than the module
+        # level requests.get/post helpers. Each of those builds a throwaway Session with
+        # its own connection pool and never closes it, so eleven probes left eleven
+        # sockets in CLOSE-WAIT for the life of the process — visible in `ss` after any
+        # `ragon-admin main-model inspect`. A shared session also reuses the one connection
+        # instead of reconnecting per probe. External hosts stay on the module API.
+        session = requests.Session()
+
+        vllm_host = config.vllm_host
+        api_base = f"{vllm_host}/v1/chat/completions"
+        api_key = "gb10-local-token"
+
+        model_name, max_model_len = cls._inspect_resolve_model(session, vllm_host, config.model)
+
+        if not model_name:
+            out_console.print(
+                "[bold red]❌ No main model set in configuration and server is unreachable.[/bold red]"
+            )
+            sys.exit(1)
+
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+        capabilities = cls._inspect_probe_capabilities(
+            session, api_base, vllm_host, model_name, headers
+        )
+
+        # What the engine actually chose, read from the container's own command line and
+        # the live /metrics — see _collect_engine_facts for why the old fixed checklist
+        # could not answer its own questions.
+        from urllib.parse import urlparse
+
+        port = urlparse(api_base).port or DEFAULT_MODEL_PORT
+        engine_facts = cls._collect_engine_facts(port, vllm_host, config.model)
+
+        out_console.print(f"   [cyan]Model:[/cyan]    {model_name}")
+        out_console.print(f"   [cyan]Endpoint:[/cyan] {api_base}")
+        out_console.print(f"   [cyan]Context:[/cyan]     {max_model_len} tokens")
+        cls._inspect_print_capabilities(out_console, capabilities)
+        hardware_gpus = cls._inspect_gpu_names()
+
+        gpu_count = len(hardware_gpus)
+        gpu_names = ", ".join(hardware_gpus) if gpu_count > 0 else "None detected"
+
+        out_console.print("[bold yellow]🖥️  Hardware Information[/bold yellow]")
+        out_console.print(f"   [cyan]GPU Count:[/cyan]       {gpu_count}")
+        out_console.print(f"   [cyan]GPU Models:[/cyan]      {gpu_names}")
+        out_console.print("")
+
+        out_console.print("[bold yellow]🚀 Engine Configuration[/bold yellow]")
+        width = max((len(k) for k in engine_facts), default=0)
+        for key, value in engine_facts.items():
+            out_console.print(f"   [cyan]{key + ':':<{width + 1}}[/cyan] {value}")
+        out_console.print("")
+
+        # Speed means nothing without evidence the output is still valid -- on SM121 a
+        # wrong kernel corrupts silently rather than erroring.
+        out_console.print("[bold yellow]🧪 Correctness Canary[/bold yellow]")
+        canary = cls._run_correctness_canary(session, api_base, model_name, headers)
+        c_width = max((len(k) for k in canary), default=0)
+        for key, value in canary.items():
+            out_console.print(f"   [cyan]{key + ':':<{c_width + 1}}[/cyan] {value}")
+
+        if getattr(args, "deep", False):
+            cls._render_deep_inspection(out_console, config, vllm_host, api_base, model_name)
+        out_console.print("")
+
+        cls._inspect_run_sample_prompts(out_console, session, vllm_host, model_name, headers)
+        session.close()
+        sys.exit(0)
+
+    @classmethod
     def run_cli(cls, argv: list[str] | None = None) -> None:
         """Main execution entrypoint for CLI command parsing and subcommand dispatching.
 
@@ -3195,658 +4140,7 @@ class DreamferenceCLIController:
                     )
                 sys.exit(0)
             elif args.main_model_command == _ARG_INSPECT:
-                cls.display_header()
-                import requests
-
-                out_console = Console()
-                out_console.print("[bold cyan]🔍 Inspecting Main Model[/bold cyan]")
-
-                # One session for every probe against the local server, rather than the module
-                # level requests.get/post helpers. Each of those builds a throwaway Session with
-                # its own connection pool and never closes it, so eleven probes left eleven
-                # sockets in CLOSE-WAIT for the life of the process — visible in `ss` after any
-                # `ragon-admin main-model inspect`. A shared session also reuses the one connection
-                # instead of reconnecting per probe. External hosts stay on the module API.
-                session = requests.Session()
-
-                # Capability probes ask a short factual question and grep the answer, so the
-                # model's thinking channel is not merely wasted budget — it silently breaks them.
-                # A reasoning model opens <think> immediately, the reasoning parser buffers that
-                # span until its closing tag, and a probe capped at 50-100 tokens truncates first.
-                # The parser then flushes nothing: both `content` and `reasoning_content` come back
-                # empty with finish_reason='length', and every probe reads that as "unsupported".
-                # Measured on Qwen3.5-122B: the antArtifact probe reported No at 100 and 400
-                # tokens, and the correct answer in 34 with thinking off. `Tags: None detected`
-                # was the same false negative at max_tokens 50.
-                #
-                # Unknown chat_template_kwargs are simply unused variables to a Jinja template, so
-                # this is inert on models that do not have a thinking channel to disable.
-                no_thinking = {"chat_template_kwargs": {"enable_thinking": False}}
-
-                vllm_host = config.vllm_host
-                api_base = f"{vllm_host}/v1/chat/completions"
-                api_key = "gb10-local-token"
-
-                # Try to get the running model from the server first
-                model_name = config.model
-                max_model_len = "Unknown"
-                try:
-                    models_response = session.get(f"{vllm_host}/v1/models", timeout=5)
-                    if models_response.status_code == _HTTP_OK:
-                        models_data = models_response.json()
-                        if models_data.get("data"):
-                            model_name = models_data["data"][0]["id"]
-                            max_model_len = str(
-                                models_data["data"][0].get("max_model_len", "Unknown")
-                            )
-                except requests.exceptions.RequestException:
-                    pass  # Fallback to config.model
-
-                if not model_name:
-                    out_console.print(
-                        "[bold red]❌ No main model set in configuration and server is unreachable.[/bold red]"
-                    )
-                    sys.exit(1)
-
-                headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
-                # Check reasoning capability
-                is_reasoning = False
-                payload_reasoning: dict[str, Any] = {
-                    "model": model_name,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": "How many Rs are in strawberry? Think step by step.",
-                        }
-                    ],
-                    "max_tokens": 50,
-                    "temperature": 0.1,
-                }
-                try:
-                    r_response = session.post(
-                        api_base, json=payload_reasoning, headers=headers, timeout=15
-                    )
-                    if r_response.status_code == _HTTP_OK:
-                        msg = r_response.json().get("choices", [{}])[0].get("message", {})
-                        content = msg.get("content") or ""
-                        if (
-                            _ARG_THINK in content
-                            or msg.get("reasoning_content")
-                            or msg.get("reasoning")
-                        ):
-                            is_reasoning = True
-                except _PROBE_ERRORS:
-                    pass
-
-                # Check supported roles
-                supported_roles = []
-                test_roles = {
-                    "system": [
-                        {"role": "system", "content": "You are a helpful assistant."},
-                        {"role": "user", "content": "Hi"},
-                    ],
-                    "user": [{"role": "user", "content": "Hi"}],
-                    "assistant": [
-                        {"role": "user", "content": "Hi"},
-                        {"role": "assistant", "content": "Hello"},
-                        {"role": "user", "content": "Next"},
-                    ],
-                    "tool": [
-                        {"role": "user", "content": "Do it"},
-                        {
-                            "role": "assistant",
-                            "content": "doing",
-                            "tool_calls": [
-                                {
-                                    "id": "call_1",
-                                    "type": "function",
-                                    "function": {"name": "test", "arguments": "{}"},
-                                }
-                            ],
-                        },
-                        {"role": "tool", "content": "done", "tool_call_id": "call_1"},
-                    ],
-                }
-                for role, msgs in test_roles.items():
-                    payload_role: dict[str, Any] = {
-                        "model": model_name,
-                        "messages": msgs,
-                        "max_tokens": 1,
-                    }
-                    try:
-                        resp = session.post(api_base, json=payload_role, headers=headers, timeout=5)
-                        if resp.status_code == _HTTP_OK:
-                            supported_roles.append(role)
-                    except _PROBE_ERRORS:
-                        pass
-                roles_str = ", ".join(supported_roles) if supported_roles else "Unknown"
-
-                # Check ChatML tag support
-                supports_chatml = False
-                payload_chatml: dict[str, Any] = {
-                    "model": model_name,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": "Print the ChatML tag '<|im_start|>' exactly as written.",
-                        }
-                    ],
-                    "max_tokens": 100,
-                    "temperature": 0,
-                    **no_thinking,
-                }
-                try:
-                    c_response = session.post(
-                        api_base, json=payload_chatml, headers=headers, timeout=15
-                    )
-                    if c_response.status_code == _HTTP_OK:
-                        msg = c_response.json().get("choices", [{}])[0].get("message", {})
-                        content = msg.get("content") or ""
-                        if _ARG_IM_START in content:
-                            supports_chatml = True
-                except _PROBE_ERRORS:
-                    pass
-
-                # Check antArtifact support
-                supports_artifact = False
-                payload_artifact: dict[str, Any] = {
-                    "model": model_name,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": "Create a one line python script and wrap it in <antArtifact> tags.",
-                        }
-                    ],
-                    "max_tokens": 100,
-                    "temperature": 0,
-                    **no_thinking,
-                }
-                try:
-                    a_response = session.post(
-                        api_base, json=payload_artifact, headers=headers, timeout=15
-                    )
-                    if a_response.status_code == _HTTP_OK:
-                        msg = a_response.json().get("choices", [{}])[0].get("message", {})
-                        content = msg.get("content") or ""
-                        if _ARG_ANTARTIFACT in content:
-                            supports_artifact = True
-                except _PROBE_ERRORS:
-                    pass
-
-                # Check tags supported by the model by asking it directly
-                supported_tags = []
-                payload_tags: dict[str, Any] = {
-                    "model": model_name,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": "Analyze your own architecture and output the exact XML tags you use for tool "
-                            "calling, reasoning, and artifacts (e.g. <tool_call>, <think>, "
-                            "<answer>). Output ONLY a comma "
-                            "separated list of tags, with no other text.",
-                        }
-                    ],
-                    "max_tokens": 50,
-                    "temperature": 0,
-                    "top_p": 0.01,
-                    "seed": 42,
-                    **no_thinking,
-                }
-                try:
-                    t_response = session.post(
-                        api_base, json=payload_tags, headers=headers, timeout=15
-                    )
-                    if t_response.status_code == _HTTP_OK:
-                        msg = t_response.json().get("choices", [{}])[0].get("message", {})
-                        content = msg.get("content") or ""
-                        import re
-
-                        tags = re.findall(r"<\|?[a-zA-Z0-9_]+\|?>", content)
-                        unique_tags = sorted(list(set(tags)))
-                        supported_tags = unique_tags
-                except _PROBE_ERRORS:
-                    pass
-                tags_str = ", ".join(supported_tags) if supported_tags else "None detected"
-                # Check Streaming, TTFT and decode rate.
-                #
-                # One stream yields all three, so the decode figure is free. The prompt is a coding
-                # task on purpose: on a speculative-decoding server the workload decides the
-                # number, because acceptance on code runs roughly twice what it does on prose, and
-                # a figure taken from "Say 'Test'" would describe nothing this project does.
-                supports_streaming = False
-                ttft = 0.0
-                decode_tps = 0.0
-                decode_tokens = 0
-                payload_stream: dict[str, Any] = {
-                    "model": model_name,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": "Write a Python function that reverses a linked list. Code only.",
-                        }
-                    ],
-                    "max_tokens": 128,
-                    "temperature": 0,
-                    "stream": True,
-                    "stream_options": {"include_usage": True},
-                }
-                try:
-                    start_stream = time.time()
-                    # `with` rather than a bare call: this probe measures time-to-first-token and
-                    # then breaks, deliberately abandoning the rest of the body. A streamed
-                    # response whose body is never finished holds its connection open, and the
-                    # server's FIN then leaves the socket in CLOSE-WAIT for the life of the
-                    # process — `ragon-admin main-model inspect` was leaking one per probe.
-                    with session.post(
-                        api_base, json=payload_stream, headers=headers, timeout=15, stream=True
-                    ) as s_response:
-                        if s_response.status_code == _HTTP_OK:
-                            import json as _json
-
-                            for line in s_response.iter_lines():
-                                if not line:
-                                    continue
-                                decoded_line = line.decode("utf-8")
-                                if not decoded_line.startswith("data: "):
-                                    continue
-                                if decoded_line == _ARG_DATA_DONE:
-                                    break
-                                if not supports_streaming:
-                                    ttft = time.time() - start_stream
-                                    supports_streaming = True
-                                # The usage chunk arrives last and carries the authoritative token
-                                # count, which beats counting deltas: with speculative decoding a
-                                # single chunk can carry several accepted tokens.
-                                try:
-                                    chunk = _json.loads(decoded_line[len("data: ") :])
-                                except ValueError:
-                                    continue
-                                usage = chunk.get("usage") or {}
-                                if usage.get("completion_tokens"):
-                                    decode_tokens = int(usage["completion_tokens"])
-                            elapsed = time.time() - start_stream
-                            # Subtract TTFT so this reports decode rate rather than end-to-end
-                            # throughput; prefill is a separate cost and already shown above.
-                            if decode_tokens > 1 and elapsed > ttft:
-                                decode_tps = (decode_tokens - 1) / (elapsed - ttft)
-                except _PROBE_ERRORS:
-                    pass
-
-                # Check if model is MoE via HF config
-                unknown = "Unknown"
-                is_moe = unknown
-                try:
-                    hf_resp = requests.get(
-                        f"https://huggingface.co/{model_name}/raw/main/config.json", timeout=3
-                    )
-                    if hf_resp.status_code == _HTTP_OK:
-                        model_cfg = hf_resp.json()
-                        moe_keys = [
-                            "num_experts_per_tok",
-                            "num_local_experts",
-                            "moe_dim",
-                            "n_routed_experts",
-                            "num_experts",
-                        ]
-                        if (
-                            any(k in model_cfg for k in moe_keys)
-                            or _ARG_MOE in model_cfg.get("model_type", "").lower()
-                        ):
-                            is_moe = "Yes"
-                        else:
-                            is_moe = "No"
-                except _PROBE_ERRORS:
-                    pass
-                # No config read (no network, or a 404 for an alias or a private repo): the name.
-                if is_moe == unknown:
-                    name_lower = model_name.lower()
-                    if any(
-                        x in name_lower
-                        for x in [
-                            "moe",
-                            "mixtral",
-                            "deepseek-coder-v2",
-                            "deepseek-v3",
-                            "deepseek-r1",
-                        ]
-                    ):
-                        is_moe = "Yes (heuristic)"
-
-                # Check Tool Calling Capability
-                supports_tools = False
-                payload_tool_test: dict[str, Any] = {
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": "What is the weather in Tokyo?"}],
-                    "tools": [
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "get_weather",
-                                "description": "Get current weather",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {"location": {"type": "string"}},
-                                    "required": ["location"],
-                                },
-                            },
-                        }
-                    ],
-                    "max_tokens": 150,
-                    "temperature": 0,
-                }
-                try:
-                    tool_resp = session.post(
-                        api_base, json=payload_tool_test, headers=headers, timeout=15
-                    )
-                    if tool_resp.status_code == _HTTP_OK:
-                        msg = tool_resp.json().get("choices", [{}])[0].get("message", {})
-                        if msg.get("tool_calls"):
-                            supports_tools = True
-                except _PROBE_ERRORS:
-                    pass
-
-                # Check JSON Mode
-                supports_json = False
-                payload_json: dict[str, Any] = {
-                    "model": model_name,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": "Output a JSON object with key 'hello' and value 'world'.",
-                        }
-                    ],
-                    "response_format": {"type": "json_object"},
-                    "max_tokens": 50,
-                    "temperature": 0,
-                    **no_thinking,
-                }
-                try:
-                    json_resp = session.post(
-                        api_base, json=payload_json, headers=headers, timeout=5
-                    )
-                    if json_resp.status_code == _HTTP_OK:
-                        supports_json = True
-                except _PROBE_ERRORS:
-                    pass
-
-                # Check KV Cache metrics
-                kv_cache_usage = "Unknown"
-                try:
-                    metrics_resp = session.get(f"{vllm_host}/metrics", timeout=2)
-                    if metrics_resp.status_code == _HTTP_OK:
-                        import re
-
-                        match = re.search(
-                            r"vllm:kv_cache_usage_perc\{[^}]+\}\s+([0-9.]+)", metrics_resp.text
-                        )
-                        if match:
-                            val = float(match.group(1)) * 100
-                            kv_cache_usage = f"{val:.1f}%"
-                except _PROBE_ERRORS:
-                    pass
-
-                # What the engine actually chose, read from the container's own command line and
-                # the live /metrics — see _collect_engine_facts for why the old fixed checklist
-                # could not answer its own questions.
-                from urllib.parse import urlparse
-
-                port = urlparse(api_base).port or DEFAULT_MODEL_PORT
-                engine_facts = cls._collect_engine_facts(port, vllm_host, config.model)
-
-                out_console.print(f"   [cyan]Model:[/cyan]    {model_name}")
-                out_console.print(f"   [cyan]Endpoint:[/cyan] {api_base}")
-                out_console.print(f"   [cyan]Context:[/cyan]     {max_model_len} tokens")
-                out_console.print(f"   [cyan]KV Cache:[/cyan]    {kv_cache_usage}")
-                out_console.print(f"   [cyan]Architecture:[/cyan] {is_moe} (MoE)")
-                out_console.print(f"   [cyan]Roles:[/cyan]       {roles_str}")
-                out_console.print(f"   [cyan]Tags:[/cyan]        {tags_str}")
-                out_console.print(f"   [cyan]Reasoning:[/cyan] {'Yes' if is_reasoning else 'No'}")
-                out_console.print(
-                    f"   [cyan]Tool Calls:[/cyan]  {'Yes' if supports_tools else 'No'}"
-                )
-                out_console.print(
-                    f"   [cyan]JSON Mode:[/cyan]   {'Yes' if supports_json else 'No'}"
-                )
-                out_console.print(
-                    f"   [cyan]antArtifact:[/cyan] {'Yes' if supports_artifact else 'No'}"
-                )
-                out_console.print(
-                    f"   [cyan]ChatML:[/cyan]      {'Yes' if supports_chatml else 'No'}"
-                )
-                if supports_streaming:
-                    decode_str = f", decode: {decode_tps:.1f} tok/s on code" if decode_tps else ""
-                    out_console.print(
-                        f"   [cyan]Streaming:[/cyan]   Yes (TTFT: {ttft:.3f}s{decode_str})"
-                    )
-                else:
-                    out_console.print("   [cyan]Streaming:[/cyan]   No")
-                out_console.print("")
-                hardware_gpus = []
-                try:
-                    import subprocess
-
-                    smi_res = subprocess.run(
-                        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                    )
-                    if smi_res.returncode == 0:
-                        hardware_gpus = [
-                            g.strip() for g in smi_res.stdout.strip().split("\n") if g.strip()
-                        ]
-                except _PROBE_ERRORS:
-                    pass
-
-                gpu_count = len(hardware_gpus)
-                gpu_names = ", ".join(hardware_gpus) if gpu_count > 0 else "None detected"
-
-                out_console.print("[bold yellow]🖥️  Hardware Information[/bold yellow]")
-                out_console.print(f"   [cyan]GPU Count:[/cyan]       {gpu_count}")
-                out_console.print(f"   [cyan]GPU Models:[/cyan]      {gpu_names}")
-                out_console.print("")
-
-                out_console.print("[bold yellow]🚀 Engine Configuration[/bold yellow]")
-                width = max((len(k) for k in engine_facts), default=0)
-                for key, value in engine_facts.items():
-                    out_console.print(f"   [cyan]{key + ':':<{width + 1}}[/cyan] {value}")
-                out_console.print("")
-
-                # Speed means nothing without evidence the output is still valid -- on SM121 a
-                # wrong kernel corrupts silently rather than erroring.
-                out_console.print("[bold yellow]🧪 Correctness Canary[/bold yellow]")
-                canary = cls._run_correctness_canary(session, api_base, model_name, headers)
-                c_width = max((len(k) for k in canary), default=0)
-                for key, value in canary.items():
-                    out_console.print(f"   [cyan]{key + ':':<{c_width + 1}}[/cyan] {value}")
-
-                if getattr(args, "deep", False):
-                    cls._render_deep_inspection(
-                        out_console, config, vllm_host, api_base, model_name
-                    )
-                out_console.print("")
-
-                # Trimmed to the prompts whose value is in reading the output. The short probes
-                # ("Say 'Hello, World!'", "What is 2 + 2?") moved to the correctness canary above,
-                # which asserts a specific answer rather than printing something for a human to
-                # eyeball, and the instruction-hierarchy prompt was dropped as well. What remains
-                # are two long-form pairs: one prose, one code, each run with and without thinking.
-                # Both halves of each pair state enable_thinking explicitly. Leaving the plain
-                # variant silent used to mean "thinking on", but the server now defaults it off via
-                # --default-chat-template-kwargs, so silence made the pair render an identical
-                # prompt twice and the comparison measured nothing. Stating it on both sides keeps
-                # the contrast real regardless of what the server's default becomes.
-                sample_prompts: list[dict[str, Any]] = [
-                    {
-                        "prompt": "Write a Wikipedia article on Richard Feynman (Thinking).",
-                        "kwargs": {"chat_template_kwargs": {"enable_thinking": True}},
-                    },
-                    {
-                        "prompt": "Write a Wikipedia article on Richard Feynman (No Thinking).",
-                        "kwargs": {"chat_template_kwargs": {"enable_thinking": False}},
-                    },
-                    {
-                        "prompt": "Write a Python implementation of red-black trees (Thinking).",
-                        "kwargs": {"chat_template_kwargs": {"enable_thinking": True}},
-                    },
-                    {
-                        "prompt": "Write a Python implementation of red-black trees (No Thinking).",
-                        "kwargs": {"chat_template_kwargs": {"enable_thinking": False}},
-                    },
-                ]
-
-                table = Table(show_header=True, header_style="bold magenta")
-                table.add_column("Prompt")
-                table.add_column("Status")
-                table.add_column("Latency (s)")
-                table.add_column("Tokens/sec")
-                table.add_column("Accept / tau")
-                table.add_column("Response snippet")
-
-                headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
-                for p_data in sample_prompts:
-                    prompt = p_data["prompt"]
-                    sys_prompt = p_data.get("system")
-                    chat_msgs: list[dict[str, Any]] = []
-                    if sys_prompt:
-                        chat_msgs.append({"role": "system", "content": sys_prompt})
-                    chat_msgs.append({"role": "user", "content": prompt})
-
-                    payload: dict[str, Any] = {
-                        "model": model_name,
-                        "messages": chat_msgs,
-                        "max_tokens": 8192,
-                        "temperature": 0.1 if _ARG_NO_THINKING not in prompt else 0,
-                        "stream": True,
-                        "stream_options": {"include_usage": True},
-                    }
-                    if _ARG_KWARGS in p_data:
-                        payload.update(p_data["kwargs"])
-                    # Acceptance is only meaningful against a known workload, so it is measured
-                    # as a delta around this one request rather than read as a running total.
-                    from dreamference.cli.model_deep_inspector import ModelDeepInspector
-
-                    spec_before = ModelDeepInspector._spec_counters(vllm_host)
-                    start_time = time.time()
-                    # Bound before the try so the finally below can close it unconditionally —
-                    # if the post itself raises, the name would otherwise be undefined there.
-                    response = None
-                    try:
-                        out_console.print(f"[bold green]▶ Running Prompt:[/bold green] {prompt}")
-                        response = session.post(
-                            api_base, json=payload, headers=headers, timeout=15, stream=True
-                        )
-                        if response.status_code == _HTTP_OK:
-                            import json
-
-                            full_content = ""
-                            full_reasoning = ""
-                            comp_tokens = 0
-
-                            for line in response.iter_lines():
-                                if line:
-                                    decoded = line.decode("utf-8")
-                                    if decoded.startswith("data: ") and decoded != _ARG_DATA_DONE:
-                                        try:
-                                            chunk = json.loads(decoded[6:])
-                                            # Grab usage if present
-                                            if chunk.get("usage"):
-                                                comp_tokens = chunk["usage"].get(
-                                                    "completion_tokens", 0
-                                                )
-
-                                            delta = chunk.get("choices", [{}])[0].get("delta", {})
-                                            c = delta.get("content", "")
-                                            r = delta.get("reasoning_content", "") or delta.get(
-                                                "reasoning", ""
-                                            )
-
-                                            if r:
-                                                full_reasoning += r
-                                            if c:
-                                                full_content += c
-                                        except _PROBE_ERRORS:
-                                            pass
-                            latency = time.time() - start_time
-
-                            display_text = ""
-                            if full_reasoning:
-                                display_text += f"<think>{full_reasoning}</think> "
-                            display_text += full_content
-                            if not display_text.strip():
-                                display_text = "Empty response"
-
-                            snippet = display_text.replace("\n", " ").strip()
-                            tps = comp_tokens / latency if latency > 0 else 0
-                            tps_str = f"{tps:.1f}" if comp_tokens > 0 else "N/A"
-
-                            # The long-form prompts are the ones worth a whole-completion rate; the
-                            # short ones finish too fast for it to mean anything. Matched
-                            # case-insensitively so a prompt reworded in the list above does not
-                            # silently drop out of this branch.
-                            lowered = prompt.lower()
-                            if (
-                                _ARG_RICHARD_FEYNMAN in lowered or _ARG_RED_BLACK_TREES in lowered
-                            ) and latency > 0:
-                                completions_per_sec = 1.0 / latency
-                                tps_str = f"{tps_str} ({completions_per_sec:.2f} completions/s)"
-
-                            accept_str = "N/A"
-                            spec_after = ModelDeepInspector._spec_counters(vllm_host)
-                            if spec_before and spec_after:
-                                d_drafts = spec_after["drafts"] - spec_before["drafts"]
-                                d_drafted = spec_after["drafted"] - spec_before["drafted"]
-                                d_accepted = spec_after["accepted"] - spec_before["accepted"]
-                                if d_drafts > 0 and d_drafted > 0:
-                                    accept_str = (
-                                        f"{100 * d_accepted / d_drafted:.1f}% / "
-                                        f"{1 + d_accepted / d_drafts:.2f}"
-                                    )
-
-                            table.add_row(
-                                prompt,
-                                "[green]OK[/green]",
-                                f"{latency:.2f}",
-                                tps_str,
-                                accept_str,
-                                snippet,
-                            )
-                        else:
-                            latency = time.time() - start_time
-                            out_console.print(f"[red]Error {response.status_code}[/red]\n")
-                            table.add_row(
-                                prompt,
-                                f"[red]Error {response.status_code}[/red]",
-                                f"{latency:.2f}",
-                                "N/A",
-                                "N/A",
-                                response.text.replace("\n", " ")[:50],
-                            )
-                    except requests.exceptions.RequestException as e:
-                        latency = time.time() - start_time
-                        out_console.print(f"[red]Failed: {e}[/red]\n")
-                        table.add_row(
-                            prompt,
-                            "[red]Failed[/red]",
-                            f"{latency:.2f}",
-                            "N/A",
-                            "N/A",
-                            str(e).replace("\n", " ")[:50],
-                        )
-                    finally:
-                        # Streamed responses do not release their connection until the body is
-                        # finished or the response is closed, and neither is guaranteed here: a
-                        # non-200 skips the iteration entirely, and a mid-stream error leaves it
-                        # part-read. Without this the sockets sit in CLOSE-WAIT until the process
-                        # exits — harmless for one run, unbounded for anything that loops.
-                        if response is not None:
-                            response.close()
-
-                out_console.print(table)
-                session.close()
-                sys.exit(0)
+                cls._inspect_main_model(args, config)
 
         elif args.command == _ARG_LOGS and getattr(args, "target", None) == _ARG_MCP:
             # Codex's TUI writes tracing into a SQLite database rather than a log file, which makes
