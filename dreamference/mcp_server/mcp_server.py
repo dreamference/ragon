@@ -21,6 +21,21 @@ global_ide_state: Final[IDEState] = IDEState()
 # for `ide_apply_diff` easily is one) used to raise out of the loop and end the server.
 LINE_LIMIT: Final[int] = 16 * 1024 * 1024
 
+# The JSON-RPC methods and tool names the server dispatches on.
+INITIALIZE: Final[str] = "initialize"
+PING: Final[str] = "ping"
+TOOLS_LIST: Final[str] = "tools/list"
+TOOLS_CALL: Final[str] = "tools/call"
+IDE_GET_ACTIVE_EDITOR: Final[str] = "ide_get_active_editor"
+IDE_GET_DIAGNOSTICS: Final[str] = "ide_get_diagnostics"
+IDE_GET_OPEN_FILES: Final[str] = "ide_get_open_files"
+IDE_OPEN_FILE: Final[str] = "ide_open_file"
+IDE_APPLY_DIFF: Final[str] = "ide_apply_diff"
+WEB_SEARCH: Final[str] = "web_search"
+WEB_FETCH: Final[str] = "web_fetch"
+WORKSPACE_SEARCH_CODE: Final[str] = "workspace_search_code"
+JSON_ID_KEY: Final[str] = "id"
+
 
 class MCPServer:
     """Model Context Protocol (MCP) Async Stdio Server handling JSON-RPC requests from IDE consumers."""
@@ -63,7 +78,7 @@ class MCPServer:
         msg_id: Any = request.get("id")
         params: dict[str, Any] = request.get("params") or {}
 
-        if method == "initialize":
+        if method == INITIALIZE:
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
@@ -74,17 +89,17 @@ class MCPServer:
                 },
             }
 
-        if method == "ping":
+        if method == PING:
             return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
 
-        if method == "tools/list":
+        if method == TOOLS_LIST:
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
                 "result": {"tools": MCPToolRegistry.get_tool_definitions()},
             }
 
-        if method == "tools/call":
+        if method == TOOLS_CALL:
             tool_name: str = str(params.get("name", ""))
             args: dict[str, Any] = params.get("arguments") or {}
             result_content = await self.execute_tool_async(tool_name, args)
@@ -106,7 +121,7 @@ class MCPServer:
         """Synchronous wrapper around handle_request_async for backward compatibility."""
         return asyncio.run(self.handle_request_async(request))
 
-    async def execute_tool_async(self, tool_name: str, args: dict[str, Any]) -> Any:
+    async def execute_tool_async(self, tool_name: str, args: dict[str, Any]) -> object:
         """Executes requested MCP tool asynchronously.
 
         Args:
@@ -116,7 +131,7 @@ class MCPServer:
         Returns:
             Any: Tool response data structure.
         """
-        if tool_name == "ide_get_active_editor":
+        if tool_name == IDE_GET_ACTIVE_EDITOR:
             return {
                 "active_file": global_ide_state.active_file or "No active file",
                 "line": global_ide_state.cursor_line,
@@ -124,33 +139,33 @@ class MCPServer:
                 "selection": global_ide_state.selection_text,
             }
 
-        if tool_name == "ide_get_diagnostics":
+        if tool_name == IDE_GET_DIAGNOSTICS:
             target_file: str | None = args.get("file_path")
             if target_file:
                 return [d for d in global_ide_state.diagnostics if d.get("file") == target_file]
             return global_ide_state.diagnostics
 
-        if tool_name == "ide_get_open_files":
+        if tool_name == IDE_GET_OPEN_FILES:
             return {"open_files": global_ide_state.open_files}
 
-        if tool_name == "ide_open_file":
+        if tool_name == IDE_OPEN_FILE:
             path: str = str(args.get("file_path", ""))
             line: int = int(args.get("line", 1))
             col: int = int(args.get("column", 1))
             global_ide_state.set_active_editor(path, line, col)
             return {"status": "success", "message": f"Opened {path} at line {line}:{col}"}
 
-        if tool_name == "ide_apply_diff":
-            path: str = str(args.get("file_path", ""))
+        if tool_name == IDE_APPLY_DIFF:
+            diff_path: str = str(args.get("file_path", ""))
             # Nothing here writes files, and no IDE companion applies the diff. This used to answer
             # "success", so an agent carried on as though an edit had landed that never did.
             return {
                 "status": "not_applied",
-                "message": f"No IDE companion is connected to apply diffs; {path} is unchanged. "
+                "message": f"No IDE companion is connected to apply diffs; {diff_path} is unchanged. "
                 "Edit the file directly.",
             }
 
-        if tool_name == "web_search":
+        if tool_name == WEB_SEARCH:
             # requests is blocking, so it goes to a worker thread like the code search below;
             # otherwise a slow site stalls the whole stdio loop and the IDE tools with it.
             from dreamference.mcp_server.web_tools import WebTools
@@ -164,14 +179,14 @@ class MCPServer:
                 str(args.get("time_range") or ""),
             )
 
-        if tool_name == "web_fetch":
+        if tool_name == WEB_FETCH:
             from dreamference.mcp_server.web_tools import WebTools
 
             return await asyncio.to_thread(
                 WebTools.fetch, str(args.get("url", "")), int(args.get("max_chars", 20000))
             )
 
-        if tool_name == "workspace_search_code":
+        if tool_name == WORKSPACE_SEARCH_CODE:
             query: str = str(args.get("query", ""))
             top_k: int = int(args.get("top_k", 5))
 
@@ -191,7 +206,7 @@ class MCPServer:
 
         return {"error": f"Tool '{tool_name}' not implemented"}
 
-    def execute_tool(self, tool_name: str, args: dict[str, Any]) -> Any:
+    def execute_tool(self, tool_name: str, args: dict[str, Any]) -> object:
         """Synchronous wrapper around execute_tool_async."""
         return asyncio.run(self.execute_tool_async(tool_name, args))
 
@@ -234,7 +249,7 @@ class MCPServer:
                 continue
             # A notification (no id) must never be answered: `notifications/initialized` used to
             # get a -32601 error back, which strict clients treat as a protocol violation.
-            is_notification = isinstance(req, dict) and "id" not in req
+            is_notification = isinstance(req, dict) and JSON_ID_KEY not in req
             try:
                 resp = await self.handle_request_async(req)
             except Exception as e:

@@ -59,6 +59,22 @@ FD_LABEL: Final[re.Pattern] = re.compile(r"^(\d+)(?:<([A-Za-z0-9]+):\[(.*)\]>)?$
 # The remote end of a connected socket's label: `->127.0.0.53:53` or `->[::1]:53`.
 LABEL_PEER: Final[re.Pattern] = re.compile(r"->\[?([0-9A-Fa-f:.]+?)\]?:(\d+)$")
 
+# Syscall and program names, quote and escape characters, and the DNS wire sizes the parser compares against.
+SYSCALL_EXECVE: Final[str] = "execve"
+SYSCALL_CONNECT: Final[str] = "connect"
+PROGRAM_GIT: Final[str] = "git"
+GIT_SUBCOMMAND_LS_REMOTE: Final[str] = "ls-remote"
+GIT_FLAG_GET_URL: Final[str] = "--get-url"
+COLON: Final[str] = ":"
+DOUBLE_QUOTE: Final[str] = '"'
+BACKSLASH: Final[str] = "\\"
+OCTAL_DIGITS: Final[str] = "01234567"
+HEX_ESCAPE_MARK: Final[str] = "x"
+DNS_HEADER_LENGTH: Final[int] = 14
+DNS_RESPONSE_FLAG: Final[int] = 0x80
+DNS_ONE_QUESTION: Final[bytes] = b"\x00\x01"
+DNS_MAX_LABEL_LENGTH: Final[int] = 63
+
 # The sockets of avahi and systemd-resolved: nss-mdns and nss-resolve ask them for a name, and
 # they resolve it on the network, so the lookup is as much egress as a DNS packet.
 LOCAL_RESOLVER_SOCKETS: Final[frozenset] = frozenset(
@@ -142,9 +158,9 @@ class StraceParser:
             trace.lines += 1
             pid = match.group(1) or match.group(2) or ""
             syscall, rest = match.group(3), match.group(4)
-            if syscall == "execve" and rest.rstrip().endswith(UNFINISHED):
+            if syscall == SYSCALL_EXECVE and rest.rstrip().endswith(UNFINISHED):
                 pending_execve[pid] = rest
-            elif syscall == "execve":
+            elif syscall == SYSCALL_EXECVE:
                 cls._read_execve(rest, trace)
             elif syscall == SENDMMSG and rest.rstrip().endswith(UNFINISHED):
                 pending_sendmmsg[pid] = rest.rstrip()[: -len(UNFINISHED)]
@@ -207,9 +223,9 @@ class StraceParser:
             target = cls.format_destination(address, port)
             if port == DNS_PORT:
                 trace.dns_servers[target] = trace.dns_servers.get(target, 0) + 1
-                if syscall == "connect":
+                if syscall == SYSCALL_CONNECT:
                     resolver_sockets[(pid, fd)] = target
-            elif syscall == "connect" and udp and inner.isdigit():
+            elif syscall == SYSCALL_CONNECT and udp and inner.isdigit():
                 # A route lookup: nothing is sent until a payload follows on this socket.
                 trace.route_lookups[target] = trace.route_lookups.get(target, 0) + 1
                 udp_routes[inner] = target
@@ -217,7 +233,7 @@ class StraceParser:
             else:
                 trace.destinations[target] = trace.destinations.get(target, 0) + 1
                 resolver_sockets.pop((pid, fd), None)
-        elif syscall == "connect":
+        elif syscall == SYSCALL_CONNECT:
             # A unix socket, netlink or anything else: this fd is not a resolver's any more.
             resolver_sockets.pop((pid, fd), None)
         elif udp:
@@ -237,7 +253,7 @@ class StraceParser:
                 "utf-8", "replace"
             )
             trace.unix_sockets[path] = trace.unix_sockets.get(path, 0) + 1
-        if syscall == "connect":
+        if syscall == SYSCALL_CONNECT:
             return
         # A payload sent to a resolver, named in the call or connected earlier, is a DNS query.
         to_resolver = to_resolver or (pid, fd) in resolver_sockets
@@ -306,12 +322,12 @@ class StraceParser:
         program, argv = strings[0], strings[1:]
         name = os.path.basename(program)
         trace.processes[name] = trace.processes.get(name, 0) + 1
-        if name == "git" or name.startswith("git-"):
+        if name == PROGRAM_GIT or name.startswith("git-"):
             subcommand = (
                 name[len("git-") :] if name.startswith("git-") else cls.git_subcommand(argv[1:])
             )
             # `git ls-remote --get-url` only prints a URL after rewriting it; it contacts nothing.
-            if subcommand == "ls-remote" and "--get-url" in argv:
+            if subcommand == GIT_SUBCOMMAND_LS_REMOTE and GIT_FLAG_GET_URL in argv:
                 return
             if subcommand in NETWORKED_GIT:
                 trace.networked_git.append(" ".join([name, *argv[1:]])[:300])
@@ -368,7 +384,7 @@ class StraceParser:
         Returns:
             str: `127.0.0.1:8000` or `[::1]:8000`.
         """
-        return f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
+        return f"[{address}]:{port}" if COLON in address else f"{address}:{port}"
 
     @classmethod
     def is_loopback(cls, address: str) -> bool:
@@ -403,12 +419,12 @@ class StraceParser:
         strings: list[bytes] = []
         index = 0
         while index < len(text):
-            if text[index] != '"':
+            if text[index] != DOUBLE_QUOTE:
                 index += 1
                 continue
             end = index + 1
-            while end < len(text) and text[end] != '"':
-                end += 2 if text[end] == "\\" else 1
+            while end < len(text) and text[end] != DOUBLE_QUOTE:
+                end += 2 if text[end] == BACKSLASH else 1
             strings.append(cls.unescape(text[index + 1 : end]))
             index = end + 1
         return strings
@@ -427,19 +443,22 @@ class StraceParser:
         index = 0
         while index < len(literal):
             char = literal[index]
-            if char != "\\" or index + 1 >= len(literal):
+            if char != BACKSLASH or index + 1 >= len(literal):
                 out.extend(char.encode("utf-8"))
                 index += 1
                 continue
             following = literal[index + 1]
-            if following in "01234567":
+            if following in OCTAL_DIGITS:
                 end = index + 1
-                while end < len(literal) and end < index + 4 and literal[end] in "01234567":
+                while end < len(literal) and end < index + 4 and literal[end] in OCTAL_DIGITS:
                     end += 1
                 out.append(int(literal[index + 1 : end], 8) & 0xFF)
                 index = end
-            elif following == "x" and re.match(r"[0-9a-fA-F]{1,2}", literal[index + 2 : index + 4]):
-                digits = re.match(r"[0-9a-fA-F]{1,2}", literal[index + 2 : index + 4]).group(0)
+            elif following == HEX_ESCAPE_MARK and re.match(
+                r"[0-9a-fA-F]{1,2}", literal[index + 2 : index + 4]
+            ):
+                hex_match = re.match(r"[0-9a-fA-F]{1,2}", literal[index + 2 : index + 4])
+                digits = hex_match.group(0) if hex_match else ""
                 out.append(int(digits, 16))
                 index += 2 + len(digits)
             else:
@@ -459,7 +478,11 @@ class StraceParser:
             Optional[str]: The name, or None when the payload is not a DNS query.
         """
         # Header: id(2) flags(2) qdcount(2) ancount(2) nscount(2) arcount(2); QR is the top bit.
-        if len(payload) < 14 or payload[2] & 0x80 or payload[4:6] != b"\x00\x01":
+        if (
+            len(payload) < DNS_HEADER_LENGTH
+            or payload[2] & DNS_RESPONSE_FLAG
+            or payload[4:6] != DNS_ONE_QUESTION
+        ):
             return None
         labels: list[str] = []
         index = 12
@@ -467,7 +490,7 @@ class StraceParser:
             length = payload[index]
             if length == 0:
                 break
-            if length > 63 or index + 1 + length > len(payload):
+            if length > DNS_MAX_LABEL_LENGTH or index + 1 + length > len(payload):
                 return None
             label = payload[index + 1 : index + 1 + length]
             if not re.fullmatch(rb"[A-Za-z0-9_\-]+", label):
