@@ -426,30 +426,6 @@ QWEN38_RAGON_ENGINE_FEATURES: Final[tuple[str, ...]] = (
 # scripts/pin_ragon_serve_image.py adds it with the commit and digest of the build that does.
 ENGINE_FEATURE_ADAPTERS: Final[str] = "lora-adapters"
 
-# The feature an engine build lists once it holds several resident drafters and routes a request to one
-# by workload (ragon-engine MULTI_DRAFTER §5.2). Also left out of the tuple above: the pinned image has
-# no `--drafter`, so a recipe's `drafters` and `drafter_routes` change nothing until the pin script adds it.
-ENGINE_FEATURE_MULTI_DRAFTER: Final[str] = "multi-drafter"
-
-# A SHA-256 pin is this many lowercase hex digits.
-SHA256_HEX_LENGTH: Final[int] = 64
-HEX_DIGITS: Final[frozenset[str]] = frozenset("0123456789abcdef")
-
-# The routing table's entry for every workload it does not name.
-DRAFTER_ROUTE_DEFAULT: Final[str] = "*"
-
-# The workload each caller declares (`ragon_workload`) and the drafter the recipe sends it to unless the
-# recipe's own table says otherwise. "*" is every workload the table does not name. The table is data
-# in the recipe, not code in the launcher.
-DEFAULT_DRAFTER_ROUTES: Final[dict[str, str]] = {
-    "work": "work",
-    "swe-bench": "work",
-    "night": "work",
-    "ask": "ask",
-    "phone": "ask",
-    DRAFTER_ROUTE_DEFAULT: "general",
-}
-
 # The sessions and the batch the recipe asks of an engine with the "kv-pages" feature: four
 # conversations at once (the owner's bar; BATCHING §5.3 P4d).
 # `--sessions` and `--batch` are parsed by every ragon-serve, but without the
@@ -559,11 +535,6 @@ QWEN38_RAGON_RECIPE: Final[dict[str, Any]] = {
     # whose `engine_features` has "kv-pages" (and "paging-switch" for `--no-kv-pages`, "fair-pairing"
     # for `--fair-pairing`), so they take effect when the pin moves to the candidate engine.
     "fair_pairing": False,
-    # Several drafters (MULTI_DRAFTER §5.2). `drafters` is empty until a drafter is published: each entry is
-    # `id`, `repo` (its matrix entry), `revision`, `url`, `sha256`, `size_gb`, `engine`, `feature`. Both fields
-    # act only on an engine whose `engine_features` has "multi-drafter"; without it the launch is unchanged.
-    "drafters": [],
-    "drafter_routes": dict(DEFAULT_DRAFTER_ROUTES),
 }
 
 
@@ -1074,88 +1045,6 @@ class ModelMatrixRegistry:
             for asset in overrides.get("engine_assets") or []
             if asset.get("engine") == engine and asset.get("feature") in features
         ]
-
-    @classmethod
-    def get_drafters(cls, model_key: str, engine: str | None = None) -> list[dict[str, Any]]:
-        """The resident drafters a model's recipe for an engine asks for, checked.
-
-        Args:
-            model_key (str): Model alias, HF repo ID, or display name.
-            engine (str | None): The engine whose recipe is asked; None for the model's default.
-
-        Returns:
-            list[dict[str, Any]]: The drafters, each with `id`, `repo`, `revision`, `url` and `sha256`; empty
-            unless the engine is the entry's own and the recipe's `engine_features` has "multi-drafter".
-
-        Raises:
-            ValueError: A listed drafter has an empty or malformed pin, ids repeat, or the routes name a
-                drafter that is not listed or lack the "*" entry.
-        """
-        overrides = cls.get_launch_overrides(model_key, engine)
-        return cls.drafters_of(overrides)
-
-    @classmethod
-    def drafters_of(cls, recipe: dict[str, Any]) -> list[dict[str, Any]]:
-        """Reads the drafters out of a recipe; see `get_drafters`.
-
-        Args:
-            recipe (dict[str, Any]): A launch recipe (`launch_overrides` or an `engine_recipes` entry).
-
-        Returns:
-            list[dict[str, Any]]: The checked drafters, empty without the "multi-drafter" feature.
-
-        Raises:
-            ValueError: As `get_drafters`.
-        """
-        features = set(recipe.get("engine_features") or [])
-        engine = cls.engine_of(recipe)
-        drafters = [
-            dict(d)
-            for d in recipe.get("drafters") or []
-            if d.get("engine", engine) == engine
-            and d.get("feature", ENGINE_FEATURE_MULTI_DRAFTER) in features
-        ]
-        if ENGINE_FEATURE_MULTI_DRAFTER not in features or not drafters:
-            return []
-        seen: set[str] = set()
-        for drafter in drafters:
-            name = str(drafter.get("id") or "")
-            if not name or name in seen:
-                raise ValueError(f"drafter id {name!r} is empty or listed twice")
-            seen.add(name)
-            digest = str(drafter.get("sha256") or "")
-            if len(digest) != SHA256_HEX_LENGTH or not set(digest) <= HEX_DIGITS:
-                raise ValueError(f"drafter {name!r} has no valid SHA-256 pin")
-            if not drafter.get("url") or not drafter.get("repo"):
-                raise ValueError(f"drafter {name!r} names no release asset or matrix entry")
-        routes = recipe.get("drafter_routes") or {}
-        if DRAFTER_ROUTE_DEFAULT not in routes:
-            raise ValueError("drafter_routes has no '*' entry")
-        for workload, target in routes.items():
-            if target not in seen:
-                raise ValueError(
-                    f"drafter_routes sends {workload!r} to {target!r}, which is not listed"
-                )
-        return drafters
-
-    @classmethod
-    def get_drafter_routes(cls, model_key: str, engine: str | None = None) -> dict[str, str]:
-        """The workload-to-drafter table of a recipe, empty when it holds no resident drafters.
-
-        Args:
-            model_key (str): Model alias, HF repo ID, or display name.
-            engine (str | None): The engine whose recipe is asked; None for the model's default.
-
-        Returns:
-            dict[str, str]: Workload to drafter id, "*" for the rest.
-
-        Raises:
-            ValueError: As `get_drafters`.
-        """
-        overrides = cls.get_launch_overrides(model_key, engine)
-        if not cls.drafters_of(overrides):
-            return {}
-        return dict(overrides.get("drafter_routes") or {})
 
     @classmethod
     def get_release_source(cls, model_key: str | None) -> dict[str, Any] | None:

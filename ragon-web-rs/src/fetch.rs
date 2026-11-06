@@ -261,14 +261,7 @@ pub fn page(
     let decoded = decode(body, &content_type, is_html);
     let (title, text) = if is_html {
         let page = html_to_text(&decoded);
-        let text = if page.needs_javascript {
-            format!("{}\n\n{}", crate::html_text::JAVASCRIPT_NOTE, page.text)
-                .trim_end()
-                .to_string()
-        } else {
-            page.text
-        };
-        (page.title, text)
+        (page.title, page.text)
     } else {
         // Plain text, JSON, source files: handed back as they are rather than run through a markup
         // parser.
@@ -333,8 +326,6 @@ pub fn decode(body: &[u8], content_type: &str, is_html: bool) -> String {
 /// The text `ragon-fetch` prints for a page.
 pub fn render_text(page: &FetchedPage, max_chars: i64) -> String {
     let mut out = String::new();
-    // The line to cite: the address the text came from after redirects, first and always there.
-    out.push_str(&format!("Source: {}\n\n", page.final_url));
     if !page.title.is_empty() {
         out.push_str(&format!("# {}\n\n", page.title));
     }
@@ -674,22 +665,8 @@ mod tests {
         };
         assert_eq!(
             render_text(&page, 4),
-            "Source: f\n\n# T\n\nBody\n\n[truncated at 4 chars]\n"
+            "# T\n\nBody\n\n[truncated at 4 chars]\n"
         );
-    }
-
-    #[test]
-    fn every_page_starts_with_the_source_line_after_redirects() {
-        let page = FetchedPage {
-            url: "http://a".into(),
-            final_url: "https://a/final".into(),
-            status: 200,
-            content_type: "text/plain".into(),
-            title: String::new(),
-            text: "Body".into(),
-            truncated: false,
-        };
-        assert_eq!(render_text(&page, 100), "Source: https://a/final\n\nBody\n");
     }
 
     #[test]

@@ -244,7 +244,7 @@ class WebTools:
             max_chars (int): Maximum characters of text to return; clamped to MAX_CHARS_CEILING.
 
         Returns:
-            Dict[str, Any]: {'url', 'final_url', 'source', 'status', 'title', 'text', 'truncated'} on
+            Dict[str, Any]: {'url', 'final_url', 'status', 'title', 'text', 'truncated'} on
                 success, or {'error': ...} on failure. Errors are returned rather than raised so
                 the agent sees what went wrong and can try a different source. At air-gap level
                 `on` the error is AIRGAPPED_ON_MESSAGE and no request is made.
@@ -294,8 +294,6 @@ class WebTools:
         return {
             "url": url,
             "final_url": response.url,
-            # The line to cite, the same address `ragon-fetch` prints as `Source:`.
-            "source": response.url,
             "status": response.status_code,
             "content_type": content_type,
             "title": title,

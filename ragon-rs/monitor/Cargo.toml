@@ -23,6 +23,8 @@ path = "src/main.rs"
 [dependencies]
 # Host-side git with the program-running config keys turned off.
 ragon-safegit = { path = "../safegit" }
+# The launcher's home directory: HOME, else USERPROFILE, which is all Windows sets.
+ragon-node-locator = { path = "../node-locator" }
 chrono = "0.4.43"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

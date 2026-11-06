@@ -338,10 +338,7 @@ fn an_empty_sandbox_variable_leaves_the_network_on() {
         &[&format!("{}/page", server.base)],
         &[("CODEX_SANDBOX_NETWORK_DISABLED", "")],
     );
-    assert_eq!(
-        stdout(&output),
-        format!("Source: {}/page\n\npage\n", server.base)
-    );
+    assert_eq!(stdout(&output), "page\n");
     assert_eq!(server.requests().len(), 1);
 }
 
@@ -511,10 +508,7 @@ fn fetch_prints_title_and_text_and_follows_redirects() {
     let url = format!("{}/moved", server.base);
     let output = fetch(&[&url], &[]);
     assert!(output.status.success());
-    assert_eq!(
-        stdout(&output),
-        format!("Source: {}/page\n\n# Café\n\nCafé\nHello\n", server.base)
-    );
+    assert_eq!(stdout(&output), "# Café\n\nCafé\nHello\n");
     let printed: serde_json::Value =
         serde_json::from_slice(&fetch(&[&url, "--json"], &[]).stdout).unwrap();
     assert_eq!(printed["final_url"], format!("{}/page", server.base));
@@ -590,7 +584,10 @@ fn a_share_link_walk_stops_at_the_google_search_without_requesting_it() {
     );
     let page = share_links::page("https://share.google/AbC123", final_url, status, &target);
     let printed = ragon_web::fetch::render_text(&page, 8000);
-    assert!(printed.starts_with("Source: "), "{printed}");
+    assert!(
+        printed.starts_with("# Some Synthetic Song\n\n"),
+        "{printed}"
+    );
     assert!(
         printed.contains("ragon-search \"Some Synthetic Song\""),
         "{printed}"
@@ -921,10 +918,7 @@ fn fetch_uses_the_environment_proxy_except_for_no_proxy_hosts() {
         &["http://example.invalid/page"],
         &[("http_proxy", &proxy.base)],
     );
-    assert_eq!(
-        stdout(&output),
-        "Source: http://example.invalid/page\n\nvia proxy\n"
-    );
+    assert_eq!(stdout(&output), "via proxy\n");
     assert_eq!(
         proxy.requests()[0],
         "GET http://example.invalid/page HTTP/1.1"
@@ -992,7 +986,7 @@ fn read_searches_then_reads_the_top_pages_and_wraps_them() {
         "{text}"
     );
     assert!(
-        text.contains("# Docs\n\nDocs\nThe answer is 42.\n</untrusted>"),
+        text.contains("# Docs\n\nDocs\nmenu\nThe answer is 42.\n</untrusted>"),
         "{text}"
     );
     assert!(
@@ -1185,9 +1179,6 @@ fn a_page_that_redirects_to_a_google_search_is_read_there() {
         &["http://example.invalid/page"],
         &[("http_proxy", &proxy.base)],
     );
-    assert_eq!(
-        stdout(&output),
-        "Source: http://www.google.com/search?q=lisbon+tram\n\nthe search page itself\n"
-    );
+    assert_eq!(stdout(&output), "the search page itself\n");
     assert_eq!(proxy.requests().len(), 2);
 }

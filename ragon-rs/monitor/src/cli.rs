@@ -81,8 +81,8 @@ pub fn run(args: &[String], exec_prefix: &[String]) -> i32 {
         eprintln!("{reason}\n\n{USAGE}");
         return 2;
     }
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        eprintln!("ragon monitor: HOME is not set");
+    let Some(home) = ragon_node_locator::home_dir() else {
+        eprintln!("ragon monitor: neither HOME nor USERPROFILE is set");
         return 2;
     };
     let config = Config::load(&home, &home.join(".config/dreamference/config.toml"));
