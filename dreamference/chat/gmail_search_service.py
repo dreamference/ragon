@@ -47,11 +47,13 @@ import base64
 import contextlib
 import datetime
 import email
+import email.errors
 import email.header
 import email.utils
 import hashlib
 import hmac
 import html
+import http.client
 import imaplib
 import json
 import os
@@ -256,6 +258,31 @@ PAGE_STYLE: Final[str] = (
 )
 
 
+# What talking to Google can fail with: no network or an error status (OSError), a reply cut short
+# (HTTPException, not an OSError), and a reply that is not JSON or lacks what is read from it.
+GOOGLE_CALL_ERRORS: Final[tuple[type[Exception], ...]] = (
+    OSError,
+    http.client.HTTPException,
+    ValueError,
+    LookupError,
+    TypeError,
+    AttributeError,
+)
+# What reading a mailbox can fail with, beyond the connection: the headers and bodies are written by
+# whoever sent the mail, so an unknown charset (LookupError), a broken encoded word (MessageError)
+# or MIME nested past the parser's depth (RecursionError, a RuntimeError) must not drop the request.
+MAILBOX_ERRORS: Final[tuple[type[Exception], ...]] = (
+    imaplib.IMAP4.error,
+    OSError,
+    email.errors.MessageError,
+    ValueError,
+    LookupError,
+    TypeError,
+    AttributeError,
+    RuntimeError,
+)
+
+
 class GmailSearchService:
     """Serves Gmail search and message retrieval over HTTP for Ragon's apps."""
 
@@ -394,67 +421,113 @@ class GmailSearchService:
 
     @classmethod
     def credentials(cls, directory: str | None = None) -> list[dict[str, str]]:
-        """Returns all valid valid accounts."""
-        import json
-        import time
-        import urllib.parse
-        import urllib.request
-
+        """Returns all valid accounts."""
         stored = cls._raw(directory)
         valid = []
         for address, acc in stored.get("accounts", {}).items():
             sealed = acc.get("access_token")
             if not sealed:
                 continue
-
             if float(acc.get("expires_at", 0)) - time.time() < TOKEN_REFRESH_MARGIN_SECONDS:
-                sealed_refresh = acc.get("refresh_token")
-                if not sealed_refresh:
-                    continue
-                refresh = cls._unseal(sealed_refresh, directory)
-                if not refresh:
-                    continue
-
-                req = urllib.request.Request(
-                    "https://oauth2.googleapis.com/token",
-                    data=urllib.parse.urlencode(
-                        {
-                            "client_id": GOOGLE_OAUTH_CLIENT_ID,
-                            "client_secret": GOOGLE_OAUTH_CLIENT_SECRET,
-                            "refresh_token": refresh,
-                            "grant_type": "refresh_token",
-                        }
-                    ).encode("utf-8"),
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                )
-                try:
-                    with urllib.request.urlopen(req, timeout=10) as res:
-                        data = json.load(res)
-                        if KEY_ACCESS_TOKEN in data:
-                            # Google may rotate the refresh token; the old one then stops working.
-                            cls.save_token(
-                                address,
-                                data["access_token"],
-                                data.get("expires_in", 3599),
-                                directory,
-                                refresh_token=data.get("refresh_token") or refresh,
-                            )
-                            valid.append(
-                                {
-                                    "email": address,
-                                    "access_token": data["access_token"],
-                                    "scopes": cls.account_scopes(acc),
-                                }
-                            )
-                except Exception:
-                    pass
+                token = cls._refreshed_token(address, acc, directory)
             else:
                 token = cls._unseal(sealed, directory)
-                if token:
-                    valid.append(
-                        {"email": address, "access_token": token, "scopes": cls.account_scopes(acc)}
-                    )
+            if token:
+                valid.append(
+                    {"email": address, "access_token": token, "scopes": cls.account_scopes(acc)}
+                )
         return valid
+
+    @classmethod
+    def _refreshed_token(
+        cls, address: str, account: dict[str, Any], directory: str | None
+    ) -> str | None:
+        """Gets a new access token for an account whose token has expired, and stores it.
+
+        Args:
+            address (str): The account.
+            account (dict[str, Any]): What is stored for it.
+            directory (str | None): Credentials directory; the mounted one by default.
+
+        Returns:
+            str | None: The new token; None when there is nothing to refresh with or Google refused.
+        """
+        sealed_refresh = account.get("refresh_token")
+        refresh = cls._unseal(sealed_refresh, directory) if sealed_refresh else None
+        if not refresh:
+            return None
+        try:
+            data = cls._token_reply({"refresh_token": refresh, "grant_type": "refresh_token"})
+            if KEY_ACCESS_TOKEN not in data:
+                return None
+            # Google may rotate the refresh token; the old one then stops working.
+            cls.save_token(
+                address,
+                data["access_token"],
+                data.get("expires_in", 3599),
+                directory,
+                refresh_token=data.get("refresh_token") or refresh,
+            )
+        except GOOGLE_CALL_ERRORS:
+            return None
+        return data["access_token"]
+
+    @classmethod
+    def _token_reply(cls, grant: dict[str, str]) -> dict[str, Any]:
+        """Asks Google's token endpoint for a token.
+
+        Args:
+            grant (dict[str, str]): The fields naming the grant, beside the client's own.
+
+        Returns:
+            dict[str, Any]: The parsed reply.
+        """
+        request = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=urllib.parse.urlencode(
+                {
+                    "client_id": GOOGLE_OAUTH_CLIENT_ID,
+                    "client_secret": GOOGLE_OAUTH_CLIENT_SECRET,
+                    **grant,
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as reply:
+            return json.load(reply)
+
+    @classmethod
+    def finish_consent(cls, code: str, state: str) -> tuple[str, dict[str, Any], str] | None:
+        """Turns the code a finished consent returned into a token and the account it is for.
+
+        Args:
+            code (str): The authorization code Google returned.
+            state (str): The state Google returned.
+
+        Returns:
+            tuple[str, dict[str, Any], str] | None: The app, Google's token reply and the address;
+                None when the state is unknown or Google's replies name no token or no address.
+        """
+        started = cls.take_state(state)
+        if not started:
+            return None
+        tokens = cls._token_reply(
+            {
+                "code": code,
+                "code_verifier": started["code_verifier"],
+                "redirect_uri": HOST_ORIGIN + "/",
+                "grant_type": "authorization_code",
+            }
+        )
+        request = urllib.request.Request(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as reply:
+            address = json.load(reply).get("email", "")
+        if not address or KEY_ACCESS_TOKEN not in tokens:
+            return None
+        return started.get("app", "gmail"), tokens, address
 
     @classmethod
     def delete_token(cls, address: str, directory: str | None = None) -> bool:
@@ -672,7 +745,7 @@ class GmailSearchService:
                 conn.authenticate("XOAUTH2", cls._xoauth2(cred["email"], cred["access_token"]))
                 conn.select(f'"{cls._all_mail_folder(conn)}"', readonly=True)
                 connections[cred["email"]] = conn
-            except Exception as error:
+            except MAILBOX_ERRORS as error:
                 failures.append({"account": cred["email"], "error": cls._describe(error)})
                 # Connected but refused: the socket is not left open until garbage collection.
                 cls._logout(conn)
@@ -950,15 +1023,8 @@ class GmailSearchService:
         all_messages = []
         for address, connection in connections.items():
             try:
-                uids = cls._search_uids(connection, query)
-                if uids:
-                    # Newest first: IMAP returns UIDs ascending, and recency is what a mailbox
-                    # question almost always means.
-                    messages = cls._fetch_headers(connection, uids[-limit:][::-1])
-                    for m in messages:
-                        m["id"] = f"{address}|{m['id']}"
-                    all_messages.extend(messages)
-            except Exception as failure:
+                all_messages.extend(cls._search_account(connection, address, query, limit))
+            except MAILBOX_ERRORS as failure:
                 failures.append({"account": address, "error": cls._describe(failure)})
             finally:
                 with contextlib.suppress(Exception):
@@ -971,6 +1037,29 @@ class GmailSearchService:
         if failures:
             answer["errors"] = failures
         return answer
+
+    @classmethod
+    def _search_account(
+        cls, connection: imaplib.IMAP4_SSL, address: str, query: str, limit: int
+    ) -> list[dict[str, str]]:
+        """Searches one mailbox, with each result's id naming the account it came from.
+
+        Args:
+            connection (imaplib.IMAP4_SSL): A connection with a folder selected.
+            address (str): The account.
+            query (str): Gmail search syntax.
+            limit (int): How many results to keep.
+
+        Returns:
+            list[dict[str, str]]: The account's newest matches, newest first.
+        """
+        uids = cls._search_uids(connection, query)
+        # Newest first: IMAP returns UIDs ascending, and recency is what a mailbox question almost
+        # always means.
+        messages = cls._fetch_headers(connection, uids[-limit:][::-1])
+        for message in messages:
+            message["id"] = f"{address}|{message['id']}"
+        return messages
 
     @classmethod
     def _sent_at(cls, message: dict[str, str]) -> float:
@@ -1183,27 +1272,36 @@ class GmailSearchService:
             dict[str, Any]: Headers and `body`, or an error.
         """
         if email and email in connections:
-            conn = connections[email]
             try:
-                status, data = conn.uid("SEARCH", None, "X-GM-MSGID", real_id)  # type: ignore[arg-type]  # None means no charset
-                if status == IMAP_OK and data[0]:
-                    uid = data[0].split()[0].decode("ascii")
-                    return cls._fetch_body(conn, uid)
-            except Exception as e:
+                found = cls._read_by_gmail_id(connections[email], real_id)
+            except MAILBOX_ERRORS as e:
                 return {"error": str(e)}
-            return {"error": "Message not found"}
+            return found if found is not None else {"error": "Message not found"}
 
         for conn in connections.values():
-            try:
-                status, data = conn.uid("SEARCH", None, "X-GM-MSGID", real_id)  # type: ignore[arg-type]  # None means no charset
-                if status == IMAP_OK and data[0]:
-                    uid = data[0].split()[0].decode("ascii")
-                    res = cls._fetch_body(conn, uid)
-                    if res and KEY_ERROR not in res:
-                        return res
-            except Exception:
-                pass
+            with contextlib.suppress(*MAILBOX_ERRORS):
+                found = cls._read_by_gmail_id(conn, real_id)
+                if found and KEY_ERROR not in found:
+                    return found
         return {"error": "Message not found"}
+
+    @classmethod
+    def _read_by_gmail_id(
+        cls, connection: imaplib.IMAP4_SSL, real_id: str
+    ) -> dict[str, Any] | None:
+        """Reads the message with a Gmail id from one mailbox.
+
+        Args:
+            connection (imaplib.IMAP4_SSL): A connection with a folder selected.
+            real_id (str): Gmail's message id, digits only.
+
+        Returns:
+            dict[str, Any] | None: What `_fetch_body` read, or None when the mailbox does not hold it.
+        """
+        status, data = connection.uid("SEARCH", None, "X-GM-MSGID", real_id)  # type: ignore[arg-type]  # None means no charset
+        if status != IMAP_OK or not data[0]:
+            return None
+        return cls._fetch_body(connection, data[0].split()[0].decode("ascii"))
 
     @classmethod
     def _close(cls, connection: imaplib.IMAP4_SSL) -> None:
@@ -1237,6 +1335,25 @@ class GmailSearchService:
         return "".join(parts).strip()
 
     @classmethod
+    def _decode_part(cls, part: Message) -> str:
+        """Decodes one MIME part's payload to text, falling back to UTF-8 for an unknown charset.
+
+        Args:
+            part (Message): The part.
+
+        Returns:
+            str: The text, empty if the part has no payload.
+        """
+        payload = part.get_payload(decode=True)
+        if not isinstance(payload, bytes):
+            return ""
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            return payload.decode(charset, "replace")
+        except (LookupError, UnicodeDecodeError):
+            return payload.decode("utf-8", "replace")
+
+    @classmethod
     def _extract_text(cls, message: Message) -> str:
         """Returns the readable body: the plain-text part, or HTML stripped down to text.
 
@@ -1247,17 +1364,6 @@ class GmailSearchService:
             str: The body text, empty if there is none.
         """
         plain, markup = "", ""
-
-        def decode(part: Message) -> str:
-            payload = part.get_payload(decode=True)
-            if not isinstance(payload, bytes):
-                return ""
-            charset = part.get_content_charset() or "utf-8"
-            try:
-                return payload.decode(charset, "replace")
-            except (LookupError, UnicodeDecodeError):
-                return payload.decode("utf-8", "replace")
-
         for part in message.walk():
             if part.get_content_maintype() == MIME_MULTIPART:
                 continue
@@ -1266,9 +1372,9 @@ class GmailSearchService:
             if (part.get("Content-Disposition") or "").lower().startswith("attachment"):
                 continue
             if part.get_content_type() == MIME_PLAIN and not plain:
-                plain = decode(part)
+                plain = cls._decode_part(part)
             elif part.get_content_type() == MIME_HTML and not markup:
-                markup = decode(part)
+                markup = cls._decode_part(part)
 
         if plain:
             return plain
@@ -1433,186 +1539,146 @@ class GmailSearchService:
                     """
                 )
 
+            def _body(self) -> str:
+                """Reads the request's body as text."""
+                content_length = int(self.headers.get("Content-Length", 0))
+                return self.rfile.read(content_length).decode("utf-8")
+
+            def _app_asked(self, query: dict[str, list[str]]) -> str:
+                """Names the app a request is for, Gmail unless it names another known one."""
+                app = (query.get("app") or ["gmail"])[0]
+                return app if app in APP_SCOPES else "gmail"
+
+            def _start_oauth(self, query: dict[str, list[str]]) -> None:
+                """Answers with the consent address for the app asked for."""
+                verifier = secrets.token_urlsafe(32)
+                challenge = (
+                    base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+                    .decode("ascii")
+                    .rstrip("=")
+                )
+                app = self._app_asked(query)
+                state = cls.new_state(app, verifier)
+                self._reply(200, {"auth_url": cls.auth_url(app, state, challenge)})
+
+            def _disconnect(self) -> None:
+                """Forgets the account the body names."""
+                post_data = self._body()
+                try:
+                    address = json.loads(post_data).get("email")
+                    if address:
+                        success = cls.delete_token(address)
+                        self._reply(200, {"status": "ok", "deleted": success})
+                        return
+                # A body that is not JSON, not an object, or names something that is no address.
+                except (OSError, ValueError, TypeError, AttributeError) as e:
+                    self._reply(400, {"error": str(e)})
+                    return
+                self._reply(400, {"error": "Invalid request"})
+
+            def _complete_oauth(self) -> None:
+                """Finishes a consent from the address its page ended at, pasted into the setup page."""
+                post_data = self._body()
+                try:
+                    url = json.loads(post_data).get("url", "")
+                    q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+                    finished = None
+                    if KEY_CODE in q and KEY_STATE in q:
+                        finished = cls.finish_consent(q["code"][0], q["state"][0])
+                    if finished:
+                        app, tokens, address = finished
+                        refused = cls.accept_grant(app, tokens, address)
+                        if refused:
+                            self._reply(400, {"error": refused})
+                        else:
+                            self._reply(200, {"status": "ok", "email": address})
+                        return
+                except GOOGLE_CALL_ERRORS as e:
+                    self._reply(400, {"error": str(e)})
+                    return
+                self._reply(400, {"error": "Invalid URL or exchange failed"})
+
             def do_POST(self) -> None:
                 parsed = urllib.parse.urlparse(self.path)
                 refused = cls.post_refusal(self.headers.get("Origin"))
                 if refused:
                     self._reply(403, {"error": refused})
-                    return
-                if parsed.path == OAUTH_START_PATH:
-                    app = (urllib.parse.parse_qs(parsed.query).get("app") or ["gmail"])[0]
-                    app = app if app in APP_SCOPES else "gmail"
-                    verifier = secrets.token_urlsafe(32)
-                    challenge = (
-                        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
-                        .decode("ascii")
-                        .rstrip("=")
-                    )
-                    state = cls.new_state(app, verifier)
-                    self._reply(200, {"auth_url": cls.auth_url(app, state, challenge)})
-                    return
+                elif parsed.path == OAUTH_START_PATH:
+                    self._start_oauth(urllib.parse.parse_qs(parsed.query))
+                elif parsed.path == DISCONNECT_PATH:
+                    self._disconnect()
+                elif parsed.path == OAUTH_COMPLETE_PATH:
+                    self._complete_oauth()
+                else:
+                    self._reply(404, {"error": "not found"})
 
-                if parsed.path == DISCONNECT_PATH:
-                    content_length = int(self.headers.get("Content-Length", 0))
-                    post_data = self.rfile.read(content_length).decode("utf-8")
-                    try:
-                        data = json.loads(post_data)
-                        email = data.get("email")
-                        if email:
-                            success = GmailSearchService.delete_token(email)
-                            self._reply(200, {"status": "ok", "deleted": success})
-                            return
-                    except Exception as e:
-                        self._reply(400, {"error": str(e)})
+            def _oauth_redirect(self, code: str, state: str) -> None:
+                """Finishes a consent Google redirected the browser back from."""
+                try:
+                    finished = cls.finish_consent(code, state)
+                    if finished:
+                        app, tokens, address = finished
+                        self._html(cls.grant_page(app, cls.accept_grant(app, tokens, address)))
                         return
-                    self._reply(400, {"error": "Invalid request"})
+                except GOOGLE_CALL_ERRORS as e:
+                    self._html(f"<h2>Error</h2><p>{html.escape(str(e))}</p>")
                     return
-                if parsed.path == OAUTH_COMPLETE_PATH:
-                    content_length = int(self.headers.get("Content-Length", 0))
-                    post_data = self.rfile.read(content_length).decode("utf-8")
-                    try:
-                        data = json.loads(post_data)
-                        url = data.get("url", "")
-                        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-                        if KEY_CODE in q and KEY_STATE in q:
-                            code = q["code"][0]
-                            state = q["state"][0]
-                            started = cls.take_state(state)
-                            if started:
-                                verifier = started["code_verifier"]
-                                req = urllib.request.Request(
-                                    "https://oauth2.googleapis.com/token",
-                                    data=urllib.parse.urlencode(
-                                        {
-                                            "client_id": GOOGLE_OAUTH_CLIENT_ID,
-                                            "client_secret": GOOGLE_OAUTH_CLIENT_SECRET,
-                                            "code": code,
-                                            "code_verifier": verifier,
-                                            "redirect_uri": HOST_ORIGIN + "/",
-                                            "grant_type": "authorization_code",
-                                        }
-                                    ).encode("utf-8"),
-                                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                                )
-                                with urllib.request.urlopen(req, timeout=10) as res:
-                                    tdata = json.load(res)
+                self._html("<h2>Error</h2><p>Invalid state or token exchange failed.</p>")
 
-                                req2 = urllib.request.Request(
-                                    "https://www.googleapis.com/oauth2/v3/userinfo",
-                                    headers={"Authorization": f"Bearer {tdata['access_token']}"},
-                                )
-                                with urllib.request.urlopen(req2, timeout=10) as res2:
-                                    user_data = json.load(res2)
-                                    email_addr = user_data.get("email", "")
+            def _authorised(self) -> bool:
+                """Checks the shared secret, answering the request when it does not match."""
+                # Fails closed: started without a secret, it would otherwise serve mail to anyone.
+                if not expected:
+                    self._reply(401, {"error": NO_SECRET_ERROR})
+                    return False
+                if not hmac.compare_digest(
+                    (self.headers.get(AUTH_HEADER) or "").encode(), expected.encode()
+                ):
+                    self._reply(401, {"error": "unauthorised"})
+                    return False
+                return True
 
-                                app = started.get("app", "gmail")
-                                if email_addr and KEY_ACCESS_TOKEN in tdata:
-                                    refused = cls.accept_grant(app, tdata, email_addr)
-                                    if refused:
-                                        self._reply(400, {"error": refused})
-                                    else:
-                                        self._reply(200, {"status": "ok", "email": email_addr})
-                                    return
-                    except Exception as e:
-                        self._reply(400, {"error": str(e)})
-                        return
-                    self._reply(400, {"error": "Invalid URL or exchange failed"})
+            def _search(self, query: dict[str, list[str]]) -> None:
+                """Answers a mailbox search."""
+                terms = (query.get("query") or [""])[0]
+                if not terms:
+                    self._reply(400, {"error": "query is required"})
                     return
-                self._reply(404, {"error": "not found"})
+                try:
+                    limit = int((query.get("limit") or [str(DEFAULT_RESULT_LIMIT)])[0])
+                except ValueError:
+                    limit = DEFAULT_RESULT_LIMIT
+                self._reply(200, cls.search(terms, limit))
+
+            def _read_for_a_client(self, path: str, query: dict[str, list[str]]) -> None:
+                """Answers the routes that read the user's data, behind the shared secret."""
+                if path == SEARCH_PATH:
+                    self._search(query)
+                elif path.startswith(("/drive/", "/calendar/")):
+                    self._reply(200, cls.workspace(path, query))
+                elif path.startswith("/message/"):
+                    # Decoded: a client may percent-encode the `@` and `|` in "<account>|<id>".
+                    message_id = urllib.parse.unquote(path.rsplit("/", 1)[-1])
+                    self._reply(200, cls.message(message_id))
+                else:
+                    self._reply(404, {"error": "not found"})
 
             def do_GET(self) -> None:
                 parsed = urllib.parse.urlparse(self.path)
                 query = urllib.parse.parse_qs(parsed.query)
 
-                # OAuth redirect
                 if parsed.path == ROOT_PATH and KEY_CODE in query and KEY_STATE in query:
-                    code = query["code"][0]
-                    state = query["state"][0]
-                    started = cls.take_state(state)
-                    if started:
-                        verifier = started["code_verifier"]
-                        req = urllib.request.Request(
-                            "https://oauth2.googleapis.com/token",
-                            data=urllib.parse.urlencode(
-                                {
-                                    "client_id": GOOGLE_OAUTH_CLIENT_ID,
-                                    "client_secret": GOOGLE_OAUTH_CLIENT_SECRET,
-                                    "code": code,
-                                    "code_verifier": verifier,
-                                    "redirect_uri": HOST_ORIGIN + "/",
-                                    "grant_type": "authorization_code",
-                                }
-                            ).encode("utf-8"),
-                            headers={"Content-Type": "application/x-www-form-urlencoded"},
-                        )
-                        try:
-                            with urllib.request.urlopen(req, timeout=10) as res:
-                                data = json.load(res)
-
-                            # identify user
-                            req2 = urllib.request.Request(
-                                "https://www.googleapis.com/oauth2/v3/userinfo",
-                                headers={"Authorization": f"Bearer {data['access_token']}"},
-                            )
-                            with urllib.request.urlopen(req2, timeout=10) as res2:
-                                user_data = json.load(res2)
-                                email_addr = user_data.get("email", "")
-
-                            app = started.get("app", "gmail")
-                            if email_addr and KEY_ACCESS_TOKEN in data:
-                                self._html(
-                                    cls.grant_page(app, cls.accept_grant(app, data, email_addr))
-                                )
-                                return
-                        except Exception as e:
-                            self._html(f"<h2>Error</h2><p>{html.escape(str(e))}</p>")
-                            return
-                    self._html("<h2>Error</h2><p>Invalid state or token exchange failed.</p>")
-                    return
-
+                    self._oauth_redirect(query["code"][0], query["state"][0])
                 # Read by `/apps` and `ragon-admin google status` to show what is connected. It
                 # exposes no mail and needs no secret.
-                if parsed.path in ("/health", "/status"):
+                elif parsed.path in ("/health", "/status"):
                     self._reply(200, cls.status())
-                    return
-                if parsed.path == LEGACY_START_PATH:
+                elif parsed.path == LEGACY_START_PATH:
                     self._redirect(CONNECT_PATH)
-                    return
-                if parsed.path == CONNECT_PATH:
-                    app = (urllib.parse.parse_qs(parsed.query).get("app") or ["gmail"])[0]
-                    self._setup_page(app if app in APP_SCOPES else "gmail")
-                    return
-                # Fails closed: started without a secret, it would otherwise serve mail to anyone.
-                if not expected:
-                    self._reply(401, {"error": NO_SECRET_ERROR})
-                    return
-                if not hmac.compare_digest(
-                    (self.headers.get(AUTH_HEADER) or "").encode(), expected.encode()
-                ):
-                    self._reply(401, {"error": "unauthorised"})
-                    return
-
-                query = urllib.parse.parse_qs(parsed.query)
-                if parsed.path == SEARCH_PATH:
-                    terms = (query.get("query") or [""])[0]
-                    if not terms:
-                        self._reply(400, {"error": "query is required"})
-                        return
-                    try:
-                        limit = int((query.get("limit") or [str(DEFAULT_RESULT_LIMIT)])[0])
-                    except ValueError:
-                        limit = DEFAULT_RESULT_LIMIT
-                    self._reply(200, cls.search(terms, limit))
-                    return
-                if parsed.path.startswith(("/drive/", "/calendar/")):
-                    self._reply(200, cls.workspace(parsed.path, query))
-                    return
-                if parsed.path.startswith("/message/"):
-                    # Decoded: a client may percent-encode the `@` and `|` in "<account>|<id>".
-                    message_id = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
-                    self._reply(200, cls.message(message_id))
-                    return
-                self._reply(404, {"error": "not found"})
+                elif parsed.path == CONNECT_PATH:
+                    self._setup_page(self._app_asked(query))
+                elif self._authorised():
+                    self._read_for_a_client(parsed.path, query)
 
             def log_message(self, *args: object) -> None:
                 """Silenced: request logs would record the user's search terms."""

@@ -4,6 +4,7 @@ A message read names its account; one that does not is read from the first accou
 """
 
 import html
+import http.client
 import imaplib
 import io
 import json
@@ -280,3 +281,96 @@ def test_a_message_no_account_can_read_is_not_found(monkeypatch):
     assert GmailSearchService._find_message(connections, None, "42") == {
         "error": "Message not found"
     }
+
+
+# -- what outside mail and a reply cut short can raise --------------------------------------------
+
+
+class _OneMail:
+    """A mailbox holding one message, as imaplib hands it back."""
+
+    def __init__(self, raw: bytes):
+        self.raw, self.literal = raw, None
+
+    def uid(self, command, *args):
+        if command == "SEARCH":
+            return "OK", [b"1"]
+        return "OK", [(b"1 (X-GM-MSGID 42 BODY[] {1}", self.raw), b")"]
+
+    def logout(self):
+        pass
+
+
+@pytest.mark.parametrize("subject", ["=?no-such-charset?Q?x?=", "=?utf-8?B?a?="])
+def test_a_header_that_does_not_decode_costs_that_account_not_the_search(monkeypatch, subject):
+    connections = {
+        "a@x.com": _OneMail(f"Subject: {subject}\r\n\r\n".encode()),
+        "b@x.com": _OneMail(b"Subject: hello\r\n\r\n"),
+    }
+    monkeypatch.setattr(
+        GmailSearchService, "_open_mailboxes", classmethod(lambda cls: (connections, None, []))
+    )
+    answer = GmailSearchService.search("q", 5)
+    assert [found["subject"] for found in answer["messages"]] == ["hello"]
+    assert [failed["account"] for failed in answer["errors"]] == ["a@x.com"]
+
+
+def test_mime_nested_past_the_parser_costs_that_message_not_the_request():
+    deep = b"".join(
+        b'Content-Type: multipart/mixed; boundary="b%d"\n\n--b%d\n' % (level, level)
+        for level in range(3000)
+    )
+    connections = {"a@x.com": _OneMail(deep), "b@x.com": _OneMail(b"Subject: hello\r\n\r\nhi")}
+    assert GmailSearchService._find_message(connections, None, "42")["subject"] == "hello"
+    assert "error" in GmailSearchService._find_message(connections, "a@x.com", "42")
+
+
+def _expired_account(tmp_path) -> str:
+    directory = str(tmp_path)
+    _store(
+        tmp_path,
+        {
+            "a@x.com": {
+                "email": "a@x.com",
+                "access_token": GmailSearchService._seal("old", directory),
+                "expires_at": 0,
+                "refresh_token": GmailSearchService._seal("ref", directory),
+            }
+        },
+    )
+    return directory
+
+
+def test_a_refresh_reply_cut_short_drops_the_account(tmp_path, monkeypatch):
+    directory = _expired_account(tmp_path)
+
+    def urlopen(request, timeout=10):
+        raise http.client.IncompleteRead(b"{")
+
+    monkeypatch.setattr(svc_mod.urllib.request, "urlopen", urlopen)
+    assert GmailSearchService.credentials(directory) == []
+
+
+def test_a_bug_in_a_refresh_is_not_taken_for_a_refused_account(tmp_path, monkeypatch):
+    directory = _expired_account(tmp_path)
+
+    def urlopen(request, timeout=10):
+        raise ZeroDivisionError
+
+    monkeypatch.setattr(svc_mod.urllib.request, "urlopen", urlopen)
+    with pytest.raises(ZeroDivisionError):
+        GmailSearchService.credentials(directory)
+
+
+def test_an_exchange_reply_cut_short_answers_400_with_the_reason(service_port, saved, monkeypatch):
+    def urlopen(request, timeout=10):
+        raise http.client.IncompleteRead(b"{")
+
+    monkeypatch.setattr(svc_mod.urllib.request, "urlopen", urlopen)
+    status, body = _call(
+        service_port,
+        "/api/google/oauth/complete",
+        {"url": "http://localhost:8767" + _state("st-short", "gmail")},
+    )
+    assert status == 400 and "IncompleteRead" in json.loads(body)["error"]
+    assert saved == []

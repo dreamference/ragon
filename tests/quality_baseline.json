@@ -61,17 +61,11 @@
    "T201": 1
   },
   "dreamference/chat/gmail_search_service.py": {
-   "BLE001": 8,
-   "C901": 4,
+   "C901": 1,
    "D102": 2,
    "D205": 1,
    "D301": 1,
-   "E501": 1,
-   "PLR0911": 2,
-   "PLR0912": 1,
-   "PLR0915": 1,
-   "PLR1702": 9,
-   "S110": 2
+   "E501": 1
   },
   "dreamference/chat/image_search_mcp.py": {
    "D205": 3,
@@ -646,5 +640,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1204
+ "total": 1178
 }
