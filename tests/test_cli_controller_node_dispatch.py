@@ -257,3 +257,91 @@ def test_codex_start_stop_and_logs_and_index(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(CodexBrandedBuilder, "build", classmethod(lambda cls, force=False: False))
     assert _go(tmp_path, "codex", "build") == 1
     assert ident
+
+
+def _server_mocks(monkeypatch, enabled):
+    from dreamference.cli import dreamference_cli_controller as ctl
+
+    vm = MagicMock()
+    monkeypatch.setattr(ctl, "VLLMServerManager", lambda **k: vm)
+    dm = MagicMock()
+    monkeypatch.setattr(ctl, "DiffusionServerManager", dm)
+    monkeypatch.setattr(
+        ctl.ModelMatrixRegistry, "diffusion_enabled", classmethod(lambda cls: enabled)
+    )
+    adv = _patch(monkeypatch, "dreamference.node", "NodeAdvertiser")["NodeAdvertiser"]
+    return vm, dm, adv
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_server_stop_and_remove_also_handle_the_diffusion_sidecar(monkeypatch, tmp_path, enabled):
+    vm, dm, adv = _server_mocks(monkeypatch, enabled)
+    DreamferenceCLIController.run_cli(["--config", str(tmp_path / "d.toml"), "server", "stop"])
+    vm.stop_server.assert_called_once()
+    DreamferenceCLIController.run_cli(["--config", str(tmp_path / "d.toml"), "server", "remove"])
+    vm.remove_server.assert_called_once()
+    assert adv.on_server_stopped.call_count == 2
+    if not enabled:
+        assert dm.remove_leftover.call_count == 2
+
+
+def test_server_logs_and_logs_command_stop_on_interrupt(monkeypatch, tmp_path, capsys):
+    vm, _, _ = _server_mocks(monkeypatch, False)
+    vm.show_request_logs.side_effect = KeyboardInterrupt
+    DreamferenceCLIController.run_cli(["--config", str(tmp_path / "d.toml"), "server", "logs"])
+    DreamferenceCLIController.run_cli(["--config", str(tmp_path / "d.toml"), "logs"])
+    assert capsys.readouterr().out.count("Stopped tailing logs") == 2
+
+
+def test_audit_egress_variants(monkeypatch, tmp_path, capsys):
+    audit = _patch(
+        monkeypatch, "dreamference.audit", "EgressAudit", "DocsEgressAudit", "SyncEgressAudit"
+    )
+    audit["EgressAudit"].run.return_value = 0
+    audit["DocsEgressAudit"].run.return_value = 0
+    audit["SyncEgressAudit"].from_cli.return_value = 0
+    assert _go(tmp_path, "audit", "egress") == 0
+    assert _go(tmp_path, "audit", "egress", "--docs") == 0
+    assert _go(tmp_path, "audit", "egress", "--docs", "--prompt", "x") == 2
+    assert _go(tmp_path, "audit", "egress", "--sync") == 0
+    assert "has no effect" in capsys.readouterr().out
+
+
+def test_index_web_and_benchmark(monkeypatch, tmp_path):
+    import subprocess
+
+    from dreamference.cli import dreamference_cli_controller as ctl
+
+    monkeypatch.setattr(
+        ctl.DreamferenceCLIController, "_refuse_during_night_run", classmethod(lambda cls, w: None)
+    )
+    import dreamference.context_engine as ce
+    import dreamference.web_canvas as wc
+
+    engine = MagicMock()
+    engine.index_workspace.return_value = {"total_indexed_files": 1, "total_ast_symbols": 2}
+    monkeypatch.setattr(ce, "ContextEngine", lambda **k: engine)
+    DreamferenceCLIController.run_cli(["--config", str(tmp_path / "d.toml"), "index", "--force"])
+    engine.index_workspace.assert_called_once_with(force_reindex=True)
+
+    monkeypatch.setattr(wc, "start_web_canvas_server", MagicMock())
+    monkeypatch.setattr(ctl.time, "sleep", MagicMock(side_effect=KeyboardInterrupt))
+    DreamferenceCLIController.run_cli(["--config", str(tmp_path / "d.toml"), "web"])
+    wc.start_web_canvas_server.assert_called_once()
+
+    import dreamference.hardware as hw
+
+    monkeypatch.setattr(hw, "resolve_model_hf_repo", lambda m: "org/m")
+    run = MagicMock()
+    monkeypatch.setattr(subprocess, "run", run)
+    base = ["--config", str(tmp_path / "d.toml"), "benchmark_server"]
+    DreamferenceCLIController.run_cli([*base, "--dataset-path", "/d.txt"])
+    assert "org/m" in run.call_args.args[0]
+    run.side_effect = subprocess.CalledProcessError(1, "x")
+    assert _go(tmp_path, "benchmark_server", "--dataset-path", "/d.txt") == 1
+    run.side_effect = KeyboardInterrupt
+    DreamferenceCLIController.run_cli([*base, "--dataset-path", "/d.txt"])
+    monkeypatch.setattr(
+        DreamferenceCLIController, "_provision_sonnet_dataset", classmethod(lambda cls, c: None)
+    )
+    assert _go(tmp_path, "benchmark_server") == 1
