@@ -390,7 +390,8 @@ fn status(dir: &Path) -> i32 {
     }
     match DiscordConfig::load(dir) {
         Some(config) => println!(
-            "Discord: on (least private), {} paired user(s), {} connection(s) in the last 24 hours{}",
+            "Discord: on (least private), gateway {}, {} paired user(s), {} connection(s) in the last 24 hours{}",
+            store::GatewayStatus::describe(store::GatewayStatus::load(dir).as_ref(), running),
             config.users.len(),
             DiscordState::load(dir).identifies_today(store::now_secs()),
             if config.users.is_empty() { "; pair one with `ragon chat discord pair`" } else { "" }
@@ -697,6 +698,7 @@ async fn discord_off(dir: &Path) -> i32 {
     }
     let _ = std::fs::remove_file(DiscordConfig::path(dir));
     let _ = std::fs::remove_file(DiscordState::path(dir));
+    let _ = std::fs::remove_file(store::GatewayStatus::path(dir));
     store::withdraw_discord_pairing_codes(dir);
     println!(
         "Discord is off: the token and the pairings are deleted. Delete the application in Discord's Developer Portal too, so the token is gone there.\n\

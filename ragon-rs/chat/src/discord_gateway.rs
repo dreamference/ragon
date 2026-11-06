@@ -20,9 +20,11 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::discord::DiscordApi;
 use crate::store;
 use crate::store::DiscordState;
+use crate::store::GatewayStatus;
 
 /// `GUILDS` (1) and `DIRECT_MESSAGES` (4096).
 pub const INTENTS: u64 = 1 | (1 << 12);
+const IDENTIFY_LIMIT_MARK: &str = "connections in 24 hours";
 const BACKOFF_CAP: Duration = Duration::from_secs(300);
 /// Close codes after which reconnecting cannot help: authentication failed, an invalid shard,
 /// sharding required, an invalid API version, invalid or disallowed intents.
@@ -50,12 +52,16 @@ pub async fn run(api: DiscordApi, dir: PathBuf, events: mpsc::UnboundedSender<(S
         // `ragon chat discord off` deleted the token: do not connect again.
         if store::DiscordConfig::load(&dir).is_none() {
             eprintln!("ragon chat: Discord is off; the Gateway is not reconnected.");
+            let _ = std::fs::remove_file(GatewayStatus::path(&dir));
             return;
         }
         let started = Instant::now();
+        GatewayStatus::Reconnecting.save(&dir);
         match connect_once(&api, &dir, &events, identify_limit).await {
             Ended::Fatal(reason) => {
                 eprintln!("ragon chat: Discord stopped: {reason}");
+                let status = if reason.contains(IDENTIFY_LIMIT_MARK) { GatewayStatus::IdentifyLimit(reason) } else { GatewayStatus::Stopped(reason) };
+                status.save(&dir);
                 return;
             }
             Ended::Identify => {
@@ -70,6 +76,7 @@ pub async fn run(api: DiscordApi, dir: PathBuf, events: mpsc::UnboundedSender<(S
         if events.is_closed() {
             return;
         }
+        GatewayStatus::Reconnecting.save(&dir);
         // A connection that lasted resets the wait; one that failed at once doubles it.
         if started.elapsed() > Duration::from_secs(60) {
             backoff = Duration::from_secs(1);
@@ -131,7 +138,7 @@ pub async fn connect_once(api: &DiscordApi, dir: &PathBuf, events: &mpsc::Unboun
     };
     let identify = |state: &mut DiscordState| -> Result<Value, Ended> {
         if state.identifies_today(store::now_secs()) >= identify_limit {
-            return Err(Ended::Fatal(format!("{identify_limit} connections in 24 hours (`[chat] discord_identify_limit`); `ragon chat restart` after checking the network")));
+            return Err(Ended::Fatal(format!("{identify_limit} {IDENTIFY_LIMIT_MARK} (`[chat] discord_identify_limit`); `ragon chat restart` after checking the network")));
         }
         state.identifies.push(store::now_secs());
         let _ = state.save(dir);
@@ -185,8 +192,10 @@ pub async fn connect_once(api: &DiscordApi, dir: &PathBuf, events: &mpsc::Unboun
                                 state.session_id = data.get("session_id").and_then(Value::as_str).map(str::to_string);
                                 state.resume_url = data.get("resume_gateway_url").and_then(Value::as_str).map(str::to_string);
                                 let _ = state.save(dir);
+                                GatewayStatus::Connected.save(dir);
                             } else if name == "RESUMED" {
                                 let _ = state.save(dir);
+                                GatewayStatus::Connected.save(dir);
                             } else if events.send((name, data)).is_err() {
                                 return Ended::Fatal("the bridge stopped".to_string());
                             }

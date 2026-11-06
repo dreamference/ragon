@@ -203,6 +203,60 @@ impl DiscordConfig {
     }
 }
 
+/// `discord-gateway.json`: what the Gateway is doing now, written by the Gateway as it changes
+/// and read by `ragon chat status`. It is the Gateway's own state, not a count.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GatewayStatus {
+    /// Identified or resumed; events are flowing.
+    Connected,
+    /// Not connected; the Gateway is trying again.
+    Reconnecting,
+    /// The Gateway ended and will not retry: the reason says why.
+    Stopped(String),
+    /// The Gateway stopped at the user's identify limit.
+    IdentifyLimit(String),
+}
+
+impl GatewayStatus {
+    pub fn path(dir: &Path) -> PathBuf {
+        dir.join("discord-gateway.json")
+    }
+
+    pub fn load(dir: &Path) -> Option<GatewayStatus> {
+        let value = read_json(&Self::path(dir));
+        let reason = || value.get("reason").and_then(Value::as_str).unwrap_or_default().to_string();
+        match value.get("state").and_then(Value::as_str)? {
+            "connected" => Some(GatewayStatus::Connected),
+            "reconnecting" => Some(GatewayStatus::Reconnecting),
+            "stopped" => Some(GatewayStatus::Stopped(reason())),
+            "identify_limit" => Some(GatewayStatus::IdentifyLimit(reason())),
+            _ => None,
+        }
+    }
+
+    pub fn save(&self, dir: &Path) {
+        let (state, reason) = match self {
+            GatewayStatus::Connected => ("connected", ""),
+            GatewayStatus::Reconnecting => ("reconnecting", ""),
+            GatewayStatus::Stopped(reason) => ("stopped", reason.as_str()),
+            GatewayStatus::IdentifyLimit(reason) => ("identify_limit", reason.as_str()),
+        };
+        let _ = write_private(&Self::path(dir), &json!({ "state": state, "reason": reason }).to_string());
+    }
+
+    /// The line `ragon chat status` prints; `bridge_running` false means the file is old.
+    pub fn describe(status: Option<&GatewayStatus>, bridge_running: bool) -> String {
+        match status {
+            _ if !bridge_running => "stopped (the bridge is not running)".to_string(),
+            Some(GatewayStatus::Connected) => "connected".to_string(),
+            Some(GatewayStatus::Reconnecting) => "reconnecting".to_string(),
+            Some(GatewayStatus::Stopped(reason)) => format!("stopped: {reason}"),
+            Some(GatewayStatus::IdentifyLimit(reason)) => format!("stopped by the identify limit: {reason}"),
+            None => "not connected yet".to_string(),
+        }
+    }
+}
+
 /// `discord-state.json`: the Gateway session to resume, and when the bridge identified (DISCORD
 /// §3.1: Discord allows 1,000 identifies a day; the bridge stops past `discord_identify_limit`).
 #[derive(Clone, Debug, Default, PartialEq)]

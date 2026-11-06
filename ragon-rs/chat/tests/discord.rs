@@ -31,6 +31,7 @@ use ragon_chat::repo_notice::RepoNoticeKind;
 use ragon_chat::store;
 use ragon_chat::store::DiscordConfig;
 use ragon_chat::store::DiscordState;
+use ragon_chat::store::GatewayStatus;
 use ragon_chat::telegram::UNPAIRED_REPLY;
 use serde_json::Value;
 use serde_json::json;
@@ -413,6 +414,8 @@ async fn play(gateway: Gateway, mut socket: WebSocket) {
         let _ = socket.send(send(json!({ "op": 0, "s": 1, "t": "READY", "d": ready }))).await;
         let _ = socket.send(send(json!({ "op": 0, "s": 2, "t": "MESSAGE_CREATE", "d": dm("111", "222", "hi") }))).await;
         if gateway.drops {
+            // Long enough for a test to see the connected state before the drop.
+            tokio::time::sleep(Duration::from_millis(400)).await;
             return;
         }
         let _ = socket.send(send(json!({ "op": 7, "d": null }))).await;
@@ -510,4 +513,56 @@ async fn a_gateway_address_that_is_not_wss_is_refused() {
     let (tx, _rx) = mpsc::unbounded_channel();
     let ended = discord_gateway::connect_once(&api, &dir, &tx, 100).await;
     assert!(matches!(ended, Ended::Fatal(_)), "{ended:?}");
+}
+
+async fn seen(dir: &std::path::Path, wanted: fn(&GatewayStatus) -> bool) -> GatewayStatus {
+    for _ in 0..500 {
+        if let Some(status) = GatewayStatus::load(dir).filter(wanted) {
+            return status;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the status never came: {:?}", GatewayStatus::load(dir));
+}
+
+#[tokio::test]
+async fn the_status_follows_the_gateway_connected_reconnecting_then_stopped() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let stand = Gateway { url: url.clone(), frames: Arc::default(), connections: Arc::default(), drops: true };
+    let app = Router::new().route("/", axum::routing::get(gateway)).with_state(stand.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (_rest, api) = stand_in(Arc::new(move |_, _| (StatusCode::OK, json!({ "url": url })))).await;
+    let dir = scratch("status-follows");
+    DiscordConfig::new("token".to_string(), "123456789012345678".to_string()).save(&dir).unwrap();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let running = tokio::spawn(discord_gateway::run(api, dir.clone(), tx, 100));
+    seen(&dir, |s| *s == GatewayStatus::Connected).await;
+    seen(&dir, |s| *s == GatewayStatus::Reconnecting).await;
+    // The second connection is closed with 4004, which no retry can cure.
+    let stopped = seen(&dir, |s| matches!(s, GatewayStatus::Stopped(_))).await;
+    running.await.unwrap();
+    assert_eq!(GatewayStatus::describe(Some(&stopped), true).split(':').next(), Some("stopped"));
+}
+
+#[tokio::test]
+async fn the_identify_limit_is_its_own_status() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", listener.local_addr().unwrap());
+    let stand = Gateway { url: url.clone(), frames: Arc::default(), connections: Arc::default(), drops: false };
+    let app = Router::new().route("/", axum::routing::get(gateway)).with_state(stand);
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (_rest, api) = stand_in(Arc::new(move |_, _| (StatusCode::OK, json!({ "url": url })))).await;
+    let dir = scratch("status-limit");
+    DiscordConfig::new("token".to_string(), "123456789012345678".to_string()).save(&dir).unwrap();
+    let mut state = DiscordState::load(&dir);
+    state.identifies = vec![std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(); 3];
+    state.save(&dir).unwrap();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    tokio::time::timeout(Duration::from_secs(20), discord_gateway::run(api, dir.clone(), tx, 3)).await.unwrap();
+    let status = GatewayStatus::load(&dir).unwrap();
+    assert!(matches!(status, GatewayStatus::IdentifyLimit(_)), "{status:?}");
+    assert!(GatewayStatus::describe(Some(&status), true).starts_with("stopped by the identify limit"));
+    assert_eq!(GatewayStatus::describe(Some(&GatewayStatus::Connected), false), "stopped (the bridge is not running)");
+    assert_eq!(GatewayStatus::describe(Some(&GatewayStatus::Connected), true), "connected");
 }
