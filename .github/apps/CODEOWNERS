@@ -97,6 +97,8 @@
 # Web & Ask
 /ragon-rs/web/                                   @dreamference/web
 /ragon-web-rs/                                   @dreamference/web
+/scripts/search_eval.py                           @dreamference/web
+/scripts/search_eval/                             @dreamference/web
 /dreamference/chat/                             @dreamference/web
 /dreamference/web_canvas.py                     @dreamference/web
 /dreamference/mcp_server/web_tools.py           @dreamference/web
