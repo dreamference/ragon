@@ -23,7 +23,7 @@ REGISTRY = (
     / "hardware"
     / "model_matrix_registry.py"
 )
-KNOWN_FEATURES = ("kv-pages", "sparse-head", "paging-switch", "fair-pairing")
+KNOWN_FEATURES = ("kv-pages", "sparse-head", "paging-switch", "fair-pairing", "lora-adapters")
 
 
 def repin(text: str, commit: str, digest: str, features: list[str]) -> str:

@@ -47,4 +47,6 @@ A node with an adapter installed stays on ragon-serve, the default engine, when 
 - **Feature absent** (an older image): when the engine resolved is ragon and an adapter is installed for the model (`AdapterServing.launch_adapters`), SGLang starts instead and one line says why; `--engine ragon` then exits 2 rather than start without the adapter, and the install warns.
 - **`--engine sglang`** is honoured either way, and SGLang remains the fallback engine for adapters.
 
+The pinned build lists it. ragon-serve loads only by a name inside `--lora-library` (`--lora-paths name=dir`, `lora_path` on the load route), and a snapshot's files link to `blobs` two folders up, so the library is the container's hub and `AdapterServing.link_library` makes a relative link `lora.<name>` at the hub's top for each adapter before the start. The gate's list keeps `path` for its hash check and adds `library_name` for the load.
+
 The gate loads, lists and unloads adapters through the engine's routes holding `engine.key` on both engines.

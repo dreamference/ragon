@@ -1,4 +1,4 @@
-"""Installed LoRA adapters keep the model on SGLang while ragon-serve is the default engine."""
+"""Installed LoRA adapters start SGLang on a node whose ragon-serve build cannot serve them."""
 
 import pytest
 
@@ -17,6 +17,16 @@ MODEL = "qwen3.8-27b-nvfp4-dflash2"
 def ragon_default():
     """The registry as shipped: ragon-serve is the model's default engine since the 0.9.0 switch."""
     assert ModelMatrixRegistry.engines(MODEL) == [ENGINE_RAGON, ENGINE_SGLANG]
+
+
+@pytest.fixture
+def older_image(monkeypatch):
+    """A ragon-serve build from before the adapter feature."""
+    monkeypatch.setattr(
+        ModelMatrixRegistry,
+        "engine_has_feature",
+        classmethod(lambda cls, key, engine, feature: False),
+    )
 
 
 @pytest.fixture
@@ -40,7 +50,7 @@ def no_adapters(monkeypatch):
 
 
 def test_ragon_default_with_an_adapter_falls_back_to_sglang_and_says_so(
-    ragon_default, adapters, capsys
+    ragon_default, older_image, adapters, capsys
 ):
     assert Cli._engine_for_adapters(MODEL, None, from_flag=False) == ENGINE_SGLANG
     out = capsys.readouterr().out
@@ -48,11 +58,15 @@ def test_ragon_default_with_an_adapter_falls_back_to_sglang_and_says_so(
     assert "mine" in out
 
 
-def test_ragon_from_the_config_with_an_adapter_also_falls_back(ragon_default, adapters):
+def test_ragon_from_the_config_with_an_adapter_also_falls_back(
+    ragon_default, older_image, adapters
+):
     assert Cli._engine_for_adapters(MODEL, ENGINE_RAGON, from_flag=False) == ENGINE_SGLANG
 
 
-def test_explicit_engine_ragon_with_an_adapter_is_refused(ragon_default, adapters, capsys):
+def test_explicit_engine_ragon_with_an_adapter_is_refused(
+    ragon_default, older_image, adapters, capsys
+):
     with pytest.raises(SystemExit) as stop:
         Cli._engine_for_adapters(MODEL, ENGINE_RAGON, from_flag=True)
     assert stop.value.code == 2
@@ -73,10 +87,10 @@ def test_ragon_without_adapters_is_untouched(ragon_default, no_adapters, capsys)
     assert capsys.readouterr().out == ""
 
 
-def test_the_shipped_default_with_an_adapter_starts_sglang(adapters, capsys):
-    # No monkeypatched registry: a plain `server start` after the 0.9.0 switch, adapter installed.
-    assert Cli._engine_for_adapters(MODEL, None, from_flag=False) == ENGINE_SGLANG
-    assert "mine" in capsys.readouterr().out
+def test_the_shipped_default_with_an_adapter_stays_on_ragon_serve(adapters, capsys):
+    # No monkeypatched registry: a plain `server start` with the pinned image, adapter installed.
+    assert Cli._engine_for_adapters(MODEL, None, from_flag=False) is None
+    assert capsys.readouterr().out == ""
 
 
 def test_explicit_sglang_with_an_adapter_is_untouched(adapters, capsys):
@@ -91,14 +105,14 @@ def test_sglang_default_with_an_adapter_is_untouched(sglang_default, adapters, c
     assert capsys.readouterr().out == ""
 
 
-def test_adapter_install_warns_when_the_engine_is_ragon(ragon_default, capsys):
+def test_adapter_install_warns_when_the_engine_is_ragon(ragon_default, older_image, capsys):
     AdapterCommand._warn_if_ragon({"key": MODEL}, DreamferenceConfig())
     assert "serves no adapters yet" in capsys.readouterr().out
 
 
-def test_adapter_install_warns_on_the_shipped_default(capsys):
+def test_adapter_install_does_not_warn_on_the_shipped_default(capsys):
     AdapterCommand._warn_if_ragon({"key": MODEL}, DreamferenceConfig())
-    assert "serves no adapters yet" in capsys.readouterr().out
+    assert capsys.readouterr().out == ""
 
 
 def test_adapter_install_does_not_warn_when_the_config_names_sglang(monkeypatch, capsys):
@@ -113,7 +127,9 @@ def test_adapter_install_does_not_warn_on_sglang(sglang_default, capsys):
     assert adapter_command  # module imported
 
 
-def test_adapter_install_reads_the_engine_from_the_config_it_was_given(monkeypatch, capsys):
+def test_adapter_install_reads_the_engine_from_the_config_it_was_given(
+    older_image, monkeypatch, capsys
+):
     # The warning built a fresh default configuration, so a `--config` naming ragon-serve was not read.
     from dreamference.node.node_identity import NodeIdentity
 
@@ -151,8 +167,8 @@ def engine_serves_adapters(monkeypatch):
     )
 
 
-def test_the_shipped_recipe_does_not_list_the_adapter_feature_yet():
-    assert not ModelMatrixRegistry.engine_has_feature(MODEL, ENGINE_RAGON, "lora-adapters")
+def test_the_shipped_recipe_lists_the_adapter_feature():
+    assert ModelMatrixRegistry.engine_has_feature(MODEL, ENGINE_RAGON, "lora-adapters")
 
 
 def test_an_engine_with_the_adapter_feature_keeps_ragon_serve(
@@ -171,7 +187,9 @@ def test_sglang_flag_is_honoured_when_the_engine_serves_adapters(
     assert capsys.readouterr().out == ""
 
 
-def test_an_engine_without_the_feature_says_why_it_starts_sglang(ragon_default, adapters, capsys):
+def test_an_engine_without_the_feature_says_why_it_starts_sglang(
+    ragon_default, older_image, adapters, capsys
+):
     assert Cli._engine_for_adapters(MODEL, None, from_flag=False) == ENGINE_SGLANG
     assert "no adapter feature" in capsys.readouterr().out
 

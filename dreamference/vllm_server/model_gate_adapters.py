@@ -26,6 +26,7 @@ ADAPTER_SEPARATOR: Final[str] = "+"
 ENGINE_SEPARATOR: Final[str] = ":"
 ENGINE_RAGON: Final[str] = "ragon"
 ENGINE_FIELD: Final[str] = "engine"
+LIBRARY_NAME_FIELD: Final[str] = "library_name"
 
 # Refused on the public port whatever the gate's state: only the gate loads adapters.
 REFUSED_PATHS: Final[tuple[str, ...]] = (
@@ -189,8 +190,14 @@ class ModelGateAdapters:
                 if problem:
                     return problem
                 await self.make_room(int(str(listing.get("max_loaded") or 8)))
+                # ragon-serve takes the adapter's name in its library; SGLang the path.
                 status, body = await self.engine_call(
-                    "POST", "/load_lora_adapter", {"lora_name": name, "lora_path": entry["path"]}
+                    "POST",
+                    "/load_lora_adapter",
+                    {
+                        "lora_name": name,
+                        "lora_path": entry.get(LIBRARY_NAME_FIELD) or entry["path"],
+                    },
                 )
                 if status != HTTP_OK or not self.load_succeeded(body):
                     shown = body[:300].decode("utf-8", "replace") or "no answer"

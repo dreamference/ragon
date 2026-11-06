@@ -528,7 +528,7 @@ def gate(tmp_path):
     port = loop.run_until_complete(service.start())
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
-    yield {"port": port, "folders": folders, "tmp": tmp_path}
+    yield {"port": port, "folders": folders, "tmp": tmp_path, "state": state}
     stop_gate(loop, thread, service)
     engine.shutdown()
 
@@ -557,6 +557,17 @@ def test_an_adapter_is_loaded_once_from_the_list_and_its_id_rewritten_both_ways(
     assert {entry[2] for entry in Engine.seen} == {"Bearer engine-secret"}
     call(gate["port"], "/v1/responses", {"model": f"{BASE}+rust", "input": "again"})
     assert len([entry for entry in Engine.seen if entry[1] == "/load_lora_adapter"]) == 1
+
+
+def test_ragon_serve_is_asked_for_an_adapter_by_its_name_in_the_library(gate):
+    # The engine refuses a path; the gate's own hash check still reads the absolute one.
+    listing = json.loads((gate["state"] / LIST_FILE).read_text())
+    listing["engine"] = "ragon"
+    listing["adapters"]["rust"]["library_name"] = "lora.rust"
+    (gate["state"] / LIST_FILE).write_text(json.dumps(listing))
+    call(gate["port"], "/v1/responses", {"model": f"{BASE}+rust", "input": "hi"})
+    loads = [entry for entry in Engine.seen if entry[1] == "/load_lora_adapter"]
+    assert [entry[3] for entry in loads] == [{"lora_name": "rust", "lora_path": "lora.rust"}]
 
 
 def test_past_the_engines_limit_the_least_recently_used_adapter_is_unloaded(gate):
@@ -732,25 +743,29 @@ def test_the_gates_model_list_names_the_adapters_as_base_plus_name(gate):
 # -- ragon-serve serves them itself [key]
 
 
-def _ragon_with_feature(monkeypatch):
+def _ragon_without_feature(monkeypatch):
     real = ModelMatrixRegistry.get_launch_overrides.__func__
 
     def overrides(cls, model_key, engine=None):
         recipe = dict(real(cls, model_key, engine))
         if recipe.get("engine") == "ragon":
-            recipe["engine_features"] = [*recipe.get("engine_features", []), "lora-adapters"]
+            recipe["engine_features"] = [
+                feature for feature in recipe["engine_features"] if feature != "lora-adapters"
+            ]
         return recipe
 
     monkeypatch.setattr(ModelMatrixRegistry, "get_launch_overrides", classmethod(overrides))
 
 
-def test_ragon_serve_is_given_the_adapters_and_the_gates_key(verified, monkeypatch):
-    _ragon_with_feature(monkeypatch)
+def test_ragon_serve_is_given_the_library_the_adapters_and_the_gates_key(verified):
     install()
     cmd = VLLMServerManager().build_launch_command(
         model=DEFAULT_MODEL_ALIAS, engine="ragon", gate=True, serve_adapters=True
     )
-    assert flag(cmd, "--lora-paths").startswith("rust=/root/.cache/huggingface/hub/models--")
+    # One name inside the library each: the engine exits 2 on `--lora-paths` without a library and
+    # refuses a name with a slash in it.
+    assert flag(cmd, "--lora-library") == "/root/.cache/huggingface/hub"
+    assert flag(cmd, "--lora-paths") == "rust=lora.rust"
     assert flag(cmd, "--api-key") == AdapterServing.engine_key()
     assert "--enable-lora" not in cmd
 
@@ -759,18 +774,42 @@ def test_ragon_serve_without_the_feature_or_the_gate_gets_no_adapter_flags(verif
     install()
     mgr = VLLMServerManager()
     cmd = mgr.build_launch_command(
-        model=DEFAULT_MODEL_ALIAS, engine="ragon", gate=True, serve_adapters=True
-    )
-    assert "--lora-paths" not in cmd and "--api-key" not in cmd
-    _ragon_with_feature(monkeypatch)
-    cmd = mgr.build_launch_command(
         model=DEFAULT_MODEL_ALIAS, engine="ragon", gate=False, serve_adapters=False
     )
     assert "--lora-paths" not in cmd
+    _ragon_without_feature(monkeypatch)
+    cmd = mgr.build_launch_command(
+        model=DEFAULT_MODEL_ALIAS, engine="ragon", gate=True, serve_adapters=True
+    )
+    assert "--lora-paths" not in cmd and "--lora-library" not in cmd and "--api-key" not in cmd
+
+
+def test_prepare_for_ragon_serve_links_the_adapters_into_the_library(verified):
+    entry = install()
+    hub = ModelDownloader.get_hf_cache_dir()
+    (hub / "lora.removed").symlink_to("models--removed")
+    assert AdapterServing.prepare(DEFAULT_MODEL_ALIAS, "image", gated=True, engine="ragon") is True
+    # Relative, so it resolves in the container's mount of the hub as it does here.
+    assert (hub / "lora.rust").readlink() == pathlib.Path(entry["snapshot"])
+    assert (hub / "lora.rust" / "adapter_model.safetensors").is_file()
+    assert not (hub / "lora.removed").is_symlink()
+    listed = json.loads((AdapterServing.gate_dir() / LIST_FILE).read_text())["adapters"]["rust"]
+    assert listed["library_name"] == "lora.rust"
+    assert listed["path"] == AdapterServing.container_path(entry)
+
+
+def test_a_snapshot_outside_the_hub_is_not_served_by_ragon_serve(monkeypatch, capsys):
+    monkeypatch.setattr(
+        AdapterServing,
+        "launch_adapters",
+        classmethod(lambda cls, key: [{"name": "far", "snapshot": "/elsewhere/far"}]),
+    )
+    assert AdapterServing.prepare(DEFAULT_MODEL_ALIAS, "image", gated=True, engine="ragon") is False
+    assert "far is outside the hub" in capsys.readouterr().out
+    assert not (AdapterServing.gate_dir() / LIST_FILE).exists()
 
 
 def test_prepare_for_ragon_serve_names_the_engine_and_patches_nothing(verified, monkeypatch):
-    _ragon_with_feature(monkeypatch)
     monkeypatch.setattr(
         SGLangRuntimePatcher, "prepare", classmethod(lambda cls, image, patches: "never called")
     )

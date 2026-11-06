@@ -73,7 +73,13 @@ def test_the_image_is_pinned_by_digest_and_the_engine_commit_is_a_full_hash():
     recipe = get_model_launch_overrides(DEFAULT_MODEL_ALIAS, ENGINE_RAGON)
     assert recipe["engine_commit"] == QWEN38_RAGON_ENGINE_COMMIT
     # The pinned engine has the page pool and the sparse head; paging and fair pairing stay off.
-    assert recipe["engine_features"] == ["kv-pages", "sparse-head", "paging-switch", "fair-pairing"]
+    assert recipe["engine_features"] == [
+        "kv-pages",
+        "sparse-head",
+        "paging-switch",
+        "fair-pairing",
+        "lora-adapters",
+    ]
     # The owner's decision: the recipe does not turn paging on.
     assert recipe["kv_pages"] is False
     assert re.fullmatch(r"[0-9a-f]{40}", QWEN38_RAGON_ENGINE_COMMIT)
@@ -217,7 +223,7 @@ def test_the_served_id_names_the_default_entry():
     assert model_key_for_served_id(SERVED_ID, DEFAULT_MODEL_ALIAS) == DEFAULT_MODEL_ALIAS
 
 
-def test_sglang_serves_adapters_and_ragon_serve_none(monkeypatch):
+def test_sglang_serves_adapters_and_an_older_ragon_serve_none(monkeypatch):
     from dreamference.vllm_server.adapter_serving import AdapterServing
 
     # Adapters are verified against the checkpoint whichever engine serves it.
@@ -230,6 +236,7 @@ def test_sglang_serves_adapters_and_ragon_serve_none(monkeypatch):
         AdapterServing, "launch_adapters", classmethod(lambda cls, key: [{"name": "x"}])
     )
     monkeypatch.setattr(AdapterServing, "clear", classmethod(lambda cls: cleared.append(True)))
+    monkeypatch.setattr(AdapterServing, "ragon_serves", classmethod(lambda cls, recipe: False))
     assert (
         AdapterServing.prepare(DEFAULT_MODEL_ALIAS, QWEN38_RAGON_IMAGE, True, ENGINE_RAGON) is True
     )

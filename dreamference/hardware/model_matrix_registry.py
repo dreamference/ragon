@@ -395,8 +395,8 @@ ENGINE_RAGON: Final[str] = "ragon"
 
 # ragon-engine (github.com/dreamference/ragon-engine), the server written for this one model
 # (ragon-engine specs/DREAMFERENCE_RAGON_ENGINE_INTEGRATION.md §12): the default for
-# qwen3.8-27b-nvfp4-dflash2 with four sessions at the full context (the owner's decisions). LoRA adapters
-# stay on SGLang until ragon-serve serves them (`--engine sglang`, which an adapter start picks by itself).
+# qwen3.8-27b-nvfp4-dflash2 with four sessions at the full context (the owner's decisions). It serves
+# LoRA adapters itself ("lora-adapters" below); `--engine sglang` stays the fallback for them.
 # Speculation and tree verification are exact, so the drafter moves speed alone.
 #
 # The commit the image's ragon-serve was built from (the full hash, never abbreviated), recorded in
@@ -405,7 +405,7 @@ ENGINE_RAGON: Final[str] = "ragon"
 # stay off: the recipe passes neither. The image's binary was built from that commit under neutral paths
 # (scripts/build_ragon_serve_image.sh). scripts/pin_ragon_serve_image.py rewrites this, the features and
 # the image digest together.
-QWEN38_RAGON_ENGINE_COMMIT: Final[str] = "e828f756621831b1658ca59b89143951f68eac25"
+QWEN38_RAGON_ENGINE_COMMIT: Final[str] = "9ae475006d1c1747cb10b6af7dcc47110b6cf022"
 
 # What the engine at that commit has that an asset or a launch may depend on, so the runtime asks
 # a list rather than git: "sparse-head" (the drafter's sparse head, read from a file beside the
@@ -413,17 +413,18 @@ QWEN38_RAGON_ENGINE_COMMIT: Final[str] = "e828f756621831b1658ca59b89143951f68eac
 # of idle sessions, the last resort, which is what lets four sessions at 262,144 tokens fit where the
 # flat KV cannot, ~19 GB each), and only with it does the launch pass `--sessions`/`--batch`, with
 # `--kv-pages` when the recipe's `kv_pages` is on; "paging-switch" (`--no-kv-pages`) and "fair-pairing"
-# (`--fair-pairing`, the scheduler's pairing switch), which an engine without them exits 2 on.
+# (`--fair-pairing`, the scheduler's pairing switch), which an engine without them exits 2 on;
+# "lora-adapters" (`--lora-library`, `--lora-paths`, the load and unload routes).
 QWEN38_RAGON_ENGINE_FEATURES: Final[tuple[str, ...]] = (
     "kv-pages",
     "sparse-head",
     "paging-switch",
     "fair-pairing",
+    "lora-adapters",
 )
 
-# The feature name an engine build lists in `engine_features` once it serves LoRA adapters itself
-# (ADAPTERS §7). It is not in the tuple above: the pinned image has no adapter code, and
-# scripts/pin_ragon_serve_image.py adds it with the commit and digest of the build that does.
+# The feature name an engine build lists in `engine_features` when it serves LoRA adapters itself
+# (ADAPTERS §7). A node still on an older image has a recipe without it and starts SGLang for them.
 ENGINE_FEATURE_ADAPTERS: Final[str] = "lora-adapters"
 
 # The sessions and the batch the recipe asks of an engine with the "kv-pages" feature: four
@@ -451,7 +452,7 @@ QWEN38_DEFAULT_ENGINE: Final[str] = ENGINE_RAGON
 # ragon-serve's image (docker/ragon-serve/Dockerfile, built by scripts/build_ragon_serve_image.sh on an
 # aarch64 machine from QWEN38_RAGON_ENGINE_COMMIT), pinned by the digest GHCR gave the push (linux/arm64).
 QWEN38_RAGON_IMAGE: Final[str] = (
-    "ghcr.io/dreamference/ragon-serve@sha256:511ea579b50c9e388b1dcb635408af4cb46854808b1139b35c03d8230419db27"
+    "ghcr.io/dreamference/ragon-serve@sha256:f16977ed68695f763431869fcc15ba5ea4d06747981091f58493d22330c7e46a"
 )
 
 # The DFlash2 drafters ragon-serve can run, pinned. Speculation is exact, so the drafter moves
@@ -579,7 +580,7 @@ class ModelMatrixRegistry:
             notes=(
                 "Served by ragon-engine's ragon-serve since 0.9.0 (QWEN38_RAGON_RECIPE, four sessions "
                 "at the full context), with SGLang one flag away (`server start --engine sglang`), "
-                "the engine for LoRA adapters until ragon-serve serves them. Not vLLM, because "
+                "the fallback for LoRA adapters. Not vLLM, because "
                 "the speed is in the drafter: DFlash2 is a block-diffusion drafter vLLM supports "
                 "only through an unmerged pull request. The measurements below are SGLang's.\n\n"
                 "Measured here: image input works, four ragon tasks at once finish, and ~38.7 GB of "
@@ -602,8 +603,7 @@ class ModelMatrixRegistry:
             hf_repo_id="RadixArk/Qwen3.8-27B-NVFP4",
             # The default engine's recipe and the other's (QWEN38_DEFAULT_ENGINE): ragon-serve by
             # default, with four sessions at the full context (the owner's decisions),
-            # and SGLang the rollback and the engine for LoRA
-            # adapters until ragon-serve serves them.
+            # and SGLang the rollback and the fallback for LoRA adapters.
             launch_overrides=_QWEN38_LAUNCH_OVERRIDES,
             engine_recipes=_QWEN38_ENGINE_RECIPES,
             supports_vision=True,

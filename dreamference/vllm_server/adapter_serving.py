@@ -28,6 +28,7 @@ from dreamference.vllm_server.model_gate_adapters import (
     ENGINE_FIELD,
     ENGINE_RAGON,
     KEY_FILE,
+    LIBRARY_NAME_FIELD,
     LIST_FILE,
 )
 from dreamference.vllm_server.ragon_serve_launch_builder import RagonServeLaunchBuilder
@@ -36,6 +37,7 @@ from dreamference.vllm_server.sglang_runtime_patcher import SGLangRuntimePatcher
 FILE_MODE: Final[int] = 0o600
 GIB: Final[float] = float(1024**3)
 DEFAULT_MAX_LOADED: Final[int] = 8
+LIBRARY_PREFIX: Final[str] = "lora."
 
 
 def say(message: str) -> None:
@@ -181,10 +183,48 @@ class AdapterServing:
         )
 
     @classmethod
+    def library_name(cls, entry: dict[str, object]) -> str:
+        """The one name an adapter has in ragon-serve's library, which is the hub.
+
+        Args:
+            entry: Its installed entry.
+
+        Returns:
+            str: The link `link_library()` makes for it.
+        """
+        return f"{LIBRARY_PREFIX}{entry['name']}"
+
+    @classmethod
+    def link_library(cls, adapters: list[dict[str, object]]) -> None:
+        """Links each adapter's snapshot into the hub under its library name.
+
+        ragon-serve takes one name per adapter and loads only what resolves inside
+        `--lora-library`. A snapshot sits two folders down and its files link to `blobs` beside
+        them, so the library has to be the hub and each adapter needs a name at its top. The links
+        are relative, so they resolve in the container as they do here; links of adapters no longer
+        served go first.
+
+        Args:
+            adapters: The adapters this start serves.
+
+        Raises:
+            OSError: A link cannot be made, or a snapshot is outside the hub the container sees.
+        """
+        hub = ModelDownloader.get_hf_cache_dir()
+        for stale in hub.glob(f"{LIBRARY_PREFIX}*"):
+            if stale.is_symlink():
+                stale.unlink()
+        for entry in adapters:
+            snapshot = str(entry["snapshot"])
+            if Path(snapshot).is_absolute():
+                raise OSError(f"{entry['name']} is outside the hub")
+            (hub / cls.library_name(entry)).symlink_to(snapshot)
+
+    @classmethod
     def ragon_args(
         cls, model_key: str, recipe: dict[str, Any], adapters: list[dict[str, object]]
     ) -> list[str]:
-        """The ragon-serve flags that serve the adapters: `--lora-paths` and the gate's key.
+        """The ragon-serve flags that serve the adapters: the library, `--lora-paths`, the gate's key.
 
         Args:
             model_key: The model being launched (its `lora` recipe names the limit).
@@ -192,18 +232,25 @@ class AdapterServing:
             adapters: `launch_adapters()`'s answer.
 
         Returns:
-            list[str]: Nothing without adapters or without the feature; otherwise the adapters
-            given at start (at most as many as the engine holds) and the engine's key, which
-            guards only the load and unload routes.
+            list[str]: Nothing without adapters or without the feature; otherwise the library, the
+            adapters given at start by their names in it (at most as many as the engine holds) and
+            the engine's key, which guards only the load and unload routes.
         """
         lora = ModelMatrixRegistry.get_lora_recipe(model_key)
         if not adapters or lora is None or not cls.ragon_serves(recipe):
             return []
         loaded = int(lora.get("max_loaded_loras", DEFAULT_MAX_LOADED))
         at_start = ",".join(
-            f"{entry['name']}={cls.container_path(entry)}" for entry in adapters[:loaded]
+            f"{entry['name']}={cls.library_name(entry)}" for entry in adapters[:loaded]
         )
-        return ["--lora-paths", at_start, "--api-key", cls.engine_key()]
+        return [
+            "--lora-library",
+            ModelDownloader.CONTAINER_HF_HUB_DIR,
+            "--lora-paths",
+            at_start,
+            "--api-key",
+            cls.engine_key(),
+        ]
 
     @classmethod
     def with_headroom(
@@ -294,6 +341,12 @@ class AdapterServing:
         recipe = ModelMatrixRegistry.get_launch_overrides(model_key, engine)
         if adapters and cls.ragon_serves(recipe):
             # No patch of an image's Python: the engine serves adapters itself.
+            try:
+                cls.link_library(adapters)
+            except OSError as error:
+                say(f"⚠️  Adapters are not served at this start: {error}.")
+                cls.clear()
+                return False
             ragon_lora = ModelMatrixRegistry.get_lora_recipe(model_key) or {}
             cls.publish(
                 ModelMatrixRegistry.resolve_hf_repo(model_key), adapters, ragon_lora, ENGINE_RAGON
@@ -342,6 +395,7 @@ class AdapterServing:
             "adapters": {
                 str(entry["name"]): {
                     "path": cls.container_path(entry),
+                    **({LIBRARY_NAME_FIELD: cls.library_name(entry)} if engine else {}),
                     "files": entry.get("files"),
                     **{
                         key: entry.get(key)
