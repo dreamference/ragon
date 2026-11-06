@@ -409,11 +409,6 @@
    "T201": 2
   },
   "dreamference/swe_bench/swe_bench_code_index.py": {
-   "D205": 6,
-   "PLR2004": 5,
-   "PTH118": 1,
-   "PTH119": 2,
-   "PTH120": 1,
    "T201": 8
   },
   "dreamference/swe_bench/swe_bench_command.py": {
@@ -442,9 +437,7 @@
    "SIM105": 1
   },
   "dreamference/swe_bench/swe_bench_harness.py": {
-   "D205": 8,
    "PLR0913": 1,
-   "PLR2004": 3,
    "T201": 4
   },
   "dreamference/swe_bench/swe_bench_hooks.py": {
@@ -481,16 +474,10 @@
   },
   "dreamference/swe_bench/swe_bench_issue_targets.py": {
    "C901": 3,
-   "D205": 6,
    "E501": 1,
    "PLR0912": 1,
    "PLR0915": 1,
-   "PLR1702": 1,
-   "PLR2004": 12
-  },
-  "dreamference/swe_bench/swe_bench_name_stripper.py": {
-   "D205": 2,
-   "PLR2004": 8
+   "PLR1702": 1
   },
   "dreamference/swe_bench/swe_bench_patch_filter.py": {
    "D205": 4,
@@ -504,10 +491,7 @@
    "C901": 3
   },
   "dreamference/swe_bench/swe_bench_run_store.py": {
-   "C901": 1,
-   "D205": 15,
-   "D415": 1,
-   "PLR2004": 8
+   "C901": 1
   },
   "dreamference/swe_bench/swe_bench_runner.py": {
    "ANN401": 3,
@@ -685,5 +669,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1378
+ "total": 1300
 }

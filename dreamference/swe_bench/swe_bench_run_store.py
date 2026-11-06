@@ -236,7 +236,8 @@ class SweBenchRunStore:
     def compactions(self, instance_id: str) -> dict[str, Any] | None:
         """The compactions of an instance's sessions.
 
-        Read from the rollouts kept in its scratch `codex-home` (compaction survey §1, §3.5): one per `compacted` record. A
+        Read from the rollouts kept in its scratch `codex-home`
+        (compaction survey §1, §3.5): one per `compacted` record. A
         compaction's time is the gap between its record and the last earlier record more than
         2 s before it, which covers the compaction request's prefill and the summary's decode
         (an upper bound by a second or two).
