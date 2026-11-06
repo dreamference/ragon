@@ -85,9 +85,9 @@ class Machine:
             assert auth["type"] == "m.login.registration_token" and auth["session"] == "s1"
             if (
                 auth["token"]
-                != json.load(pathlib.Path(MatrixHomeserver._path("matrix-admin.json")).open())[  # noqa: SIM115
-                    "registration_token"
-                ]
+                != json.loads(
+                    pathlib.Path(MatrixHomeserver._path("matrix-admin.json")).read_text()
+                )["registration_token"]
             ):
                 return 401, {"errcode": "M_FORBIDDEN"}
             localpart = body["username"]
@@ -147,13 +147,9 @@ def test_start_builds_a_homeserver_with_no_route_out_and_a_bot_account(machine, 
     assert not [arg for argv in machine.runs for arg in argv if token in arg]
     assert run[-1] == mh.MATRIX_IMAGE and "@sha256:" in mh.MATRIX_IMAGE
     # The loopback proxy points at the container.
-    service = (
-        pathlib.Path(MatrixHomeserver.unit_dir(), mh.PROXY_SERVICE_UNIT).open().read()  # noqa: SIM115
-    )
+    service = pathlib.Path(MatrixHomeserver.unit_dir(), mh.PROXY_SERVICE_UNIT).read_text()
     assert f"ExecStart={mh.SOCKET_PROXYD} {mh.MATRIX_ADDRESS}:{mh.MATRIX_PORT}" in service
-    socket = (
-        pathlib.Path(MatrixHomeserver.unit_dir(), mh.PROXY_SOCKET_UNIT).open().read()  # noqa: SIM115
-    )
+    socket = pathlib.Path(MatrixHomeserver.unit_dir(), mh.PROXY_SOCKET_UNIT).read_text()
     assert "ListenStream=127.0.0.1:6167" in socket
     # tailscale serve fronts the proxy, never the container's address.
     assert machine.argv("tailscale", "serve")[0] == [
@@ -163,7 +159,7 @@ def test_start_builds_a_homeserver_with_no_route_out_and_a_bot_account(machine, 
         "--https=443",
         mh.PROXY_URL,
     ]
-    config = json.load(pathlib.Path(MatrixHomeserver._path("matrix.json")).open())  # noqa: SIM115
+    config = json.loads(pathlib.Path(MatrixHomeserver._path("matrix.json")).read_text())
     assert config == {
         "user_id": "@ragon:node.tail1234.ts.net",
         "access_token": "bot-token",

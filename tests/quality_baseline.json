@@ -84,15 +84,6 @@
    "PTH208": 1
   },
   "dreamference/chat/matrix_homeserver.py": {
-   "C901": 1,
-   "D102": 5,
-   "D205": 3,
-   "E501": 1,
-   "PLR0911": 1,
-   "PLR0912": 1,
-   "PLR2004": 10,
-   "PTH111": 1,
-   "PTH118": 4,
    "T201": 27
   },
   "dreamference/chat/searxng_sidecar.py": {
@@ -694,5 +685,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1405
+ "total": 1378
 }
