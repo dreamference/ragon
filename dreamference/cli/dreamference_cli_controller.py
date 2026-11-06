@@ -84,6 +84,14 @@ _CODE_FENCE: Final[str] = "```"
 _ARG_ENABLE_PREFIX_CACHING: Final[str] = "--enable-prefix-caching"
 _ARG_GMAIL: Final[str] = "gmail"
 _ARG_IMAGES: Final[str] = "images"
+_PROBE_ERRORS: Final[tuple[type[BaseException], ...]] = (
+    OSError,
+    ValueError,
+    KeyError,
+    IndexError,
+    TypeError,
+    AttributeError,
+)
 _ARG_IM_START: Final[str] = "<|im_start|>"
 _ARG_INIT: Final[str] = "init"
 _ARG_INSPECT: Final[str] = "inspect"
@@ -171,7 +179,8 @@ class DreamferenceCLIController:
 
         rich_console().print(
             Panel.fit(
-                "[bold green]⚡ Ragon[/bold green] [dim]by Dreamference[/dim] - Autonomous Local Agentic Coding Engine\n"
+                "[bold green]⚡ Ragon[/bold green] [dim]by Dreamference[/dim] - Autonomous Local Agentic Coding "
+                "Engine\n"
                 "[dim]Exclusive Target Hardware: NVIDIA GB10 (Blackwell Architecture | 128 GB Unified Memory)[/dim]",
                 border_style="green",
             )
@@ -385,7 +394,7 @@ class DreamferenceCLIController:
                 if response.status_code != _HTTP_OK:
                     return None
                 return response.json()["choices"][0]["message"]
-            except Exception:
+            except _PROBE_ERRORS:
                 return None
 
         arithmetic = ask("What is 17 * 23? Reply with only the number.", max_tokens=16)
@@ -814,7 +823,7 @@ class DreamferenceCLIController:
             expected_full = VLLMServerManager().build_launch_command(
                 model=model, port=port, gate=ENGINE_BIND_ADDRESS in running_cmd, engine=engine
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             return {}
 
         # Keep only the server's own arguments: from the first flag after the engine's entry
@@ -1002,7 +1011,7 @@ class DreamferenceCLIController:
 
             served = requests.get(f"{vllm_host}/v1/models", timeout=5).json()["data"][0]["id"]
             return model_key_for_served_id(served, preferred=model_alias) or model_alias
-        except Exception:
+        except _PROBE_ERRORS:
             return model_alias
 
     @classmethod
@@ -1356,7 +1365,8 @@ class DreamferenceCLIController:
 
     @classmethod
     def handle_status(cls) -> None:
-        """Executes `ragon-admin status` command, displaying hardware metrics, vLLM health, Codex/Cline/Continue/OpenHands config,
+        """Executes `ragon-admin status` command, displaying hardware metrics, vLLM health,
+        Codex/Cline/Continue/OpenHands config,
         and context engine index telemetry in formatted Rich panels.
         """
         from rich.panel import Panel
@@ -1610,7 +1620,10 @@ class DreamferenceCLIController:
         """
         parser = argparse.ArgumentParser(
             prog="ragon-admin",
-            description="Ragon by Dreamference: private AI on your NVIDIA GB10. Runs the model server, the Ragon agent, the web chat and the desktop app; also drives Cline, Continue and OpenHands",
+            description=(
+                "Ragon by Dreamference: private AI on your NVIDIA GB10. Runs the model server, "
+                "the Ragon agent, the web chat and the desktop app; also drives Cline, Continue and OpenHands"
+            ),
         )
         agent_choices = ["codex", "cline", "continue", "openhands"]
 
@@ -1813,7 +1826,10 @@ class DreamferenceCLIController:
         start_server_parser.add_argument(
             "--no-gate",
             action="store_true",
-            help="Serve the port from the engine itself, without the model gate that lets a SWE-bench run refuse other requests",
+            help=(
+                "Serve the port from the engine itself, without the model gate that lets a "
+                "SWE-bench run refuse other requests"
+            ),
         )
         start_server_parser.add_argument(
             "--quantization", default=None, help="Quantization method (int8, fp8, awq)"
@@ -1881,7 +1897,10 @@ class DreamferenceCLIController:
         start_server_parser.add_argument(
             "--guided-decoding-backend",
             default=None,
-            help="Structured-outputs backend for deterministic JSON/tool calls (auto, xgrammar, guidance). Unset leaves vLLM's own default",
+            help=(
+                "Structured-outputs backend for deterministic JSON/tool calls (auto, xgrammar, "
+                "guidance). Unset leaves vLLM's own default"
+            ),
         )
         start_server_parser.add_argument(
             "--tensorize",
@@ -1904,7 +1923,8 @@ class DreamferenceCLIController:
             "--diffusion-model",
             default=None,
             help=diffusion_help(
-                f"Diffusion model to serve beside the main one (default: the configured diffusion model, {DEFAULT_DIFFUSION_MODEL})"
+                f"Diffusion model to serve beside the main one (default: the configured diffusion model, "
+                f"{DEFAULT_DIFFUSION_MODEL})"
             ),
         )
         start_server_parser.add_argument(
@@ -2000,7 +2020,10 @@ class DreamferenceCLIController:
         codex_subparsers.add_parser("stop", help="Stop ragon's app-server daemon")
         codex_test_parser = codex_subparsers.add_parser(
             "test",
-            help="Run the upstream test suite on ragon's patched tree, except the tests in codex-tests/ragon-skips.toml",
+            help=(
+                "Run the upstream test suite on ragon's patched tree, except the tests in "
+                "codex-tests/ragon-skips.toml"
+            ),
         )
         codex_test_parser.add_argument(
             "-E", "--filter", default=None, help="nextest filterset to narrow the run to"
@@ -2038,12 +2061,18 @@ class DreamferenceCLIController:
         # Command: ragon-admin host (the settings a model load is refused without)
         host_parser = subparsers.add_parser(
             "host",
-            help="Check or apply the host settings a model load and ragon's sandbox need (swap, sysctls, earlyoom, sysstat, bubblewrap, Wi-Fi power saving)",
+            help=(
+                "Check or apply the host settings a model load and ragon's sandbox need (swap, "
+                "sysctls, earlyoom, sysstat, bubblewrap, Wi-Fi power saving)"
+            ),
         )
         host_subparsers = host_parser.add_subparsers(dest="host_command")
         host_subparsers.add_parser(
             "check",
-            help="Show what `server start` would refuse over, and Wi-Fi power saving (reported, but it blocks no model load), changing nothing",
+            help=(
+                "Show what `server start` would refuse over, and Wi-Fi power saving (reported, "
+                "but it blocks no model load), changing nothing"
+            ),
         )
         host_setup_parser = host_subparsers.add_parser(
             "setup",
@@ -2052,7 +2081,10 @@ class DreamferenceCLIController:
         host_setup_parser.add_argument(
             "--yes",
             action="store_true",
-            help="Never wait for input: run through `sudo -n` (root, NOPASSWD or a fresh sudo timestamp), with no terminal needed; change nothing if sudo would ask",
+            help=(
+                "Never wait for input: run through `sudo -n` (root, NOPASSWD or a fresh sudo "
+                "timestamp), with no terminal needed; change nothing if sudo would ask"
+            ),
         )
 
         # Command: ragon-admin night (Night Shift: run queued tasks overnight)
@@ -2161,7 +2193,10 @@ class DreamferenceCLIController:
         )
         night_pause_parser = night_subparsers.add_parser(
             "pause",
-            help="Let every request through the model gate while a SWE-bench run holds it (the run waits for them, as before the gate)",
+            help=(
+                "Let every request through the model gate while a SWE-bench run holds it (the run "
+                "waits for them, as before the gate)"
+            ),
         )
         night_pause_parser.add_argument(
             "--for",
@@ -2215,7 +2250,10 @@ class DreamferenceCLIController:
         audit_egress_mode.add_argument(
             "--docs",
             action="store_true",
-            help="Trace the local file index instead: `ragon-docs index` and `search` over a fixture folder must reach nothing",
+            help=(
+                "Trace the local file index instead: `ragon-docs index` and `search` over a "
+                "fixture folder must reach nothing"
+            ),
         )
         audit_egress_mode.add_argument(
             "--sync",
@@ -2231,7 +2269,10 @@ class DreamferenceCLIController:
         audit_egress_parser.add_argument(
             "--json",
             action="store_true",
-            help="Also write the full result to $CODEX_HOME/audit/<timestamp>-<session>.json (the session is exec, tui, app, web, docs or sync)",
+            help=(
+                "Also write the full result to $CODEX_HOME/audit/<timestamp>-<session>.json (the "
+                "session is exec, tui, app, web, docs or sync)"
+            ),
         )
         audit_egress_parser.add_argument("--ragon-docs-bin", default=None, help=argparse.SUPPRESS)
 
@@ -2266,7 +2307,10 @@ class DreamferenceCLIController:
         )
         node_status_parser = node_subparsers.add_parser(
             "status",
-            help="Show the node id, what is advertised and published, and what a browse of the network returns; with a name, that paired node's status",
+            help=(
+                "Show the node id, what is advertised and published, and what a browse of the "
+                "network returns; with a name, that paired node's status"
+            ),
         )
         node_status_parser.add_argument(
             "name",
@@ -2349,7 +2393,10 @@ class DreamferenceCLIController:
             "--bind",
             action="append",
             default=None,
-            help="A path on the node to bind read-only; the node's [node] bindable decides which are allowed (repeatable)",
+            help=(
+                "A path on the node to bind read-only; the node's [node] bindable decides which "
+                "are allowed (repeatable)"
+            ),
         )
         node_run_parser.add_argument(
             "job_command", nargs=argparse.REMAINDER, help="-- then the command and its arguments"
@@ -2434,7 +2481,10 @@ class DreamferenceCLIController:
         power_config_subparsers.add_parser("show", help="Print the plugs and the nodes they power")
         node_provision_parser = node_subparsers.add_parser(
             "provision",
-            help="Set up new GB10s from this one: install Ragon, the root half, the model, pairing, start (FLEET spec); re-run on paired nodes, it is the fleet update",
+            help=(
+                "Set up new GB10s from this one: install Ragon, the root half, the model, "
+                "pairing, start (FLEET spec); re-run on paired nodes, it is the fleet update"
+            ),
         )
         node_provision_parser.add_argument(
             "hosts",
@@ -2519,8 +2569,11 @@ class DreamferenceCLIController:
             "--role",
             choices=["night", "engine"],
             default=None,
-            help="Also leave it as a night or engine node: main key, docker, the root helper sudo allows, key-only SSH, "
-            "the role's setup and a readiness report (docs/dev/node.md)",
+            help=(
+                "Also leave it as a night or engine node: main key, docker, the root helper sudo "
+                "allows, key-only SSH, "
+                "the role's setup and a readiness report (docs/dev/node.md)"
+            ),
         )
         node_subparsers.add_parser(
             "prepare",
@@ -2533,7 +2586,10 @@ class DreamferenceCLIController:
         node_job_exec_parser.add_argument("job", help="The job id")
         node_subparsers.add_parser(
             "authorize",
-            help="(Run by `node add` on the other node) authorise a public key, read from standard input, for node operations only",
+            help=(
+                "(Run by `node add` on the other node) authorise a public key, read from standard "
+                "input, for node operations only"
+            ),
         )
         node_serve_parser = node_subparsers.add_parser(
             "serve-job",
@@ -2555,7 +2611,10 @@ class DreamferenceCLIController:
         bench_parser.add_argument(
             "--dataset-path",
             default=None,
-            help="Path to the sonnet dataset inside the container. Unset probes the known locations for the image the server is running",
+            help=(
+                "Path to the sonnet dataset inside the container. Unset probes the known "
+                "locations for the image the server is running"
+            ),
         )
         bench_parser.add_argument(
             "--num-prompts", type=int, default=8, help="Number of prompts to benchmark"
@@ -2628,7 +2687,10 @@ class DreamferenceCLIController:
         docs_subparsers = docs_parser.add_subparsers(dest="docs_command")
         docs_subparsers.add_parser(
             "setup",
-            help="Install PDFium, ONNX Runtime, the embedding model and OCR's models and libraries ragon-docs loads (pinned, checked)",
+            help=(
+                "Install PDFium, ONNX Runtime, the embedding model and OCR's models and libraries "
+                "ragon-docs loads (pinned, checked)"
+            ),
         )
 
         # Command: ragon-admin searxng (the search container behind ragon-search and the web UI)
@@ -3052,7 +3114,9 @@ class DreamferenceCLIController:
                             )
                     else:
                         print(
-                            "⚠️  No model specified. Use --model <model_name> or initialize config with 'ragon-admin init --model <model_name>'"
+                            "⚠️  No model specified. Use --model <model_name> or initialize config "
+                            "with 'ragon-admin init "
+                            "--model <model_name>'"
                         )
                 sys.exit(0)
 
@@ -3202,7 +3266,7 @@ class DreamferenceCLIController:
                             or msg.get("reasoning")
                         ):
                             is_reasoning = True
-                except Exception:
+                except _PROBE_ERRORS:
                     pass
 
                 # Check supported roles
@@ -3244,7 +3308,7 @@ class DreamferenceCLIController:
                         resp = session.post(api_base, json=payload_role, headers=headers, timeout=5)
                         if resp.status_code == _HTTP_OK:
                             supported_roles.append(role)
-                    except Exception:
+                    except _PROBE_ERRORS:
                         pass
                 roles_str = ", ".join(supported_roles) if supported_roles else "Unknown"
 
@@ -3271,7 +3335,7 @@ class DreamferenceCLIController:
                         content = msg.get("content") or ""
                         if _ARG_IM_START in content:
                             supports_chatml = True
-                except Exception:
+                except _PROBE_ERRORS:
                     pass
 
                 # Check antArtifact support
@@ -3297,7 +3361,7 @@ class DreamferenceCLIController:
                         content = msg.get("content") or ""
                         if _ARG_ANTARTIFACT in content:
                             supports_artifact = True
-                except Exception:
+                except _PROBE_ERRORS:
                     pass
 
                 # Check tags supported by the model by asking it directly
@@ -3307,7 +3371,10 @@ class DreamferenceCLIController:
                     "messages": [
                         {
                             "role": "user",
-                            "content": "Analyze your own architecture and output the exact XML tags you use for tool calling, reasoning, and artifacts (e.g. <tool_call>, <think>, <answer>). Output ONLY a comma separated list of tags, with no other text.",
+                            "content": "Analyze your own architecture and output the exact XML tags you use for tool "
+                            "calling, reasoning, and artifacts (e.g. <tool_call>, <think>, "
+                            "<answer>). Output ONLY a comma "
+                            "separated list of tags, with no other text.",
                         }
                     ],
                     "max_tokens": 50,
@@ -3328,7 +3395,7 @@ class DreamferenceCLIController:
                         tags = re.findall(r"<\|?[a-zA-Z0-9_]+\|?>", content)
                         unique_tags = sorted(list(set(tags)))
                         supported_tags = unique_tags
-                except Exception:
+                except _PROBE_ERRORS:
                     pass
                 tags_str = ", ".join(supported_tags) if supported_tags else "None detected"
                 # Check Streaming, TTFT and decode rate.
@@ -3393,7 +3460,7 @@ class DreamferenceCLIController:
                             # throughput; prefill is a separate cost and already shown above.
                             if decode_tokens > 1 and elapsed > ttft:
                                 decode_tps = (decode_tokens - 1) / (elapsed - ttft)
-                except Exception:
+                except _PROBE_ERRORS:
                     pass
 
                 # Check if model is MoE via HF config
@@ -3419,7 +3486,7 @@ class DreamferenceCLIController:
                             is_moe = "Yes"
                         else:
                             is_moe = "No"
-                except Exception:
+                except _PROBE_ERRORS:
                     pass
                 # No config read (no network, or a 404 for an alias or a private repo): the name.
                 if is_moe == unknown:
@@ -3466,7 +3533,7 @@ class DreamferenceCLIController:
                         msg = tool_resp.json().get("choices", [{}])[0].get("message", {})
                         if msg.get("tool_calls"):
                             supports_tools = True
-                except Exception:
+                except _PROBE_ERRORS:
                     pass
 
                 # Check JSON Mode
@@ -3490,7 +3557,7 @@ class DreamferenceCLIController:
                     )
                     if json_resp.status_code == _HTTP_OK:
                         supports_json = True
-                except Exception:
+                except _PROBE_ERRORS:
                     pass
 
                 # Check KV Cache metrics
@@ -3506,7 +3573,7 @@ class DreamferenceCLIController:
                         if match:
                             val = float(match.group(1)) * 100
                             kv_cache_usage = f"{val:.1f}%"
-                except Exception:
+                except _PROBE_ERRORS:
                     pass
 
                 # What the engine actually chose, read from the container's own command line and
@@ -3559,7 +3626,7 @@ class DreamferenceCLIController:
                         hardware_gpus = [
                             g.strip() for g in smi_res.stdout.strip().split("\n") if g.strip()
                         ]
-                except Exception:
+                except _PROBE_ERRORS:
                     pass
 
                 gpu_count = len(hardware_gpus)
@@ -3690,7 +3757,7 @@ class DreamferenceCLIController:
                                                 full_reasoning += r
                                             if c:
                                                 full_content += c
-                                        except Exception:
+                                        except _PROBE_ERRORS:
                                             pass
                             latency = time.time() - start_time
 
@@ -3891,7 +3958,8 @@ class DreamferenceCLIController:
             )
             console.print(f"   [cyan]Target Host:[/cyan]     {config.vllm_host}")
             console.print(
-                f"   [cyan]Indexed Files:[/cyan]   {summary['total_indexed_files']} ({summary['total_ast_symbols']} AST symbols)"
+                f"   [cyan]Indexed Files:[/cyan]   {summary['total_indexed_files']} "
+                f"({summary['total_ast_symbols']} AST symbols)"
             )
 
         elif args.command == _ARG_RUN:
@@ -3948,7 +4016,7 @@ class DreamferenceCLIController:
                 s.connect(("8.8.8.8", 80))
                 local_ip = s.getsockname()[0]
                 s.close()
-            except Exception:
+            except _PROBE_ERRORS:
                 pass
 
             cred_table = Table(title="OpenAPI-compatible Credentials", show_header=False)
@@ -3966,7 +4034,8 @@ class DreamferenceCLIController:
             cred_table.add_row("Auth Header", "Authorization: Bearer <key> (when enabled)")
             console.print(cred_table)
             print(
-                "\n💡 Use with any client that speaks the standard /v1 chat-completions API: point its base_url at the endpoint above."
+                "\n💡 Use with any client that speaks the standard /v1 chat-completions API: point its base_url "
+                "at the endpoint above."
             )
 
         elif args.command == _ARG_SERVER:
@@ -4039,7 +4108,7 @@ class DreamferenceCLIController:
                             hf_token=config.hf_token,
                         ):
                             diffusion_mgr = None
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
                         print(f"⚠️  Diffusion sidecar failed to start: {exc}")
                         diffusion_mgr = None
 
@@ -4162,7 +4231,7 @@ class DreamferenceCLIController:
                                     cls._suggest_engine_fallback(
                                         args.model, engine, "the NVFP4 canary"
                                     )
-                            except Exception as e:
+                            except Exception as e:  # noqa: BLE001
                                 print(f"⚠️  NVFP4 Canary failed to execute: {e}")
                                 cls._suggest_engine_fallback(args.model, engine, "the NVFP4 canary")
 
@@ -4187,7 +4256,8 @@ class DreamferenceCLIController:
                                 # be reported as "still loading" beside the error text.
                                 print(
                                     f"⚠️  Diffusion sidecar at {diffusion_mgr.host}/v1 failed to load: {state}\n"
-                                    f"   The main model is unaffected. Details: docker logs dreamference-diffusion-{args.diffusion_port}"
+                                    f"   The main model is unaffected. Details: docker logs "
+                                    f"dreamference-diffusion-{args.diffusion_port}"
                                 )
                             else:
                                 print(
@@ -4442,7 +4512,8 @@ class DreamferenceCLIController:
             if args.node_command == _ARG_SERVE_JOB:
                 sys.exit(NodeServe.serve(os.environ.get("SSH_ORIGINAL_COMMAND"), key_tag=args.key))
             print(
-                "usage: ragon-admin node {enable,disable,status,list,add,remove,set,start,stop,sync-model,run,jobs,logs,cancel,fetch}"
+                "usage: ragon-admin node "
+                "{enable,disable,status,list,add,remove,set,start,stop,sync-model,run,jobs,logs,cancel,fetch}"
             )
             sys.exit(2)
 
