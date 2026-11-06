@@ -273,3 +273,79 @@ def test_no_headroom_row_without_a_numeric_concurrency(served, max_num_seqs):
 
 def test_an_empty_log_gives_no_graph_rows(served):
     assert ModelDeepInspector.graph_coverage("c", "16") == {}
+
+
+class _Resp:
+    def __init__(self, text: str = "", status: int = 200) -> None:
+        self.text = text
+        self.status_code = status
+
+
+def _metrics(drafts: float, drafted: float, accepted: float, per_pos: list[float]) -> str:
+    lines = [
+        f'vllm:spec_decode_num_drafts_total{{engine="0"}} {drafts}',
+        f'vllm:spec_decode_num_draft_tokens_total{{engine="0"}} {drafted}',
+        f'vllm:spec_decode_num_accepted_tokens_total{{engine="0"}} {accepted}',
+    ]
+    for index, value in enumerate(per_pos):
+        lines.append(
+            f'vllm:spec_decode_num_accepted_tokens_per_pos_total{{engine="0",position="{index}"}}'
+            f" {value}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def test_spec_counters_reads_per_position_slots(monkeypatch) -> None:
+    import requests
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(_metrics(4, 12, 8, [4, 3, 1])))
+    counters = ModelDeepInspector._spec_counters("http://x")
+    assert counters == {"drafts": 4.0, "drafted": 12.0, "accepted": 8.0, "per_pos": [4.0, 3.0, 1.0]}
+
+
+def test_spec_counters_is_none_on_missing_counters_or_bad_status(monkeypatch) -> None:
+    import requests
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp("nothing here\n"))
+    assert ModelDeepInspector._spec_counters("http://x") is None
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp("", 500))
+    assert ModelDeepInspector._spec_counters("http://x") is None
+
+    def boom(*a, **k):
+        raise OSError("down")
+
+    monkeypatch.setattr(requests, "get", boom)
+    assert ModelDeepInspector._spec_counters("http://x") is None
+
+
+def test_profile_skips_probes_whose_request_or_counters_fail(monkeypatch) -> None:
+    import requests
+
+    seq = iter([None, "ok", "ok", "ok"])
+    calls = {"n": 0}
+
+    def fake_counters(cls, host):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None  # first probe: no counters before
+        if calls["n"] == 2:  # second probe before ok, post raises
+            return {"drafts": 1.0, "drafted": 1.0, "accepted": 1.0, "per_pos": [1.0]}
+        if calls["n"] == 3:  # third probe before ok, after None
+            return {"drafts": 1.0, "drafted": 1.0, "accepted": 1.0, "per_pos": [1.0]}
+        if calls["n"] == 4:
+            return None
+        # remaining: before ok, after unchanged (no drafts)
+        return {"drafts": 1.0, "drafted": 1.0, "accepted": 1.0, "per_pos": [1.0]}
+
+    del seq
+    monkeypatch.setattr(ModelDeepInspector, "_spec_counters", classmethod(fake_counters))
+    posts = {"n": 0}
+
+    def fake_post(*a, **k):
+        posts["n"] += 1
+        if posts["n"] == 1:
+            raise OSError("down")
+        return _Resp()
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    assert ModelDeepInspector.profile_acceptance_by_workload("h", "a", "m") == []

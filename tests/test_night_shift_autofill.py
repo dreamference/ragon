@@ -320,3 +320,55 @@ def test_autofill_max_outside_one_to_five_is_refused_not_read_as_the_default(val
     with pytest.raises(SystemExit):
         parser.parse_args(["night", "autofill", "--max", value])
     assert parser.parse_args(["night", "autofill", "--max", "5"]).max == 5
+
+
+def _raising(*args: Any, **kwargs: Any) -> Any:
+    raise OSError("no such command")
+
+
+def test_benchmark_night_names_the_holder_and_survives_a_missing_systemctl(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from dreamference.night_shift.night_shift_queue import NightShiftQueue
+
+    monkeypatch.setattr(
+        NightShiftQueue, "runner_holder", classmethod(lambda c, d=None: "a SWE-bench run")
+    )
+    assert NightShiftAutofill.benchmark_night(tmp_path) == "a SWE-bench run"
+    monkeypatch.setattr(NightShiftQueue, "runner_holder", classmethod(lambda c, d=None: None))
+    assert NightShiftAutofill.benchmark_night(tmp_path, _raising) is None
+
+
+def test_ci_and_qa_candidates_survive_a_missing_gh_and_a_missing_report(tmp_path: Path) -> None:
+    assert NightShiftAutofill.ci_candidates(_raising, tmp_path) == []
+    folder = tmp_path / "empty"
+    folder.mkdir()
+    assert NightShiftAutofill.qa_candidates(folder, _raising, tmp_path) == []
+
+
+def test_a_qa_check_without_a_name_is_dropped(tmp_path: Path) -> None:
+    folder = qa_dir(tmp_path, [{"status": "fail", "name": ""}])
+    assert NightShiftAutofill.qa_candidates(folder, _raising, tmp_path) == []
+
+
+def test_an_unreadable_spec_file_is_skipped(tmp_path: Path) -> None:
+    repo = repo_with_specs(tmp_path, "- [ ] open item\n")
+    (repo / "specs" / "Y.md").mkdir()
+    assert isinstance(NightShiftAutofill.spec_candidates(repo), list)
+
+
+def test_fill_stops_when_the_repo_is_missing_or_the_queue_is_full(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(NightShiftAutofill, "runner", staticmethod(FakeRun()))
+    out = NightShiftAutofill.fill(tmp_path / "night", tmp_path / "nope", "ragon", TODAY, 3)
+    assert "is not there" in out[0]
+    repo = repo_with_specs(tmp_path, "")
+    assert (
+        "queue already holds"
+        in NightShiftAutofill.fill(tmp_path / "night", repo, "ragon", TODAY, 0)[0]
+    )
+
+
+def test_repo_for_expands_a_configured_path() -> None:
+    assert NightShiftAutofill.repo_for("~/somewhere") == Path("~/somewhere").expanduser()
