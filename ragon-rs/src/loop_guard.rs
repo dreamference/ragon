@@ -24,6 +24,10 @@
 //! times, rerunning the loop. Tool calls are held until the response completes, so a call cut off by
 //! the cap is never run.
 //!
+//! **The workload hint.** On a server whose `/v1/models` says `owned_by: ragon-engine`, a request also
+//! names its kind of work (`ragon_workload`), so the engine can pick the drafter that serves it fastest.
+//! It is a hint: no response is cut for it and no output changes (ragon-engine, MULTI_DRAFTER §2.1).
+//!
 //! **Surfaces.** What a request gets depends on where it comes from: the TUI, `ragon exec` (which
 //! is also how SWE-bench and Night Shift run the agent), and, inside `ragon app-server`, Work
 //! threads, Ask threads (cwd under `$CODEX_HOME/ask/`) and phone threads (`$CODEX_HOME/ask/chat-*`,
@@ -70,6 +74,11 @@ pub const BUDGET_ENV: &str = "DREAMFERENCE_RAGON_OUTPUT_BUDGET";
 /// `nonthinking` asks the gate for the model card's non-thinking sampling; `default` or unset sends
 /// nothing, and the server's defaults apply.
 pub const SAMPLING_ENV: &str = "DREAMFERENCE_RAGON_SAMPLING";
+/// What kind of work this process's requests are, one of [`WORKLOADS`]: how `ragon exec`'s unattended
+/// callers (Night Shift, SWE-bench) name theirs. It wins over the surface's; anything else sends none.
+pub const WORKLOAD_ENV: &str = "DREAMFERENCE_RAGON_WORKLOAD";
+/// The values the engine knows (specs in ragon-engine, MULTI_DRAFTER §2.1).
+pub const WORKLOADS: [&str; 6] = ["work", "ask", "phone", "swe-bench", "night", "general"];
 /// The Dreamference TOML file's table for per-surface settings and thresholds.
 pub const TABLE: &str = "loop_guard";
 
@@ -77,6 +86,9 @@ pub const TABLE: &str = "loop_guard";
 pub const SURFACE_KEY: &str = "ragon_surface";
 pub const BUDGET_KEY: &str = "ragon_max_output_tokens";
 pub const SAMPLING_KEY: &str = "ragon_sampling";
+/// Which drafter would serve a request fastest. The gate passes it on; only the engine reads it, and
+/// it never changes a token of the output.
+pub const WORKLOAD_KEY: &str = "ragon_workload";
 
 /// The one sampling arm there is: Qwen3.8's card's values for non-thinking mode, which is how
 /// every `ragon` surface runs the model (reasoning effort `none`).
@@ -135,6 +147,16 @@ impl Surface {
 
     fn default_guard(self) -> bool {
         self != Surface::Exec
+    }
+
+    /// `exec` has none of its own: a plain `ragon exec` says nothing and the engine infers.
+    fn default_workload(self) -> Option<&'static str> {
+        match self {
+            Surface::Tui | Surface::Work => Some("work"),
+            Surface::Ask => Some("ask"),
+            Surface::Phone => Some("phone"),
+            Surface::Exec => None,
+        }
     }
 }
 
@@ -234,6 +256,8 @@ struct State {
     process: Process,
     codex_home: Option<PathBuf>,
     table: Option<toml::Table>,
+    /// Whether the server reads the workload hint; any other is sent nothing new.
+    reads_workload: bool,
     /// Thread id to surface, for `ragon app-server` (filled by the World State hook).
     threads: Mutex<HashMap<String, Surface>>,
     /// Threads whose last response was stopped: the next stop ends the turn.
@@ -242,8 +266,9 @@ struct State {
 
 static STATE: OnceLock<State> = OnceLock::new();
 
-/// Records the kind of process; without it the guard does nothing (`ragon debug`, the tests).
-pub fn configure(process: Process, codex_home: &Path) {
+/// Records the kind of process and whether the server reads the workload hint; without it the guard
+/// does nothing (`ragon debug`, the tests).
+pub fn configure(process: Process, codex_home: &Path, reads_workload: bool) {
     let table = crate::config_file()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|text| text.parse::<toml::Table>().ok())
@@ -252,6 +277,7 @@ pub fn configure(process: Process, codex_home: &Path) {
         process,
         codex_home: Some(codex_home.to_path_buf()),
         table,
+        reads_workload,
         threads: Mutex::new(HashMap::new()),
         nudged: Mutex::new(HashSet::new()),
     });
@@ -274,9 +300,18 @@ fn thread_surface(state: &State, thread_id: &str) -> Surface {
     }
 }
 
-/// The `client_metadata` entries a request from `surface` carries; none when it is untouched.
-pub fn metadata(surface: Surface, settings: &Settings) -> Option<HashMap<String, String>> {
-    if settings.untouched() {
+/// The workload a request from `surface` names: the variable if it is set, else the surface's.
+pub fn workload_for(surface: Surface, env: &dyn Fn(&str) -> Option<String>) -> Option<&'static str> {
+    match env(WORKLOAD_ENV) {
+        Some(value) => WORKLOADS.into_iter().find(|known| *known == value.trim()),
+        None => surface.default_workload(),
+    }
+}
+
+/// The `client_metadata` entries a request from `surface` carries; none when it is untouched and
+/// names no workload.
+pub fn metadata(surface: Surface, settings: &Settings, workload: Option<&str>) -> Option<HashMap<String, String>> {
+    if settings.untouched() && workload.is_none() {
         return None;
     }
     let mut out = HashMap::from([(SURFACE_KEY.to_string(), surface.name().to_string())]);
@@ -285,6 +320,9 @@ pub fn metadata(surface: Surface, settings: &Settings) -> Option<HashMap<String,
     }
     if let Some(arm) = &settings.sampling {
         out.insert(SAMPLING_KEY.to_string(), arm.clone());
+    }
+    if let Some(workload) = workload {
+        out.insert(WORKLOAD_KEY.to_string(), workload.to_string());
     }
     Some(out)
 }
@@ -300,7 +338,8 @@ impl ModelRequestContributor for Guard {
         }
         let surface = thread_surface(state, input.thread_id);
         let settings = settings_for(surface, state.table.as_ref(), &env_var);
-        *input.client_metadata = metadata(surface, &settings);
+        let workload = state.reads_workload.then(|| workload_for(surface, &env_var)).flatten();
+        *input.client_metadata = metadata(surface, &settings, workload);
         if !settings.guard && settings.budget.is_none() {
             return None;
         }
@@ -781,10 +820,54 @@ mod tests {
     }
 
     #[test]
+    fn each_surface_names_its_workload_and_a_plain_exec_names_none() {
+        let expected = [
+            (Surface::Tui, Some("work")),
+            (Surface::Work, Some("work")),
+            (Surface::Ask, Some("ask")),
+            (Surface::Phone, Some("phone")),
+            (Surface::Exec, None),
+        ];
+        for (surface, workload) in expected {
+            assert_eq!(workload_for(surface, &no_env), workload, "{surface:?}");
+        }
+    }
+
+    #[test]
+    fn the_variable_names_the_workload_and_an_unknown_one_names_none() {
+        for known in WORKLOADS {
+            let env = |name: &str| (name == WORKLOAD_ENV).then(|| known.to_string());
+            assert_eq!(workload_for(Surface::Exec, &env), Some(known));
+            assert_eq!(workload_for(Surface::Ask, &env), Some(known));
+        }
+        let unknown = |name: &str| (name == WORKLOAD_ENV).then(|| "fast".to_string());
+        assert_eq!(workload_for(Surface::Exec, &unknown), None);
+        assert_eq!(workload_for(Surface::Work, &unknown), None);
+    }
+
+    #[test]
+    fn a_workload_alone_reaches_the_metadata_and_sets_nothing_the_gate_acts_on() {
+        let exec = settings_for(Surface::Exec, None, &no_env);
+        assert!(exec.untouched());
+        let sent = metadata(Surface::Exec, &exec, Some("night")).unwrap();
+        assert_eq!(sent.get(WORKLOAD_KEY).map(String::as_str), Some("night"));
+        assert_eq!(sent.get(SURFACE_KEY).map(String::as_str), Some("exec"));
+        assert!(!sent.contains_key(BUDGET_KEY) && !sent.contains_key(SAMPLING_KEY));
+    }
+
+    #[test]
+    fn a_workload_changes_no_other_entry() {
+        let ask = settings_for(Surface::Ask, None, &no_env);
+        let mut with = metadata(Surface::Ask, &ask, Some("ask")).unwrap();
+        assert_eq!(with.remove(WORKLOAD_KEY).as_deref(), Some("ask"));
+        assert_eq!(Some(with), metadata(Surface::Ask, &ask, None));
+    }
+
+    #[test]
     fn exec_and_therefore_swe_bench_and_night_shift_are_untouched_by_default() {
         let exec = settings_for(Surface::Exec, None, &no_env);
         assert!(exec.untouched());
-        assert_eq!(metadata(Surface::Exec, &exec), None);
+        assert_eq!(metadata(Surface::Exec, &exec, None), None);
         for surface in [Surface::Tui, Surface::Work, Surface::Ask, Surface::Phone] {
             let s = settings_for(surface, None, &no_env);
             assert!(s.guard && s.budget.is_some() && s.sampling.is_none(), "{surface:?}");
@@ -802,7 +885,7 @@ mod tests {
         let sampling = Settings { sampling: Some(NONTHINKING.to_string()), ..off.clone() };
         for one in [guard, budget, sampling] {
             assert!(!one.untouched(), "{one:?}");
-            assert!(metadata(Surface::Exec, &one).is_some(), "{one:?}");
+            assert!(metadata(Surface::Exec, &one, None).is_some(), "{one:?}");
         }
     }
 
@@ -818,7 +901,7 @@ mod tests {
         assert!(s.guard);
         assert_eq!(s.budget, Some(16_384));
         assert_eq!(s.sampling.as_deref(), Some(NONTHINKING));
-        let sent = metadata(Surface::Exec, &s).expect("metadata");
+        let sent = metadata(Surface::Exec, &s, None).expect("metadata");
         assert_eq!(sent.get(SURFACE_KEY).map(String::as_str), Some("exec"));
         assert_eq!(sent.get(BUDGET_KEY).map(String::as_str), Some("16384"));
         assert_eq!(sent.get(SAMPLING_KEY).map(String::as_str), Some("nonthinking"));
@@ -1100,6 +1183,7 @@ mod tests {
             process,
             codex_home: None,
             table: None,
+            reads_workload: false,
             threads: Mutex::new(HashMap::new()),
             nudged: Mutex::new(HashSet::new()),
         };

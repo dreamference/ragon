@@ -259,6 +259,11 @@ impl ServedModel {
     pub fn runs_custom_tools(&self) -> bool {
         self.owned_by == RAGON_ENGINE_OWNER
     }
+
+    /// Whether the server reads the workload hint (loop_guard.rs); it goes to no other.
+    pub fn reads_workload_hint(&self) -> bool {
+        self.owned_by == RAGON_ENGINE_OWNER
+    }
 }
 
 /// Overrides how `apply_patch` is offered, for a benchmark arm: `off` or `freeform`. Unset, empty
@@ -803,7 +808,7 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
     } else {
         loop_guard::Process::Tui
     };
-    loop_guard::configure(process, &codex_home);
+    loop_guard::configure(process, &codex_home, model.reads_workload_hint());
     // Git over OpenSSL in a sandboxed Windows session: Schannel cannot reach https under the
     // sandbox's restricted token (windows_tls.rs; WINDOWS_ARM §23.4 W3).
     let args = windows_tls::with_git_openssl(args, &user_args, airgapped::full_access_selected(&user_args));
@@ -1869,6 +1874,14 @@ mod tests {
         for given in [&["-m", "other"][..], &["--model", "other"], &["--model=other"], &["-mother"]] {
             let out = prepared(&[&["ragon"][..], given].concat());
             assert!(!out.iter().any(|arg| arg == "Intel/Qwen"), "{given:?}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn only_ragon_engine_is_sent_the_workload_hint() {
+        for (owner, reads) in [(RAGON_ENGINE_OWNER, true), ("sglang", false), ("vllm", false), ("", false)] {
+            let model = ServedModel { id: "m".into(), max_model_len: 65536, owned_by: owner.into() };
+            assert_eq!(model.reads_workload_hint(), reads, "{owner}");
         }
     }
 
