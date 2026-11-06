@@ -1,5 +1,4 @@
-"""Test files taken out of a collected patch, for the regrade-only arm
-the failure analysis §6.2.
+"""Test files taken out of a collected patch, for the regrade-only arm of the failure analysis §6.2.
 
 `swe-bench eval --drop-test-hunks` grades a copy of a run's predictions with every file section
 whose path is a test file removed. The rule looks at paths alone and never at the dataset's
@@ -37,6 +36,7 @@ SKIP: Final[re.Pattern] = re.compile(
 )
 # What a section's header says when the file did not exist before the patch.
 NEW_FILE: Final[str] = "--- /dev/null"
+DEV_NULL: Final[str] = "/dev/null"
 
 
 class SweBenchPatchFilter:
@@ -44,7 +44,9 @@ class SweBenchPatchFilter:
 
     @classmethod
     def is_test_path(cls, path: str) -> bool:
-        """Args:
+        """Check whether a repository-relative path names a test file.
+
+        Args:
             path: A repository-relative path.
 
         Returns:
@@ -143,7 +145,9 @@ class SweBenchPatchFilter:
 
     @classmethod
     def sections(cls, patch: str) -> list[str]:
-        """Args:
+        """Split a unified diff into file sections.
+
+        Args:
             patch: A unified diff in `git diff`'s format.
 
         Returns:
@@ -163,7 +167,9 @@ class SweBenchPatchFilter:
 
     @classmethod
     def paths(cls, section: str) -> list[str]:
-        """Args:
+        """Extract the file paths named in one `git diff` section.
+
+        Args:
             section: One file section of a `git diff`.
 
         Returns:
@@ -201,7 +207,7 @@ class SweBenchPatchFilter:
             # Git quotes a path with special characters; only the quote and backslash matter to
             # whether it is a test path.
             text = text[1:-1].replace('\\"', '"').replace("\\\\", "\\")
-        if text == "/dev/null":
+        if text == DEV_NULL:
             return None
         if prefixed and (text.startswith(("a/", "b/"))):
             text = text[2:]

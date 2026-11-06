@@ -421,10 +421,6 @@
    "PLR0915": 1,
    "PLR1702": 1
   },
-  "dreamference/swe_bench/swe_bench_patch_filter.py": {
-   "D205": 4,
-   "PLR2004": 1
-  },
   "dreamference/swe_bench/swe_bench_relay.py": {
    "D205": 2,
    "PLR2004": 1
@@ -595,5 +591,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1037
+ "total": 1032
 }
