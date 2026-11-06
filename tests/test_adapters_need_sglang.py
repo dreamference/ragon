@@ -137,3 +137,47 @@ def test_adapter_install_reads_the_engine_from_the_config_it_was_given(monkeypat
     args = Cli.build_parser().parse_args(["adapter", "install", "tuned"])
     assert AdapterCommand.run(args, Config()) == 0
     assert "serves no adapters yet" in capsys.readouterr().out
+
+
+@pytest.fixture
+def engine_serves_adapters(monkeypatch):
+    """An engine build whose recipe lists the adapter feature."""
+    monkeypatch.setattr(
+        ModelMatrixRegistry,
+        "engine_has_feature",
+        classmethod(
+            lambda cls, key, engine, feature: engine == ENGINE_RAGON and feature == "lora-adapters"
+        ),
+    )
+
+
+def test_the_shipped_recipe_does_not_list_the_adapter_feature_yet():
+    assert not ModelMatrixRegistry.engine_has_feature(MODEL, ENGINE_RAGON, "lora-adapters")
+
+
+def test_an_engine_with_the_adapter_feature_keeps_ragon_serve(
+    ragon_default, adapters, engine_serves_adapters, capsys
+):
+    assert Cli._engine_for_adapters(MODEL, None, from_flag=False) is None
+    assert Cli._engine_for_adapters(MODEL, ENGINE_RAGON, from_flag=False) == ENGINE_RAGON
+    assert Cli._engine_for_adapters(MODEL, ENGINE_RAGON, from_flag=True) == ENGINE_RAGON
+    assert capsys.readouterr().out == ""
+
+
+def test_sglang_flag_is_honoured_when_the_engine_serves_adapters(
+    adapters, engine_serves_adapters, capsys
+):
+    assert Cli._engine_for_adapters(MODEL, ENGINE_SGLANG, from_flag=True) == ENGINE_SGLANG
+    assert capsys.readouterr().out == ""
+
+
+def test_an_engine_without_the_feature_says_why_it_starts_sglang(ragon_default, adapters, capsys):
+    assert Cli._engine_for_adapters(MODEL, None, from_flag=False) == ENGINE_SGLANG
+    assert "no adapter feature" in capsys.readouterr().out
+
+
+def test_install_does_not_warn_when_the_engine_serves_adapters(
+    ragon_default, engine_serves_adapters, capsys
+):
+    AdapterCommand._warn_if_ragon({"key": MODEL}, DreamferenceConfig())
+    assert capsys.readouterr().out == ""

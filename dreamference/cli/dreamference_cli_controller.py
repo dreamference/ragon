@@ -524,9 +524,10 @@ class DreamferenceCLIController:
     def _engine_for_adapters(cls, model: str, engine: str | None, from_flag: bool) -> str | None:
         """Keeps installed LoRA adapters from being lost to an engine that cannot serve them.
 
-        ragon-serve, the default engine since 0.9.0, has no adapter code yet. When the engine this
-        start resolved is ragon and an adapter is installed for the model, a start without `--engine`
-        moves to SGLang and says so; an explicit `--engine ragon` is refused.
+        When the engine this start resolved is ragon-serve and an adapter is installed for the model:
+        an engine build whose recipe lists the `lora-adapters` feature serves it, so ragon-serve
+        starts; otherwise a start without `--engine` moves to SGLang and says why, and an explicit
+        `--engine ragon` is refused. `--engine sglang` is always honoured.
 
         Args:
             model (str): The model to serve.
@@ -540,7 +541,11 @@ class DreamferenceCLIController:
             SystemExit: With 2, on `--engine ragon` while adapters are installed.
         """
         from dreamference.hardware import ModelMatrixRegistry
-        from dreamference.hardware.model_matrix_registry import ENGINE_RAGON, ENGINE_SGLANG
+        from dreamference.hardware.model_matrix_registry import (
+            ENGINE_FEATURE_ADAPTERS,
+            ENGINE_RAGON,
+            ENGINE_SGLANG,
+        )
         from dreamference.vllm_server.adapter_serving import AdapterServing
 
         engines = ModelMatrixRegistry.engines(model)
@@ -549,19 +554,21 @@ class DreamferenceCLIController:
         adapters = AdapterServing.launch_adapters(model)
         if not adapters:
             return engine
+        if ModelMatrixRegistry.engine_has_feature(model, ENGINE_RAGON, ENGINE_FEATURE_ADAPTERS):
+            return engine
         names = ", ".join(str(entry["name"]) for entry in adapters)
         if from_flag:
             print(
                 f"❌ --engine ragon cannot serve the installed adapters ({names}): ragon-serve has no "
-                "adapter support yet. Use --engine sglang, or remove them with "
+                "adapter support in this engine build. Use --engine sglang, or remove them with "
                 "`ragon-admin adapter remove`."
             )
             raise SystemExit(2)
         if ENGINE_SGLANG not in engines:
             return engine
         print(
-            f"⚠️  Adapters need SGLang until ragon-serve serves them: serving with SGLang "
-            f"for {names}."
+            f"⚠️  Adapters need SGLang until ragon-serve serves them: this engine build has no "
+            f"adapter feature, so serving with SGLang for {names}."
         )
         return ENGINE_SGLANG
 

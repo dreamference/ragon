@@ -218,13 +218,18 @@ class AdapterCommand:
     def _warn_if_ragon(cls, base: dict[str, str] | None, config: DreamferenceConfig) -> None:
         """Warns when the engine the next `server start` resolves is ragon-serve, which serves no adapters."""
         from dreamference.hardware import ModelMatrixRegistry
-        from dreamference.hardware.model_matrix_registry import ENGINE_RAGON
+        from dreamference.hardware.model_matrix_registry import (
+            ENGINE_FEATURE_ADAPTERS,
+            ENGINE_RAGON,
+        )
 
         if base is None:
             return
         engines = ModelMatrixRegistry.engines(base["key"])
         engine = config.server_engine or (engines[0] if engines else None)
-        if engine == ENGINE_RAGON:
+        if engine == ENGINE_RAGON and not ModelMatrixRegistry.engine_has_feature(
+            base["key"], ENGINE_RAGON, ENGINE_FEATURE_ADAPTERS
+        ):
             print(
                 "⚠️  The engine configured for this model is ragon-serve, which serves no adapters yet: "
                 "`ragon-admin server start` will use SGLang while an adapter is installed "

@@ -421,6 +421,11 @@ QWEN38_RAGON_ENGINE_FEATURES: Final[tuple[str, ...]] = (
     "fair-pairing",
 )
 
+# The feature name an engine build lists in `engine_features` once it serves LoRA adapters itself
+# (ADAPTERS §7). It is not in the tuple above: the pinned image has no adapter code, and
+# scripts/pin_ragon_serve_image.py adds it with the commit and digest of the build that does.
+ENGINE_FEATURE_ADAPTERS: Final[str] = "lora-adapters"
+
 # The sessions and the batch the recipe asks of an engine with the "kv-pages" feature: four
 # conversations at once (the owner's bar; BATCHING §5.3 P4d).
 # `--sessions` and `--batch` are parsed by every ragon-serve, but without the
@@ -915,6 +920,21 @@ class ModelMatrixRegistry:
             str: `launch_overrides['engine']`, lower case; `vllm` when it names none.
         """
         return str(recipe.get("engine") or ENGINE_VLLM).lower()
+
+    @classmethod
+    def engine_has_feature(cls, model_key: str, engine: str, feature: str) -> bool:
+        """Whether a model's recipe for an engine lists a feature of the pinned engine build.
+
+        Args:
+            model_key (str): Model alias, HF repo ID, or display name.
+            engine (str): The engine whose recipe is asked.
+            feature (str): A name in the recipe's `engine_features`.
+
+        Returns:
+            bool: True when the recipe for that engine names the feature.
+        """
+        overrides = cls.get_launch_overrides(model_key, engine)
+        return feature in (overrides.get("engine_features") or [])
 
     @classmethod
     def engines(cls, model_key: str) -> list[str]:
