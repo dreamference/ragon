@@ -35,6 +35,9 @@ WEB_UNIT = str(pathlib.Path("~/.config/systemd/user/ragon-web.service").expandus
 # Ubuntu puts the daemon in /usr/sbin, which is not on every user's PATH.
 AVAHI_DAEMON = "/usr/sbin/avahi-daemon"
 DEFAULT_MODEL_PORT = 8000
+HTTP_OK = 200
+LAN_FLAG = " --lan"
+SUDO_MODE = "sudo"
 
 SHARING_NOTICE = (
     "⚠️  Anyone on the local network can now use this node: send prompts to its model and search\n"
@@ -116,8 +119,10 @@ class NodeAdvertiser:
 
     @classmethod
     def warn_wifi_power_save(cls) -> None:
-        """Prints a warning, not an error, when a connected Wi-Fi interface has power saving on: it
-        loses the multicast mDNS this advertisement travels by, so clients may not find the node.
+        """Print a warning when a connected Wi-Fi interface has power saving on.
+
+        It is a warning, not an error: power saving loses the multicast mDNS this advertisement
+        travels by, so clients may not find the node.
         """
         from dreamference.vllm_server.wifi_power_save import WifiPowerSave
 
@@ -157,7 +162,9 @@ class NodeAdvertiser:
 
     @classmethod
     def status(cls) -> str:
-        """Returns:
+        """Describe this node's advertisement in plain text.
+
+        Returns:
         str: The node's id, what it shares, the advertised records, the published addresses,
         and what a browse of the network returns.
         """
@@ -186,9 +193,8 @@ class NodeAdvertiser:
             lines.append(f"Web UI (ragon web, port {WEB_PORT}): ragon is not installed")
         else:
             shared = settings["advertise"] and settings["web"]
-            lines.append(
-                f"Web UI (ragon web, port {WEB_PORT}): {'the local network, paired devices only' if shared else 'this machine only'}"
-            )
+            reach = "the local network, paired devices only" if shared else "this machine only"
+            lines.append(f"Web UI (ragon web, port {WEB_PORT}): {reach}")
         searxng = cls.searxng_published_address()
         lines.append(f"SearXNG published on: {searxng or 'not running'}")
         found = NodeBrowser.browse()
@@ -242,7 +248,9 @@ class NodeAdvertiser:
 
     @classmethod
     def ragon_executable(cls) -> str | None:
-        """Returns:
+        """Find the installed `ragon`.
+
+        Returns:
         Optional[str]: The installed `ragon`, which serves `ragon web`, or None.
         """
         from dreamference.runner.codex_branded_builder import CodexBrandedBuilder
@@ -252,7 +260,9 @@ class NodeAdvertiser:
 
     @classmethod
     def ragon_web_available(cls) -> bool:
-        """Returns:
+        """Tell whether `ragon web` can be served here.
+
+        Returns:
         bool: True if this machine can serve the Ragon web UI (`ragon web`, part of `ragon`).
         """
         return cls.ragon_executable() is not None
@@ -280,7 +290,7 @@ class NodeAdvertiser:
         else:
             try:
                 with pathlib.Path(WEB_UNIT).open() as handle:
-                    on_lan = " --lan" in handle.read()
+                    on_lan = LAN_FLAG in handle.read()
             except OSError:
                 on_lan = False
             if not on_lan:
@@ -311,10 +321,11 @@ class NodeAdvertiser:
 
     @classmethod
     def apply_binds(cls) -> bool:
-        """Publishes the web UI and SearXNG where the settings say, recreating a container only when
-        its address changes. `ragon web` is started on the network for a node that shares its web
-        UI (`serve_web`); SearXNG is not installed or started by this: a node without it simply
-        does not offer it.
+        """Publish the web UI and SearXNG where the settings say.
+
+        A container is recreated only when its address changes. `ragon web` is started on the
+        network for a node that shares its web UI (`serve_web`); SearXNG is not installed or
+        started by this: a node without it simply does not offer it.
 
         Returns:
             bool: True when the web UI is shared with the network.
@@ -330,7 +341,9 @@ class NodeAdvertiser:
 
     @classmethod
     def avahi_installed(cls) -> bool:
-        """Returns:
+        """Tell whether the Avahi daemon is installed.
+
+        Returns:
         bool: True if the Avahi daemon, which publishes the service file, is installed.
         """
         return shutil.which("avahi-daemon") is not None or pathlib.Path(AVAHI_DAEMON).exists()
@@ -398,7 +411,7 @@ class NodeAdvertiser:
                 subprocess.run(
                     HostSafetySetup.root_argv(command, mode),
                     check=False,
-                    stdin=None if mode == "sudo" else subprocess.DEVNULL,
+                    stdin=None if mode == SUDO_MODE else subprocess.DEVNULL,
                 ).returncode
                 == 0
             )
@@ -419,7 +432,9 @@ class NodeAdvertiser:
 
     @classmethod
     def model_port(cls) -> int:
-        """Returns:
+        """Return the model server's port.
+
+        Returns:
         int: The model server's port, from the configured host.
         """
         from dreamference.config import DreamferenceConfig
@@ -437,13 +452,15 @@ class NodeAdvertiser:
             with urllib.request.urlopen(
                 f"http://127.0.0.1:{port}/v1/models", timeout=2
             ) as response:
-                return response.status == 200
+                return response.status == HTTP_OK
         except (OSError, ValueError):
             return False
 
     @classmethod
     def search_port(cls) -> int | None:
-        """Returns:
+        """Return SearXNG's host port.
+
+        Returns:
         Optional[int]: SearXNG's host port when its container exists, else None.
         """
         from dreamference.chat.searxng_sidecar import SEARXNG_CONTAINER_NAME, SEARXNG_HOST_PORT
@@ -453,7 +470,9 @@ class NodeAdvertiser:
 
     @classmethod
     def serves_main_model(cls) -> bool:
-        """Returns:
+        """Tell whether this node's model suits a coding client.
+
+        Returns:
         bool: True if the model assigned to this node is one a coding client can use.
         """
         from dreamference.config import DreamferenceConfig
@@ -476,19 +495,23 @@ class NodeAdvertiser:
 
     @classmethod
     def is_gb10(cls) -> bool:
-        """Returns:
+        """Tell whether this machine is a GB10.
+
+        Returns:
         bool: True if the hardware detection qualifies this machine as a GB10.
         """
         try:
             from dreamference.hardware.hardware_manager import HardwareManager
 
             return bool(HardwareManager.detect_gb10_hardware().is_gb10)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a failed probe means "not a GB10"
             return False
 
     @classmethod
     def version(cls) -> str:
-        """Returns:
+        """Return Ragon's version.
+
+        Returns:
         str: Ragon's version on this node.
         """
         from dreamference import __version__
@@ -497,7 +520,9 @@ class NodeAdvertiser:
 
     @classmethod
     def searxng_published_address(cls) -> str:
-        """Returns:
+        """Return the address SearXNG publishes on.
+
+        Returns:
         str: The address SearXNG's container publishes on, or "" when there is none.
         """
         from dreamference.chat.searxng_sidecar import SearxngSidecar
@@ -506,7 +531,9 @@ class NodeAdvertiser:
 
     @classmethod
     def summary(cls) -> dict[str, object]:
-        """Returns:
+        """Return the settings and node id.
+
+        Returns:
         Dict[str, object]: The settings and the node id, for `ragon-admin status`.
         """
         return {"node": NodeIdentity.read(), **NodeSettings.load()}

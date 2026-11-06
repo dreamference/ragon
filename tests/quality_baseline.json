@@ -374,10 +374,6 @@
    "PLR2004": 5
   },
   "dreamference/node/node_advertiser.py": {
-   "BLE001": 1,
-   "D205": 13,
-   "E501": 1,
-   "PLR2004": 3,
    "T201": 19
   },
   "dreamference/node/node_browser.py": {
@@ -1011,5 +1007,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 2402
+ "total": 2384
 }
