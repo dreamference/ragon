@@ -185,8 +185,7 @@ class NightShiftRunner:
     def lanes(
         cls, vllm_host: str, settings: NightShiftSettings
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """This machine's model server and every paired node serving the same model, each with the
-        tasks it may hold and their compaction limit.
+        """This machine's model server and every paired node, each with its tasks and compaction limit.
 
         Args:
             vllm_host: This machine's model server.
@@ -303,8 +302,9 @@ class NightShiftRunner:
         end: datetime,
         notes: list[str],
     ) -> None:
-        """Refreshes the code index of every repository with queued tasks, one at a time, before any
-        task starts, so each begins with a fresh index (code-index spec §6.3). `ragon-code` admits
+        """Refreshes the code index of every repository with queued tasks, one at a time, before any task starts.
+
+        So each begins with a fresh index (code-index spec §6.3). `ragon-code` admits
         and sandboxes its own runs; a refresh that does not finish leaves the index as it was,
         which the router's answers already account for.
 
@@ -557,7 +557,8 @@ class NightShiftRunner:
 
     @classmethod
     def pending_tasks(cls, night_dir: Path) -> list[dict[str, Any]]:
-        """Returns:
+        """Returns queued and interrupted tasks of every repository, oldest first.
+
         List[Dict[str, Any]]: Queued and interrupted tasks of every repository, oldest first.
         """
         return [
@@ -568,8 +569,9 @@ class NightShiftRunner:
 
     @classmethod
     def round_robin(cls, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Orders tasks first in, first out within a repository and alternates between repositories,
-        so one long list cannot starve another (§4).
+        """Orders tasks first in, first out within a repository and alternates between repositories.
+
+        So one long list cannot starve another (§4).
 
         Args:
             tasks: Tasks, oldest first.

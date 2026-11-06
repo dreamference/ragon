@@ -220,7 +220,6 @@
   "dreamference/night_shift/night_shift_runner.py": {
    "ANN401": 1,
    "C901": 1,
-   "D205": 4,
    "PLR1702": 1,
    "PLR2004": 1,
    "T201": 6
@@ -600,5 +599,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1046
+ "total": 1042
 }
