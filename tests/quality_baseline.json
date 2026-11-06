@@ -475,15 +475,11 @@
    "C901": 1
   },
   "dreamference/swe_bench/swe_bench_runner.py": {
-   "ANN401": 3,
    "BLE001": 1,
-   "C901": 2,
-   "D205": 9,
+   "C901": 1,
    "PLR0911": 1,
-   "PLR0912": 2,
-   "PLR0915": 2,
-   "PLR1702": 15,
-   "PLR2004": 6,
+   "PLR0912": 1,
+   "PLR0915": 1,
    "T201": 33
   },
   "dreamference/swe_bench/swe_bench_runtime.py": {
@@ -650,5 +646,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1277
+ "total": 1204
 }
