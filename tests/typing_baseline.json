@@ -41,9 +41,6 @@
   "dreamference/swe_bench/swe_bench_relay.py": {
    "union-attr": 1
   },
-  "dreamference/swe_bench/swe_bench_run_store.py": {
-   "operator": 1
-  },
   "dreamference/swe_bench/swe_bench_runner.py": {
    "arg-type": 3,
    "attr-defined": 1,
@@ -51,5 +48,5 @@
   }
  },
  "mypy": "2.4.0",
- "total": 30
+ "total": 29
 }
