@@ -52,7 +52,9 @@ class SweBenchHooks:
     def hook_hash(
         cls, event_label: str, command: str, timeout: int, matcher: str | None = None
     ) -> str:
-        """The hash Codex compares with `hooks.state.<key>.trusted_hash` before it runs a hook
+        """Computes the trusted hash of one hook.
+
+        The hash Codex compares with `hooks.state.<key>.trusted_hash` before it runs a hook
         (codex-rs/config/src/fingerprint.rs `version_for_toml` over the normalised hook,
         hooks/src/engine/discovery.rs `hook_hash`): SHA-256 over canonical JSON, keys sorted,
         no spaces. The same scheme as the launcher's (ragon-rs/src/compaction.rs), pinned by a
@@ -130,15 +132,19 @@ class SweBenchHooks:
 
     @classmethod
     def gate_source(cls) -> Path:
-        """Returns:
-        Path: The gate's file in the installed package, mounted read-only into containers.
+        """Returns the gate's file in the installed package, mounted read-only into containers.
+
+        Returns:
+            Path: The gate's file in the installed package, mounted read-only into containers.
         """
         return Path(swe_bench_issue_gate.__file__).resolve()
 
     @classmethod
     def gate_digest(cls) -> str:
-        """Returns:
-        str: The SHA-256 of the gate's file, recorded in the manifest.
+        """Returns the SHA-256 of the gate's file, recorded in the manifest.
+
+        Returns:
+            str: The SHA-256 of the gate's file, recorded in the manifest.
         """
         return hashlib.sha256(cls.gate_source().read_bytes()).hexdigest()
 
