@@ -1549,10 +1549,11 @@ def host(monkeypatch):
     monkeypatch.setattr(
         HostSafetySetup, "_mem_available_gb", classmethod(lambda cls: state["mem_available_gb"])
     )
+    path_exists = host_safety_setup.Path.exists
     monkeypatch.setattr(
-        host_safety_setup.os.path,
+        host_safety_setup.Path,
         "exists",
-        lambda path: state["swap_file_exists"] if path == "/swap.img" else os.path.lexists(path),
+        lambda self: state["swap_file_exists"] if str(self) == "/swap.img" else path_exists(self),
     )
     # The machine's own /etc/apparmor.d must not decide a test: a CI runner's image has a profile
     # for bwrap where this machine has none, and the fix then loads that one instead of ours.
@@ -2046,9 +2047,10 @@ def test_swap_areas_are_read_from_proc_swaps(tmp_path, monkeypatch):
     )
     (tmp_path / "swaps").write_text(text)
     monkeypatch.setattr(
-        "builtins.open",
-        lambda path, *a, **k: real_open(
-            tmp_path / "swaps" if path == "/proc/swaps" else path, *a, **k
+        host_safety_setup.Path,
+        "open",
+        lambda self, *a, **k: real_open(
+            tmp_path / "swaps" if str(self) == "/proc/swaps" else self, *a, **k
         ),
     )
     areas = HostSafetySetup.swap_areas()

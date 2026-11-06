@@ -21,6 +21,12 @@ TOOL_CALL_CANARY_TIMEOUT_S: Final[float] = 60.0
 CONNECT_TIMEOUT_S: Final[float] = 5.0
 MAX_OUTPUT_TOKENS: Final[int] = 256
 
+HTTP_OK: Final[int] = 200
+HTTP_BAD_REQUEST: Final[int] = 400
+HTTP_NOT_FOUND: Final[int] = 404
+STREAM_DONE: Final[str] = "[DONE]"
+FUNCTION_CALL_TYPE: Final[str] = "function_call"
+OUTPUT_ITEM_DONE: Final[str] = "response.output_item.done"
 TOOL_NAME: Final[str] = "get_weather"
 REQUIRED_ARGUMENT: Final[str] = "city"
 PROMPT: Final[str] = "What is the weather in Paris right now? Use the tool."
@@ -129,7 +135,7 @@ class ToolCallCanary:
         except requests.RequestException as error:
             return False, f"the request failed ({type(error).__name__}); nothing could be checked"
         try:
-            if response.status_code != 200:
+            if response.status_code != HTTP_OK:
                 body = (getattr(response, "text", "") or "").strip().replace("\n", " ")[:160]
                 return False, cls.refusal(response.status_code, body, model_key, engine)
             try:
@@ -173,7 +179,7 @@ class ToolCallCanary:
             if not line or not line.startswith("data:"):
                 continue
             data = line[len("data:") :].strip()
-            if data == "[DONE]":
+            if data == STREAM_DONE:
                 return events, True
             try:
                 event = json.loads(data)
@@ -220,7 +226,7 @@ class ToolCallCanary:
             detail = failed.get("message") or (failed.get("response") or {}).get("error") or failed
             return False, f"the server reported an error mid-stream ({str(detail)[:120]})"
         items = cls.output_items(events)
-        calls = [item for item in items if item.get("type") == "function_call"]
+        calls = [item for item in items if item.get("type") == FUNCTION_CALL_TYPE]
         text = cls.text_of(items, events, "message", "response.output_text")
         reasoning = cls.text_of(items, events, "reasoning", "response.reasoning")
         parsers = cls.parsers(model_key, engine)
@@ -277,12 +283,12 @@ class ToolCallCanary:
         Returns:
             str: What came back and what is likely at fault.
         """
-        if status == 400:
+        if status == HTTP_BAD_REQUEST:
             return (
                 f"the server refused the request (HTTP 400: {body!r}): the chat template"
                 f"{cls.parsers(model_key, engine)['template']} or the server's Responses support is at fault"
             )
-        if status == 404:
+        if status == HTTP_NOT_FOUND:
             return "the server has no /v1/responses (HTTP 404): ragon cannot use it"
         return f"the server answered HTTP {status} ({body!r})"
 
@@ -310,8 +316,7 @@ class ToolCallCanary:
         return [
             event["item"]
             for event in events
-            if event.get("type") == "response.output_item.done"
-            and isinstance(event.get("item"), dict)
+            if event.get("type") == OUTPUT_ITEM_DONE and isinstance(event.get("item"), dict)
         ]
 
     @classmethod

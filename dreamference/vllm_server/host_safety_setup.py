@@ -80,6 +80,21 @@ TOOLKIT_COMMANDS: Final[tuple] = (
 SWAP_DISK_MARGIN_GB: Final[float] = 20.0
 
 
+# Keys, names and mode strings the setup steps are matched on.
+STEP_COMMANDS_KEY: Final[str] = "commands"
+BWRAP_STEP_NAME: Final[str] = "let bubblewrap create its sandbox"
+BWRAP_ERROR_PREFIX: Final[str] = "bwrap:"
+MODE_ROOT: Final[str] = "root"
+MODE_SUDO: Final[str] = "sudo"
+MODE_SUDO_NONINTERACTIVE: Final[str] = "sudo -n"
+SWAP_TYPE_FILE: Final[str] = "file"
+SWAP_TYPE_NAME: Final[str] = "swap"
+# An /etc/fstab line has six fields; a swap entry needs at least four to be read, and three to
+# carry its file and type.
+FSTAB_MIN_FIELDS: Final[int] = 4
+FSTAB_TYPE_FIELDS: Final[int] = 3
+
+
 class HostSafetySetup:
     """Finds what `check_host_safety()` would refuse over, and applies the fixes."""
 
@@ -123,7 +138,7 @@ class HostSafetySetup:
         print(f"⚠️  Host setup: {len(steps)} thing(s) to fix on this machine.\n")
         for number, step in enumerate(steps, 1):
             cls._describe(number, step)
-        if any("commands" in step for step in steps):
+        if any(STEP_COMMANDS_KEY in step for step in steps):
             print(
                 "💡 `ragon-admin host setup` runs the commands listed (sudo asks for your password)."
             )
@@ -173,7 +188,7 @@ class HostSafetySetup:
         finally:
             cls._restore_hangup(hangup)
         remaining = cls.steps()
-        if not any(step["name"] == "let bubblewrap create its sandbox" for step in remaining):
+        if not any(step["name"] == BWRAP_STEP_NAME for step in remaining):
             # A "turn it off" answer given to `SandboxPrerequisite` no longer applies.
             from dreamference.vllm_server.sandbox_prerequisite import SandboxPrerequisite
 
@@ -297,9 +312,9 @@ class HostSafetySetup:
         Returns:
             List[str]: The argv to run.
         """
-        if mode == "root":
+        if mode == MODE_ROOT:
             return list(command)
-        if mode == "sudo -n":
+        if mode == MODE_SUDO_NONINTERACTIVE:
             return ["sudo", "-n", *command]
         return ["sudo", *command]
 
@@ -362,9 +377,7 @@ class HostSafetySetup:
         # zram is not counted (see `_swap_total_gb`), and it is no reason not to resize the swap
         # file beside it: it stays as it is.
         areas = [
-            area
-            for area in cls.swap_areas()
-            if not os.path.basename(area["name"]).startswith("zram")
+            area for area in cls.swap_areas() if not Path(area["name"]).name.startswith("zram")
         ]
         target = f"{MIN_SWAP_GB:.0f}G"
         make = [
@@ -382,7 +395,7 @@ class HostSafetySetup:
             ],
         ]
         only_the_swap_file = (
-            len(areas) == 1 and areas[0]["name"] == SWAP_FILE and areas[0]["type"] == "file"
+            len(areas) == 1 and areas[0]["name"] == SWAP_FILE and areas[0]["type"] == SWAP_TYPE_FILE
         )
         if areas and not only_the_swap_file:
             listed = ", ".join(f"{area['name']} ({area['type']})" for area in areas)
@@ -393,7 +406,7 @@ class HostSafetySetup:
             )
             return step
         existing_gb = areas[0]["size_gb"] if areas else 0.0
-        if not areas and os.path.exists(SWAP_FILE):
+        if not areas and Path(SWAP_FILE).exists():
             if not cls.is_swap_file(SWAP_FILE):
                 step["manual"] = (
                     f"{SWAP_FILE} exists but is not in use as swap. Check what it is, then "
@@ -626,7 +639,7 @@ class HostSafetySetup:
         except (OSError, subprocess.SubprocessError):
             return None
         output = result.stdout + result.stderr
-        if "bwrap:" in output:
+        if BWRAP_ERROR_PREFIX in output:
             return False
         return True if result.returncode == 0 else None
 
@@ -639,7 +652,7 @@ class HostSafetySetup:
             process (root, an ACL, a rootless daemon elsewhere), or the user is listed in the
             `docker` group, which counts before the next login makes it true for processes too.
         """
-        if not os.path.exists(DOCKER_SOCKET) or os.access(DOCKER_SOCKET, os.W_OK):
+        if not Path(DOCKER_SOCKET).exists() or os.access(DOCKER_SOCKET, os.W_OK):
             return True
         if grp is None:
             return True
@@ -664,13 +677,13 @@ class HostSafetySetup:
         """
         areas: list[dict[str, Any]] = []
         try:
-            with open("/proc/swaps") as handle:
+            with Path("/proc/swaps").open() as handle:
                 lines = handle.read().splitlines()[1:]
         except OSError:
             return areas
         for line in lines:
             fields = line.split()
-            if len(fields) < 4:
+            if len(fields) < FSTAB_MIN_FIELDS:
                 continue
             try:
                 areas.append(
@@ -698,10 +711,14 @@ class HostSafetySetup:
             bool: True if it is safe to `mkswap` it.
         """
         try:
-            with open(FSTAB) as handle:
+            with Path(FSTAB).open() as handle:
                 for line in handle:
                     fields = line.split("#", 1)[0].split()
-                    if len(fields) >= 3 and fields[0] == path and fields[2] == "swap":
+                    if (
+                        len(fields) >= FSTAB_TYPE_FIELDS
+                        and fields[0] == path
+                        and fields[2] == SWAP_TYPE_NAME
+                    ):
                         return True
         except OSError:
             pass
@@ -718,12 +735,12 @@ class HostSafetySetup:
             )
         except (OSError, subprocess.SubprocessError):
             return False
-        return result.stdout.strip() == "swap"
+        return result.stdout.strip() == SWAP_TYPE_NAME
 
     @classmethod
     def _file_gb(cls, path: str) -> float:
         try:
-            return os.path.getsize(path) / (1024**3)
+            return Path(path).stat().st_size / (1024**3)
         except OSError:
             return 0.0
 
@@ -737,7 +754,7 @@ class HostSafetySetup:
     @classmethod
     def _mem_available_gb(cls) -> float:
         try:
-            with open("/proc/meminfo") as handle:
+            with Path("/proc/meminfo").open() as handle:
                 for line in handle:
                     if line.startswith("MemAvailable:"):
                         return int(line.split()[1]) / (1024**2)
@@ -761,7 +778,7 @@ class HostSafetySetup:
             print(text, flush=True)
         except OSError:  # BrokenPipeError among them
             with contextlib.suppress(OSError):
-                sys.stdout = open(os.devnull, "w")  # noqa: SIM115  # stays open: it is stdout now
+                sys.stdout = Path(os.devnull).open("w")  # noqa: SIM115  # stays open: it is stdout now
 
     @classmethod
     def _ignore_hangup(cls) -> Any:
@@ -826,8 +843,8 @@ class HostSafetySetup:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                stdin=None if mode == "sudo" else subprocess.DEVNULL,
-                start_new_session=mode == "root",
+                stdin=None if mode == MODE_SUDO else subprocess.DEVNULL,
+                start_new_session=mode == MODE_ROOT,
             )
         except OSError as error:
             cls._say(f"❌ {error}")

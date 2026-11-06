@@ -29,6 +29,7 @@ Two things are load-bearing about the timing, both learned from the 14:11 reset:
 
 import contextlib
 import os
+import pathlib
 import signal
 import socket
 import subprocess
@@ -71,6 +72,10 @@ TRIP_REASON_SUSTAINED: Final[str] = "avg60"
 # processes run as root. Talking to the socket costs a connect and one small write; it does not fork
 # or exec, which is what rules out the `docker` CLI on a stalling host.
 DEFAULT_DOCKER_SOCKET: Final[str] = "/var/run/docker.sock"
+HTTP_STATUS_SPLITS: Final[int] = 2
+HTTP_STATUS_PARTS: Final[int] = 2
+HTTP_OK_MIN: Final[int] = 200
+HTTP_OK_END: Final[int] = 300
 DOCKER_KILL_TIMEOUT_S: Final[float] = 10.0
 
 # How many times to try turning the container name into a cgroup path before settling for the
@@ -90,7 +95,7 @@ def read_memory_pressure_full() -> tuple[float, float] | None:
         (kernel built without CONFIG_PSI).
     """
     try:
-        with open(PSI_MEMORY_PATH) as f:
+        with pathlib.Path(PSI_MEMORY_PATH).open() as f:
             for line in f:
                 if not line.startswith("full"):
                     continue
@@ -272,7 +277,7 @@ class MemoryPressureWatchdog:
         self._container_id = container_id
         for template in CGROUP_PROCS_CANDIDATES:
             path = template.format(id=container_id)
-            if os.path.exists(path):
+            if pathlib.Path(path).exists():
                 self._cgroup_procs = path
                 # Read it once so the dentry and inode are warm and the trip-path read cannot
                 # itself block on I/O that the stall has made slow.
@@ -313,7 +318,7 @@ class MemoryPressureWatchdog:
         if self._cgroup_procs is None:
             return []
         try:
-            with open(self._cgroup_procs) as f:
+            with pathlib.Path(self._cgroup_procs).open() as f:
                 return [int(line) for line in f.read().split() if line.isdigit()]
         except (OSError, ValueError):
             return []
@@ -471,7 +476,7 @@ class MemoryPressureWatchdog:
 
         # b'HTTP/1.1 204 No Content' on a kill; 404 if it already exited, which is not a failure
         # of this watchdog but is not a kill either.
-        parts = status.split(b" ", 2)
-        if len(parts) < 2 or not parts[1].isdigit():
+        parts = status.split(b" ", HTTP_STATUS_SPLITS)
+        if len(parts) < HTTP_STATUS_PARTS or not parts[1].isdigit():
             return False
-        return 200 <= int(parts[1]) < 300
+        return HTTP_OK_MIN <= int(parts[1]) < HTTP_OK_END

@@ -685,11 +685,6 @@
   "dreamference/vllm_server/host_safety_setup.py": {
    "ANN401": 2,
    "PLR1702": 3,
-   "PLR2004": 12,
-   "PTH110": 2,
-   "PTH119": 1,
-   "PTH123": 4,
-   "PTH202": 1,
    "T201": 4
   },
   "dreamference/vllm_server/model_gate.py": {
@@ -705,16 +700,12 @@
   },
   "dreamference/vllm_server/model_loading_monitor.py": {
    "BLE001": 2,
-   "PLR2004": 4,
    "S110": 1,
    "T201": 4
   },
   "dreamference/vllm_server/psi_watchdog.py": {
    "BLE001": 1,
    "PLR1702": 3,
-   "PLR2004": 3,
-   "PTH110": 1,
-   "PTH123": 2,
    "T201": 1
   },
   "dreamference/vllm_server/sandbox_prerequisite.py": {
@@ -728,8 +719,7 @@
   },
   "dreamference/vllm_server/tool_call_canary.py": {
    "BLE001": 1,
-   "PLR0911": 1,
-   "PLR2004": 6
+   "PLR0911": 1
   },
   "dreamference/vllm_server/vllm_log_streamer.py": {
    "ANN401": 2,
@@ -1007,5 +997,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 2384
+ "total": 2348
 }

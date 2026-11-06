@@ -85,12 +85,12 @@ def test_a_blkid_that_fails_does_not_make_a_file_the_swap_file(monkeypatch, no_f
 
 
 def _shadow_open(monkeypatch, content):
-    def fake(path, *args, **kwargs):
+    def fake(self, *args, **kwargs):
         if isinstance(content, Exception):
             raise content
         return io.StringIO(content)
 
-    monkeypatch.setattr(host_safety_setup, "open", fake, raising=False)
+    monkeypatch.setattr(host_safety_setup.Path, "open", fake)
 
 
 def test_unreadable_proc_swaps_means_no_swap_areas(monkeypatch):

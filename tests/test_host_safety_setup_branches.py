@@ -20,12 +20,12 @@ def _which(*present):
 def _files(monkeypatch, contents):
     """`open` in the module reads `contents[path]`, or fails as a missing file does."""
 
-    def fake_open(path, *args, **kwargs):
-        if path not in contents:
-            raise FileNotFoundError(path)
-        return io.StringIO(contents[path])
+    def fake_open(self, *args, **kwargs):
+        if str(self) not in contents:
+            raise FileNotFoundError(str(self))
+        return io.StringIO(contents[str(self)])
 
-    monkeypatch.setattr(host_safety_setup, "open", fake_open, raising=False)
+    monkeypatch.setattr(host_safety_setup.Path, "open", fake_open)
 
 
 # -- root_mode and root_argv -----------------------------------------------------------------------
@@ -191,7 +191,7 @@ def test_meminfo_without_available_memory_counts_as_none(monkeypatch):
 
 
 def test_without_a_group_database_docker_access_is_assumed(monkeypatch):
-    monkeypatch.setattr(host_safety_setup.os.path, "exists", lambda path: True)
+    monkeypatch.setattr(host_safety_setup.Path, "exists", lambda self: True)
     monkeypatch.setattr(host_safety_setup.os, "access", lambda path, mode: False)
     monkeypatch.setattr(host_safety_setup, "grp", None)
 

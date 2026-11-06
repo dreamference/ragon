@@ -9,7 +9,12 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import datetime
-from typing import ClassVar
+from typing import ClassVar, Final
+
+LOG_CHECK_INTERVAL_S: Final[float] = 0.5
+UNKNOWN_ENV_MARKER: Final[str] = "Unknown vLLM environment variable detected"
+# Variables the image sets itself; their "unknown" warning is noise.
+IGNORED_ENV_VARS: Final[tuple[str, str]] = ("VLLM_VERSION", "VLLM_FLASH_ATTN_SRC_DIR")
 
 
 class ModelLoadingMonitor:
@@ -82,7 +87,7 @@ class ModelLoadingMonitor:
             current_time = time.time()
 
             # Check logs frequently for stage updates
-            if current_time - last_log_check > 0.5:
+            if current_time - last_log_check > LOG_CHECK_INTERVAL_S:
                 self._check_logs()
                 last_log_check = current_time
 
@@ -109,8 +114,8 @@ class ModelLoadingMonitor:
             logs = self.get_logs_fn()
             for log_line in logs:
                 # Suppress benign NVIDIA container warnings about its own injected variables
-                if "Unknown vLLM environment variable detected" in log_line and (
-                    "VLLM_VERSION" in log_line or "VLLM_FLASH_ATTN_SRC_DIR" in log_line
+                if UNKNOWN_ENV_MARKER in log_line and (
+                    IGNORED_ENV_VARS[0] in log_line or IGNORED_ENV_VARS[1] in log_line
                 ):
                     self._process_log_line(log_line)
                     continue

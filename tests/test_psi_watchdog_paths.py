@@ -182,11 +182,13 @@ def test_an_id_with_no_known_cgroup_layout_is_kept_for_the_socket(tmp_path, monk
     ],
 )
 def test_each_known_cgroup_layout_is_found(monkeypatch, layout):
-    exists = psi_watchdog.os.path.exists
+    exists = psi_watchdog.pathlib.Path.exists
     monkeypatch.setattr(
-        psi_watchdog.os.path,
+        psi_watchdog.pathlib.Path,
         "exists",
-        lambda path: path == layout if path.startswith("/sys/fs/cgroup/") else exists(path),
+        lambda self: (
+            str(self) == layout if str(self).startswith("/sys/fs/cgroup/") else exists(self)
+        ),
     )
     monkeypatch.setattr(
         psi_watchdog.subprocess,
@@ -249,7 +251,7 @@ def test_a_cgroup_file_that_does_not_decode_lists_no_pids(monkeypatch):
         def read(self, *args):
             raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
-    monkeypatch.setattr(psi_watchdog, "open", lambda *args, **kwargs: Undecodable(), raising=False)
+    monkeypatch.setattr(psi_watchdog.pathlib.Path, "open", lambda *args, **kwargs: Undecodable())
     wd = MemoryPressureWatchdog("test-container")
     wd._cgroup_procs = "/sys/fs/cgroup/docker/abc123/cgroup.procs"
     assert wd._read_cgroup_pids() == []
