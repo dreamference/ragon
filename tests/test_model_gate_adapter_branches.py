@@ -99,3 +99,62 @@ def test_a_chunked_answer_is_joined_and_stops_at_its_last_chunk():
 
 def test_a_chunk_size_that_is_not_hex_ends_the_body():
     assert ModelGateAdapters.dechunk(b"2\r\nab\r\nzz\r\ncd\r\n") == b"ab"
+
+
+# -- ragon-serve and the gate [key]
+
+RAGON = {**LISTING, "engine": "ragon"}
+
+
+def test_a_ragon_serve_request_keeps_its_id_and_swaps_nothing_back(adapters):
+    adapters.loaded["fix"] = True
+    adapters.synced = True
+    body = json.dumps({"model": "org/base+fix", "messages": []}).encode()
+
+    refusal, sent, swap = asyncio.run(adapters.rewrite(body, RAGON))
+
+    assert refusal is None and swap is None
+    assert json.loads(sent)["model"] == "org/base+fix"
+
+
+def test_the_separator_follows_the_engine_in_the_list():
+    assert ModelGateAdapters.separator(RAGON) == "+"
+    assert ModelGateAdapters.separator(LISTING) == ":"
+    assert ModelGateAdapters.engine_model("org/base+fix", "+") == "org/base+fix"
+    assert ModelGateAdapters.engine_model("org/base+fix") == "org/base:fix"
+
+
+def test_ragon_serves_own_adapter_entries_are_read_and_hidden_from_clients():
+    body = json.dumps({"data": [{"id": "org/base"}, {"id": "org/base+fix"}]}).encode()
+
+    assert ModelGateAdapters.engine_adapters(body, "+") == ["fix"]
+    shown = ModelGateAdapters.models(body, RAGON)["data"]
+    # The engine's own entry is dropped; the one shown is the gate's, from the verified list.
+    assert [entry["id"] for entry in shown] == ["org/base", "org/base+fix"]
+    assert "ragon_adapter" in shown[1]
+
+
+def test_a_load_the_engine_answers_with_success_false_is_a_refusal_not_the_base(adapters):
+    calls = []
+
+    async def engine_call(method, path, payload):
+        calls.append(path)
+        return 200, b'{"success": false, "message": "rank too large"}'
+
+    adapters.engine_call = engine_call
+    adapters.synced = True
+    listing = {**RAGON, "adapters": {"fix": {"path": "/x", "files": {}}}}
+    body = json.dumps({"model": "org/base+fix"}).encode()
+
+    refusal, _, _ = asyncio.run(adapters.rewrite(body, listing))
+
+    assert refusal is not None and refusal[0] == 503
+    assert refusal[1]["error"]["code"] == "adapter_unavailable"
+    assert "rank too large" in refusal[1]["error"]["message"]
+    assert "fix" not in adapters.loaded
+
+
+def test_load_and_unload_routes_stay_refused_on_the_public_port():
+    from dreamference.vllm_server.model_gate_adapters import REFUSED_PATHS
+
+    assert "/load_lora_adapter" in REFUSED_PATHS and "/unload_lora_adapter" in REFUSED_PATHS

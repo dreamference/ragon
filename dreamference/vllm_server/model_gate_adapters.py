@@ -6,7 +6,8 @@ the standard library only. The gate is where an adapter is selected and loaded: 
 its state folder, read on every request like the run's record), refuses one that is not there (404,
 never the base in its place), loads it into the engine on first use from the path recorded there
 (hashing its files first), unloads the least recently used one past the engine's limit, and
-rewrites the id to SGLang's `<base>:<name>` on the way in and back on the way out. Nothing a request
+rewrites the id to SGLang's `<base>:<name>` on the way in and back on the way out (ragon-serve
+takes `<base>+<name>` as it is, so nothing is rewritten for it; the list names the engine). Nothing a request
 says ever becomes a path, a client may not name an engine-side adapter itself, and the engine's
 load and unload endpoints are refused on the public port. The engine is started with an API key
 that only the gate holds, which it adds to every request it forwards.
@@ -23,6 +24,8 @@ LIST_FILE: Final[str] = "adapters.json"
 KEY_FILE: Final[str] = "engine.key"
 ADAPTER_SEPARATOR: Final[str] = "+"
 ENGINE_SEPARATOR: Final[str] = ":"
+ENGINE_RAGON: Final[str] = "ragon"
+ENGINE_FIELD: Final[str] = "engine"
 
 # Refused on the public port whatever the gate's state: only the gate loads adapters.
 REFUSED_PATHS: Final[tuple[str, ...]] = (
@@ -189,12 +192,39 @@ class ModelGateAdapters:
                 status, body = await self.engine_call(
                     "POST", "/load_lora_adapter", {"lora_name": name, "lora_path": entry["path"]}
                 )
-                if status != HTTP_OK:
-                    return (
-                        f"the engine did not load {name}: {body[:300].decode('utf-8', 'replace')}"
-                    )
+                if status != HTTP_OK or not self.load_succeeded(body):
+                    shown = body[:300].decode("utf-8", "replace") or "no answer"
+                    return f"the engine did not load {name}: {shown}"
                 self.loaded[name] = True
                 return None
+
+    @classmethod
+    def load_succeeded(cls, body: bytes) -> bool:
+        """Whether an engine's 200 answer to a load says it worked (a body with `success: false` does not).
+
+        Args:
+            body: The load answer's body.
+
+        Returns:
+            bool: False only when the body is JSON that reports a failure.
+        """
+        try:
+            record = json.loads(body)
+        except ValueError:
+            return True
+        return not (isinstance(record, dict) and record.get("success") is False)
+
+    @classmethod
+    def separator(cls, listing: dict[str, object]) -> str:
+        """The separator the served engine writes between base and adapter in a model id.
+
+        Args:
+            listing: `listing()`'s answer; its `engine` is `ragon` for ragon-serve.
+
+        Returns:
+            str: `+` for ragon-serve, `:` for SGLang (and for a list that names no engine).
+        """
+        return ADAPTER_SEPARATOR if listing.get(ENGINE_FIELD) == ENGINE_RAGON else ENGINE_SEPARATOR
 
     async def sync(self, listing: dict[str, object]) -> None:
         """Learns which adapters the engine holds (those given at its start), and unloads removed ones.
@@ -206,7 +236,7 @@ class ModelGateAdapters:
         if status != HTTP_OK:
             return
         adapters = listing.get("adapters")
-        for name in self.engine_adapters(body):
+        for name in self.engine_adapters(body, self.separator(listing)):
             if isinstance(adapters, dict) and name in adapters:
                 self.loaded[name] = True
             else:
@@ -269,11 +299,12 @@ class ModelGateAdapters:
     # -- /v1/models ----------------------------------------------------------------------------
 
     @classmethod
-    def engine_adapters(cls, body: bytes) -> list[str]:
+    def engine_adapters(cls, body: bytes, separator: str = ENGINE_SEPARATOR) -> list[str]:
         """The adapter names the engine's own `/v1/models` lists.
 
         Args:
             body: Its JSON body.
+            separator: The engine's: ragon-serve lists `<base>+<name>`, SGLang the bare name.
 
         Returns:
             list[str]: Names of the entries that have a parent.
@@ -282,11 +313,16 @@ class ModelGateAdapters:
             data = json.loads(body).get("data")
         except (ValueError, AttributeError):
             return []
-        return [
-            str(entry["id"])
-            for entry in data or []
-            if isinstance(entry, dict) and entry.get("parent")
-        ]
+        names = []
+        for entry in data or []:
+            if not isinstance(entry, dict):
+                continue
+            ident = str(entry.get("id"))
+            if separator == ADAPTER_SEPARATOR and separator in ident:
+                names.append(ident.partition(separator)[2])
+            elif entry.get("parent"):
+                names.append(ident)
+        return names
 
     @classmethod
     def models(cls, body: bytes, listing: dict[str, object]) -> dict[str, object]:
@@ -308,7 +344,9 @@ class ModelGateAdapters:
         data = [
             entry
             for entry in record.get("data") or []
-            if isinstance(entry, dict) and not entry.get("parent")
+            if isinstance(entry, dict)
+            and not entry.get("parent")
+            and ADAPTER_SEPARATOR not in str(entry.get("id"))
         ]
         base = next((entry for entry in data if entry.get("id") == listing.get("base")), None)
         adapters = listing.get("adapters")
@@ -402,7 +440,9 @@ class ModelGateAdapters:
             message = f"The adapter {decision} cannot be served now: {problem}."
             return self.refusal(503, "adapter_unavailable", message), body, None
         client = str(record["model"])
-        record["model"] = self.engine_model(client)
+        record["model"] = self.engine_model(client, self.separator(listing))
+        if record["model"] == client:
+            return None, json.dumps(record).encode("utf-8"), None
         swap = (json.dumps(record["model"]).encode("utf-8"), json.dumps(client).encode("utf-8"))
         return None, json.dumps(record).encode("utf-8"), swap
 
@@ -491,16 +531,17 @@ class ModelGateAdapters:
     # -- the rewrites --------------------------------------------------------------------------
 
     @classmethod
-    def engine_model(cls, model: str) -> str:
-        """`<base>+<name>` as SGLang names it, `<base>:<name>`: the same length.
+    def engine_model(cls, model: str, separator: str = ENGINE_SEPARATOR) -> str:
+        """`<base>+<name>` as the engine names it: SGLang `<base>:<name>` (the same length), ragon-serve as is.
 
         Args:
             model: The client's id.
+            separator: `separator()`'s answer for the served engine.
 
         Returns:
             str: The engine's.
         """
-        return model.replace(ADAPTER_SEPARATOR, ENGINE_SEPARATOR, 1)
+        return model.replace(ADAPTER_SEPARATOR, separator, 1)
 
     @classmethod
     def replace_stream(

@@ -727,3 +727,60 @@ def test_the_gates_model_list_names_the_adapters_as_base_plus_name(gate):
         entry["id"] for entry in json.loads(call(gate["port"], "/v1/models", method="GET"))["data"]
     ]
     assert ids == [BASE, f"{BASE}+cpp", f"{BASE}+rust", f"{BASE}+ts"]
+
+
+# -- ragon-serve serves them itself [key]
+
+
+def _ragon_with_feature(monkeypatch):
+    real = ModelMatrixRegistry.get_launch_overrides.__func__
+
+    def overrides(cls, model_key, engine=None):
+        recipe = dict(real(cls, model_key, engine))
+        if recipe.get("engine") == "ragon":
+            recipe["engine_features"] = [*recipe.get("engine_features", []), "lora-adapters"]
+        return recipe
+
+    monkeypatch.setattr(ModelMatrixRegistry, "get_launch_overrides", classmethod(overrides))
+
+
+def test_ragon_serve_is_given_the_adapters_and_the_gates_key(verified, monkeypatch):
+    _ragon_with_feature(monkeypatch)
+    install()
+    cmd = VLLMServerManager().build_launch_command(
+        model=DEFAULT_MODEL_ALIAS, engine="ragon", gate=True, serve_adapters=True
+    )
+    assert flag(cmd, "--lora-paths").startswith("rust=/root/.cache/huggingface/hub/models--")
+    assert flag(cmd, "--api-key") == AdapterServing.engine_key()
+    assert "--enable-lora" not in cmd
+
+
+def test_ragon_serve_without_the_feature_or_the_gate_gets_no_adapter_flags(verified, monkeypatch):
+    install()
+    mgr = VLLMServerManager()
+    cmd = mgr.build_launch_command(
+        model=DEFAULT_MODEL_ALIAS, engine="ragon", gate=True, serve_adapters=True
+    )
+    assert "--lora-paths" not in cmd and "--api-key" not in cmd
+    _ragon_with_feature(monkeypatch)
+    cmd = mgr.build_launch_command(
+        model=DEFAULT_MODEL_ALIAS, engine="ragon", gate=False, serve_adapters=False
+    )
+    assert "--lora-paths" not in cmd
+
+
+def test_prepare_for_ragon_serve_names_the_engine_and_patches_nothing(verified, monkeypatch):
+    _ragon_with_feature(monkeypatch)
+    monkeypatch.setattr(
+        SGLangRuntimePatcher, "prepare", classmethod(lambda cls, image, patches: "never called")
+    )
+    install()
+    assert AdapterServing.prepare(DEFAULT_MODEL_ALIAS, "image", gated=True, engine="ragon") is True
+    listing = json.loads((AdapterServing.gate_dir() / LIST_FILE).read_text())
+    assert listing["engine"] == "ragon" and "rust" in listing["adapters"]
+    # The same adapters on SGLang carry no engine name: the gate rewrites the id as before.
+    monkeypatch.setattr(
+        SGLangRuntimePatcher, "prepare", classmethod(lambda cls, image, patches: None)
+    )
+    AdapterServing.prepare(DEFAULT_MODEL_ALIAS, "image", gated=True, engine=SGLANG)
+    assert "engine" not in json.loads((AdapterServing.gate_dir() / LIST_FILE).read_text())

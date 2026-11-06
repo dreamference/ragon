@@ -20,8 +20,17 @@ from dreamference.hardware.adapter_installer import AdapterInstaller
 from dreamference.hardware.adapter_store import AdapterStore
 from dreamference.hardware.adapter_verifier import AdapterVerifier
 from dreamference.hardware.model_downloader import ModelDownloader
-from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
-from dreamference.vllm_server.model_gate_adapters import KEY_FILE, LIST_FILE
+from dreamference.hardware.model_matrix_registry import (
+    ENGINE_FEATURE_ADAPTERS,
+    ModelMatrixRegistry,
+)
+from dreamference.vllm_server.model_gate_adapters import (
+    ENGINE_FIELD,
+    ENGINE_RAGON,
+    KEY_FILE,
+    LIST_FILE,
+)
+from dreamference.vllm_server.ragon_serve_launch_builder import RagonServeLaunchBuilder
 from dreamference.vllm_server.sglang_runtime_patcher import SGLangRuntimePatcher
 
 FILE_MODE: Final[int] = 0o600
@@ -158,6 +167,45 @@ class AdapterServing:
         ]
 
     @classmethod
+    def ragon_serves(cls, recipe: dict[str, Any]) -> bool:
+        """Whether a recipe is ragon-serve's and its pinned build lists the adapters feature.
+
+        Args:
+            recipe: The model's launch overrides for the chosen engine.
+
+        Returns:
+            bool: True when ragon-serve serves adapters at this launch.
+        """
+        return RagonServeLaunchBuilder.is_ragon(recipe) and ENGINE_FEATURE_ADAPTERS in (
+            recipe.get("engine_features") or []
+        )
+
+    @classmethod
+    def ragon_args(
+        cls, model_key: str, recipe: dict[str, Any], adapters: list[dict[str, object]]
+    ) -> list[str]:
+        """The ragon-serve flags that serve the adapters: `--lora-paths` and the gate's key.
+
+        Args:
+            model_key: The model being launched (its `lora` recipe names the limit).
+            recipe: The model's launch overrides (`engine: ragon`).
+            adapters: `launch_adapters()`'s answer.
+
+        Returns:
+            list[str]: Nothing without adapters or without the feature; otherwise the adapters
+            given at start (at most as many as the engine holds) and the engine's key, which
+            guards only the load and unload routes.
+        """
+        lora = ModelMatrixRegistry.get_lora_recipe(model_key)
+        if not adapters or lora is None or not cls.ragon_serves(recipe):
+            return []
+        loaded = int(lora.get("max_loaded_loras", DEFAULT_MAX_LOADED))
+        at_start = ",".join(
+            f"{entry['name']}={cls.container_path(entry)}" for entry in adapters[:loaded]
+        )
+        return ["--lora-paths", at_start, "--api-key", cls.engine_key()]
+
+    @classmethod
     def with_headroom(
         cls, recipe: dict[str, Any], adapters: list[dict[str, object]]
     ) -> dict[str, Any]:
@@ -236,7 +284,7 @@ class AdapterServing:
             gated: Whether the launch is behind the gate with no API key of the caller's; without
                 that, nothing is served and the gate's list is removed.
             engine: The engine it is launched with; None is the model's default. Only a recipe
-                with a `lora` key serves adapters (SGLang's; ragon-serve serves none).
+                with a `lora` key serves adapters (SGLang's), or a ragon-serve recipe listing the adapters feature.
 
         Returns:
             bool: False when adapters were to be served and the patch could not be prepared (the
@@ -244,6 +292,16 @@ class AdapterServing:
         """
         adapters = cls.launch_adapters(model_key) if gated else []
         recipe = ModelMatrixRegistry.get_launch_overrides(model_key, engine)
+        if adapters and cls.ragon_serves(recipe):
+            # No patch of an image's Python: the engine serves adapters itself.
+            ragon_lora = ModelMatrixRegistry.get_lora_recipe(model_key) or {}
+            cls.publish(
+                ModelMatrixRegistry.resolve_hf_repo(model_key), adapters, ragon_lora, ENGINE_RAGON
+            )
+            say(
+                f"🧩 Adapters served behind the gate: {', '.join(str(e['name']) for e in adapters)}"
+            )
+            return True
         lora = recipe.get("lora")
         if not adapters or not isinstance(lora, dict):
             cls.clear()
@@ -262,16 +320,24 @@ class AdapterServing:
         return True
 
     @classmethod
-    def publish(cls, base_id: str, adapters: list[dict[str, object]], lora: dict[str, Any]) -> None:
+    def publish(
+        cls,
+        base_id: str,
+        adapters: list[dict[str, object]],
+        lora: dict[str, Any],
+        engine: str | None = None,
+    ) -> None:
         """Writes the verified list the gate loads from.
 
         Args:
             base_id: The served id of the base.
             adapters: The verified adapters.
             lora: The recipe's `lora` key.
+            engine: `ragon` when ragon-serve serves them (its ids are not rewritten); None for SGLang.
         """
         record = {
             "base": base_id,
+            **({ENGINE_FIELD: engine} if engine else {}),
             "max_loaded": int(lora.get("max_loaded_loras", DEFAULT_MAX_LOADED)),
             "adapters": {
                 str(entry["name"]): {

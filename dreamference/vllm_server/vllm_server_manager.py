@@ -795,6 +795,14 @@ class VLLMServerManager:
                     host=engine_host,
                 )
             )
+            # Installed adapters, for a build that lists the feature: the key it is given guards
+            # only the load routes and only the gate holds it (the caller's key stays refused).
+            from dreamference.vllm_server.adapter_serving import AdapterServing
+
+            if gate and serve_adapters:
+                cmd.extend(
+                    AdapterServing.ragon_args(model, recipe, AdapterServing.launch_adapters(model))
+                )
             return cmd
 
         if SGLangLaunchBuilder.is_sglang(recipe):
