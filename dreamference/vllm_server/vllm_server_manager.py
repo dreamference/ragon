@@ -40,6 +40,26 @@ DEFAULT_GPU_MEMORY_UTILIZATION: Final[float] = 0.50
 # page cache to stream weights. On unified memory every byte vLLM pins is a byte the compositor,
 # journald and the input stack no longer have.
 HOST_MEMORY_RESERVE_GB: Final[float] = 12.0
+
+# Comparison values named for readability (PLR2004).
+HTTP_OK: Final[int] = 200
+MODEL_ID_KEY: Final[str] = "id"
+IMAGE_PATH_SEPARATOR: Final[str] = "/"
+TENSORIZER_TRUE: Final[str] = "True"
+ATTENTION_AUTO: Final[str] = "auto"
+MISTRAL_MARKER: Final[str] = "mistral"
+LARGE_MODEL_MARKERS: Final[tuple[str, str]] = ("70b", "72b")
+SWAP_FULL_PCT: Final[float] = 100.0
+SWAPS_MIN_FIELDS: Final[int] = 3
+DOCKER_BINARY: Final[str] = "docker"
+DOCKER_TRUE: Final[str] = "true"
+LOG_LOADING_SHARDS: Final[str] = "loading safetensors checkpoint shards"
+LOG_WARM_UP: Final[str] = "warm up the model"
+LOG_WARMING_UP: Final[str] = "warming up"
+LOG_LOADING_MODEL: Final[str] = "loading model"
+LOG_LOAD_MODEL: Final[str] = "load model"
+LOG_DOWNLOADING: Final[str] = "downloading"
+LOG_HF_DOWNLOAD: Final[str] = "hf_hub_download"
 # ragon-serve's own `--host-reserve-mb` default (16,384 MiB): it refuses a start that would leave the
 # host less than this, so the pre-load check counts it. dreamference never passes or lowers the flag.
 RAGON_SERVE_HOST_RESERVE_MIB: Final[int] = 16384
@@ -214,7 +234,7 @@ class VLLMServerManager:
         try:
             url = f"{self.host}/v1/models"
             resp = requests.get(url, timeout=timeout)
-            if resp.status_code != 200:
+            if resp.status_code != HTTP_OK:
                 return False
 
             # Extra check: ensure completions endpoint is actually ready
@@ -232,7 +252,7 @@ class VLLMServerManager:
                 chat_url, data=data, headers={"Content-Type": "application/json"}
             )
             with urllib.request.urlopen(req, timeout=timeout) as chat_resp:
-                return chat_resp.status == 200
+                return chat_resp.status == HTTP_OK
         except Exception:
             return False
 
@@ -250,9 +270,9 @@ class VLLMServerManager:
         try:
             url = f"{self.host}/v1/models"
             resp = requests.get(url, timeout=timeout)
-            if resp.status_code == 200:
+            if resp.status_code == HTTP_OK:
                 data = resp.json()
-                return [m.get("id") for m in data.get("data", []) if "id" in m]
+                return [m.get(MODEL_ID_KEY) for m in data.get("data", []) if MODEL_ID_KEY in m]
         except Exception:
             pass
         return []
@@ -288,7 +308,7 @@ class VLLMServerManager:
             )
         except requests.RequestException:
             return None
-        if response.status_code != 200:
+        if response.status_code != HTTP_OK:
             return None
         return time.monotonic() - start
 
@@ -368,7 +388,7 @@ class VLLMServerManager:
         # Building it would tag this project's own Dockerfile output with a third-party name and
         # then launch it believing it was theirs — which, now that recipes can pin their own image,
         # is a live possibility rather than a hypothetical.
-        if "/" in docker_image:
+        if IMAGE_PATH_SEPARATOR in docker_image:
             print(f"📦 Docker image '{docker_image}' not found locally. Pulling...")
             try:
                 subprocess.run(["docker", "pull", docker_image], check=True)
@@ -490,7 +510,7 @@ class VLLMServerManager:
                             int(re.sub(r"\D.*$", "", parts[1])),
                         )
                     elif line.startswith("tensorizer="):
-                        result["has_tensorizer"] = line.split("=", 1)[1].strip() == "True"
+                        result["has_tensorizer"] = line.split("=", 1)[1].strip() == TENSORIZER_TRUE
         except Exception:
             pass
 
@@ -565,7 +585,7 @@ class VLLMServerManager:
         Returns:
             str: Parser name to pass to --tool-call-parser.
         """
-        if requested and requested != "auto":
+        if requested and requested != ATTENTION_AUTO:
             return requested
 
         from dreamference.hardware import get_model_launch_overrides
@@ -575,7 +595,7 @@ class VLLMServerManager:
             return recipe_parser
 
         model_lower = model.lower()
-        if "mistral" in model_lower:
+        if MISTRAL_MARKER in model_lower:
             return "mistral"
         return "hermes"
 
@@ -722,7 +742,7 @@ class VLLMServerManager:
         # build_structured_outputs_args both probe it, and probing the wrong one produces flags
         # built for a vLLM that is not the one about to run.
         docker_image = resolved(docker_image, "docker_image", DEFAULT_VLLM_IMAGE)
-        if not attention_backend or attention_backend == "auto":
+        if not attention_backend or attention_backend == ATTENTION_AUTO:
             attention_backend = recipe.get("attention_backend", "auto")
 
         # Prefix caching is the one knob a recipe may veto outright rather than merely default.
@@ -740,7 +760,7 @@ class VLLMServerManager:
         if (
             not quantization
             and not model_declares_own_quantization(model)
-            and ("70b" in model.lower() or "72b" in model.lower())
+            and (LARGE_MODEL_MARKERS[0] in model.lower() or LARGE_MODEL_MARKERS[1] in model.lower())
         ):
             quantization = "fp8"
 
@@ -852,7 +872,7 @@ class VLLMServerManager:
             base_args.append("--enable-chunked-prefill")
             if max_num_batched_tokens and max_num_batched_tokens > 0:
                 base_args.extend(["--max-num-batched-tokens", str(max_num_batched_tokens)])
-        if attention_backend and attention_backend != "auto":
+        if attention_backend and attention_backend != ATTENTION_AUTO:
             base_args.extend(["--attention-backend", attention_backend])
         if kv_cache_dtype:
             base_args.extend(["--kv-cache-dtype", kv_cache_dtype])
@@ -925,7 +945,7 @@ class VLLMServerManager:
 
         # 'auto' is vLLM's own default, so passing it explicitly only adds noise to the command
         # line and to any future diff of it.
-        if load_format and load_format != "auto":
+        if load_format and load_format != ATTENTION_AUTO:
             base_args.extend(["--load-format", load_format])
 
         # A pinned recipe serves the commit it was measured on and downloaded at; without these the
@@ -1338,7 +1358,7 @@ class VLLMServerManager:
         """
         swap_pct = cls._earlyoom_flag_value(argv, "-s")
         swap_kib = cls._earlyoom_flag_value(argv, "-S")
-        gate_open = (swap_pct is not None and swap_pct >= 100.0) or (
+        gate_open = (swap_pct is not None and swap_pct >= SWAP_FULL_PCT) or (
             swap_kib is not None and swap_kib >= cls._swap_total_gb() * (1024**2)
         )
         if not gate_open:
@@ -1393,7 +1413,9 @@ class VLLMServerManager:
             total_kb = 0
             for line in lines:
                 fields = line.split()
-                if len(fields) >= 3 and not os.path.basename(fields[0]).startswith("zram"):
+                if len(fields) >= SWAPS_MIN_FIELDS and not os.path.basename(fields[0]).startswith(
+                    "zram"
+                ):
                     total_kb += int(fields[2])
             return total_kb / (1024**2)
         except (OSError, ValueError):
@@ -2234,7 +2256,7 @@ class VLLMServerManager:
         cmd = self.build_launch_command(**launch, gate=gate, serve_adapters=serve_adapters)
 
         # Step 3: Cleanup potential container name conflicts prior to launch
-        if cmd and cmd[0] == "docker":
+        if cmd and cmd[0] == DOCKER_BINARY:
             container_name = f"dreamference-vllm-{port}"
             subprocess.run(
                 ["docker", "rm", "-f", container_name],
@@ -2288,7 +2310,7 @@ class VLLMServerManager:
         # which is the state that actually required the power button. This watches for it and
         # ends the container first.
         self.watchdog = None
-        if cmd and cmd[0] == "docker":
+        if cmd and cmd[0] == DOCKER_BINARY:
 
             def _report(reason: str, pressure: float, window_s: float) -> None:
                 print(
@@ -2305,7 +2327,7 @@ class VLLMServerManager:
                 print("⚠️  Kernel does not expose /proc/pressure/memory; load is unguarded.")
 
         if background:
-            if cmd and cmd[0] == "docker":
+            if cmd and cmd[0] == DOCKER_BINARY:
                 cmd.insert(2, "-d")
                 try:
                     subprocess.run(cmd, check=True, env=env)
@@ -2432,7 +2454,7 @@ class VLLMServerManager:
                     capture_output=True,
                     text=True,
                 )
-                if res.stdout.strip() == "true":
+                if res.stdout.strip() == DOCKER_TRUE:
                     log_res = subprocess.run(
                         ["docker", "logs", "--tail", "100", container_name],
                         capture_output=True,
@@ -2441,16 +2463,16 @@ class VLLMServerManager:
                     logs = log_res.stdout + "\n" + log_res.stderr
                     for line in reversed(logs.splitlines()):
                         line_lower = line.lower()
-                        if "loading safetensors checkpoint shards" in line_lower:
+                        if LOG_LOADING_SHARDS in line_lower:
                             loading_status = line.strip()
                             break
-                        elif "warm up the model" in line_lower or "warming up" in line_lower:
+                        elif LOG_WARM_UP in line_lower or LOG_WARMING_UP in line_lower:
                             loading_status = "Warming up model (CUDA graphs)..."
                             break
-                        elif "loading model" in line_lower or "load model" in line_lower:
+                        elif LOG_LOADING_MODEL in line_lower or LOG_LOAD_MODEL in line_lower:
                             loading_status = "Loading model weights into GPU memory..."
                             break
-                        elif "downloading" in line_lower or "hf_hub_download" in line_lower:
+                        elif LOG_DOWNLOADING in line_lower or LOG_HF_DOWNLOAD in line_lower:
                             loading_status = "Downloading model components..."
                             break
                     if not loading_status:
