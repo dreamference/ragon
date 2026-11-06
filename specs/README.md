@@ -103,6 +103,7 @@ This directory holds the specification, split into focused documents. This page 
 | Document | What it covers |
 |---|---|
 | [DREAMFERENCE_RELEASE_0.9.0.md](./DREAMFERENCE_RELEASE_0.9.0.md) | *The first release:* what 0.9.0 contains |
+| [DREAMFERENCE_RELEASE_1.0_SCOPE.md](./DREAMFERENCE_RELEASE_1.0_SCOPE.md) | *Scope of 1.0, the announcement release, nothing built from it yet:* the two gates (Windows nodes, adapters), the content tracks, the freeze, and the owner's decisions D1-D8 |
 | [DREAMFERENCE_MOONSHOT_BEAT_HUSKY.md](./DREAMFERENCE_MOONSHOT_BEAT_HUSKY.md) | *Proposed, a moonshot for the 1.0 engine track, nothing built:* how to beat Underdog's Husky where it matters for agents — ten exact-first levers from 2025–2026 research (long copies across session/attempts/agents, an acceptance-trained agent drafter, load-adaptive speculation, prefill at tensor-core speed, overlapping concurrency, paged/virtual KV, cross-layer prefetch, hybrid-state snapshots; FP8 KV behind a night), targets, and the receipts benchmark for the 1.0 write-up |
 
 ---
