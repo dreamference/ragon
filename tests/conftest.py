@@ -51,6 +51,7 @@ from dreamference.vllm_server.model_gate import ModelGate  # noqa: E402
 # Asks the model server's gate what it does: an HTTP request to the configured server, which in the
 # suite would be this machine's live one. The fixture below answers "no gate"; its tests restore it.
 REAL_GATE_PROBE = ModelGate.probe
+REAL_GATE_IS_STALE = ModelGate.is_stale
 # A build through the machine's real sccache would start its server, a daemon outside the test, and
 # whether one is installed must not decide a test. The fixture below answers "no compile cache";
 # its tests restore it.
@@ -159,6 +160,7 @@ def _skip_sandbox_gate(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_model_gate_probe(monkeypatch):
     monkeypatch.setattr(ModelGate, "probe", classmethod(lambda cls, host, timeout=2.0: None))
+    monkeypatch.setattr(ModelGate, "is_stale", classmethod(lambda cls, host, timeout=2.0: False))
 
 
 # Python asks the built `ragon` for the air-gap level (`AirgappedResolver`, AIRGAPPED §6.5), which a

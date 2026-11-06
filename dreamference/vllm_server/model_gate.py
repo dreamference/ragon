@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Final
@@ -47,6 +48,10 @@ GATE_CPUS: Final[str] = "2"
 DEFAULT_PAUSE_S: Final[int] = 3600
 # How long a started gate has to answer its probe before the engine serves the port itself.
 START_WAIT_S: Final[float] = 10.0
+
+
+HTTP_NOT_FOUND: Final[int] = 404
+DOCKER_RUNNING: Final[str] = "true"
 
 
 class ModelGate:
@@ -224,6 +229,50 @@ class ModelGate:
         return record if isinstance(record, dict) and record.get("gate") == "ragon" else None
 
     @classmethod
+    def is_stale(cls, host: str, timeout: float = 2.0) -> bool:
+        """Whether a gate from an older install, not the current one, holds the model port.
+
+        Call it after `probe` returned None. A gate answers the probe path in one of two ways when
+        it is not the current one: with a record that does not name this gate, or with 404 (it does
+        not know the path) while its container runs and the model port still answers `/v1/models`.
+
+        Args:
+            host: The model server's base URL.
+            timeout: Seconds to wait.
+
+        Returns:
+            bool: True for a stale gate; False for no answer, an engine without a gate, or an
+            answer that is not a gate's.
+        """
+        base = host.rstrip("/")
+        try:
+            with urllib.request.urlopen(f"{base}{PROBE_PATH}", timeout=timeout) as response:
+                record = json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code != HTTP_NOT_FOUND:
+                return False
+        except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException):
+            return False
+        else:
+            # Our own name would have made `probe` answer; a foreign `gate` field is a stale gate.
+            return isinstance(record, dict) and isinstance(record.get("gate"), str)
+        try:
+            with urllib.request.urlopen(f"{base}/v1/models", timeout=timeout):
+                pass
+            port = urllib.parse.urlparse(base).port
+            running = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", cls.container_name(port or 8000)],
+                capture_output=True,
+                text=True,
+                timeout=timeout * 2,
+            )
+        except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException):
+            return False
+        except subprocess.SubprocessError:
+            return False
+        return running.returncode == 0 and running.stdout.strip() == DOCKER_RUNNING
+
+    @classmethod
     def state(cls, now: float | None = None) -> dict[str, Any]:
         """The gate's state at a moment.
 
@@ -364,7 +413,12 @@ class ModelGate:
                 lines.append(
                     f"   Run {state['stale']} left a record whose heartbeat stopped; it is ignored."
                 )
-        if live is None:
+        if live is None and cls.is_stale(host):
+            lines.append(
+                f"   A gate from an older install is running at {host}; "
+                "`ragon-admin server start` replaces it."
+            )
+        elif live is None:
             lines.append(
                 f"   No gate answers at {host}: the model server was started without one "
                 "(it comes with the next `ragon-admin server start`), so a benchmark run waits "
