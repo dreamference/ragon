@@ -42,14 +42,6 @@
    "assignment": 1,
    "var-annotated": 1
   },
-  "dreamference/node/node_job.py": {
-   "arg-type": 3,
-   "union-attr": 2
-  },
-  "dreamference/node/node_job_sender.py": {
-   "arg-type": 1,
-   "index": 5
-  },
   "dreamference/node/node_model_sync.py": {
    "union-attr": 1
   },
@@ -94,5 +86,5 @@
   }
  },
  "mypy": "2.4.0",
- "total": 59
+ "total": 48
 }

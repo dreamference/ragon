@@ -37,7 +37,7 @@ import time
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, BinaryIO, Final
 
 from dreamference.runner.safe_git import SafeGit
 
@@ -109,7 +109,7 @@ class NodeJob:
         return Path(codex_home) / "jobs"
 
     @classmethod
-    def repo_path(cls, slug: str) -> Path:
+    def repo_path(cls, slug: str | None) -> Path:
         """Args: slug: The repository's name on this node, as the sender derived it.
 
         Returns:
@@ -118,12 +118,12 @@ class NodeJob:
         Raises:
             ValueError: If the slug is not a plain name (it comes from another machine).
         """
-        if not REPO_SLUG.fullmatch(slug or "") or ".." in slug:
+        if not slug or not REPO_SLUG.fullmatch(slug) or ".." in slug:
             raise ValueError(f"not a repository name: {slug!r}")
         return cls.jobs_dir() / "repos" / f"{slug}.git"
 
     @classmethod
-    def job_dir(cls, job_id: str) -> Path:
+    def job_dir(cls, job_id: str | None) -> Path:
         """Args: job_id: The job's id.
 
         Returns:
@@ -134,7 +134,7 @@ class NodeJob:
         """
         if not JOB_ID.fullmatch(job_id or ""):
             raise ValueError(f"not a job id: {job_id!r}")
-        return cls.jobs_dir() / job_id
+        return cls.jobs_dir() / str(job_id)
 
     @classmethod
     def unit_name(cls, job_id: str) -> str:
@@ -217,7 +217,8 @@ class NodeJob:
         ):
             raise ValueError("--out names a folder inside the repository, such as `checkpoints`")
         binds = cls.allowed_binds(request.get("binds") or [])
-        author = request.get("author") if isinstance(request.get("author"), dict) else {}
+        raw_author = request.get("author")
+        author: dict[str, Any] = raw_author if isinstance(raw_author, dict) else {}
         return {
             "id": job_id,
             "repo": request["repo"],
@@ -278,7 +279,7 @@ class NodeJob:
         ]
 
     @classmethod
-    def allowed_binds(cls, binds: Any) -> list[str]:
+    def allowed_binds(cls, binds: object) -> list[str]:
         """Checks the read-only binds a sender asked for against what this node allows.
 
         Args:
@@ -782,7 +783,9 @@ class NodeJob:
         }
 
     @classmethod
-    def _environment(cls, record: dict[str, Any], tree: Path, network: bool, sink: Any) -> Any:
+    def _environment(
+        cls, record: dict[str, Any], tree: Path, network: bool, sink: BinaryIO
+    ) -> tuple[Path | None, str | None]:
         """Builds the job's environment, or finds it built.
 
         Returns:
@@ -927,6 +930,8 @@ class NodeJob:
                     timespec="seconds"
                 )
             finished = record.get("finished") or record.get("submitted")
+            if not isinstance(finished, str):
+                raise TypeError("a job record carries no time")
             return (datetime.fromisoformat(finished) + KEEP_UNFETCHED).isoformat(timespec="seconds")
         except (TypeError, ValueError):
             return None
@@ -1048,7 +1053,7 @@ class NodeJob:
         return branch
 
     @classmethod
-    def _run(cls, argv: list[str], sink: Any, tree: Path) -> int:
+    def _run(cls, argv: list[str], sink: BinaryIO, tree: Path) -> int:
         try:
             return subprocess.run(
                 argv,
