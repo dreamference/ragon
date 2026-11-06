@@ -321,4 +321,62 @@ mod tests {
         assert_eq!(named_in("# Code navigation\n\nbehind the `code_*` tools"), Some(TOOLS_NAME));
         assert_eq!(named_in("# Code navigation\n\n`ragon-code def`"), Some("`ragon-code`"));
     }
+
+    #[test]
+    fn the_last_directory_flag_wins() {
+        let here = std::env::current_dir().unwrap_or_default();
+        let args = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        assert_eq!(session_dir(&args(&["-C", "a", "--cd", "b"])), here.join("b"));
+        assert_eq!(session_dir(&args(&["--cd=a", "-Cb"])), here.join("b"));
+    }
+
+    #[test]
+    fn a_directory_flag_without_a_value_leaves_the_current_directory() {
+        let here = std::env::current_dir().unwrap_or_default();
+        let args = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        assert_eq!(session_dir(&args(&["exec", "-C"])), here);
+        assert_eq!(session_dir(&[]), here);
+    }
+
+    #[test]
+    fn a_block_without_the_heading_or_still_building_names_no_index() {
+        assert_eq!(named_in("use the `code_*` tools"), None);
+        assert_eq!(named_in("# Code navigation\n\nis being built; the `code_*` tools come later"), None);
+    }
+
+    #[test]
+    fn a_prompt_without_the_rg_sentence_is_returned_whole_whatever_the_index() {
+        for index in [None, Some(TOOLS_NAME)] {
+            let out = search_habit("a prompt with no such sentence", index, true);
+            assert!(out.starts_with("a prompt with no such sentence"));
+        }
+        assert_eq!(search_habit("unrelated", None, true), "unrelated");
+    }
+
+    #[test]
+    fn a_binary_that_is_a_folder_or_missing_is_not_a_binary() {
+        let _turn = BIN_ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // SAFETY: tests in this module are the only readers of RAGON_CODE_BIN.
+        unsafe { std::env::set_var("RAGON_CODE_BIN", std::env::temp_dir()) };
+        assert_eq!(binary(), None);
+        unsafe { std::env::remove_var("RAGON_CODE_BIN") };
+    }
+
+    #[test]
+    fn a_session_that_already_configures_the_server_gets_no_second_copy() {
+        let _turn = BIN_ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let file = std::env::temp_dir().join(format!("ragon-code-bin-{}", std::process::id()));
+        std::fs::write(&file, "").unwrap();
+        // SAFETY: tests in this module are the only readers of RAGON_CODE_BIN.
+        unsafe { std::env::set_var("RAGON_CODE_BIN", &file) };
+        let own: Vec<OsString> = vec!["ragon".into(), "-c".into(), format!("mcp_servers.{MCP_SERVER}.command=\"x\"").into()];
+        assert_eq!(with_tools(own.clone()), own);
+        let fresh = with_tools(vec!["ragon".into(), "exec".into()]);
+        assert_eq!(fresh.first().and_then(|a| a.to_str()), Some("ragon"));
+        assert_eq!(fresh.last().and_then(|a| a.to_str()), Some("exec"));
+        let text: Vec<String> = fresh.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(text.iter().filter(|a| a.starts_with("mcp_optional_startup_grace_ms=")).count(), 1);
+        unsafe { std::env::remove_var("RAGON_CODE_BIN") };
+        let _ = std::fs::remove_file(&file);
+    }
 }
