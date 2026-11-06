@@ -1,0 +1,1728 @@
+{
+ "version": 1,
+ "queries": [
+  {
+   "id": "doc-001",
+   "class": "documentation",
+   "query": "python asyncio gather documentation",
+   "accept": [
+    "docs.python.org"
+   ]
+  },
+  {
+   "id": "doc-002",
+   "class": "documentation",
+   "query": "python pathlib Path.glob",
+   "accept": [
+    "docs.python.org"
+   ]
+  },
+  {
+   "id": "doc-003",
+   "class": "documentation",
+   "query": "python argparse subparsers",
+   "accept": [
+    "docs.python.org"
+   ]
+  },
+  {
+   "id": "doc-004",
+   "class": "documentation",
+   "query": "python subprocess run capture_output",
+   "accept": [
+    "docs.python.org"
+   ]
+  },
+  {
+   "id": "doc-005",
+   "class": "documentation",
+   "query": "python typing Protocol",
+   "accept": [
+    "docs.python.org",
+    "typing.readthedocs.io"
+   ]
+  },
+  {
+   "id": "doc-006",
+   "class": "documentation",
+   "query": "python contextlib contextmanager",
+   "accept": [
+    "docs.python.org"
+   ]
+  },
+  {
+   "id": "doc-007",
+   "class": "documentation",
+   "query": "python logging basicConfig",
+   "accept": [
+    "docs.python.org"
+   ]
+  },
+  {
+   "id": "doc-008",
+   "class": "documentation",
+   "query": "python json dumps indent",
+   "accept": [
+    "docs.python.org"
+   ]
+  },
+  {
+   "id": "doc-009",
+   "class": "documentation",
+   "query": "python sqlite3 row_factory",
+   "accept": [
+    "docs.python.org"
+   ]
+  },
+  {
+   "id": "doc-010",
+   "class": "documentation",
+   "query": "python enum auto",
+   "accept": [
+    "docs.python.org"
+   ]
+  },
+  {
+   "id": "doc-011",
+   "class": "documentation",
+   "query": "pytest fixtures scope",
+   "accept": [
+    "docs.pytest.org"
+   ]
+  },
+  {
+   "id": "doc-012",
+   "class": "documentation",
+   "query": "pytest monkeypatch setenv",
+   "accept": [
+    "docs.pytest.org"
+   ]
+  },
+  {
+   "id": "doc-013",
+   "class": "documentation",
+   "query": "pydantic BaseModel validators",
+   "accept": [
+    "docs.pydantic.dev"
+   ]
+  },
+  {
+   "id": "doc-014",
+   "class": "documentation",
+   "query": "fastapi background tasks",
+   "accept": [
+    "fastapi.tiangolo.com"
+   ]
+  },
+  {
+   "id": "doc-015",
+   "class": "documentation",
+   "query": "django queryset select_related",
+   "accept": [
+    "docs.djangoproject.com"
+   ]
+  },
+  {
+   "id": "doc-016",
+   "class": "documentation",
+   "query": "flask blueprints",
+   "accept": [
+    "flask.palletsprojects.com"
+   ]
+  },
+  {
+   "id": "doc-017",
+   "class": "documentation",
+   "query": "numpy broadcasting rules",
+   "accept": [
+    "numpy.org"
+   ]
+  },
+  {
+   "id": "doc-018",
+   "class": "documentation",
+   "query": "pandas DataFrame groupby agg",
+   "accept": [
+    "pandas.pydata.org"
+   ]
+  },
+  {
+   "id": "doc-019",
+   "class": "documentation",
+   "query": "requests session retries adapter",
+   "accept": [
+    "requests.readthedocs.io"
+   ]
+  },
+  {
+   "id": "doc-020",
+   "class": "documentation",
+   "query": "httpx async client timeout",
+   "accept": [
+    "python-httpx.org",
+    "www.python-httpx.org"
+   ]
+  },
+  {
+   "id": "doc-021",
+   "class": "documentation",
+   "query": "pytorch torch.compile",
+   "accept": [
+    "pytorch.org"
+   ]
+  },
+  {
+   "id": "doc-022",
+   "class": "documentation",
+   "query": "huggingface transformers pipeline",
+   "accept": [
+    "huggingface.co"
+   ]
+  },
+  {
+   "id": "doc-023",
+   "class": "documentation",
+   "query": "rust std mpsc channel",
+   "accept": [
+    "doc.rust-lang.org"
+   ]
+  },
+  {
+   "id": "doc-024",
+   "class": "documentation",
+   "query": "rust serde derive rename_all",
+   "accept": [
+    "serde.rs",
+    "docs.rs"
+   ]
+  },
+  {
+   "id": "doc-025",
+   "class": "documentation",
+   "query": "rust anyhow context",
+   "accept": [
+    "docs.rs"
+   ]
+  },
+  {
+   "id": "doc-026",
+   "class": "documentation",
+   "query": "rust lifetimes elision rules",
+   "accept": [
+    "doc.rust-lang.org"
+   ]
+  },
+  {
+   "id": "doc-027",
+   "class": "documentation",
+   "query": "rust Option map_or_else",
+   "accept": [
+    "doc.rust-lang.org"
+   ]
+  },
+  {
+   "id": "doc-028",
+   "class": "documentation",
+   "query": "rust cargo features optional dependencies",
+   "accept": [
+    "doc.rust-lang.org"
+   ]
+  },
+  {
+   "id": "doc-029",
+   "class": "documentation",
+   "query": "rust reqwest blocking client",
+   "accept": [
+    "docs.rs"
+   ]
+  },
+  {
+   "id": "doc-030",
+   "class": "documentation",
+   "query": "go context WithTimeout",
+   "accept": [
+    "pkg.go.dev",
+    "go.dev"
+   ]
+  },
+  {
+   "id": "doc-031",
+   "class": "documentation",
+   "query": "go http.Client timeout",
+   "accept": [
+    "pkg.go.dev",
+    "go.dev"
+   ]
+  },
+  {
+   "id": "doc-032",
+   "class": "documentation",
+   "query": "go generics constraints",
+   "accept": [
+    "go.dev"
+   ]
+  },
+  {
+   "id": "doc-033",
+   "class": "documentation",
+   "query": "go modules replace directive",
+   "accept": [
+    "go.dev"
+   ]
+  },
+  {
+   "id": "doc-034",
+   "class": "documentation",
+   "query": "typescript generics constraints",
+   "accept": [
+    "typescriptlang.org"
+   ]
+  },
+  {
+   "id": "doc-035",
+   "class": "documentation",
+   "query": "typescript tsconfig strict",
+   "accept": [
+    "typescriptlang.org"
+   ]
+  },
+  {
+   "id": "doc-036",
+   "class": "documentation",
+   "query": "javascript Promise.allSettled",
+   "accept": [
+    "developer.mozilla.org"
+   ]
+  },
+  {
+   "id": "doc-037",
+   "class": "documentation",
+   "query": "javascript Array.prototype.flatMap",
+   "accept": [
+    "developer.mozilla.org"
+   ]
+  },
+  {
+   "id": "doc-038",
+   "class": "documentation",
+   "query": "css grid template areas",
+   "accept": [
+    "developer.mozilla.org"
+   ]
+  },
+  {
+   "id": "doc-039",
+   "class": "documentation",
+   "query": "html dialog element",
+   "accept": [
+    "developer.mozilla.org"
+   ]
+  },
+  {
+   "id": "doc-040",
+   "class": "documentation",
+   "query": "node.js fs promises readFile",
+   "accept": [
+    "nodejs.org"
+   ]
+  },
+  {
+   "id": "doc-041",
+   "class": "documentation",
+   "query": "react useEffect cleanup",
+   "accept": [
+    "react.dev"
+   ]
+  },
+  {
+   "id": "doc-042",
+   "class": "documentation",
+   "query": "react context provider",
+   "accept": [
+    "react.dev"
+   ]
+  },
+  {
+   "id": "doc-043",
+   "class": "documentation",
+   "query": "nextjs app router layouts",
+   "accept": [
+    "nextjs.org"
+   ]
+  },
+  {
+   "id": "doc-044",
+   "class": "documentation",
+   "query": "svelte stores writable",
+   "accept": [
+    "svelte.dev"
+   ]
+  },
+  {
+   "id": "doc-045",
+   "class": "documentation",
+   "query": "electron ipcMain handle",
+   "accept": [
+    "electronjs.org"
+   ]
+  },
+  {
+   "id": "doc-046",
+   "class": "documentation",
+   "query": "docker multi-stage build",
+   "accept": [
+    "docs.docker.com"
+   ]
+  },
+  {
+   "id": "doc-047",
+   "class": "documentation",
+   "query": "dockerfile ARG vs ENV",
+   "accept": [
+    "docs.docker.com"
+   ]
+  },
+  {
+   "id": "doc-048",
+   "class": "documentation",
+   "query": "kubernetes configmap volume",
+   "accept": [
+    "kubernetes.io"
+   ]
+  },
+  {
+   "id": "doc-049",
+   "class": "documentation",
+   "query": "ansible handlers notify",
+   "accept": [
+    "docs.ansible.com"
+   ]
+  },
+  {
+   "id": "doc-050",
+   "class": "documentation",
+   "query": "git rebase onto",
+   "accept": [
+    "git-scm.com"
+   ]
+  },
+  {
+   "id": "doc-051",
+   "class": "documentation",
+   "query": "git bisect run",
+   "accept": [
+    "git-scm.com"
+   ]
+  },
+  {
+   "id": "doc-052",
+   "class": "documentation",
+   "query": "git sparse-checkout",
+   "accept": [
+    "git-scm.com"
+   ]
+  },
+  {
+   "id": "doc-053",
+   "class": "documentation",
+   "query": "systemd service Restart= options",
+   "accept": [
+    "freedesktop.org",
+    "man7.org"
+   ]
+  },
+  {
+   "id": "doc-054",
+   "class": "documentation",
+   "query": "systemd timer OnCalendar",
+   "accept": [
+    "freedesktop.org",
+    "man7.org"
+   ]
+  },
+  {
+   "id": "doc-055",
+   "class": "documentation",
+   "query": "posix mmap flags",
+   "accept": [
+    "man7.org",
+    "pubs.opengroup.org"
+   ]
+  },
+  {
+   "id": "doc-056",
+   "class": "documentation",
+   "query": "postgresql jsonb operators",
+   "accept": [
+    "postgresql.org"
+   ]
+  },
+  {
+   "id": "doc-057",
+   "class": "documentation",
+   "query": "sqlite WAL mode",
+   "accept": [
+    "sqlite.org"
+   ]
+  },
+  {
+   "id": "doc-058",
+   "class": "documentation",
+   "query": "nginx proxy_pass trailing slash",
+   "accept": [
+    "nginx.org"
+   ]
+  },
+  {
+   "id": "doc-059",
+   "class": "documentation",
+   "query": "cmake target_link_libraries",
+   "accept": [
+    "cmake.org"
+   ]
+  },
+  {
+   "id": "doc-060",
+   "class": "documentation",
+   "query": "cuda unified memory prefetch",
+   "accept": [
+    "docs.nvidia.com",
+    "developer.nvidia.com"
+   ]
+  },
+  {
+   "id": "doc-061",
+   "class": "documentation",
+   "query": "c++ std::optional value_or",
+   "accept": [
+    "cppreference.com"
+   ]
+  },
+  {
+   "id": "doc-062",
+   "class": "documentation",
+   "query": "c++ std::span",
+   "accept": [
+    "cppreference.com"
+   ]
+  },
+  {
+   "id": "doc-063",
+   "class": "documentation",
+   "query": "java stream collectors groupingBy",
+   "accept": [
+    "docs.oracle.com"
+   ]
+  },
+  {
+   "id": "doc-064",
+   "class": "documentation",
+   "query": "swift async await actors",
+   "accept": [
+    "docs.swift.org",
+    "developer.apple.com"
+   ]
+  },
+  {
+   "id": "doc-065",
+   "class": "documentation",
+   "query": "graphql schema directives",
+   "accept": [
+    "graphql.org"
+   ]
+  },
+  {
+   "id": "doc-066",
+   "class": "documentation",
+   "query": "openapi 3.1 oneOf discriminator",
+   "accept": [
+    "spec.openapis.org",
+    "swagger.io"
+   ]
+  },
+  {
+   "id": "doc-067",
+   "class": "documentation",
+   "query": "vllm speculative decoding config",
+   "accept": [
+    "docs.vllm.ai"
+   ]
+  },
+  {
+   "id": "doc-068",
+   "class": "documentation",
+   "query": "sglang server arguments",
+   "accept": [
+    "docs.sglang.ai",
+    "docs.sglang.io"
+   ]
+  },
+  {
+   "id": "doc-069",
+   "class": "documentation",
+   "query": "github actions matrix strategy",
+   "accept": [
+    "docs.github.com"
+   ]
+  },
+  {
+   "id": "doc-070",
+   "class": "documentation",
+   "query": "github actions cache action",
+   "accept": [
+    "docs.github.com",
+    "github.com/actions"
+   ]
+  },
+  {
+   "id": "doc-071",
+   "class": "documentation",
+   "query": "pyproject.toml project dependencies",
+   "accept": [
+    "packaging.python.org"
+   ]
+  },
+  {
+   "id": "doc-072",
+   "class": "documentation",
+   "query": "setuptools entry points",
+   "accept": [
+    "setuptools.pypa.io",
+    "packaging.python.org"
+   ]
+  },
+  {
+   "id": "doc-073",
+   "class": "documentation",
+   "query": "uv pip install requirements",
+   "accept": [
+    "docs.astral.sh"
+   ]
+  },
+  {
+   "id": "doc-074",
+   "class": "documentation",
+   "query": "webpack code splitting",
+   "accept": [
+    "webpack.js.org"
+   ]
+  },
+  {
+   "id": "doc-075",
+   "class": "documentation",
+   "query": "vite env variables",
+   "accept": [
+    "vite.dev",
+    "vitejs.dev"
+   ]
+  },
+  {
+   "id": "doc-076",
+   "class": "documentation",
+   "query": "playwright locators",
+   "accept": [
+    "playwright.dev"
+   ]
+  },
+  {
+   "id": "doc-077",
+   "class": "documentation",
+   "query": "tailwind responsive design",
+   "accept": [
+    "tailwindcss.com"
+   ]
+  },
+  {
+   "id": "doc-078",
+   "class": "documentation",
+   "query": "curl --resolve option",
+   "accept": [
+    "curl.se"
+   ]
+  },
+  {
+   "id": "doc-079",
+   "class": "documentation",
+   "query": "jq select map",
+   "accept": [
+    "jqlang.github.io",
+    "stedolan.github.io"
+   ]
+  },
+  {
+   "id": "doc-080",
+   "class": "documentation",
+   "query": "sed in-place edit",
+   "accept": [
+    "gnu.org"
+   ]
+  },
+  {
+   "id": "err-001",
+   "class": "error message",
+   "query": "ModuleNotFoundError: No module named 'yaml'",
+   "accept": [
+    "stackoverflow.com",
+    "pypi.org",
+    "github.com"
+   ]
+  },
+  {
+   "id": "err-002",
+   "class": "error message",
+   "query": "TypeError: 'NoneType' object is not subscriptable",
+   "accept": [
+    "stackoverflow.com"
+   ]
+  },
+  {
+   "id": "err-003",
+   "class": "error message",
+   "query": "python RecursionError maximum recursion depth exceeded",
+   "accept": [
+    "stackoverflow.com",
+    "docs.python.org"
+   ]
+  },
+  {
+   "id": "err-004",
+   "class": "error message",
+   "query": "python ValueError too many values to unpack",
+   "accept": [
+    "stackoverflow.com"
+   ]
+  },
+  {
+   "id": "err-005",
+   "class": "error message",
+   "query": "python KeyError pandas column not found",
+   "accept": [
+    "stackoverflow.com"
+   ]
+  },
+  {
+   "id": "err-006",
+   "class": "error message",
+   "query": "python SSL: CERTIFICATE_VERIFY_FAILED",
+   "accept": [
+    "stackoverflow.com"
+   ]
+  },
+  {
+   "id": "err-007",
+   "class": "error message",
+   "query": "python RuntimeError asyncio.run() cannot be called from a running event loop",
+   "accept": [
+    "stackoverflow.com",
+    "github.com"
+   ]
+  },
+  {
+   "id": "err-008",
+   "class": "error message",
+   "query": "pip error externally-managed-environment",
+   "accept": [
+    "stackoverflow.com",
+    "packaging.python.org",
+    "pip.pypa.io"
+   ]
+  },
+  {
+   "id": "err-009",
+   "class": "error message",
+   "query": "pytest fixture not found",
+   "accept": [
+    "stackoverflow.com",
+    "docs.pytest.org"
+   ]
+  },
+  {
+   "id": "err-010",
+   "class": "error message",
+   "query": "error[E0382]: borrow of moved value",
+   "accept": [
+    "doc.rust-lang.org",
+    "stackoverflow.com"
+   ]
+  },
+  {
+   "id": "err-011",
+   "class": "error message",
+   "query": "error[E0499]: cannot borrow as mutable more than once",
+   "accept": [
+    "doc.rust-lang.org",
+    "stackoverflow.com"
+   ]
+  },
+  {
+   "id": "err-012",
+   "class": "error message",
+   "query": "rust the trait bound is not satisfied Send",
+   "accept": [
+    "stackoverflow.com",
+    "users.rust-lang.org",
+    "doc.rust-lang.org"
+   ]
+  },
+  {
+   "id": "err-013",
+   "class": "error message",
+   "query": "rust linker cc not found",
+   "accept": [
+    "stackoverflow.com",
+    "users.rust-lang.org"
+   ]
+  },
+  {
+   "id": "err-014",
+   "class": "error message",
+   "query": "rust error: linking with cc failed: exit status: 1",
+   "accept": [
+    "stackoverflow.com",
+    "users.rust-lang.org",
+    "github.com"
+   ]
+  },
+  {
+   "id": "err-015",
+   "class": "error message",
+   "query": "go: cannot find package in GOROOT",
+   "accept": [
+    "stackoverflow.com",
+    "go.dev"
+   ]
+  },
+  {
+   "id": "err-016",
+   "class": "error message",
+   "query": "go panic: assignment to entry in nil map",
+   "accept": [
+    "stackoverflow.com",
+    "go.dev"
+   ]
+  },
+  {
+   "id": "err-017",
+   "class": "error message",
+   "query": "go declared and not used",
+   "accept": [
+    "stackoverflow.com",
+    "go.dev"
+   ]
+  },
+  {
+   "id": "err-018",
+   "class": "error message",
+   "query": "TypeError: Cannot read properties of undefined (reading 'map')",
+   "accept": [
+    "stackoverflow.com"
+   ]
+  },
+  {
+   "id": "err-019",
+   "class": "error message",
+   "query": "Uncaught ReferenceError: process is not defined",
+   "accept": [
+    "stackoverflow.com",
+    "github.com"
+   ]
+  },
+  {
+   "id": "err-020",
+   "class": "error message",
+   "query": "npm ERR! code EACCES permission denied",
+   "accept": [
+    "stackoverflow.com",
+    "docs.npmjs.com"
+   ]
+  },
+  {
+   "id": "err-021",
+   "class": "error message",
+   "query": "Error: Cannot find module 'express'",
+   "accept": [
+    "stackoverflow.com"
+   ]
+  },
+  {
+   "id": "err-022",
+   "class": "error message",
+   "query": "Access to fetch has been blocked by CORS policy",
+   "accept": [
+    "stackoverflow.com",
+    "developer.mozilla.org"
+   ]
+  },
+  {
+   "id": "err-023",
+   "class": "error message",
+   "query": "react Hydration failed because the initial UI does not match",
+   "accept": [
+    "stackoverflow.com",
+    "nextjs.org",
+    "react.dev"
+   ]
+  },
+  {
+   "id": "err-024",
+   "class": "error message",
+   "query": "typescript error TS2322 Type 'string' is not assignable to type 'number'",
+   "accept": [
+    "stackoverflow.com",
+    "typescriptlang.org"
+   ]
+  },
+  {
+   "id": "err-025",
+   "class": "error message",
+   "query": "ENOSPC: System limit for number of file watchers reached",
+   "accept": [
+    "stackoverflow.com",
+    "github.com"
+   ]
+  },
+  {
+   "id": "err-026",
+   "class": "error message",
+   "query": "docker: Got permission denied while trying to connect to the Docker daemon socket",
+   "accept": [
+    "stackoverflow.com",
+    "docs.docker.com",
+    "askubuntu.com"
+   ]
+  },
+  {
+   "id": "err-027",
+   "class": "error message",
+   "query": "docker error response from daemon: no space left on device",
+   "accept": [
+    "stackoverflow.com",
+    "docs.docker.com"
+   ]
+  },
+  {
+   "id": "err-028",
+   "class": "error message",
+   "query": "docker exec format error arm64",
+   "accept": [
+    "stackoverflow.com",
+    "github.com",
+    "docs.docker.com"
+   ]
+  },
+  {
+   "id": "err-029",
+   "class": "error message",
+   "query": "kubernetes CrashLoopBackOff troubleshooting",
+   "accept": [
+    "kubernetes.io",
+    "stackoverflow.com",
+    "sysdig.com",
+    "komodor.com"
+   ]
+  },
+  {
+   "id": "err-030",
+   "class": "error message",
+   "query": "kubernetes ImagePullBackOff",
+   "accept": [
+    "kubernetes.io",
+    "stackoverflow.com",
+    "sysdig.com",
+    "komodor.com"
+   ]
+  },
+  {
+   "id": "err-031",
+   "class": "error message",
+   "query": "git error: failed to push some refs non-fast-forward",
+   "accept": [
+    "stackoverflow.com",
+    "git-scm.com",
+    "docs.github.com"
+   ]
+  },
+  {
+   "id": "err-032",
+   "class": "error message",
+   "query": "git fatal: not a git repository (or any of the parent directories)",
+   "accept": [
+    "stackoverflow.com"
+   ]
+  },
+  {
+   "id": "err-033",
+   "class": "error message",
+   "query": "ssh Permission denied (publickey)",
+   "accept": [
+    "stackoverflow.com",
+    "docs.github.com",
+    "askubuntu.com"
+   ]
+  },
+  {
+   "id": "err-034",
+   "class": "error message",
+   "query": "ssh WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED",
+   "accept": [
+    "stackoverflow.com",
+    "askubuntu.com",
+    "serverfault.com"
+   ]
+  },
+  {
+   "id": "err-035",
+   "class": "error message",
+   "query": "bash: permission denied script",
+   "accept": [
+    "stackoverflow.com",
+    "askubuntu.com",
+    "unix.stackexchange.com"
+   ]
+  },
+  {
+   "id": "err-036",
+   "class": "error message",
+   "query": "CUDA error: out of memory pytorch",
+   "accept": [
+    "stackoverflow.com",
+    "discuss.pytorch.org",
+    "pytorch.org"
+   ]
+  },
+  {
+   "id": "err-037",
+   "class": "error message",
+   "query": "RuntimeError: CUDA error: device-side assert triggered",
+   "accept": [
+    "stackoverflow.com",
+    "discuss.pytorch.org",
+    "github.com"
+   ]
+  },
+  {
+   "id": "err-038",
+   "class": "error message",
+   "query": "nvidia-smi has failed because it couldn't communicate with the NVIDIA driver",
+   "accept": [
+    "stackoverflow.com",
+    "askubuntu.com",
+    "forums.developer.nvidia.com"
+   ]
+  },
+  {
+   "id": "err-039",
+   "class": "error message",
+   "query": "nginx 502 bad gateway upstream",
+   "accept": [
+    "stackoverflow.com",
+    "serverfault.com",
+    "nginx.org"
+   ]
+  },
+  {
+   "id": "err-040",
+   "class": "error message",
+   "query": "postgres FATAL: password authentication failed for user",
+   "accept": [
+    "stackoverflow.com",
+    "dba.stackexchange.com",
+    "postgresql.org"
+   ]
+  },
+  {
+   "id": "err-041",
+   "class": "error message",
+   "query": "java.lang.OutOfMemoryError: Java heap space",
+   "accept": [
+    "stackoverflow.com",
+    "baeldung.com"
+   ]
+  },
+  {
+   "id": "err-042",
+   "class": "error message",
+   "query": "java NullPointerException cannot invoke because is null",
+   "accept": [
+    "stackoverflow.com",
+    "baeldung.com"
+   ]
+  },
+  {
+   "id": "err-043",
+   "class": "error message",
+   "query": "CMake Error: Could not find CMAKE_ROOT",
+   "accept": [
+    "stackoverflow.com",
+    "cmake.org"
+   ]
+  },
+  {
+   "id": "err-044",
+   "class": "error message",
+   "query": "error: externally linked symbol multiple definition",
+   "accept": [
+    "stackoverflow.com"
+   ]
+  },
+  {
+   "id": "err-045",
+   "class": "error message",
+   "query": "tar: Error is not recoverable: exiting now",
+   "accept": [
+    "stackoverflow.com",
+    "unix.stackexchange.com",
+    "askubuntu.com"
+   ]
+  },
+  {
+   "id": "rel-001",
+   "class": "release facts",
+   "query": "python 3.13 release notes new features",
+   "accept": [
+    "docs.python.org",
+    "python.org"
+   ]
+  },
+  {
+   "id": "rel-002",
+   "class": "release facts",
+   "query": "python 3.12 what's new",
+   "accept": [
+    "docs.python.org",
+    "python.org"
+   ]
+  },
+  {
+   "id": "rel-003",
+   "class": "release facts",
+   "query": "rust 1.80 release notes",
+   "accept": [
+    "blog.rust-lang.org",
+    "github.com/rust-lang"
+   ]
+  },
+  {
+   "id": "rel-004",
+   "class": "release facts",
+   "query": "rust latest stable version release",
+   "accept": [
+    "blog.rust-lang.org",
+    "rust-lang.org",
+    "github.com/rust-lang"
+   ]
+  },
+  {
+   "id": "rel-005",
+   "class": "release facts",
+   "query": "go 1.23 release notes",
+   "accept": [
+    "go.dev"
+   ]
+  },
+  {
+   "id": "rel-006",
+   "class": "release facts",
+   "query": "node.js 22 release changelog",
+   "accept": [
+    "nodejs.org",
+    "github.com/nodejs"
+   ]
+  },
+  {
+   "id": "rel-007",
+   "class": "release facts",
+   "query": "node.js LTS schedule",
+   "accept": [
+    "nodejs.org",
+    "github.com/nodejs"
+   ]
+  },
+  {
+   "id": "rel-008",
+   "class": "release facts",
+   "query": "typescript 5.4 release notes",
+   "accept": [
+    "typescriptlang.org",
+    "devblogs.microsoft.com"
+   ]
+  },
+  {
+   "id": "rel-009",
+   "class": "release facts",
+   "query": "react 19 release",
+   "accept": [
+    "react.dev"
+   ]
+  },
+  {
+   "id": "rel-010",
+   "class": "release facts",
+   "query": "vue 3.5 release",
+   "accept": [
+    "blog.vuejs.org",
+    "github.com/vuejs"
+   ]
+  },
+  {
+   "id": "rel-011",
+   "class": "release facts",
+   "query": "django 5.0 release notes",
+   "accept": [
+    "docs.djangoproject.com",
+    "djangoproject.com"
+   ]
+  },
+  {
+   "id": "rel-012",
+   "class": "release facts",
+   "query": "numpy 2.0 release notes",
+   "accept": [
+    "numpy.org"
+   ]
+  },
+  {
+   "id": "rel-013",
+   "class": "release facts",
+   "query": "pytorch 2.4 release notes",
+   "accept": [
+    "pytorch.org",
+    "github.com/pytorch"
+   ]
+  },
+  {
+   "id": "rel-014",
+   "class": "release facts",
+   "query": "transformers latest release changelog",
+   "accept": [
+    "github.com/huggingface",
+    "huggingface.co",
+    "pypi.org"
+   ]
+  },
+  {
+   "id": "rel-015",
+   "class": "release facts",
+   "query": "vllm latest release notes",
+   "accept": [
+    "github.com/vllm-project",
+    "docs.vllm.ai"
+   ]
+  },
+  {
+   "id": "rel-016",
+   "class": "release facts",
+   "query": "pydantic 2.9 changelog",
+   "accept": [
+    "docs.pydantic.dev",
+    "github.com/pydantic",
+    "pydantic.dev"
+   ]
+  },
+  {
+   "id": "rel-017",
+   "class": "release facts",
+   "query": "fastapi changelog release notes",
+   "accept": [
+    "fastapi.tiangolo.com",
+    "github.com/fastapi",
+    "github.com/tiangolo"
+   ]
+  },
+  {
+   "id": "rel-018",
+   "class": "release facts",
+   "query": "ruff changelog latest",
+   "accept": [
+    "github.com/astral-sh",
+    "docs.astral.sh"
+   ]
+  },
+  {
+   "id": "rel-019",
+   "class": "release facts",
+   "query": "docker engine 27 release notes",
+   "accept": [
+    "docs.docker.com"
+   ]
+  },
+  {
+   "id": "rel-020",
+   "class": "release facts",
+   "query": "docker compose v2 release notes",
+   "accept": [
+    "docs.docker.com",
+    "github.com/docker"
+   ]
+  },
+  {
+   "id": "rel-021",
+   "class": "release facts",
+   "query": "kubernetes 1.30 changelog",
+   "accept": [
+    "kubernetes.io",
+    "github.com/kubernetes"
+   ]
+  },
+  {
+   "id": "rel-022",
+   "class": "release facts",
+   "query": "postgresql 16 release notes",
+   "accept": [
+    "postgresql.org"
+   ]
+  },
+  {
+   "id": "rel-023",
+   "class": "release facts",
+   "query": "sqlite latest release version",
+   "accept": [
+    "sqlite.org"
+   ]
+  },
+  {
+   "id": "rel-024",
+   "class": "release facts",
+   "query": "nginx stable version changelog",
+   "accept": [
+    "nginx.org",
+    "github.com/nginx"
+   ]
+  },
+  {
+   "id": "rel-025",
+   "class": "release facts",
+   "query": "git 2.46 release notes",
+   "accept": [
+    "git-scm.com",
+    "github.com/git"
+   ]
+  },
+  {
+   "id": "rel-026",
+   "class": "release facts",
+   "query": "linux kernel 6.11 release",
+   "accept": [
+    "kernel.org",
+    "kernelnewbies.org",
+    "lwn.net"
+   ]
+  },
+  {
+   "id": "rel-027",
+   "class": "release facts",
+   "query": "ubuntu 24.04 release notes",
+   "accept": [
+    "ubuntu.com",
+    "discourse.ubuntu.com",
+    "wiki.ubuntu.com"
+   ]
+  },
+  {
+   "id": "rel-028",
+   "class": "release facts",
+   "query": "debian 12 release notes",
+   "accept": [
+    "debian.org"
+   ]
+  },
+  {
+   "id": "rel-029",
+   "class": "release facts",
+   "query": "cuda 13 release notes",
+   "accept": [
+    "docs.nvidia.com",
+    "developer.nvidia.com"
+   ]
+  },
+  {
+   "id": "rel-030",
+   "class": "release facts",
+   "query": "electron 33 release",
+   "accept": [
+    "electronjs.org",
+    "github.com/electron"
+   ]
+  },
+  {
+   "id": "rel-031",
+   "class": "release facts",
+   "query": "vite 6 release",
+   "accept": [
+    "vite.dev",
+    "vitejs.dev",
+    "github.com/vitejs"
+   ]
+  },
+  {
+   "id": "rel-032",
+   "class": "release facts",
+   "query": "webpack 5 release notes",
+   "accept": [
+    "webpack.js.org",
+    "github.com/webpack"
+   ]
+  },
+  {
+   "id": "rel-033",
+   "class": "release facts",
+   "query": "java 21 features",
+   "accept": [
+    "openjdk.org",
+    "docs.oracle.com",
+    "oracle.com"
+   ]
+  },
+  {
+   "id": "rel-034",
+   "class": "release facts",
+   "query": "swift 6 release",
+   "accept": [
+    "swift.org",
+    "developer.apple.com"
+   ]
+  },
+  {
+   "id": "rel-035",
+   "class": "release facts",
+   "query": "llvm 19 release notes",
+   "accept": [
+    "llvm.org",
+    "releases.llvm.org"
+   ]
+  },
+  {
+   "id": "rel-036",
+   "class": "release facts",
+   "query": "gcc 14 release changes",
+   "accept": [
+    "gcc.gnu.org"
+   ]
+  },
+  {
+   "id": "rel-037",
+   "class": "release facts",
+   "query": "clang 18 release notes",
+   "accept": [
+    "llvm.org",
+    "releases.llvm.org",
+    "clang.llvm.org"
+   ]
+  },
+  {
+   "id": "rel-038",
+   "class": "release facts",
+   "query": "ansible 10 changelog",
+   "accept": [
+    "docs.ansible.com",
+    "github.com/ansible"
+   ]
+  },
+  {
+   "id": "rel-039",
+   "class": "release facts",
+   "query": "systemd 256 NEWS",
+   "accept": [
+    "github.com/systemd",
+    "freedesktop.org"
+   ]
+  },
+  {
+   "id": "rel-040",
+   "class": "release facts",
+   "query": "flask 3.0 changes",
+   "accept": [
+    "flask.palletsprojects.com"
+   ]
+  },
+  {
+   "id": "rel-041",
+   "class": "release facts",
+   "query": "sqlalchemy 2.0 migration what's new",
+   "accept": [
+    "docs.sqlalchemy.org"
+   ]
+  },
+  {
+   "id": "rel-042",
+   "class": "release facts",
+   "query": "httpx latest release",
+   "accept": [
+    "pypi.org",
+    "github.com/encode",
+    "python-httpx.org"
+   ]
+  },
+  {
+   "id": "rel-043",
+   "class": "release facts",
+   "query": "serde latest version",
+   "accept": [
+    "crates.io",
+    "docs.rs",
+    "github.com/serde-rs"
+   ]
+  },
+  {
+   "id": "rel-044",
+   "class": "release facts",
+   "query": "clap 4 changelog",
+   "accept": [
+    "github.com/clap-rs",
+    "crates.io",
+    "docs.rs"
+   ]
+  },
+  {
+   "id": "rel-045",
+   "class": "release facts",
+   "query": "deno 2 release",
+   "accept": [
+    "deno.com",
+    "github.com/denoland"
+   ]
+  },
+  {
+   "id": "nav-001",
+   "class": "navigational",
+   "query": "python documentation",
+   "accept": [
+    "docs.python.org"
+   ]
+  },
+  {
+   "id": "nav-002",
+   "class": "navigational",
+   "query": "rust programming language book",
+   "accept": [
+    "doc.rust-lang.org"
+   ]
+  },
+  {
+   "id": "nav-003",
+   "class": "navigational",
+   "query": "docs.rs",
+   "accept": [
+    "docs.rs"
+   ]
+  },
+  {
+   "id": "nav-004",
+   "class": "navigational",
+   "query": "pypi",
+   "accept": [
+    "pypi.org"
+   ]
+  },
+  {
+   "id": "nav-005",
+   "class": "navigational",
+   "query": "npm registry",
+   "accept": [
+    "npmjs.com"
+   ]
+  },
+  {
+   "id": "nav-006",
+   "class": "navigational",
+   "query": "mdn web docs",
+   "accept": [
+    "developer.mozilla.org"
+   ]
+  },
+  {
+   "id": "nav-007",
+   "class": "navigational",
+   "query": "github",
+   "accept": [
+    "github.com"
+   ]
+  },
+  {
+   "id": "nav-008",
+   "class": "navigational",
+   "query": "hugging face",
+   "accept": [
+    "huggingface.co"
+   ]
+  },
+  {
+   "id": "nav-009",
+   "class": "navigational",
+   "query": "pytorch",
+   "accept": [
+    "pytorch.org"
+   ]
+  },
+  {
+   "id": "nav-010",
+   "class": "navigational",
+   "query": "numpy",
+   "accept": [
+    "numpy.org"
+   ]
+  },
+  {
+   "id": "nav-011",
+   "class": "navigational",
+   "query": "django project",
+   "accept": [
+    "djangoproject.com"
+   ]
+  },
+  {
+   "id": "nav-012",
+   "class": "navigational",
+   "query": "fastapi",
+   "accept": [
+    "fastapi.tiangolo.com"
+   ]
+  },
+  {
+   "id": "nav-013",
+   "class": "navigational",
+   "query": "vue.js",
+   "accept": [
+    "vuejs.org"
+   ]
+  },
+  {
+   "id": "nav-014",
+   "class": "navigational",
+   "query": "typescript",
+   "accept": [
+    "typescriptlang.org"
+   ]
+  },
+  {
+   "id": "nav-015",
+   "class": "navigational",
+   "query": "deno",
+   "accept": [
+    "deno.com"
+   ]
+  },
+  {
+   "id": "nav-016",
+   "class": "navigational",
+   "query": "go packages",
+   "accept": [
+    "pkg.go.dev"
+   ]
+  },
+  {
+   "id": "nav-017",
+   "class": "navigational",
+   "query": "docker docs",
+   "accept": [
+    "docs.docker.com"
+   ]
+  },
+  {
+   "id": "nav-018",
+   "class": "navigational",
+   "query": "postgresql",
+   "accept": [
+    "postgresql.org"
+   ]
+  },
+  {
+   "id": "nav-019",
+   "class": "navigational",
+   "query": "redis",
+   "accept": [
+    "redis.io"
+   ]
+  },
+  {
+   "id": "nav-020",
+   "class": "navigational",
+   "query": "linux kernel archives",
+   "accept": [
+    "kernel.org"
+   ]
+  },
+  {
+   "id": "nav-021",
+   "class": "navigational",
+   "query": "ubuntu",
+   "accept": [
+    "ubuntu.com"
+   ]
+  },
+  {
+   "id": "nav-022",
+   "class": "navigational",
+   "query": "cppreference",
+   "accept": [
+    "cppreference.com"
+   ]
+  },
+  {
+   "id": "nav-023",
+   "class": "navigational",
+   "query": "llvm",
+   "accept": [
+    "llvm.org"
+   ]
+  },
+  {
+   "id": "nav-024",
+   "class": "navigational",
+   "query": "cuda toolkit documentation",
+   "accept": [
+    "docs.nvidia.com"
+   ]
+  },
+  {
+   "id": "nav-025",
+   "class": "navigational",
+   "query": "sglang",
+   "accept": [
+    "github.com/sgl-project",
+    "docs.sglang.ai",
+    "sglang.ai"
+   ]
+  },
+  {
+   "id": "nav-026",
+   "class": "navigational",
+   "query": "jetbrains pycharm",
+   "accept": [
+    "jetbrains.com"
+   ]
+  },
+  {
+   "id": "nav-027",
+   "class": "navigational",
+   "query": "electron",
+   "accept": [
+    "electronjs.org"
+   ]
+  },
+  {
+   "id": "nav-028",
+   "class": "navigational",
+   "query": "playwright",
+   "accept": [
+    "playwright.dev"
+   ]
+  },
+  {
+   "id": "nav-029",
+   "class": "navigational",
+   "query": "curl",
+   "accept": [
+    "curl.se"
+   ]
+  },
+  {
+   "id": "nav-030",
+   "class": "navigational",
+   "query": "gnu bash manual",
+   "accept": [
+    "gnu.org"
+   ]
+  }
+ ]
+}
