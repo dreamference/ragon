@@ -463,3 +463,74 @@ As SIGNAL §19.7, in the hub: `/night add <task>` (the last exchange read back w
 ### 16.9 Speed
 
 As SIGNAL §19.8, for every `chat` thread whatever the bridge: no `image_search` (`promptThreadConfig` in `ragon web`'s policy, on start and resume), and the phone prompt searches only when the answer needs it and runs commands with `exec_command`, never through Code Mode's `exec`. The Telegram thread (20.6 s) had spent three calls on a missing `ragon_fetch` tool and a failed `exec` script. Telegram already streams answers in drafts; Signal now streams them by edits.
+
+---
+
+## 17. The source channel (proposal, for the 1.0 backlog; nothing here is built)
+
+Owner decision 2026-11-06: when the user talks to Ragon through Telegram, Signal or another messenger, Ragon needs to know the source. Today the `chat` prompt (§16.3) says "a phone chat (Signal, Telegram or Matrix)" and nothing more: the model cannot tell which one, and a terminal or web thread says nothing at all.
+
+### 17.1 Decisions, stated first
+
+1. **Every inbound message has a channel**, one of `terminal`, `web`, `desktop`, `telegram`, `signal`, `matrix`, `discord`. The set is closed; a new bridge adds a name here first.
+2. **The bridge, not the model, names the channel.** The agent never infers it from the text. A message cannot change its own channel.
+3. **The channel reaches the agent as one fixed line** (§17.2), put in the thread's context when the thread starts, so it is in every later turn without being repeated.
+4. **The channel is recorded with the session** (§17.3): the thread keeps it for resume and for the record.
+5. **Reply rules per channel are one table** (§17.4), shared by the prompt, the formatters and the tests. The prompt carries the short form; the bridge's formatter enforces the hard limits whatever the model wrote.
+6. **The channel line is a fact about delivery, not a grant.** It never widens what the agent may do; a stricter table row narrows the reply, not the policy (sandbox, approvals and `/airgapped` stay as they are).
+
+### 17.2 The line the agent sees
+
+A fixed template, one line, filled from the table; the same words for every thread on that channel, so the prompt cache stays warm:
+
+`This conversation is on <Channel>; <rules>.`
+
+For example, Telegram: "This conversation is on Telegram; reply in short plain-text messages, no tables, no long code; the user cannot run commands from here." The line is carried by the system prompt's channel slot when the prompt is `chat`/`chat-work` (the named prompts in `docs/dev/prompt.md`), and by the first user line (`[channel: telegram]` followed by the message) for a thread whose prompt has no slot. `terminal`, `web` and `desktop` threads get a one-word line (no rules) or none; their text is unchanged. A thread resumed on another channel gets a new line at its next turn ("This conversation moved to Signal; …"), because the old rules no longer apply.
+
+### 17.3 Recorded with the session
+
+- **Bridge state.** `threads.json` (§3) and the Signal bridge's state keep `channel` beside each chat's thread ids; it is written when the thread is created and when it moves.
+- **Thread metadata.** `thread/start` takes `channel` (next to `prompt`); the app server stores it in the thread's metadata, so `thread/resume`, the rollout's session header, Night Shift reports and the web UI's thread list show where the conversation happens.
+- **Turns.** Each `turn/start` from a bridge carries the channel too, so a thread used from two places records which turn came from which.
+- **Not recorded:** the chat id, number or username. The record names the messenger, never the person's account on it.
+
+### 17.4 Per-channel reply rules
+
+| Channel | Length | Formatting | Attachments | The agent must not |
+|---|---|---|---|---|
+| `terminal` | none | Markdown, tables and code blocks | files by path | (none beyond the policy) |
+| `web`, `desktop` | none | Markdown, tables, code, images | files and images shown inline | (none beyond the policy) |
+| `telegram` | split at 4,096; keep an answer to a few short messages | the renderer's subset (§3): bold, italic, code, links; no tables | offered, sent only after the user says yes (§16) | mention approval buttons it cannot see; paste long code; assume the user can run commands |
+| `signal` | split at 2,000 UTF-16 units; over eight parts becomes `answer.md` | plain text with style ranges (SIGNAL §9); no tables | `answer.md` or a named file, after yes | send a clickable approval link; ask for a link to be opened to approve; paste long code |
+| `matrix` | split at 16,000 | `formatted_body` subset; no tables | as Telegram | as Telegram |
+| `discord` | split at 2,000 characters | Discord Markdown subset (DISCORD spec); no tables | as Telegram | as Telegram; mention `@everyone` or any role |
+
+On every messenger: short answers, no clarifying questions (§16.3), the user cannot run commands from the chat, and approvals are a plain yes/no question in the chat, never a link. Limits come from the bridges' own constants; the table is the single place a change is written down, and a test (§17.6) compares it with the code.
+
+#### Citations are links where the channel allows
+
+Owner addition 2026-11-06 09:40: today a Telegram reply ends with a plain `[1] AccuWeather — Lisbon forecast` that cannot be tapped. The agent keeps producing the numbered `[n] title` form with the URL beside it; the **bridge** turns it into the channel's link form, after splitting and before sending:
+
+| Channel | Citation form |
+|---|---|
+| `telegram` | `parse_mode=HTML`, `<a href="URL">title</a>`; every other character of the text HTML-escaped (`<`, `>`, `&`, and quotes in the URL); `disable_web_page_preview` on |
+| `discord` | Markdown link `[title](<URL>)`; `_`, `*`, `[`, `]` in the title escaped; embeds suppressed |
+| `matrix` | `formatted_body` with `<a href="URL">title</a>`, title escaped; the plain `body` keeps `[n] title URL` |
+| `signal` | the URL on its own line after the title, no markup (Signal makes a bare URL tappable); no style range over it |
+| `terminal`, `web`, `desktop` | the existing rendering |
+
+A title containing `<`, `&` or `_` must come out as the same visible text on every channel, never as markup.
+
+### 17.5 What changes in code (the 1.0 backlog)
+
+1. **Bridges tag messages:** `ragon-rs/chat` (Telegram, Matrix, Discord) and `ragon-rs/signal` set `channel` on `thread/start` and `turn/start` (`hub.rs:774`, `bridge.rs:264`) and in their state files.
+2. **Launcher / app server:** a `--channel <name>` flag, or `DREAMFERENCE_RAGON_CHANNEL`, which the bridges set for a thread they open; validated against the closed set; stored in the thread's metadata and the rollout header. Terminal, web and desktop set theirs by default.
+3. **Prompt:** the channel line (§17.2) as a slot in `ragon-rs/prompts/chat.md` and `chat-work.md`, filled from one table in `ragon-rs/src/prompt.rs`; `docs/dev/prompt.md` names it.
+4. **Tests:** one per bridge (an inbound message opens a thread carrying its channel and the line reaches the prompt), one for the launcher (flag and env, an unknown name refused), and one comparing §17.4's limits with the bridges' constants.
+5. **Citations as links:** each bridge's formatter converts `[n] title` + URL into the channel's form (the table under §17.4); one test per bridge for the conversion and one for escaping a title containing `<`, `&` or `_`.
+6. **Docs:** `docs/dev/messengers.md` one line; `AGENTS.md` no change.
+
+### 17.6 Open points
+
+- Whether a thread started on a phone and opened in the web UI keeps the `chat` prompt's rules (this section says the new line replaces them at the next turn; the prompt itself stays).
+- Whether `terminal` gets a line at all (the cache cost is one line).
