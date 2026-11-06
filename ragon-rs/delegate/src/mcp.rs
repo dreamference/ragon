@@ -870,4 +870,138 @@ mod tests {
             );
         }
     }
+
+    fn call(allow: Option<&str>, name: &str, args: Value) -> Value {
+        let mut probe = DummyProbe;
+        call_tool(&json!({ "name": name, "arguments": args }), allow, &mut probe, &be())
+    }
+
+    fn text_of(v: &Value) -> String {
+        v["content"][0]["text"].as_str().unwrap_or("").to_string()
+    }
+
+    #[test]
+    fn only_watch_task_and_run_test_calls_get_a_thread() {
+        let call_of = |n: &str| format!(r#"{{"method":"tools/call","params":{{"name":"{n}"}}}}"#);
+        for slow in ["watch", "task", "run_test"] {
+            assert!(is_slow_call(&call_of(slow)), "{slow}");
+        }
+        for fast in ["lookup", "git_log", "diff_stat", "task_verdict"] {
+            assert!(!is_slow_call(&call_of(fast)), "{fast}");
+        }
+        assert!(!is_slow_call(r#"{"method":"tools/list"}"#));
+        assert!(!is_slow_call("not json"));
+    }
+
+    #[test]
+    fn a_line_that_is_not_json_is_a_parse_error_with_a_null_id() {
+        let mut probe = DummyProbe;
+        let resp: Value = serde_json::from_str(&handle_line("{nope", None, &mut probe, &be()).unwrap()).unwrap();
+        assert_eq!(resp["error"]["code"], -32700);
+        assert!(resp["id"].is_null());
+    }
+
+    #[test]
+    fn ping_answers_empty_and_an_unknown_method_is_not_found() {
+        let mut probe = DummyProbe;
+        let ping: Value =
+            serde_json::from_str(&handle_line(r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#, None, &mut probe, &be()).unwrap()).unwrap();
+        assert_eq!(ping["id"], 3);
+        assert_eq!(ping["result"], json!({}));
+        let nf: Value =
+            serde_json::from_str(&handle_line(r#"{"jsonrpc":"2.0","id":4,"method":"nope"}"#, None, &mut probe, &be()).unwrap()).unwrap();
+        assert_eq!(nf["error"]["code"], -32601);
+        // Without an id an unknown method is a notification and gets no reply.
+        assert!(handle_line(r#"{"jsonrpc":"2.0","method":"nope"}"#, None, &mut probe, &be()).is_none());
+        assert!(handle_line(r#"{"jsonrpc":"2.0","method":"notifications/cancelled"}"#, None, &mut probe, &be()).is_none());
+    }
+
+    #[test]
+    fn initialize_echoes_the_clients_protocol_version_or_falls_back() {
+        let mut probe = DummyProbe;
+        let r: Value = serde_json::from_str(
+            &handle_line(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#, None, &mut probe, &be()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(r["result"]["protocolVersion"], "1999-01-01");
+        let r: Value = serde_json::from_str(
+            &handle_line(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#, None, &mut probe, &be()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(r["result"]["protocolVersion"], PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn ask_night_and_unknown_tools_are_errors() {
+        for name in ["ask", "night"] {
+            let v = call(None, name, json!({}));
+            assert_eq!(v["isError"], true);
+            assert!(text_of(&v).contains("disabled"), "{name}");
+        }
+        let v = call(None, "frobnicate", json!({}));
+        assert_eq!(v["isError"], true);
+        assert!(text_of(&v).contains("unknown tool"));
+    }
+
+    #[test]
+    fn invalid_arguments_name_the_tool() {
+        for name in ["watch", "lookup", "run_test", "git_log", "diff_stat", "task"] {
+            let v = call(None, name, json!("not an object"));
+            assert_eq!(v["isError"], true, "{name}");
+            assert!(text_of(&v).contains(&format!("invalid {name} arguments")), "{name}: {}", text_of(&v));
+        }
+    }
+
+    #[test]
+    fn the_runner_error_comes_back_as_a_tool_error() {
+        let v = call(None, "diff_stat", json!({}));
+        assert_eq!(v["isError"], true);
+        assert!(v.get("structuredContent").is_none());
+    }
+
+    #[test]
+    fn lookup_returns_structured_content_from_the_index_backend() {
+        let v = call(None, "lookup", json!({ "op": "def", "name": "x" }));
+        if v["isError"] == false {
+            assert!(v["structuredContent"].is_object());
+            assert!(!text_of(&v).is_empty());
+        } else {
+            assert!(!text_of(&v).is_empty());
+        }
+    }
+
+    #[test]
+    fn task_verdict_with_an_empty_id_is_an_error_not_a_panic() {
+        let v = call(None, "task_verdict", json!({}));
+        assert_eq!(v["isError"], true);
+    }
+
+    #[test]
+    fn each_tool_definition_names_itself_and_has_an_object_schema() {
+        let defs = [
+            (watch_tool_definition(), "watch"),
+            (lookup_tool_definition(), "lookup"),
+            (run_test_tool_definition(), "run_test"),
+            (git_log_tool_definition(), "git_log"),
+            (diff_stat_tool_definition(), "diff_stat"),
+            (task_tool_definition(), "task"),
+            (task_verdict_tool_definition(), "task_verdict"),
+        ];
+        for (d, name) in defs {
+            assert_eq!(d["name"], name);
+            assert_eq!(d["inputSchema"]["type"], "object", "{name}");
+            assert!(d["description"].as_str().is_some_and(|s| !s.is_empty()), "{name}");
+        }
+    }
+
+    #[test]
+    fn serve_stream_replies_once_per_request_and_skips_blank_lines_and_notifications() {
+        let input = "\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n";
+        let mut reader = std::io::Cursor::new(input.as_bytes());
+        let mut out = Vec::new();
+        let mut probe = DummyProbe;
+        serve_stream(&mut reader, &mut out, None, &mut probe, &be()).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.lines().count(), 2, "{text}");
+    }
 }

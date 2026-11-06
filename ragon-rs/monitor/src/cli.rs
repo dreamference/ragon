@@ -659,4 +659,131 @@ mod tests {
         let changes = home_changes(&before, &after, &home_before, &home_after);
         assert_eq!(changes, vec!["~/.local/bin/new added", "~/.local/bin/ragon changed", "1 new entry directly under the home"]);
     }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ragon-monitor-cli-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn set(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn check_takes_no_value_and_status_takes_only_json() {
+        let words = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(refused_args("check", &words(&["--json"])).is_some());
+        assert!(refused_args("status", &words(&["--dry-run"])).is_some());
+        assert!(refused_args("check", &[]).is_none());
+        let why = refused_args("replay", &words(&["--until"])).unwrap();
+        assert!(why.contains("needs a value"), "{why}");
+        let why = refused_args("enable", &words(&["now"])).unwrap();
+        assert!(why.contains("unexpected argument `now`"), "{why}");
+    }
+
+    #[test]
+    fn help_exits_zero_and_a_refused_argument_exits_two_before_anything_runs() {
+        let words = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for h in ["help", "--help", "-h"] {
+            assert_eq!(run(&words(&[h]), &[]), 0, "{h}");
+        }
+        assert_eq!(run(&words(&["disable", "--now"]), &[]), 2);
+        assert_eq!(run(&words(&["status", "--bogus"]), &[]), 2);
+    }
+
+    #[test]
+    fn home_changes_is_empty_when_nothing_moved() {
+        let bin: BTreeMap<String, String> = [("ragon".to_string(), "-> x".to_string())].into();
+        assert!(home_changes(&bin, &bin, &set(&["a"]), &set(&["a"])).is_empty());
+    }
+
+    #[test]
+    fn home_changes_names_removed_binaries_and_counts_new_home_entries_in_the_plural() {
+        let before: BTreeMap<String, String> = [("old".to_string(), "1".to_string())].into();
+        let after = BTreeMap::new();
+        let changes = home_changes(&before, &after, &set(&["a"]), &set(&["a", "b", "c"]));
+        assert_eq!(changes, vec!["~/.local/bin/old removed", "2 new entries directly under the home"]);
+    }
+
+    #[test]
+    fn a_removed_home_entry_is_not_a_change() {
+        assert!(home_changes(&BTreeMap::new(), &BTreeMap::new(), &set(&["a", "b"]), &set(&["a"])).is_empty());
+    }
+
+    fn record(hash: &str, who: &str, trailers: &str) -> String {
+        format!("{hash}\x1f{who}\x1f{trailers}\x1e")
+    }
+
+    #[test]
+    fn a_commit_by_another_author_is_a_problem_once() {
+        let log = record("abcdef1234", "Other <o@x>", "");
+        let mut seen = BTreeSet::new();
+        let first = commit_problems(&log, "repo", Some("Me <m@x>"), &[], &mut seen);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].short, "abcdef1");
+        assert!(first[0].problem.contains("author"));
+        assert!(commit_problems(&log, "repo", Some("Me <m@x>"), &[], &mut seen).is_empty(), "already seen");
+    }
+
+    #[test]
+    fn a_forbidden_trailer_is_found_case_insensitively_at_a_line_start() {
+        let trailers = vec!["Co-Authored-By:".to_string()];
+        let log = record("1234567abc", "Me <m@x>", "Signed-off-by: x\nco-authored-by: y");
+        let mut seen = BTreeSet::new();
+        let found = commit_problems(&log, "r", Some("Me <m@x>"), &trailers, &mut seen);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].problem.contains("trailer"));
+        let clean = record("7654321abc", "Me <m@x>", "Signed-off-by: x");
+        assert!(commit_problems(&clean, "r", Some("Me <m@x>"), &trailers, &mut seen).is_empty());
+    }
+
+    #[test]
+    fn short_hashes_and_malformed_records_are_skipped() {
+        let log = format!("{}{}garbage", record("abc", "x", ""), record("", "x", ""));
+        let mut seen = BTreeSet::new();
+        assert!(commit_problems(&log, "r", Some("Me"), &[], &mut seen).is_empty());
+        assert!(seen.is_empty());
+    }
+
+    #[test]
+    fn state_survives_a_json_round_trip_and_loads_only_valid_files() {
+        let dir = scratch("state");
+        let path = dir.join("state.json");
+        assert!(load_state(&path).is_none(), "missing file");
+        std::fs::write(&path, "not json").unwrap();
+        assert!(load_state(&path).is_none(), "invalid file");
+        let mut state = State::default();
+        state.last_check = 42;
+        state.seen_commits.insert("abc".into());
+        std::fs::write(&path, serde_json::to_string(&state).unwrap()).unwrap();
+        let back = load_state(&path).unwrap();
+        assert_eq!(back.last_check, 42);
+        assert!(back.seen_commits.contains("abc"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bin_snapshot_and_home_entries_list_what_is_there() {
+        let home = scratch("home");
+        assert!(bin_snapshot(&home).is_empty(), "no .local/bin yet");
+        std::fs::create_dir_all(home.join(".local/bin")).unwrap();
+        std::fs::write(home.join(".local/bin/tool"), "x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/elsewhere", home.join(".local/bin/link")).unwrap();
+        let snap = bin_snapshot(&home);
+        assert!(snap.contains_key("tool"));
+        #[cfg(unix)]
+        assert_eq!(snap.get("link").map(String::as_str), Some("-> /elsewhere"));
+        assert!(home_entries(&home).contains(".local"));
+        assert!(home_entries(&home.join("missing")).is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn peak_rss_is_read_from_proc() {
+        assert!(peak_rss_kb() > 0);
+    }
 }

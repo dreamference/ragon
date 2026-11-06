@@ -527,4 +527,74 @@ mod tests {
         }
         assert_eq!(run(&[]), 2);
     }
+
+    fn sv(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn lookup_needs_an_op_and_a_name() {
+        assert!(parse_lookup_args(&[]).unwrap_err().contains("usage"));
+        assert!(parse_lookup_args(&sv(&["def"])).unwrap_err().contains("usage"));
+    }
+
+    #[test]
+    fn lookup_rejects_a_flag_without_a_value_and_a_bad_limit() {
+        assert!(parse_lookup_args(&sv(&["def", "x", "--scope"])).unwrap_err().contains("missing value"));
+        assert!(parse_lookup_args(&sv(&["def", "x", "--limit", "many"])).unwrap_err().contains("invalid --limit"));
+        assert!(parse_lookup_args(&sv(&["def", "x", "--limit", "-1"])).is_err());
+    }
+
+    #[test]
+    fn lookup_takes_every_option_once_parsed() {
+        let r = parse_lookup_args(&sv(&["refs", "foo", "--scope", "src", "--repo", "/r", "--limit", "7"])).unwrap();
+        assert_eq!((r.op.as_str(), r.name.as_str()), ("refs", "foo"));
+        assert_eq!((r.scope.as_deref(), r.repo.as_deref(), r.limit), (Some("src"), Some("/r"), Some(7)));
+    }
+
+    #[test]
+    fn run_test_needs_a_worktree_and_a_numeric_timeout() {
+        assert!(parse_run_test_args(&[]).unwrap_err().contains("usage"));
+        assert!(parse_run_test_args(&sv(&["pytest", "t", "--worktree"])).unwrap_err().contains("missing value"));
+        assert!(parse_run_test_args(&sv(&["pytest", "t", "--worktree", "/w", "--timeout", "soon"])).is_err());
+        assert!(parse_run_test_args(&sv(&["pytest", "t", "--cwd", "c"])).unwrap_err().contains("--worktree"));
+    }
+
+    #[test]
+    fn run_test_reads_package_and_lines() {
+        let r = parse_run_test_args(&sv(&["cargo", "t", "--worktree", "/w", "--package", "p", "--lines", "12"])).unwrap();
+        assert_eq!((r.package.as_deref(), r.lines), (Some("p"), Some(12)));
+        assert_eq!(r.timeout_s, None);
+    }
+
+    #[test]
+    fn git_log_needs_a_path_and_reads_the_repo() {
+        assert!(parse_git_log_args(&[]).unwrap_err().contains("usage"));
+        let g = parse_git_log_args(&sv(&["a.rs", "--repo", "/r"])).unwrap();
+        assert_eq!((g.path.as_str(), g.repo.as_deref(), g.start, g.end), ("a.rs", Some("/r"), None, None));
+        assert!(parse_git_log_args(&sv(&["a.rs", "--end"])).unwrap_err().contains("missing value"));
+    }
+
+    #[test]
+    fn diff_stat_defaults_to_no_repo() {
+        assert_eq!(parse_diff_stat_args(&[]).unwrap().repo, None);
+        assert!(parse_diff_stat_args(&sv(&["--repo"])).is_err());
+    }
+
+    #[test]
+    fn help_and_unknown_subcommands_have_exit_codes() {
+        assert_eq!(run(&sv(&["help"])), 0);
+        assert_eq!(run(&sv(&["--help"])), 0);
+        assert_eq!(run(&sv(&["mcp", "--help"])), 0);
+        assert_eq!(run(&sv(&["mcp", "extra"])), 2);
+        assert_eq!(run(&sv(&["frobnicate"])), 2);
+    }
+
+    #[test]
+    fn lookup_help_and_bad_arguments_exit_without_running() {
+        assert_eq!(run(&sv(&["lookup", "-h"])), 0);
+        assert_eq!(run(&sv(&["lookup"])), 2);
+        assert_eq!(run(&sv(&["run_test", "pytest"])), 2);
+        assert_eq!(run(&sv(&["git-log"])), 2);
+    }
 }

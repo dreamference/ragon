@@ -899,4 +899,147 @@ mod tests {
         assert_eq!(table.read_new(&found, None).len(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ragon-monitor-agents-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn sources_finds_sessions_and_subagents_sorted_by_path() {
+        let dir = scratch("sources");
+        let project = dir.join("proj");
+        std::fs::create_dir_all(project.join("sess1/subagents")).unwrap();
+        std::fs::write(project.join("sess1.jsonl"), "").unwrap();
+        std::fs::write(project.join("sess1/subagents/agent-ab12.jsonl"), "").unwrap();
+        std::fs::write(project.join("sess1/subagents/notes.txt"), "").unwrap();
+        std::fs::write(project.join("readme.md"), "").unwrap();
+        let found = sources(&dir);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found.windows(2).all(|w| w[0].path <= w[1].path));
+        let sub = found.iter().find(|s| s.subagent).unwrap();
+        assert_eq!((sub.key.as_str(), sub.session.as_str()), ("sess1/ab12", "sess1"));
+        let main = found.iter().find(|s| !s.subagent).unwrap();
+        assert_eq!(main.key, "sess1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sources_of_a_missing_folder_is_empty() {
+        assert!(sources(Path::new("/nonexistent/ragon-monitor-projects")).is_empty());
+    }
+
+    #[test]
+    fn meta_of_reads_agent_type_and_description_with_defaults() {
+        let dir = scratch("meta");
+        let transcript = dir.join("agent-x.jsonl");
+        assert_eq!(meta_of(&transcript), ("subagent".to_string(), String::new()));
+        std::fs::write(dir.join("agent-x.meta.json"), r#"{"agentType":"worker","description":"d"}"#).unwrap();
+        assert_eq!(meta_of(&transcript), ("worker".to_string(), "d".to_string()));
+        std::fs::write(dir.join("agent-x.meta.json"), "not json").unwrap();
+        assert_eq!(meta_of(&transcript).0, "subagent");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalise_masks_digits_hashes_and_temporary_paths() {
+        assert_eq!(normalise("sleep 30"), "sleep #");
+        assert_eq!(normalise("git show abc1234def"), "git show #");
+        assert_eq!(normalise("cat /tmp/x1/y.log"), "cat /tmp/*");
+        assert_eq!(normalise("echo \"/tmp/a b\""), "echo /tmp/* b\"");
+        assert_eq!(normalise("  a   b  "), "a b");
+        assert_eq!(normalise(""), "");
+    }
+
+    #[test]
+    fn a_word_of_letters_only_is_never_hexish() {
+        assert_eq!(normalise("deadbeefcafe"), "deadbeefcafe");
+        assert_eq!(normalise("v12.3.45"), "v#.#.#");
+    }
+
+    #[test]
+    fn wait_commands_start_with_a_waiting_word_or_chain_a_sleep() {
+        for yes in ["sleep 5", "  until x; do :; done", "timeout 9 x", "while true; do :; done", "wait $!", "make; sleep 2", "make && sleep 2", "gh run watch 1", "gh run view 1"] {
+            assert!(is_wait_command(yes), "{yes}");
+        }
+        for no in ["ls", "echo sleeping", "cargo build"] {
+            assert!(!is_wait_command(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn install_commands_are_recognised_by_phrase() {
+        for yes in ["ragon-admin codex build", "pip install x", "bash install.sh", "ragon update", "ln -sf a b"] {
+            assert!(is_install_command(yes), "{yes}");
+        }
+        assert!(!is_install_command("cargo build"));
+    }
+
+    #[test]
+    fn tools_become_calls_by_name() {
+        let tool = |name: &str, command: Option<&str>, path: Option<&str>| ToolUse {
+            name: name.to_string(),
+            command: command.map(String::from),
+            file_path: path.map(String::from),
+            ..bash("x")
+        };
+        for edit in ["Edit", "Write", "MultiEdit", "NotebookEdit"] {
+            assert!(matches!(call_of(&tool(edit, None, None)), Call::Edit), "{edit}");
+        }
+        assert!(matches!(call_of(&tool("Grep", None, None)), Call::Other));
+        let a = call_of(&tool("Read", None, Some("/a")));
+        let b = call_of(&tool("Read", None, Some("/a")));
+        let c = call_of(&tool("Read", None, Some("/b")));
+        assert!(matches!((&a, &b), (Call::Read { hash: x }, Call::Read { hash: y }) if x == y));
+        assert!(matches!((&a, &c), (Call::Read { hash: x }, Call::Read { hash: y }) if x != y));
+        assert!(matches!(call_of(&tool("Bash", Some("sleep 3"), None)), Call::Command { wait: true, .. }));
+        assert!(matches!(call_of(&tool("Bash", Some("ls"), None)), Call::Command { wait: false, .. }));
+    }
+
+    #[test]
+    fn repeated_commands_that_differ_only_in_numbers_hash_alike() {
+        let h = |c: &str| match call_of(&ToolUse { command: Some(c.to_string()), ..bash(c) }) {
+            Call::Command { hash, .. } => hash,
+            _ => unreachable!(),
+        };
+        assert_eq!(h("tail -n 40 /tmp/a1.log"), h("tail -n 50 /tmp/b2.log"));
+        assert_ne!(h("tail x"), h("head x"));
+    }
+
+    #[test]
+    fn tokens_since_sums_only_hours_from_the_one_containing_since() {
+        let mut agent = Agent::new(&source(), 0);
+        for (hour, n) in [(0, 1u64), (3600, 2), (7200, 4)] {
+            let t = agent.hour_mut(hour);
+            t.usage.output = n;
+            t.responses = n;
+        }
+        assert_eq!(agent.tokens_since(0).responses, 7);
+        assert_eq!(agent.tokens_since(3600 + 10).responses, 6, "the hour containing `since` counts");
+        assert_eq!(agent.tokens_since(7201).usage.output, 4);
+        assert_eq!(agent.tokens_since(10_000_000).responses, 0);
+    }
+
+    #[test]
+    fn read_complete_lines_stops_at_the_last_newline() {
+        let dir = scratch("lines");
+        let file = dir.join("t.jsonl");
+        std::fs::write(&file, "one\ntwo\npart").unwrap();
+        let len = std::fs::metadata(&file).unwrap().len();
+        let (text, used) = read_complete_lines(&file, 0, len).unwrap();
+        assert_eq!((text.as_str(), used), ("one\ntwo\n", 8));
+        let (text, used) = read_complete_lines(&file, 4, len).unwrap();
+        assert_eq!((text.as_str(), used), ("two\n", 4));
+        assert!(read_complete_lines(&dir.join("missing"), 0, 1).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_main_agent_is_the_coordinator_and_a_subagent_reads_its_meta() {
+        let main = Agent::new(&source(), 77);
+        assert_eq!((main.agent_type.as_str(), main.first_ts, main.last_ts), ("coordinator", 77, 77));
+        assert!(!main.subagent);
+    }
 }

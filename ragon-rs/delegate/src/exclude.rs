@@ -771,4 +771,89 @@ mod tests {
         .unwrap();
         assert!(why.contains("cannot be checked"), "{why}");
     }
+
+    #[test]
+    fn config_excludes_drops_negations_and_blanks() {
+        let text = "[claude_plugin]\nexclude = [\" a/** \", \"!keep\", \"  \", \"*.pem\"]\n";
+        assert_eq!(config_excludes(text).unwrap(), vec!["a/**", "*.pem"]);
+        assert!(config_excludes("[other]\nx = 1\n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn config_excludes_rejects_bad_shapes() {
+        assert!(config_excludes("[claude_plugin]\nexclude = \"x\"\n")
+            .unwrap_err()
+            .contains("not a list"));
+        assert!(config_excludes("[claude_plugin]\nexclude = [1]\n")
+            .unwrap_err()
+            .contains("not a string"));
+        assert!(config_excludes("= nope").unwrap_err().contains("not valid TOML"));
+    }
+
+    #[test]
+    fn path_matches_handles_backslashes_dot_slash_and_empty_inputs() {
+        assert!(path_matches("src/*.rs", ".\\src\\Main.RS"));
+        assert!(path_matches("./docs", "docs/a/b.md"));
+        assert!(!path_matches("", "a"));
+        assert!(!path_matches("a", ""));
+        assert!(!path_matches("src/*.rs", "src/main.py"));
+    }
+
+    #[test]
+    fn question_mark_matches_one_character_and_double_star_any_depth() {
+        assert!(path_matches("a?c", "abc"));
+        assert!(!path_matches("a?c", "ac"));
+        assert!(path_matches("**/secret.txt", "x/y/z/secret.txt"));
+        assert!(path_matches("a/**/z", "a/z"));
+        assert!(path_matches("a/**/z", "a/b/c/z"));
+    }
+
+    #[test]
+    fn manifests_are_recognised_by_file_name_in_any_folder() {
+        assert!(is_manifest("sub/dir/Cargo.toml"));
+        assert!(is_manifest("package.json"));
+        assert!(is_manifest("a\\setup.py"));
+        assert!(!is_manifest("Cargo.lock"));
+        assert!(!is_manifest("README.md"));
+    }
+
+    #[test]
+    fn requirements_and_constraints_files_are_lockfiles() {
+        assert!(lockfile("requirements-dev.txt").is_some());
+        assert!(lockfile("deps/constraints.in").is_some());
+        assert!(lockfile("a/requirements/prod.txt").is_some());
+        assert!(lockfile("src/main.rs").is_none());
+    }
+
+    #[test]
+    fn cargo_dependencies_see_workspace_target_and_patch_tables() {
+        let text = "[workspace.dependencies]\nserde = \"1\"\n[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n[patch.crates-io]\nfoo = { path = \"x\" }\n";
+        let deps = cargo_dependencies(text).unwrap();
+        assert!(deps.keys().any(|k| k.contains("workspace")), "{deps:?}");
+        assert!(deps.keys().any(|k| k.starts_with("target.")), "{deps:?}");
+        assert!(deps.contains_key("patch"), "{deps:?}");
+    }
+
+    #[test]
+    fn package_json_dependencies_reject_invalid_json_and_ignore_other_keys() {
+        assert!(package_json_dependencies("{").unwrap_err().contains("not valid JSON"));
+        let deps = package_json_dependencies(r#"{"name":"x","overrides":{"a":"1"}}"#).unwrap();
+        assert_eq!(deps.keys().collect::<Vec<_>>(), vec!["overrides"]);
+    }
+
+    #[test]
+    fn setup_py_dependencies_drop_comments_and_whitespace_and_refuse_names() {
+        let a = setup_py_dependencies("setup(install_requires = [ 'a',  # c\n 'b' ])").unwrap();
+        let b = setup_py_dependencies("setup(install_requires=['a','b'])").unwrap();
+        assert_eq!(a, b);
+        assert!(setup_py_dependencies("setup(install_requires=REQS)").is_err());
+    }
+
+    #[test]
+    fn a_new_manifest_with_no_dependencies_is_not_a_change() {
+        assert!(dependency_change("Cargo.toml", None, Some("[package]\nname = \"x\"\n")).is_none());
+        assert!(dependency_change("notes.md", None, Some("x")).is_none());
+        let why = dependency_change("Cargo.toml", None, Some("[dependencies]\na = \"1\"\n")).unwrap();
+        assert!(why.contains("changed"), "{why}");
+    }
 }
