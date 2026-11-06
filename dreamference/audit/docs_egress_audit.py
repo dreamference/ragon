@@ -1,4 +1,5 @@
-"""`ragon-admin audit egress --docs`: the local file index's scenario
+"""`ragon-admin audit egress --docs`: the local file index's scenario.
+
 (specs/DREAMFERENCE_RAGON_LOCAL_INDEX.md §10.2, specs/DREAMFERENCE_RAGON_EGRESS.md).
 
 This module provides the DocsEgressAudit class. It indexes a fixture folder with `ragon-docs` and
@@ -30,6 +31,8 @@ TRACED_SYSCALLS = "connect,sendto,sendmsg,sendmmsg,execve"
 RUN_TIMEOUT_S = 900
 FIXTURE_QUESTION = "Which bird nests in burrows on sea cliffs?"
 FIXTURE_ANSWER = "petrels nest in burrows"
+# The line the index step prints when every collection indexed.
+INDEX_OK_LINE = "documents: ok"
 # The session name in the result file's name and body, beside `exec`, `tui`, `app` and `web`.
 DOCS_SESSION = "docs"
 
@@ -57,7 +60,8 @@ class DocsEgressAudit:
         objects = [
             "<< /Type /Catalog /Pages 2 0 R >>",
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font "
+            "<< /F1 5 0 R >> >> >>",
             f"<< /Length {len(content)} >>\nstream\n{content}\nendstream",
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
         ]
@@ -87,15 +91,15 @@ class DocsEgressAudit:
         Returns:
             str: The folder.
         """
-        folder = os.path.join(home, "Documents")
+        folder = str(pathlib.Path(home, "Documents"))
         pathlib.Path(folder).mkdir(parents=True)
-        with pathlib.Path(os.path.join(folder, "seabirds.md")).open("w") as handle:
+        with pathlib.Path(str(pathlib.Path(folder, "seabirds.md"))).open("w") as handle:
             handle.write(
                 "# Seabirds\n\n## Atlantic petrel\n\nAtlantic petrels nest in burrows on grassy sea cliffs.\n"
             )
-        with pathlib.Path(os.path.join(folder, "notes.txt")).open("w") as handle:
+        with pathlib.Path(str(pathlib.Path(folder, "notes.txt"))).open("w") as handle:
             handle.write("Shopping: bread, milk, coffee beans.\n")
-        with pathlib.Path(os.path.join(folder, "report.pdf")).open("wb") as handle:
+        with pathlib.Path(str(pathlib.Path(folder, "report.pdf"))).open("wb") as handle:
             handle.write(
                 cls.fixture_pdf(
                     ["Colony survey", "The colony counted 412 breeding pairs this year."]
@@ -113,15 +117,17 @@ class DocsEgressAudit:
         ) as archive:
             archive.writestr(
                 "word/document.xml",
-                f"<w:document {word}><w:body><w:p><w:r><w:t>Gulls follow fishing boats.</w:t></w:r></w:p></w:body></w:document>",
+                f"<w:document {word}><w:body><w:p><w:r><w:t>Gulls follow fishing "
+                f"boats.</w:t></w:r></w:p></w:body></w:document>",
             )
         with (pathlib.Path(folder) / "survey.eml").open("w") as handle:
             handle.write(
-                "From: warden@example.org\nSubject: Survey dates\nMIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=b\n\n"
+                "From: warden@example.org\nSubject: Survey dates\nMIME-Version: 1.0\nContent-Type: "
+                "multipart/mixed; boundary=b\n\n"
                 "--b\nContent-Type: text/plain\n\nThe survey runs in June.\n--b\nContent-Type: text/csv\n"
                 "Content-Disposition: attachment; filename=counts.csv\n\nSpecies,Pairs\nRazorbill,57\n--b--\n"
             )
-        with pathlib.Path(os.path.join(folder, "installer.deb")).open("wb") as handle:
+        with pathlib.Path(str(pathlib.Path(folder, "installer.deb"))).open("wb") as handle:
             handle.write(b"never opened")
         return folder
 
@@ -180,7 +186,7 @@ class DocsEgressAudit:
             Tuple[EgressTrace, bool, bool, Dict[str, str]]: The parsed trace of both commands,
             whether indexing succeeded, whether the search found the answer, and their output.
         """
-        home = os.path.join(work_dir, "home")
+        home = str(pathlib.Path(work_dir, "home"))
         pathlib.Path(home).mkdir(parents=True)
         cls.make_fixture(home)
         env = {
@@ -191,8 +197,8 @@ class DocsEgressAudit:
         env.update(
             {
                 "HOME": home,
-                "CODEX_HOME": os.path.join(home, ".ragon"),
-                "DREAMFERENCE_CONFIG_PATH": os.path.join(work_dir, "config.toml"),
+                "CODEX_HOME": str(pathlib.Path(home, ".ragon")),
+                "DREAMFERENCE_CONFIG_PATH": str(pathlib.Path(work_dir, "config.toml")),
             }
         )
         with pathlib.Path(env["DREAMFERENCE_CONFIG_PATH"]).open("w") as handle:
@@ -203,7 +209,7 @@ class DocsEgressAudit:
             ("index", ["index"]),
             ("search", ["search", FIXTURE_QUESTION, "--k", "3"]),
         ):
-            trace_path = os.path.join(work_dir, f"trace-{step}.txt")
+            trace_path = str(pathlib.Path(work_dir, f"trace-{step}.txt"))
             command = [
                 "strace",
                 "-f",
@@ -221,7 +227,7 @@ class DocsEgressAudit:
             if pathlib.Path(trace_path).is_file():
                 with pathlib.Path(trace_path).open(errors="replace") as handle:
                     text += handle.read()
-        indexed = "documents: ok" in outputs.get("index", "")
+        indexed = INDEX_OK_LINE in outputs.get("index", "")
         found = FIXTURE_ANSWER in outputs.get("search", "").lower()
         return StraceParser.parse(text), indexed, found, outputs
 
@@ -262,8 +268,9 @@ class DocsEgressAudit:
 
     @classmethod
     def write_result(cls, trace: EgressTrace, verdict: EgressVerdict, ragon_docs: str) -> str:
-        """Writes the full result as JSON under `$CODEX_HOME/audit/`, as `<timestamp>-docs.json`
-        beside the session audit's `<timestamp>-<session>.json`.
+        """Write the full result as JSON under `$CODEX_HOME/audit/`.
+
+        It is `<timestamp>-docs.json`, beside the session audit's `<timestamp>-<session>.json`.
 
         Args:
             trace (EgressTrace): What the two commands did.
@@ -275,10 +282,10 @@ class DocsEgressAudit:
         """
         from dreamference.runner.codex_installer import CodexInstaller
 
-        directory = os.path.join(CodexInstaller.home_dir(), "audit")
+        directory = str(pathlib.Path(CodexInstaller.home_dir(), "audit"))
         pathlib.Path(directory).mkdir(exist_ok=True, parents=True)
         now = datetime.datetime.now().astimezone()
-        path = os.path.join(directory, f"{now:%Y%m%d-%H%M%S}-{DOCS_SESSION}.json")
+        path = str(pathlib.Path(directory, f"{now:%Y%m%d-%H%M%S}-{DOCS_SESSION}.json"))
         digest = hashlib.sha256()
         try:
             with pathlib.Path(ragon_docs).open("rb") as handle:
@@ -319,7 +326,7 @@ class DocsEgressAudit:
                 "⚠️  Docs egress audit: trace failed\n   - strace is not installed: sudo apt-get install strace"
             )
             return 2
-        ragon_docs = ragon_docs or os.path.join(INSTALL_DIR, "bin", "ragon-docs")
+        ragon_docs = ragon_docs or str(pathlib.Path(INSTALL_DIR, "bin", "ragon-docs"))
         if not os.access(ragon_docs, os.X_OK):
             print(
                 "⚠️  Docs egress audit: trace failed\n   - ragon-docs is not built: run `ragon-admin codex build` first."

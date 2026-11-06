@@ -5,27 +5,15 @@
    "PQ002": 1
   },
   "dreamference/audit/docs_egress_audit.py": {
-   "D205": 2,
-   "E501": 3,
-   "PLR2004": 1,
-   "PTH118": 12,
    "T201": 11
   },
   "dreamference/audit/egress_audit.py": {
    "BLE001": 1,
    "C901": 3,
-   "D205": 7,
-   "E501": 6,
    "PLR0912": 1,
    "PLR0913": 2,
    "PLR0915": 2,
    "PLR1702": 2,
-   "PLR2004": 4,
-   "PTH100": 1,
-   "PTH118": 21,
-   "PTH119": 1,
-   "PTH120": 3,
-   "PTH208": 3,
    "RUF001": 3,
    "SIM115": 1,
    "T201": 26
@@ -730,5 +718,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1614
+ "total": 1550
 }

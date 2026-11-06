@@ -7,8 +7,8 @@ This module provides the EgressAudit class. It runs one real `ragon` session und
 server, `ragon web serve`, answering one Ask thread asked through it; with `--compat claude` the
 compatibility mode's print mode in a repository holding Claude Code's files), in a throwaway
 repository with a throwaway `CODEX_HOME`, and prints every network destination, every name asked
-of a resolver and every process the session started, with a verdict. It makes "your code stays on your machine" something a user can check and re-check
-after each Codex bump, instead of a promise.
+of a resolver and every process the session started, with a verdict. It makes "your code stays on
+your machine" something a user can check and re-check after each Codex bump, instead of a promise.
 
 The audit reads; the one thing it writes outside its scratch directory is the `--json` result
 under `$CODEX_HOME/audit/`.
@@ -54,6 +54,15 @@ IMAGE_PROMPT: Final[str] = (
 TRACED_SYSCALLS: Final[str] = "connect,sendto,sendmsg,sendmmsg,execve,write,writev"
 
 SESSION_TIMEOUT_S: Final[int] = 300
+
+URL_SCHEME_SEPARATOR: Final[str] = "://"
+HTTPS_SCHEME: Final[str] = "https"
+HTTPS_DEFAULT_PORT: Final[int] = 443
+HTTP_DEFAULT_PORT: Final[int] = 80
+# The `tui_stage` at which the interface has reached the composer.
+TUI_STAGE_COMPOSER: Final[str] = "composer"
+# The exit code of a run that could not show what the build does.
+VERDICT_UNPROVEN: Final[int] = 2
 
 # Loopback services a session may reach besides the model server (spec §4.3).
 GMAIL_PORT: Final[int] = 8767
@@ -132,8 +141,10 @@ class EgressAudit:
         Returns:
             Dict[int, str]: Port to the service behind it.
         """
-        parsed = urlparse(vllm_host if "://" in vllm_host else f"http://{vllm_host}")
-        model_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        parsed = urlparse(vllm_host if URL_SCHEME_SEPARATOR in vllm_host else f"http://{vllm_host}")
+        model_port = parsed.port or (
+            HTTPS_DEFAULT_PORT if parsed.scheme == HTTPS_SCHEME else HTTP_DEFAULT_PORT
+        )
         return {
             model_port: "model server",
             GMAIL_PORT: "Gmail search service",
@@ -200,8 +211,9 @@ class EgressAudit:
         session: str = EXEC,
         app_bin: str | None = None,
     ) -> tuple[EgressTrace, bool, str]:
-        """Runs one `ragon` session under strace in a throwaway repository with a throwaway
-        `CODEX_HOME`, so no login, history or config of the user's influences the result, and
+        """Run one `ragon` session under strace in a throwaway repository.
+
+        It uses a throwaway `CODEX_HOME`, so no login, history or config of the user's influences the result, and
         none is touched.
 
         An `exec` session writes its reply to a file. A `tui` session is the interface itself on
@@ -232,11 +244,11 @@ class EgressAudit:
             Tuple[EgressTrace, bool, str]: The parsed trace, whether the session replied, and the
             path of the raw trace.
         """
-        repo = os.path.join(work_dir, "repo")
-        home = os.path.join(work_dir, "home")
+        repo = str(Path(work_dir, "repo"))
+        home = str(Path(work_dir, "home"))
         Path(repo).mkdir(parents=True)
         Path(home).mkdir(parents=True)
-        with Path(os.path.join(repo, "README.md")).open("w") as handle:
+        with Path(str(Path(repo, "README.md"))).open("w") as handle:
             handle.write("A throwaway repository for `ragon-admin audit egress`.\n")
         git = [
             "git",
@@ -249,13 +261,13 @@ class EgressAudit:
         ]
         for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "audit"]):
             subprocess.run(git + args, cwd=repo, capture_output=True, check=False)
-        config = os.path.join(work_dir, "config.toml")
+        config = str(Path(work_dir, "config.toml"))
         with Path(config).open("w") as handle:
             handle.write(
                 f"vllm_host = {json.dumps(vllm_host)}\ncode_index_enabled = false\nragon_docs = false\n"
             )
-        trace_path = os.path.join(work_dir, "trace.txt")
-        reply_path = os.path.join(work_dir, "reply.txt")
+        trace_path = str(Path(work_dir, "trace.txt"))
+        reply_path = str(Path(work_dir, "reply.txt"))
         env = dict(os.environ)
         env.update(
             {
@@ -311,7 +323,7 @@ class EgressAudit:
             cls.tui_stage = str(outcome.get("stage", ""))
             return cls._read_trace(trace_path), bool(outcome["replied"]), trace_path
         if session == APP:
-            scratch_home = os.path.join(work_dir, "home-dir")
+            scratch_home = str(Path(work_dir, "home-dir"))
             Path(scratch_home).mkdir(parents=True)
             env.update(
                 {
@@ -383,8 +395,10 @@ class EgressAudit:
         home: str,
         prompt: str,
     ) -> bool:
-        """Traces `ragon web serve` on a free loopback port while `ragon web ask`, untraced, asks it
-        one question through the bridge (specs/DREAMFERENCE_RAGON_ASK.md §13), then, where
+        """Trace `ragon web serve` on a free loopback port while `ragon web ask` queries it.
+
+        The untraced `ragon web ask` asks one question through the bridge
+        (specs/DREAMFERENCE_RAGON_ASK.md §13), then, where
         image search is set up here, a second that calls `image_search` (§9, §19.6). Everything
         the server starts is traced with it: the app-server it launches on its own socket, `ragon
         prompt show ask --composed` and the tool's MCP server. `HOME` and `XDG_RUNTIME_DIR` are
@@ -404,8 +418,8 @@ class EgressAudit:
         Returns:
             bool: Whether the Ask thread answered.
         """
-        run_dir = os.path.join(work_dir, "run")
-        user_home = os.path.join(work_dir, "user")
+        run_dir = str(Path(work_dir, "run"))
+        user_home = str(Path(work_dir, "user"))
         Path(run_dir).mkdir(mode=0o700, parents=True)
         Path(user_home).mkdir(parents=True)
         env.update({"HOME": user_home, "XDG_RUNTIME_DIR": run_dir})
@@ -421,7 +435,7 @@ class EgressAudit:
                     f"not asked: the image_search tool's server would not start: {problem}"
                 )
         port = cls.free_port()
-        server_file = os.path.join(home, "web", "server.json")
+        server_file = str(Path(home, "web", "server.json"))
         try:
             server = subprocess.Popen(
                 [*strace, "web", "serve", "--port", str(port)],
@@ -487,7 +501,7 @@ class EgressAudit:
 
         import dreamference
 
-        root = os.path.dirname(os.path.dirname(os.path.abspath(dreamference.__file__)))
+        root = str(Path(dreamference.__file__).resolve().parent.parent)
         # `-I`: no PYTHONPATH, no user site and not the working directory, so nothing but `root`
         # decides which `dreamference` runs.
         code = (
@@ -502,8 +516,9 @@ class EgressAudit:
 
     @classmethod
     def prepare_image_search(cls, user_home: str) -> bool:
-        """Lays out the scratch home so the traced session is offered `image_search`, as the launcher
-        offers it on a node (`ragon-rs/src/images.rs`): a node id, a copy of this machine's image
+        """Lay out the scratch home so the traced session is offered `image_search`.
+
+        The launcher offers it on a node (`ragon-rs/src/images.rs`): a node id, a copy of this machine's image
         search secret (so the tool reaches the real sidecar) and the `ragon-admin` of the code under
         audit (`write_admin`). Nothing is laid out, and the turn is skipped, where image search was
         never set up.
@@ -520,25 +535,26 @@ class EgressAudit:
 
         if not Path(IMAGE_SEARCH_SECRET_FILE).is_file():
             return False
-        config = os.path.join(user_home, ".config", "dreamference")
-        secret = os.path.join(config, "image-search", "secret")
-        bin_dir = os.path.join(user_home, ".local", "bin")
+        config = str(Path(user_home, ".config", "dreamference"))
+        secret = str(Path(config, "image-search", "secret"))
+        bin_dir = str(Path(user_home, ".local", "bin"))
         try:
-            Path(os.path.dirname(secret)).mkdir(mode=0o700, exist_ok=True, parents=True)
+            Path(secret).parent.mkdir(mode=0o700, exist_ok=True, parents=True)
             shutil.copyfile(IMAGE_SEARCH_SECRET_FILE, secret)
             Path(secret).chmod(0o600)
-            with Path(os.path.join(config, "node-id")).open("w") as handle:
+            with Path(str(Path(config, "node-id"))).open("w") as handle:
                 handle.write(f"{uuid.uuid4()}\n")
             Path(bin_dir).mkdir(exist_ok=True, parents=True)
-            cls.write_admin(os.path.join(bin_dir, "ragon-admin"))
+            cls.write_admin(str(Path(bin_dir, "ragon-admin")))
         except OSError:
             return False
         return True
 
     @classmethod
     def image_tool_problem(cls, user_home: str, env: dict[str, str]) -> str:
-        """Starts the scratch home's `ragon-admin images mcp` as Codex will and asks for its tools, so
-        a server that cannot start is named instead of showing up as an answer without an image.
+        """Start the scratch home's `ragon-admin images mcp` as Codex will and ask for its tools.
+
+        A server that cannot start is named instead of showing up as an answer without an image.
         `tools/list` makes no connection, so the trace is not touched.
 
         Args:
@@ -550,18 +566,24 @@ class EgressAudit:
         """
         from dreamference.chat.image_search_mcp import ImageSearchMcp
 
-        return ImageSearchMcp.probe(os.path.join(user_home, ".local", "bin", "ragon-admin"), env)
+        return ImageSearchMcp.probe(str(Path(user_home, ".local", "bin", "ragon-admin")), env)
 
     @classmethod
     def stored_images(cls) -> set:
-        """Returns:
+        """Return the image ids of this machine's image search store.
+
+        Returns:
         set: The image ids in this machine's image search store. Only the service writes there
         (the service logs no request), so a new one, or one an answer names, shows it was asked.
         """
         from dreamference.chat.image_search_sidecar import IMAGE_STORE_DIR
 
         try:
-            return {name[:-4] for name in os.listdir(IMAGE_STORE_DIR) if name.endswith(".jpg")}
+            return {
+                name[:-4]
+                for name in (p.name for p in Path(IMAGE_STORE_DIR).iterdir())
+                if name.endswith(".jpg")
+            }
         except OSError:
             return set()
 
@@ -610,7 +632,9 @@ class EgressAudit:
 
     @classmethod
     def free_port(cls) -> int:
-        """Returns:
+        """Return a loopback port nothing listens on now.
+
+        Returns:
         int: A loopback port nothing listens on now.
         """
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
@@ -637,7 +661,7 @@ class EgressAudit:
         from dreamference.runner.codex_installer import CodexInstaller
 
         try:
-            with Path(os.path.join(CodexInstaller.home_dir(), "chat", name)).open(
+            with Path(str(Path(CodexInstaller.home_dir(), "chat", name))).open(
                 encoding="utf-8"
             ) as handle:
                 value = json.load(handle)
@@ -659,13 +683,15 @@ class EgressAudit:
         names = set()
         try:
             targets = [
-                entry for entry in os.listdir(cls.SYSTEMD_SYSTEM_DIR) if entry.endswith(".wants")
+                entry
+                for entry in (p.name for p in Path(cls.SYSTEMD_SYSTEM_DIR).iterdir())
+                if entry.endswith(".wants")
             ]
         except OSError:
             return []
         for target in targets:
             try:
-                links = os.listdir(os.path.join(cls.SYSTEMD_SYSTEM_DIR, target))
+                links = [p.name for p in Path(cls.SYSTEMD_SYSTEM_DIR, target).iterdir()]
             except OSError:
                 continue
             for link in links:
@@ -679,8 +705,9 @@ class EgressAudit:
 
     @classmethod
     def declared_exceptions(cls) -> list[str]:
-        """Names what the user turned on that reaches outside this machine by design, which no traced
-        session shows: the messenger bridges, each off until its own command turns it on
+        """Name what the user turned on that reaches outside this machine by design.
+
+        No traced session shows it: the messenger bridges, each off until its own command turns it on
         (SIGNAL §10, CHAT §10). Off, none of them is named and none adds a destination to the trace.
 
         - Signal: the system unit `ragon-signal.service` (`ragon signal setup`), and one line
@@ -711,12 +738,14 @@ class EgressAudit:
             unit = f"{SIGNAL_INSTANCE_PREFIX}{name}{SIGNAL_INSTANCE_SUFFIX}"
             if cls._unit_enabled(unit, user=False):
                 lines.append(
-                    f"Signal bridge `{name}` enabled ({unit}): signal-cli connects to Signal's servers, outside this trace. "
+                    f"Signal bridge `{name}` enabled ({unit}): signal-cli connects to Signal's servers, "
+                    f"outside this trace. "
                     f"`ragon signal remove --name {name}` turns it off."
                 )
         if cls._unit_enabled(CHAT_UNIT, user=True) and cls._chat_file("telegram.json").get("token"):
             lines.append(
-                f"Telegram bridge enabled ({CHAT_UNIT}): `ragon chat serve` connects to Telegram's Bot API, outside this trace. "
+                f"Telegram bridge enabled ({CHAT_UNIT}): `ragon chat serve` connects to Telegram's Bot "
+                f"API, outside this trace. "
                 "`ragon chat telegram off` or `ragon chat stop` turns it off."
             )
         if cls._unit_enabled(CHAT_UNIT, user=True) and cls._chat_file("discord.json").get("token"):
@@ -868,7 +897,7 @@ class EgressAudit:
         # The stamp describes the installed binary only: a scratch build traced with --ragon-bin
         # (a build without one patch, say) has none, and must not be credited with the installed one's.
         build_key = ""
-        stamp = os.path.join(INSTALL_DIR, BUILD_STAMP_NAME)
+        stamp = str(Path(INSTALL_DIR, BUILD_STAMP_NAME))
         if (
             binary == os.path.realpath(CodexBrandedBuilder.executable_path())
             and Path(stamp).is_file()
@@ -881,7 +910,7 @@ class EgressAudit:
             patches = {}
             for path in CodexBrandedBuilder.patches():
                 with Path(path).open("rb") as handle:
-                    patches[os.path.basename(path)] = hashlib.sha256(handle.read()).hexdigest()
+                    patches[Path(path).name] = hashlib.sha256(handle.read()).hexdigest()
         return {
             "ragon_version": version,
             "ragon_bin": binary,
@@ -991,7 +1020,8 @@ class EgressAudit:
             if page:
                 print(
                     f"ℹ️  Preview tab: the audit's page {'loaded and ran' if page.loaded() else 'did not load'}; "
-                    "it reached for example.com, .org and .net by picture, script, stylesheet, fetch, prefetch hints and a link"
+                    "it reached for example.com, .org and .net by picture, script, stylesheet, fetch, "
+                    "prefetch hints and a link"
                 )
             for line in cls.render(trace, verdict, allowed):
                 print(line)
@@ -1000,18 +1030,20 @@ class EgressAudit:
             if web:
                 print(f"ℹ️  Image search turn: {cls.image_turn}")
             if verdict.status == TRACE_FAILED:
-                if tui and cls.tui_stage == "composer":
+                if tui and cls.tui_stage == TUI_STAGE_COMPOSER:
                     print("💡 The interface opened and took the prompt, but no reply was recorded.")
                 if app:
                     print(
-                        "💡 The app did not run its audit session to the end: start it by hand on this display to see why."
+                        "💡 The app did not run its audit session to the end: start it by hand on this "
+                        "display to see why."
                     )
                 print(
                     f"💡 The session needs the model server at {vllm_host}: `ragon-admin server start`."
                 )
             if write_json:
                 print(
-                    f"💡 Full result: {cls.write_result(trace, verdict, allowed, cls.build_identity(ragon_bin), session)}"
+                    f"💡 Full result: "
+                    f"{cls.write_result(trace, verdict, allowed, cls.build_identity(ragon_bin), session)}"
                 )
         finally:
             if page:
@@ -1083,7 +1115,7 @@ class EgressAudit:
                     "❌ This build reaches something it should not: see the destinations above. "
                     "The build is installed; do not use it for private work until that is explained."
                 )
-            elif worst == 2:
+            elif worst == VERDICT_UNPROVEN:
                 print(f"⚠️  The audit could not show what this build does; {later}.")
             return worst
         except (
@@ -1115,10 +1147,10 @@ class EgressAudit:
         """
         from dreamference.runner.codex_installer import CodexInstaller
 
-        directory = os.path.join(CodexInstaller.home_dir(), "audit")
+        directory = str(Path(CodexInstaller.home_dir(), "audit"))
         Path(directory).mkdir(exist_ok=True, parents=True)
         now = datetime.datetime.now().astimezone()
-        path = os.path.join(directory, f"{now:%Y%m%d-%H%M%S}-{session}.json")
+        path = str(Path(directory, f"{now:%Y%m%d-%H%M%S}-{session}.json"))
         result = {
             "at": now.isoformat(timespec="seconds"),
             "session": session,
