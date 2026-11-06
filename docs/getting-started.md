@@ -149,6 +149,24 @@ Administrator rights: for the sandbox the agent's commands run in, the firewall 
 `ragon` and the app hear nodes announce themselves, and an egress audit. Over SSH there is no
 desktop for that prompt; the script says so and prints the command an administrator runs instead.
 
+A client has no `ragon-admin` (that is the node's tool). To see which node it uses, run `ragon node list`;
+to pick one, `ragon node use <name or address>`; to check that the model answers, `ragon exec "say hi"`.
+
+**ripgrep is recommended.** The agent searches your code with `rg`, and `ragon doctor` warns "search
+command could not be verified" without it. Install it with `sudo apt install ripgrep` (Debian, Ubuntu),
+`brew install ripgrep` (macOS) or `winget install BurntSushi.ripgrep.MSVC` (Windows).
+
+**Checking a release by hand.** The installers verify every download; there is no separate key file
+among the release assets. The release key is embedded in `install.sh` and `install.ps1` and kept in
+the repository as `ragon-rs/release-signing.pub` (the line below is its key). To verify `SHA256SUMS.sig` yourself, download
+`SHA256SUMS` and `SHA256SUMS.sig` from the release, then:
+
+```bash
+echo 'release-key namespaces="ragon-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII9boVZe01adX9jSk8Hh/GAJURmqzCznictI3meZX0/i' > allowed_signers
+ssh-keygen -Y verify -f allowed_signers -I release-key -n ragon-release -s SHA256SUMS.sig < SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+```
+
 To remove the client, on any of them: `ragon uninstall` (it asks first; `--purge` also removes
 `~/.ragon`, your sessions and settings). The desktop app stays: remove it as any other app.
 

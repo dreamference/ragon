@@ -1,6 +1,6 @@
 # `ragon-admin`'s commands
 
-Developer notes behind the command lines in `AGENTS.md`. `ragon-admin` is `dreamference.cli:main`; its parser and dispatch are `dreamference/cli/dreamference_cli_controller.py`.
+Developer notes behind the command lines in `AGENTS.md`. `ragon-admin` is `dreamference.cli:main`; its parser and dispatch are `dreamference/cli/dreamference_cli_controller.py`. A client install has no `ragon-admin` (node-only): clients use `ragon node list`, `ragon node use` and `ragon exec`.
 
 ## Every subcommand
 

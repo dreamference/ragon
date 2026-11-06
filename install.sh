@@ -42,6 +42,9 @@
 # everything else (`apt-get full-upgrade`, firmware staged for the next boot); it never reboots,
 # and the summary says when to. With no terminal they are only listed, with the commands.
 #
+# A client has no ragon-admin: `ragon node list`, `ragon node use <address>` and `ragon exec` are its tools; ripgrep
+# is recommended (`ragon doctor` warns without it). The release key is embedded below, not a release asset.
+#
 # --no-advertise keeps the node off the local network (`ragon-admin node enable` offers it later).
 #
 # It downloads the same assets, by the same names and with the same checks, as `ragon update`
