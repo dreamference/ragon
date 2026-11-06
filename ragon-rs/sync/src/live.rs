@@ -525,3 +525,190 @@ pub async fn run(codex_home: PathBuf, hub: Arc<HubClient>) {
     };
     tokio::join!(looker, publisher, poller);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Events = mpsc::UnboundedReceiver<(String, Value)>;
+
+    fn keeping(folder: &str) -> Settings {
+        Settings { exclude: vec![PathBuf::from(folder)], ..Settings::default() }
+    }
+
+    fn routed() -> (Shared, mpsc::UnboundedSender<(String, Value)>, Events) {
+        let (events, incoming) = mpsc::unbounded_channel();
+        (Shared::default(), events, incoming)
+    }
+
+    fn connection() -> (Connection, mpsc::UnboundedReceiver<Message>) {
+        let (out, outgoing) = mpsc::unbounded_channel();
+        (Connection { socket: PathBuf::from("/nonexistent/socket"), out, shared: Arc::new(Shared::default()), next: Mutex::new(0) }, outgoing)
+    }
+
+    fn attach(connection: &Connection, thread: &str, cwd: &str) {
+        connection.shared.attached.lock().unwrap().insert(thread.to_string(), cwd.to_string());
+    }
+
+    #[test]
+    fn a_thread_leaves_this_machine_unless_it_is_kept() {
+        let open = Settings::default();
+        assert!(leaves(&open, &json!({ "cwd": "/work" })));
+        assert!(leaves(&open, &json!({ "ephemeral": false, "parentThreadId": null })));
+        assert!(!leaves(&open, &json!({ "cwd": "/work", "ephemeral": true })));
+        assert!(!leaves(&open, &json!({ "cwd": "/work", "parentThreadId": "parent" })));
+
+        let kept = keeping("/secret");
+        assert!(leaves(&kept, &json!({ "cwd": "/work" })));
+        assert!(!leaves(&kept, &json!({ "cwd": "/secret/inner" })));
+        // With a folder kept, a thread whose folder is not known may be in it.
+        assert!(!leaves(&kept, &json!({})));
+        assert!(!leaves(&kept, &json!({ "cwd": "" })));
+    }
+
+    #[test]
+    fn the_sockets_are_codex_control_socket_and_ragon_webs() {
+        let home = Path::new("/nonexistent/home");
+        let found = sockets(home);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0], home.join("app-server-control/app-server-control.sock"));
+        assert_ne!(found[1], found[0]);
+        assert!(found[1].starts_with(home), "{}", found[1].display());
+    }
+
+    #[test]
+    fn an_answer_goes_to_whoever_waits_for_it_and_no_further() {
+        let (shared, events, mut incoming) = routed();
+        let (waiter, answered) = oneshot::channel();
+        shared.waiting.lock().unwrap().insert(json!("sync-1").to_string(), waiter);
+
+        let answer = json!({ "id": "sync-1", "result": { "ok": true } });
+        Connection::incoming(&shared, answer.clone(), &events);
+        Connection::incoming(&shared, json!({ "id": "nobody", "result": {} }), &events);
+
+        assert_eq!(answered.blocking_recv().unwrap(), answer);
+        assert!(shared.waiting.lock().unwrap().is_empty());
+        assert!(shared.pending.lock().unwrap().is_empty());
+        assert!(incoming.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_server_request_waits_until_it_is_resolved() {
+        let (shared, events, mut incoming) = routed();
+        let request = json!({ "id": 7, "method": "item/commandExecution/requestApproval", "params": { "threadId": "t1" } });
+        Connection::incoming(&shared, request.clone(), &events);
+
+        let key = json!(7).to_string();
+        assert!(shared.pending.lock().unwrap().contains(&key));
+        assert_eq!(shared.requests.lock().unwrap().get(&key), Some(&("t1".to_string(), request.clone())));
+        assert_eq!(incoming.try_recv().unwrap(), ("t1".to_string(), request));
+
+        let resolved = json!({ "method": "serverRequest/resolved", "params": { "threadId": "t1", "requestId": 7 } });
+        Connection::incoming(&shared, resolved.clone(), &events);
+        assert!(shared.pending.lock().unwrap().is_empty());
+        assert!(shared.requests.lock().unwrap().is_empty());
+        assert_eq!(incoming.try_recv().unwrap(), ("t1".to_string(), resolved));
+    }
+
+    #[test]
+    fn a_request_that_names_no_thread_waits_but_goes_nowhere() {
+        let (shared, events, mut incoming) = routed();
+        Connection::incoming(&shared, json!({ "id": "q", "method": "account/refresh", "params": {} }), &events);
+        assert!(shared.pending.lock().unwrap().contains(&json!("q").to_string()));
+        assert!(shared.requests.lock().unwrap().is_empty());
+        assert!(incoming.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_running_turn_is_tracked_by_its_thread() {
+        let (shared, events, mut incoming) = routed();
+        Connection::incoming(&shared, json!({ "method": "turn/started", "params": { "threadId": "t1", "turn": { "id": "turn-1" } } }), &events);
+        Connection::incoming(&shared, json!({ "method": "turn/started", "params": { "threadId": "t2", "turn": { "id": "turn-2" } } }), &events);
+        assert_eq!(shared.turns.lock().unwrap().get("t1").map(String::as_str), Some("turn-1"));
+
+        Connection::incoming(&shared, json!({ "method": "turn/completed", "params": { "threadId": "t1" } }), &events);
+        assert_eq!(shared.turns.lock().unwrap().keys().collect::<Vec<_>>(), ["t2"]);
+        let threads: Vec<String> = std::iter::from_fn(|| incoming.try_recv().ok()).map(|(thread, _)| thread).collect();
+        assert_eq!(threads, ["t1", "t2", "t1"]);
+    }
+
+    #[test]
+    fn only_followed_news_of_a_thread_within_the_cap_is_forwarded() {
+        let (shared, events, mut incoming) = routed();
+        // Not followed, no thread, and over the cap: nothing leaves.
+        Connection::incoming(&shared, json!({ "method": "account/updated", "params": { "threadId": "t1" } }), &events);
+        Connection::incoming(&shared, json!({ "method": "item/started", "params": {} }), &events);
+        let huge = "x".repeat(EVENT_CAP);
+        Connection::incoming(&shared, json!({ "method": "item/completed", "params": { "threadId": "t1", "text": huge } }), &events);
+        assert!(incoming.try_recv().is_err());
+
+        let small = json!({ "method": "item/agentMessage/delta", "params": { "threadId": "t1", "delta": "hi" } });
+        Connection::incoming(&shared, small.clone(), &events);
+        assert_eq!(incoming.try_recv().unwrap(), ("t1".to_string(), small));
+
+        // A message that is neither a request nor a notification changes nothing.
+        Connection::incoming(&shared, json!({ "params": { "threadId": "t1" } }), &events);
+        assert!(incoming.try_recv().is_err());
+    }
+
+    #[test]
+    fn request_ids_count_up_and_a_closed_server_is_an_error() {
+        let (connection, mut outgoing) = connection();
+        assert_eq!(connection.next_id(), json!("sync-1"));
+        assert_eq!(connection.next_id(), json!("sync-2"));
+        assert!(!connection.closed());
+
+        connection.send_raw(json!({ "method": "initialized" })).unwrap();
+        let Ok(Message::Text(text)) = outgoing.try_recv() else { panic!("a text frame was sent") };
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), json!({ "method": "initialized" }));
+
+        drop(outgoing);
+        assert_eq!(connection.send_raw(json!({})), Err("the server closed the connection".to_string()));
+    }
+
+    #[test]
+    fn the_projects_are_attached_folders_without_ask_threads() {
+        let (connection, _outgoing) = connection();
+        assert!(!connection.holds("t1"));
+        attach(&connection, "t1", "/work/b");
+        attach(&connection, "t2", "/work/a");
+        attach(&connection, "t3", "/work/b");
+        attach(&connection, "t4", "");
+        attach(&connection, "t5", "/state/ask/one");
+        assert!(connection.holds("t1"));
+        assert_eq!(connection.projects(), ["/work/a", "/work/b"]);
+    }
+
+    #[test]
+    fn a_host_with_no_server_says_so() {
+        let (host, _incoming) = Host::new(Path::new("/nonexistent/home"));
+        assert!(!host.attached());
+        assert!(!host.holds("t1"));
+        assert!(host.id.starts_with("agent-"));
+        assert_eq!(
+            host.body(Vec::new(), Vec::new()),
+            json!({ "host": host.id, "kind": "agent", "holding": [], "projects": [], "models": [], "events": [], "acks": [] })
+        );
+    }
+
+    #[test]
+    fn a_host_posts_what_all_its_connections_hold() {
+        let (host, _incoming) = Host::new(Path::new("/nonexistent/home"));
+        let (first, _first_out) = connection();
+        let (second, _second_out) = connection();
+        attach(&first, "t1", "/work/b");
+        attach(&second, "t2", "/work/a");
+        attach(&second, "t3", "/work/b");
+        host.connections.lock().unwrap().extend([Arc::new(first), Arc::new(second)]);
+        host.holding.lock().unwrap().extend(["t2".to_string(), "t1".to_string()]);
+
+        assert!(host.attached());
+        assert!(host.holds("t3"));
+        assert!(!host.holds("t4"));
+        let body = host.body(vec![json!({ "event": 1 })], vec![json!({ "ack": 2 })]);
+        assert_eq!(body["holding"], json!(["t1", "t2"]));
+        assert_eq!(body["projects"], json!(["/work/a", "/work/b"]));
+        assert_eq!(body["events"], json!([{ "event": 1 }]));
+        assert_eq!(body["acks"], json!([{ "ack": 2 }]));
+    }
+}

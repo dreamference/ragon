@@ -520,3 +520,159 @@ impl Agent {
         self.status_written = (text, std::time::Instant::now());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ragon-sync-agent-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn paired(home: &Path, settings: Settings) -> Agent {
+        let device = DeviceFile { device: "device-a".to_string(), name: "test".to_string(), secret: "not-a-secret".to_string(), port: 3100, local: true };
+        device.save(home).unwrap();
+        Agent::load(home, Path::new("/nonexistent/ragon"), settings).unwrap()
+    }
+
+    fn rollout(thread: &str, source: &str, cwd: &str) -> RolloutState {
+        RolloutState { thread: thread.to_string(), source: source.to_string(), cwd: cwd.to_string(), ..RolloutState::default() }
+    }
+
+    fn local(rollout: &str, stamp: (u64, u128)) -> Local {
+        Local { path: PathBuf::new(), file: String::new(), thread: String::new(), rollout: rollout.to_string(), archived: false, compressed: false, stamp }
+    }
+
+    #[test]
+    fn an_unpaired_device_has_no_agent() {
+        let home = scratch("unpaired");
+        assert!(Agent::load(&home, Path::new("/nonexistent/ragon"), Settings::default()).is_none());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn hold_reason_names_what_keeps_a_rollout_here() {
+        let home = scratch("hold");
+        let mut agent = paired(&home, Settings { exclude: vec![PathBuf::from("/secret")], ..Settings::default() });
+
+        assert_eq!(agent.hold_reason(&rollout("t", "cli", "/work")), None);
+        assert!(agent.hold_reason(&rollout("t", "exec", "/work")).unwrap().contains("[sync] exec"));
+        assert!(agent.hold_reason(&rollout("t", "cli", "/secret/inner")).unwrap().contains("[sync] exclude"));
+        // A folder not read yet excludes nothing, and a sibling with the same prefix is not inside.
+        assert_eq!(agent.hold_reason(&rollout("t", "cli", "")), None);
+        assert_eq!(agent.hold_reason(&rollout("t", "cli", "/secret-not")), None);
+
+        agent.settings.exec = true;
+        assert_eq!(agent.hold_reason(&rollout("t", "exec", "/work")), None);
+
+        // A deletion outranks every other reason.
+        agent.state.deleted.insert("t".to_string());
+        assert!(agent.hold_reason(&rollout("t", "cli", "/secret/inner")).unwrap().contains("deleted on the hub"));
+        assert_eq!(agent.hold_reason(&rollout("other", "cli", "/work")), None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn forgetting_a_thread_takes_only_its_own_rollouts() {
+        let home = scratch("forget");
+        let mut agent = paired(&home, Settings::default());
+        agent.state.threads.insert("t1".to_string(), ThreadState { hub_thread: "hub-1".to_string(), ..ThreadState::default() });
+        agent.state.threads.insert("t2".to_string(), ThreadState { hub_thread: "hub-2".to_string(), ..ThreadState::default() });
+        agent.state.rollouts.insert("r1".to_string(), rollout("t1", "cli", ""));
+        agent.state.rollouts.insert("r2".to_string(), rollout("t2", "cli", ""));
+
+        assert_eq!(agent.local_thread("hub-1").as_deref(), Some("t1"));
+        assert_eq!(agent.local_thread("t1"), None);
+
+        agent.forget_thread("t1");
+
+        assert_eq!(agent.local_thread("hub-1"), None);
+        assert_eq!(agent.local_thread("hub-2").as_deref(), Some("t2"));
+        assert_eq!(agent.state.rollouts.keys().collect::<Vec<_>>(), ["r2"]);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn pending_counts_rollouts_with_bytes_the_hub_lacks() {
+        let home = scratch("pending");
+        let mut agent = paired(&home, Settings::default());
+        agent.state.rollouts.insert("same".to_string(), RolloutState { stamp: (10, 1), ..RolloutState::default() });
+        agent.state.rollouts.insert("grown".to_string(), RolloutState { stamp: (10, 1), ..RolloutState::default() });
+        agent.state.rollouts.insert("held".to_string(), RolloutState { stamp: (10, 1), held: Some("kept".to_string()), ..RolloutState::default() });
+
+        assert_eq!(agent.pending(&[]), 0);
+        assert_eq!(agent.pending(&[local("same", (10, 1))]), 0);
+        assert_eq!(agent.pending(&[local("grown", (20, 2))]), 1);
+        assert_eq!(agent.pending(&[local("held", (20, 2))]), 0);
+        assert_eq!(agent.pending(&[local("new", (1, 1))]), 1);
+        assert_eq!(agent.pending(&[local("same", (10, 1)), local("grown", (20, 2)), local("held", (20, 2)), local("new", (1, 1))]), 2);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_idle_agent_writes_nothing_and_a_new_one_reads_what_was_kept() {
+        let home = scratch("save");
+        let mut agent = paired(&home, Settings::default());
+        agent.state.cursor = 7;
+        agent.save().unwrap();
+        let path = state_path(&home);
+        let kept: State = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(kept.cursor, 7);
+        assert!(Hlc::parse(&kept.clock).is_some());
+
+        std::fs::remove_file(&path).unwrap();
+        agent.save().unwrap();
+        assert!(!path.exists(), "no change, so no write");
+
+        agent.state.cursor = 8;
+        agent.save().unwrap();
+        let kept: State = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+        let next = Agent::load(&home, Path::new("/nonexistent/ragon"), Settings::default()).unwrap();
+        assert_eq!(next.state, kept);
+        // The clock goes on from the reading it kept, never back.
+        assert!(Hlc::parse(&next.reading()).unwrap() > Hlc::parse(&kept.clock).unwrap());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_state_file_that_cannot_be_read_starts_the_agent_afresh() {
+        let home = scratch("corrupt");
+        let _ = paired(&home, Settings::default());
+        std::fs::write(state_path(&home), "{ not json").unwrap();
+        let agent = Agent::load(&home, Path::new("/nonexistent/ragon"), Settings::default()).unwrap();
+        assert_eq!(agent.state, State::default());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn the_status_is_written_when_it_changes() {
+        let home = scratch("status");
+        let mut agent = paired(&home, Settings::default());
+        agent.state.cursor = 3;
+        agent.state.threads.insert("t".to_string(), ThreadState::default());
+        let report = Report { errors: vec!["the hub is away".to_string()], ..Report::default() };
+
+        agent.write_status("http://node:3100", &report, 2);
+        let path = status_path(&home);
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["hub"], "http://node:3100");
+        assert_eq!(written["device"], "device-a");
+        assert_eq!(written["cursor"], 3);
+        assert_eq!(written["published"], 1);
+        assert_eq!(written["pending"], 2);
+        assert_eq!(written["errors"], json!(["the hub is away"]));
+        assert!(written["at"].is_u64());
+
+        std::fs::remove_file(&path).unwrap();
+        agent.write_status("http://node:3100", &report, 2);
+        assert!(!path.exists(), "the same status within 30 seconds is not written again");
+
+        agent.write_status("http://node:3100", &report, 1);
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}

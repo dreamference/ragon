@@ -91,6 +91,7 @@ async fn hub(dir: &Path, enabled: bool) -> Hub {
     let port = listener.local_addr().unwrap().port();
     let state_dir = auth::state_dir(&codex_home);
     let config = Config {
+        phone_admin: None,
         codex_home: codex_home.clone(),
         socket: dir.join("run").join("s.sock"),
         launch: Launch { ragon: dir.join("no-ragon"), env: Vec::new(), log: state_dir.join("app-server.log") },
