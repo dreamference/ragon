@@ -310,9 +310,6 @@
    "D205": 1,
    "PLR2004": 2
   },
-  "dreamference/node/node_settings.py": {
-   "D205": 6
-  },
   "dreamference/runner/cline_installer.py": {
    "T201": 6
   },
@@ -616,5 +613,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1087
+ "total": 1081
 }

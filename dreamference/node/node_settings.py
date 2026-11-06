@@ -19,17 +19,16 @@ class NodeSettings:
 
     @classmethod
     def path(cls) -> Path:
-        """Returns:
-        Path: `~/.config/dreamference/node-advertise.json`, resolved at call time.
-        """
+        """Returns `~/.config/dreamference/node-advertise.json`, resolved at call time."""
         return Path("~/.config/dreamference/node-advertise.json").expanduser()
 
     @classmethod
     def load(cls) -> dict[str, bool]:
-        """Returns:
-        Dict[str, bool]: `advertise` (the node is offered to the network) and `web` (the web
-        UI is offered with it). Both False when the file is missing or unreadable: a node
-        that was never enabled keeps every bind on loopback.
+        """Returns a dict with `advertise` and `web`.
+
+        `advertise` (the node is offered to the network) and `web` (the web UI is offered
+        with it). Both False when the file is missing or unreadable: a node that was never
+        enabled keeps every bind on loopback.
         """
         try:
             data: Any = json.loads(cls.path().read_text())
@@ -42,9 +41,11 @@ class NodeSettings:
 
     @classmethod
     def save(cls, advertise: bool, web: bool = True) -> None:
-        """Args:
-        advertise: Whether the node is advertised.
-        web: Whether the web UI is shared with the network when it is.
+        """Sets the two switches.
+
+        Args:
+            advertise: Whether the node is advertised.
+            web: Whether the web UI is shared with the network when it is.
         """
         path = cls.path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,23 +55,21 @@ class NodeSettings:
 
     @classmethod
     def advertised(cls) -> bool:
-        """Returns:
-        bool: True once `node enable` has run and `node disable` has not.
-        """
+        """Returns True once `node enable` has run and `node disable` has not."""
         return cls.load()["advertise"]
 
     @classmethod
     def search_bind_address(cls) -> str:
-        """Returns:
-        str: The host address SearXNG publishes on: every interface on an advertised node,
-        loopback otherwise.
+        """Returns the SearXNG host address.
+
+        Every interface on an advertised node, loopback otherwise.
         """
         return EVERY_INTERFACE if cls.advertised() else LOOPBACK
 
     @classmethod
     def web_bind_address(cls) -> str:
-        """Returns:
-        str: The address the web UI (`ragon web`, port 3100) is served on: every interface on
-        an advertised node that shares its web UI, loopback otherwise.
+        """Returns the web UI (`ragon web`, port 3100) host address.
+
+        Every interface on an advertised node that shares its web UI, loopback otherwise.
         """
         return EVERY_INTERFACE if cls.load()["web"] else LOOPBACK
