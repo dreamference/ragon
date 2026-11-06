@@ -25,7 +25,7 @@ from dreamference.night_shift.night_shift_runner import NightShiftRunner
 from dreamference.night_shift.strategy_hints import DEFAULT_HINTS
 from dreamference.runner.safe_git import SafeGit
 from dreamference.swe_bench import swe_bench_settings
-from dreamference.swe_bench.swe_bench_code_index import ARMS, SweBenchCodeIndex
+from dreamference.swe_bench.swe_bench_code_index import ARMS, EXACT_TEXT, SweBenchCodeIndex
 from dreamference.swe_bench.swe_bench_docker import SweBenchDocker
 from dreamference.swe_bench.swe_bench_evaluator import SweBenchEvaluator
 from dreamference.swe_bench.swe_bench_gate_hold import SweBenchGateHold
@@ -44,6 +44,7 @@ from dreamference.swe_bench.swe_bench_run_store import SweBenchRunStore
 from dreamference.swe_bench.swe_bench_runtime import SweBenchRuntime
 from dreamference.swe_bench.swe_bench_shards import SweBenchShards
 from dreamference.vllm_server.model_gate import ModelGate
+from dreamference.vllm_server.model_gate_service import STATE_CLOSED
 
 POLL_S: Final[float] = 5.0
 
@@ -82,6 +83,8 @@ MIN_OUTPUT_BUDGET: Final[int] = 64
 # (ragon-rs/src/guard.rs), set to "1" only when the run asks.
 TEST_GUARD_ENV: Final[str] = "DREAMFERENCE_RAGON_TEST_GUARD"
 FINISH_CHECK_ENV: Final[str] = "DREAMFERENCE_RAGON_FINISH_CHECK"
+# The code index's arm of a run without one.
+CODE_INDEX_OFF: Final[str] = "off"
 DEFAULT_RUN_PROMPT: Final[str] = "default"
 PROMPT_DIR: Final[str] = "system-prompts"
 # The turn-end compaction arm (spec §16): Codex's own key, pinned on every `ragon exec`
@@ -90,6 +93,9 @@ PROMPT_DIR: Final[str] = "system-prompts"
 TURN_END_KEY: Final[str] = "model_post_turn_compact_threshold_percent"
 TURN_END_ENV: Final[str] = "DREAMFERENCE_RAGON_TURN_END_COMPACTION"
 AUTO_TURN_END: Final[str] = "auto"
+TURN_END_OFF: Final[str] = "off"
+# The largest percentage Codex's key takes: 100 would never compact.
+MAX_TURN_END_PERCENT: Final[int] = 99
 # The launcher's rule for the percentage (`turn_end_percent` there): the share of the limit a turn
 # must have passed, Codex's headroom off the window, and its cap on any limit.
 TURN_END_SHARE_PERCENT: Final[int] = 70
@@ -120,16 +126,20 @@ class SweBenchRunner:
 
     @classmethod
     def smoke_path(cls) -> Path:
-        """Returns:
-        Path: The record of the last passed smoke on this machine.
+        """Where this machine keeps its smoke record.
+
+        Returns:
+            Path: The record of the last passed smoke on this machine.
         """
         architecture = swe_bench_settings.SweBenchSettings.architecture()
         return swe_bench_settings.CACHE_DIR / f"smoke-{architecture}.json"
 
     @classmethod
     def smoke_passed(cls) -> bool:
-        """Returns:
-        bool: True when a smoke passed here with the harness version now pinned.
+        """Whether this machine has passed a smoke.
+
+        Returns:
+            bool: True when a smoke passed here with the harness version now pinned.
         """
         import json
 
@@ -151,8 +161,9 @@ class SweBenchRunner:
         limit: int | None,
         subset: str | None,
     ) -> list[str]:
-        """Chooses the instances a new run covers, in a fixed order (sorted by instance id), so two
-        runs with the same arguments cover the same instances.
+        """Chooses the instances a new run covers, in a fixed order (sorted by instance id).
+
+        Two runs with the same arguments cover the same instances.
 
         Args:
             dataset: The dataset.
@@ -207,8 +218,9 @@ class SweBenchRunner:
 
     @classmethod
     def model_name(cls, served_model: str) -> str:
-        """Builds the predictions' `model_name_or_path`, so a result stays attributable to the build
-        and the model that produced it.
+        """Builds the predictions' `model_name_or_path`.
+
+        A result stays attributable to the build and the model that produced it.
 
         Args:
             served_model: The served model's id.
@@ -235,9 +247,9 @@ class SweBenchRunner:
         Returns:
             Optional[str]: The value as given, or None when it is not one of those.
         """
-        if value is None or value in ("on", "off"):
+        if value is None or value in ("on", TURN_END_OFF):
             return value
-        return value if value.isdigit() and 1 <= int(value) <= 99 else None
+        return value if value.isdigit() and 1 <= int(value) <= MAX_TURN_END_PERCENT else None
 
     @classmethod
     def turn_end_percent(cls, setting: str, window: int, limit: int) -> int | None:
@@ -257,7 +269,7 @@ class SweBenchRunner:
         """
         if setting == AUTO_TURN_END:
             return None
-        if setting == "off":
+        if setting == TURN_END_OFF:
             return 0
         if setting.isdigit():
             return int(setting)
@@ -265,14 +277,16 @@ class SweBenchRunner:
         target = (
             min(limit, window * MAX_LIMIT_PERCENT_OF_WINDOW // 100) * TURN_END_SHARE_PERCENT // 100
         )
-        return min(99, max(1, target * 100 // usable))
+        return min(MAX_TURN_END_PERCENT, max(1, target * 100 // usable))
 
     @classmethod
     def wait_for_index_runs(cls, limit_s: int | None = None, poll_s: int | None = None) -> bool:
-        """Waits for an active index run (a `ragon-index-*` scope: `ragon-code` or `ragon-docs`
-        indexing started by a session) to end, for up to `limit_s`, polling every `poll_s`. Any
-        other heavy job, or an index scope still active at the limit, is left to admission, which
-        refuses as before. Prints one line when it starts waiting and one when it goes on.
+        """Waits for an active index run to end, for up to `limit_s`, polling every `poll_s`.
+
+        An index run is a `ragon-index-*` scope: `ragon-code` or `ragon-docs` indexing started by a
+        session. Any other heavy job, or an index scope still active at the limit, is left to
+        admission, which refuses as before. Prints one line when it starts waiting and one when it
+        goes on.
 
         Args:
             limit_s: How long to wait at most; `INDEX_WAIT_S` by default.
@@ -716,6 +730,30 @@ class SweBenchRunner:
             print(f"❌ Run {store.name}: {refusal}")  # noqa: T201 — CLI output
             return 1
         end = cls.until_time(until)
+        # What a new run records; a resumed run keeps what its manifest says.
+        requested: dict[str, Any] = {
+            "code_index": code_index,
+            "prompt": prompt,
+            "mask": mask,
+            "strip_names": strip_names,
+            "refine": refine,
+            "task_rules": task_rules,
+            "review_turn": review_turn,
+            "refine_version": refine_version,
+            "hooks": hooks,
+            "turn_end_compaction": turn_end_compaction,
+            "restart_after_compactions": restart_after_compactions,
+            "apply_patch": apply_patch,
+            "exec_tool": exec_tool,
+            "compat": compat,
+            "drop_old_outputs": drop_old_outputs,
+            "loop_guard": loop_guard,
+            "output_budget": output_budget,
+            "sampling": sampling,
+            "test_guard": test_guard,
+            "finish_check": finish_check,
+            "strategy_hint": strategy_hint,
+        }
         with NightShiftQueue.runner_lock(NightShiftQueue.night_dir(), holder=LOCK_HOLDER) as held:
             if not held:
                 print(
@@ -734,39 +772,16 @@ class SweBenchRunner:
             remote = cls.remote_server(vllm_host)
             subnet = None if remote else SweBenchDocker.subnet(swe_bench_settings.NETWORK_NAME)
             with cls.gate_hold(store, vllm_host, subnet, label) as hold:
-                idle = settings.idle_minutes if idle_minutes is None else idle_minutes
-                if hold.priority():
-                    # Nobody else can reach the model now: an open session cannot start a turn, so
-                    # the run only waits for requests already in flight to finish.
-                    print(
-                        "🚦 The model gate now refuses every request but this run's, until it ends "
-                        "(`ragon-admin night pause` lets them through for a while).",
-                        flush=True,
-                    )
-                    idle = 0
-                elif hold.subnet and not hold.enforced:
-                    print(
-                        "💡 No model gate answers in front of the model server (it comes with the next "
-                        "`ragon-admin server start`): this run waits for other requests, as before.",
-                        flush=True,
-                    )
-                cls.admission.ignore_sessions = ignore_sessions or hold.priority()
-                cls.wait_for_index_runs()
-                reason = cls.admission.admit(
+                reason = cls._admission_refusal(
+                    store,
+                    hold,
                     vllm_host,
                     ragon_bin,
-                    idle,
-                    end or datetime.now().astimezone() + timedelta(days=365),
-                )
-                reason = reason or SweBenchEvaluator.disk_problem(settings)
-                # A resumed run keeps the arms it started with; a new one takes the flags.
-                arms = store.manifest() or {
-                    "loop_guard": loop_guard,
-                    "output_budget": output_budget or 0,
-                    "sampling": sampling or DEFAULT_SAMPLING,
-                }
-                reason = reason or cls.loop_guard_refusal(
-                    arms, ragon_bin, cls.gate.probe(vllm_host)
+                    settings,
+                    end,
+                    idle_minutes,
+                    ignore_sessions,
+                    requested,
                 )
                 if reason:
                     print(f"⚠️  Not run: {reason}.")
@@ -775,272 +790,412 @@ class SweBenchRunner:
                 if served is None:
                     print(f"⚠️  Not run: the model server at {vllm_host} is not answering.")
                     return 1
-                metrics = cls.host.metrics(vllm_host) or {}
-                max_parallel = cls.max_parallel(settings, served)
-                if max_parallel < settings.max_parallel:
-                    print(  # noqa: T201 — CLI output
-                        f"💡 At most {max_parallel} instance(s) at once: the cap of {served[0]}'s registry entry "
-                        f"(max_parallel is {settings.max_parallel}).",
-                        flush=True,
-                    )
-                parallel = cls.host.parallelism(
-                    max_parallel, metrics.get("kv_pool", 0.0), settings.task_context
-                )
+                parallel = cls._lane_parallel(vllm_host, settings, served)
                 runtime_hash = SweBenchRuntime.ensure(ragon_bin, SweBenchHarness.tool("patchelf"))
                 if runtime_hash is None:
                     return 1
-
-                manifest = store.manifest()
+                manifest = cls._run_manifest(
+                    store,
+                    {"dataset": dataset, "instances": instances, "limit": limit, "subset": subset},
+                    wanted_shard,
+                    settings,
+                    served,
+                    runtime_hash,
+                    ragon_bin,
+                    parallel,
+                    requested,
+                )
                 if manifest is None:
-                    try:
-                        selected = cls.select(dataset, instances, limit, subset)
-                    except (ValueError, OSError) as error:
-                        print(f"❌ {error}")
-                        return 1
-                    whole = list(selected)
-                    selected = cls.shard_of(dataset, whole, wanted_shard)
-                    print(
-                        f"🔎 Checking that {len(selected)} instance(s) grade correctly here "
-                        "(reference patch resolves, no-op patch does not)..."
-                    )
-                    problems = SweBenchEvaluator.validate(dataset, selected, settings)
-                    excluded = {i: problem for i, problem in problems.items() if problem}
-                    manifest = cls.build_manifest(
-                        store.name,
-                        dataset,
-                        selected,
-                        excluded,
-                        settings,
-                        served,
-                        runtime_hash,
-                        ragon_bin,
-                        parallel,
-                        code_index,
-                        prompt,
-                        mask,
-                        strip_names,
-                        refine,
-                        task_rules,
-                        review_turn,
-                        refine_version,
-                        hooks=hooks,
-                        turn_end_compaction=turn_end_compaction,
-                        restart_after_compactions=restart_after_compactions,
-                        apply_patch=apply_patch,
-                        exec_tool=exec_tool,
-                        compat=compat,
-                        drop_old_outputs=drop_old_outputs,
-                        loop_guard=loop_guard,
-                        output_budget=output_budget,
-                        sampling=sampling,
-                        test_guard=test_guard,
-                        finish_check=finish_check,
-                        strategy_hint=strategy_hint,
-                    )
-                    manifest.update(cls.shard_record(whole, wanted_shard))
-                    store.write_manifest(manifest)
-                elif (
-                    manifest.get("runtime_hash") != runtime_hash
-                    or manifest.get("served_model") != served[0]
-                ):
-                    print(
-                        f"❌ Run {store.name} was started with another ragon build or model "
-                        f"({manifest.get('served_model')}); a run measures one configuration. Use a new --name."
-                    )
                     return 1
                 hold.update(manifest["instances"], parallel)
-
-                model_url = f"http://{gateway}:{urlparse(vllm_host).port or DEFAULT_MODEL_PORT}"
-                run_prompt = str(manifest.get("prompt") or DEFAULT_RUN_PROMPT)
-                lanes, lane_notes = cls.lanes(vllm_host, served, settings, parallel)
-                relays = cls.lane_relays(gateway, lanes, model_url, vllm_host if remote else None)
-                for note in lane_notes:
-                    print(f"   {note}")
-                extra_env = {
-                    "DREAMFERENCE_RAGON_AIRGAPPED": "off",
-                    "DREAMFERENCE_RAGON_PROMPT": run_prompt,
-                    # A run made before masking existed has no key: it ran unmasked.
-                    "DREAMFERENCE_RAGON_MASK": str(manifest.get("masking") or "off"),
-                    # The runner orchestrates `--refine` itself; the launcher's own refine mode
-                    # would turn each step into two sessions, whatever the setting says.
-                    "DREAMFERENCE_RAGON_REFINE": "off",
-                }
-                # The turn-end compaction arm (spec §16): Codex's key on every exec command
-                # line (`SweBenchInstanceRun`), the launcher's switch beside it, only when the run asks.
-                run_turn_end = str(manifest.get("turn_end_compaction") or AUTO_TURN_END)
-                turn_end_percent = cls.turn_end_percent(
-                    run_turn_end,
-                    int(manifest.get("served_context") or 0),
-                    int(manifest.get("task_context") or settings.task_context),
+                return cls._run_instances(
+                    store,
+                    hold,
+                    manifest,
+                    settings,
+                    gateway,
+                    vllm_host,
+                    remote,
+                    ragon_bin,
+                    served,
+                    runtime_hash,
+                    parallel,
+                    end,
+                    evaluate,
+                    keep_images,
+                    image_chunk,
                 )
-                if turn_end_percent is not None:
-                    extra_env[TURN_END_ENV] = "0" if turn_end_percent == 0 else "1"
-                # The apply_patch arm (spec §22): the launcher's override, only when the run asks.
-                run_apply_patch = str(manifest.get("apply_patch") or AUTO_APPLY_PATCH)
-                if run_apply_patch != AUTO_APPLY_PATCH:
-                    extra_env[APPLY_PATCH_ENV] = run_apply_patch
-                # The Code Mode arm (spec §23): the launcher's switch, only when the run asks.
-                run_exec_tool = str(manifest.get("exec_tool") or AUTO_EXEC_TOOL)
-                if run_exec_tool != AUTO_EXEC_TOOL:
-                    extra_env[EXEC_TOOL_ENV] = run_exec_tool
-                # The compatibility-mode arm: the launcher's switch, only when the run asks.
-                run_compat = str(manifest.get("compat") or AUTO_COMPAT)
-                if run_compat != AUTO_COMPAT:
-                    extra_env[COMPAT_ENV] = run_compat
-                # The drop-first compaction arm (compaction spec §13): the launcher's switch, only
-                # when the run asks. A run made before the option existed has no key and ran without.
-                if manifest.get("drop_old_outputs"):
-                    extra_env[DROP_OLD_OUTPUTS_ENV] = "1"
-                # The loop guard's arms: the launcher's variables, only when the run asks. A run made
-                # before the options existed has no keys and ran with none.
-                extra_env.update(cls.loop_guard_env(manifest))
-                extra_env.update(cls.guard_env(manifest))
-                # A custom prompt reaches the container's CODEX_HOME read-only: the agent cannot edit
-                # the text a later session of the same instance would start from.
-                custom_prompt = cls.prompt_file(run_prompt)
-                extra_mounts = (
-                    [f"{custom_prompt}:{SCRATCH_MOUNT}/codex-home/{PROMPT_DIR}/{run_prompt}.md:ro"]
-                    if custom_prompt is not None
-                    else []
-                )
-
-                finished = set(store.finished())
-                pending = [i for i in manifest["instances"] if i not in finished]
-                rows = {
-                    row["instance_id"]: row for row in SweBenchHarness.rows(manifest["dataset"])
-                }
-                indexes: dict[str, dict[str, Any]] = {}
-                if manifest.get("code_index", "off") != "off" and pending:
-                    # Every index is built before the first agent starts: an index run beside the
-                    # agents would compete with them, and its time is not the agent's.
-                    code_hash = SweBenchCodeIndex.ensure_runtime(SweBenchHarness.tool("patchelf"))
-                    if code_hash is None:
-                        return 1
-                    # Which `ragon-code` answered, beside the manifest, which is never edited: a
-                    # resumed run may use another build, so each start appends its own line.
-                    with Path(store.directory / "ragon-code.sha256").open("a") as hash_file:
-                        hash_file.write(f"{code_hash}  {time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n")
-                    arm = manifest["code_index"]
-                    layer = "SCIP stores only" if arm == "exact" else "universal layer"
-                    print(
-                        f"🗂️  Indexing {len(pending)} repositories on the host ({layer})...",
-                        flush=True,
-                    )
-                    # With `--eval --remove-images` the images are cycled one repository at a time; an
-                    # image this pass pulled only to index goes again at once, and the instance pulls
-                    # it back when it starts. Otherwise every image of the run would be on disk before
-                    # the first agent starts (about 2.3 GB each), past the disk reserve on a 50-task run.
-                    cycling = evaluate and not keep_images
-                    for instance_id in pending:
-                        image = manifest["images"][instance_id]["image"]
-                        pulled = cycling and SweBenchDocker.image_digest(image) is None
-                        record = (
-                            SweBenchCodeIndex.ensure(rows[instance_id], image, arm)
-                            if SweBenchDocker.ensure_image(image)
-                            else None
-                        )
-                        if pulled:
-                            SweBenchImageCache.release([image], settings)
-                        if record is None:
-                            print(
-                                f"❌ {instance_id} has no index, and a run measures one arm: not started."
-                            )
-                            return 1
-                        indexes[instance_id] = dict(
-                            SweBenchCodeIndex.container_arguments(rows[instance_id], record, arm),
-                            record=record,
-                        )
-                        extra = (
-                            (
-                                f", {len(record.get('stores', []))} store(s), peak {record.get('peak_mb', 0)} MiB"
-                                + (
-                                    f", not finished: {', '.join(sorted(record['failed']))}"
-                                    if record.get("failed")
-                                    else ""
-                                )
-                            )
-                            if arm == "exact"
-                            else ""
-                        )
-                        print(
-                            f"   {instance_id}: index {'cached' if record['cached'] else 'built'} "
-                            f"({record['seconds']:.0f} s{extra})",
-                            flush=True,
-                        )
-                print(
-                    f"🏁 SWE-bench run {store.name}: {len(pending)} instance(s) to run, "
-                    f"{len(finished)} done, {len(manifest.get('excluded', {}))} excluded; "
-                    f"up to {parallel} at once on {served[0]}."
-                )
-                interrupted = False
-                previous = signal.getsignal(signal.SIGTERM)
-                if threading.current_thread() is threading.main_thread():
-                    signal.signal(signal.SIGTERM, cls._raise_interrupt)
-                try:
-                    # One repository at a time, in chunks of at most `image_chunk` instances, only when
-                    # the images are to be removed after grading; otherwise everything is one group, so
-                    # small repositories do not run alone. The chunks are cut from the whole run, so a
-                    # resumed run has the same ones, and a chunk with nothing left to run is skipped.
-                    cycling = evaluate and not keep_images
-                    chunk = settings.image_chunk if image_chunk is None else image_chunk
-                    waiting = set(pending)
-                    groups = cls.run_groups(
-                        manifest["instances"], waiting, rows, chunk if cycling else None
-                    )
-                    for group in groups:
-                        todo = pending if group is None else [i for i in group if i in waiting]
-                        stopped = cls.schedule(
-                            store,
-                            todo,
-                            rows,
-                            manifest,
-                            settings,
-                            runtime_hash,
-                            model_url,
-                            vllm_host,
-                            ragon_bin,
-                            parallel,
-                            end,
-                            extra_env,
-                            indexes,
-                            extra_mounts,
-                            lanes=lanes,
-                            hold=hold,
-                        )
-                        if evaluate:
-                            graded_now = list(manifest["instances"]) if group is None else group
-                            SweBenchEvaluator.grade(store, settings, only=graded_now)
-                            if cycling and not stopped:
-                                SweBenchImageCache.release(
-                                    [
-                                        manifest["images"][i]["image"]
-                                        for i in graded_now
-                                        if i in manifest["images"]
-                                    ],
-                                    settings,
-                                )
-                        if stopped:
-                            print(f"⏸️  Stopped: {stopped}. Run the same command again to resume.")
-                            break
-                except KeyboardInterrupt:
-                    interrupted = True
-                    print(
-                        "\n⏸️  Interrupted; the instances that were running will run again on resume."
-                    )
-                finally:
-                    for relay in relays:
-                        relay.close()
-                    if threading.current_thread() is threading.main_thread():
-                        signal.signal(signal.SIGTERM, previous)
-                done = len(store.finished())
-                print(
-                    f"✅ {done} of {len(manifest['instances'])} instance(s) have a prediction: "
-                    f"{store.predictions_path}"
-                )
-                return 130 if interrupted else 0
 
     @classmethod
-    def _raise_interrupt(cls, *_: Any) -> None:
+    def _admission_refusal(  # noqa: PLR0913
+        cls,
+        store: SweBenchRunStore,
+        hold: SweBenchGateHold,
+        vllm_host: str,
+        ragon_bin: str,
+        settings: "swe_bench_settings.SweBenchSettings",
+        end: datetime | None,
+        idle_minutes: float | None,
+        ignore_sessions: bool,
+        requested: dict[str, Any],
+    ) -> str | None:
+        """Why the run may not start now (machine, disk, loop-guard arm); None when it may."""
+        idle = settings.idle_minutes if idle_minutes is None else idle_minutes
+        if hold.priority():
+            # Nobody else can reach the model now: an open session cannot start a turn, so
+            # the run only waits for requests already in flight to finish.
+            print(
+                "🚦 The model gate now refuses every request but this run's, until it ends "
+                "(`ragon-admin night pause` lets them through for a while).",
+                flush=True,
+            )
+            idle = 0
+        elif hold.subnet and not hold.enforced:
+            print(
+                "💡 No model gate answers in front of the model server (it comes with the next "
+                "`ragon-admin server start`): this run waits for other requests, as before.",
+                flush=True,
+            )
+        cls.admission.ignore_sessions = ignore_sessions or hold.priority()
+        cls.wait_for_index_runs()
+        reason = cls.admission.admit(
+            vllm_host,
+            ragon_bin,
+            idle,
+            end or datetime.now().astimezone() + timedelta(days=365),
+        )
+        reason = reason or SweBenchEvaluator.disk_problem(settings)
+        # A resumed run keeps the arms it started with; a new one takes the flags.
+        arms = store.manifest() or {
+            "loop_guard": requested["loop_guard"],
+            "output_budget": requested["output_budget"] or 0,
+            "sampling": requested["sampling"] or DEFAULT_SAMPLING,
+        }
+        return reason or cls.loop_guard_refusal(arms, ragon_bin, cls.gate.probe(vllm_host))
+
+    @classmethod
+    def _lane_parallel(
+        cls,
+        vllm_host: str,
+        settings: "swe_bench_settings.SweBenchSettings",
+        served: tuple[str, int],
+    ) -> int:
+        """How many instances this machine's lane holds at once, said when the model lowers it."""
+        metrics = cls.host.metrics(vllm_host) or {}
+        max_parallel = cls.max_parallel(settings, served)
+        if max_parallel < settings.max_parallel:
+            print(  # noqa: T201 — CLI output
+                f"💡 At most {max_parallel} instance(s) at once: the cap of {served[0]}'s registry entry "
+                f"(max_parallel is {settings.max_parallel}).",
+                flush=True,
+            )
+        return cls.host.parallelism(
+            max_parallel, metrics.get("kv_pool", 0.0), settings.task_context
+        )
+
+    @classmethod
+    def _run_manifest(  # noqa: PLR0913
+        cls,
+        store: SweBenchRunStore,
+        selection: dict[str, Any],
+        wanted_shard: tuple[int, int] | None,
+        settings: "swe_bench_settings.SweBenchSettings",
+        served: tuple[str, int],
+        runtime_hash: str,
+        ragon_bin: str,
+        parallel: int,
+        requested: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """A resumed run's manifest, or a new run's, written; None (said) when neither can be used."""
+        manifest = store.manifest()
+        if manifest is None:
+            try:
+                selected = cls.select(**selection)
+            except (ValueError, OSError) as error:
+                print(f"❌ {error}")
+                return None
+            whole = list(selected)
+            dataset = selection["dataset"]
+            selected = cls.shard_of(dataset, whole, wanted_shard)
+            print(
+                f"🔎 Checking that {len(selected)} instance(s) grade correctly here "
+                "(reference patch resolves, no-op patch does not)..."
+            )
+            problems = SweBenchEvaluator.validate(dataset, selected, settings)
+            excluded = {i: problem for i, problem in problems.items() if problem}
+            manifest = cls.build_manifest(
+                store.name,
+                dataset,
+                selected,
+                excluded,
+                settings,
+                served,
+                runtime_hash,
+                ragon_bin,
+                parallel,
+                **requested,
+            )
+            manifest.update(cls.shard_record(whole, wanted_shard))
+            store.write_manifest(manifest)
+            return manifest
+        if (
+            manifest.get("runtime_hash") != runtime_hash
+            or manifest.get("served_model") != served[0]
+        ):
+            print(
+                f"❌ Run {store.name} was started with another ragon build or model "
+                f"({manifest.get('served_model')}); a run measures one configuration. Use a new --name."
+            )
+            return None
+        return manifest
+
+    @classmethod
+    def _session_env(
+        cls,
+        manifest: dict[str, Any],
+        settings: "swe_bench_settings.SweBenchSettings",
+        run_prompt: str,
+    ) -> dict[str, str]:
+        """The launcher's variables for every session of the run, from its manifest."""
+        extra_env = {
+            "DREAMFERENCE_RAGON_AIRGAPPED": "off",
+            "DREAMFERENCE_RAGON_PROMPT": run_prompt,
+            # A run made before masking existed has no key: it ran unmasked.
+            "DREAMFERENCE_RAGON_MASK": str(manifest.get("masking") or "off"),
+            # The runner orchestrates `--refine` itself; the launcher's own refine mode
+            # would turn each step into two sessions, whatever the setting says.
+            "DREAMFERENCE_RAGON_REFINE": "off",
+        }
+        # The turn-end compaction arm (spec §16): Codex's key on every exec command
+        # line (`SweBenchInstanceRun`), the launcher's switch beside it, only when the run asks.
+        run_turn_end = str(manifest.get("turn_end_compaction") or AUTO_TURN_END)
+        turn_end_percent = cls.turn_end_percent(
+            run_turn_end,
+            int(manifest.get("served_context") or 0),
+            int(manifest.get("task_context") or settings.task_context),
+        )
+        if turn_end_percent is not None:
+            extra_env[TURN_END_ENV] = "0" if turn_end_percent == 0 else "1"
+        # The apply_patch arm (spec §22): the launcher's override, only when the run asks.
+        run_apply_patch = str(manifest.get("apply_patch") or AUTO_APPLY_PATCH)
+        if run_apply_patch != AUTO_APPLY_PATCH:
+            extra_env[APPLY_PATCH_ENV] = run_apply_patch
+        # The Code Mode arm (spec §23): the launcher's switch, only when the run asks.
+        run_exec_tool = str(manifest.get("exec_tool") or AUTO_EXEC_TOOL)
+        if run_exec_tool != AUTO_EXEC_TOOL:
+            extra_env[EXEC_TOOL_ENV] = run_exec_tool
+        # The compatibility-mode arm: the launcher's switch, only when the run asks.
+        run_compat = str(manifest.get("compat") or AUTO_COMPAT)
+        if run_compat != AUTO_COMPAT:
+            extra_env[COMPAT_ENV] = run_compat
+        # The drop-first compaction arm (compaction spec §13): the launcher's switch, only
+        # when the run asks. A run made before the option existed has no key and ran without.
+        if manifest.get("drop_old_outputs"):
+            extra_env[DROP_OLD_OUTPUTS_ENV] = "1"
+        # The loop guard's arms: the launcher's variables, only when the run asks. A run made
+        # before the options existed has no keys and ran with none.
+        extra_env.update(cls.loop_guard_env(manifest))
+        extra_env.update(cls.guard_env(manifest))
+        return extra_env
+
+    @classmethod
+    def _build_indexes(
+        cls,
+        store: SweBenchRunStore,
+        manifest: dict[str, Any],
+        pending: list[str],
+        rows: dict[str, dict[str, Any]],
+        settings: "swe_bench_settings.SweBenchSettings",
+        cycling: bool,
+    ) -> dict[str, dict[str, Any]] | None:
+        """Every pending instance's code index, built on the host; None (said) when one has none."""
+        indexes: dict[str, dict[str, Any]] = {}
+        if manifest.get("code_index", CODE_INDEX_OFF) != CODE_INDEX_OFF and pending:
+            # Every index is built before the first agent starts: an index run beside the
+            # agents would compete with them, and its time is not the agent's.
+            code_hash = SweBenchCodeIndex.ensure_runtime(SweBenchHarness.tool("patchelf"))
+            if code_hash is None:
+                return None
+            # Which `ragon-code` answered, beside the manifest, which is never edited: a
+            # resumed run may use another build, so each start appends its own line.
+            with Path(store.directory / "ragon-code.sha256").open("a") as hash_file:
+                hash_file.write(f"{code_hash}  {time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n")
+            arm = manifest["code_index"]
+            layer = "SCIP stores only" if arm == EXACT_TEXT else "universal layer"
+            print(
+                f"🗂️  Indexing {len(pending)} repositories on the host ({layer})...",
+                flush=True,
+            )
+            # With `--eval --remove-images` the images are cycled one repository at a time; an
+            # image this pass pulled only to index goes again at once, and the instance pulls
+            # it back when it starts. Otherwise every image of the run would be on disk before
+            # the first agent starts (about 2.3 GB each), past the disk reserve on a 50-task run.
+            for instance_id in pending:
+                image = manifest["images"][instance_id]["image"]
+                pulled = cycling and SweBenchDocker.image_digest(image) is None
+                record = (
+                    SweBenchCodeIndex.ensure(rows[instance_id], image, arm)
+                    if SweBenchDocker.ensure_image(image)
+                    else None
+                )
+                if pulled:
+                    SweBenchImageCache.release([image], settings)
+                if record is None:
+                    print(
+                        f"❌ {instance_id} has no index, and a run measures one arm: not started."
+                    )
+                    return None
+                indexes[instance_id] = dict(
+                    SweBenchCodeIndex.container_arguments(rows[instance_id], record, arm),
+                    record=record,
+                )
+                extra = (
+                    (
+                        f", {len(record.get('stores', []))} store(s), peak {record.get('peak_mb', 0)} MiB"
+                        + (
+                            f", not finished: {', '.join(sorted(record['failed']))}"
+                            if record.get("failed")
+                            else ""
+                        )
+                    )
+                    if arm == EXACT_TEXT
+                    else ""
+                )
+                print(
+                    f"   {instance_id}: index {'cached' if record['cached'] else 'built'} "
+                    f"({record['seconds']:.0f} s{extra})",
+                    flush=True,
+                )
+        return indexes
+
+    @classmethod
+    def _grade_group(
+        cls,
+        store: SweBenchRunStore,
+        manifest: dict[str, Any],
+        settings: "swe_bench_settings.SweBenchSettings",
+        group: list[str] | None,
+        release_images: bool,
+    ) -> None:
+        """Grades one group of a run (None: all of it), then removes its images when asked."""
+        graded_now = list(manifest["instances"]) if group is None else group
+        SweBenchEvaluator.grade(store, settings, only=graded_now)
+        if release_images:
+            SweBenchImageCache.release(
+                [manifest["images"][i]["image"] for i in graded_now if i in manifest["images"]],
+                settings,
+            )
+
+    @classmethod
+    def _run_instances(  # noqa: PLR0913
+        cls,
+        store: SweBenchRunStore,
+        hold: SweBenchGateHold,
+        manifest: dict[str, Any],
+        settings: "swe_bench_settings.SweBenchSettings",
+        gateway: str,
+        vllm_host: str,
+        remote: bool,
+        ragon_bin: str,
+        served: tuple[str, int],
+        runtime_hash: str,
+        parallel: int,
+        end: datetime | None,
+        evaluate: bool,
+        keep_images: bool,
+        image_chunk: int | None,
+    ) -> int:
+        """Runs what is left of a run under its gate hold, grading as it goes.
+
+        Returns:
+            int: 0 when it did what it could, 1 when an index could not be built, 130 when interrupted.
+        """
+        model_url = f"http://{gateway}:{urlparse(vllm_host).port or DEFAULT_MODEL_PORT}"
+        run_prompt = str(manifest.get("prompt") or DEFAULT_RUN_PROMPT)
+        lanes, lane_notes = cls.lanes(vllm_host, served, settings, parallel)
+        relays = cls.lane_relays(gateway, lanes, model_url, vllm_host if remote else None)
+        for note in lane_notes:
+            print(f"   {note}")
+        extra_env = cls._session_env(manifest, settings, run_prompt)
+        # A custom prompt reaches the container's CODEX_HOME read-only: the agent cannot edit
+        # the text a later session of the same instance would start from.
+        custom_prompt = cls.prompt_file(run_prompt)
+        extra_mounts = (
+            [f"{custom_prompt}:{SCRATCH_MOUNT}/codex-home/{PROMPT_DIR}/{run_prompt}.md:ro"]
+            if custom_prompt is not None
+            else []
+        )
+
+        finished = set(store.finished())
+        pending = [i for i in manifest["instances"] if i not in finished]
+        rows = {row["instance_id"]: row for row in SweBenchHarness.rows(manifest["dataset"])}
+        indexes = cls._build_indexes(
+            store, manifest, pending, rows, settings, evaluate and not keep_images
+        )
+        if indexes is None:
+            return 1
+        print(
+            f"🏁 SWE-bench run {store.name}: {len(pending)} instance(s) to run, "
+            f"{len(finished)} done, {len(manifest.get('excluded', {}))} excluded; "
+            f"up to {parallel} at once on {served[0]}."
+        )
+        interrupted = False
+        previous = signal.getsignal(signal.SIGTERM)
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, cls._raise_interrupt)
+        try:
+            # One repository at a time, in chunks of at most `image_chunk` instances, only when
+            # the images are to be removed after grading; otherwise everything is one group, so
+            # small repositories do not run alone. The chunks are cut from the whole run, so a
+            # resumed run has the same ones, and a chunk with nothing left to run is skipped.
+            cycling = evaluate and not keep_images
+            chunk = settings.image_chunk if image_chunk is None else image_chunk
+            waiting = set(pending)
+            groups = cls.run_groups(
+                manifest["instances"], waiting, rows, chunk if cycling else None
+            )
+            for group in groups:
+                todo = pending if group is None else [i for i in group if i in waiting]
+                stopped = cls.schedule(
+                    store,
+                    todo,
+                    rows,
+                    manifest,
+                    settings,
+                    runtime_hash,
+                    model_url,
+                    vllm_host,
+                    ragon_bin,
+                    parallel,
+                    end,
+                    extra_env,
+                    indexes,
+                    extra_mounts,
+                    lanes=lanes,
+                    hold=hold,
+                )
+                if evaluate:
+                    cls._grade_group(store, manifest, settings, group, cycling and not stopped)
+                if stopped:
+                    print(f"⏸️  Stopped: {stopped}. Run the same command again to resume.")
+                    break
+        except KeyboardInterrupt:
+            interrupted = True
+            print("\n⏸️  Interrupted; the instances that were running will run again on resume.")
+        finally:
+            for relay in relays:
+                relay.close()
+            if threading.current_thread() is threading.main_thread():
+                signal.signal(signal.SIGTERM, previous)
+        done = len(store.finished())
+        print(
+            f"✅ {done} of {len(manifest['instances'])} instance(s) have a prediction: "
+            f"{store.predictions_path}"
+        )
+        return 130 if interrupted else 0
+
+    @classmethod
+    def _raise_interrupt(cls, *_: object) -> None:
         raise KeyboardInterrupt
 
     @classmethod
@@ -1068,12 +1223,13 @@ class SweBenchRunner:
     def lanes(
         cls,
         vllm_host: str,
-        served: Any,
+        served: tuple[str, int],
         settings: "swe_bench_settings.SweBenchSettings",
         parallel: int,
-    ) -> Any:
-        """This machine's model server and every paired node serving the same model
-        (specs/DREAMFERENCE_RAGON_NODE.md §12.3). The containers all run here; a replica only
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """This machine's model server and every paired node serving the same model.
+
+        See specs/DREAMFERENCE_RAGON_NODE.md §12.3. The containers all run here; a replica only
         answers some of their model requests, each lane holding as many instances as its own KV
         pool allows.
 
@@ -1084,7 +1240,7 @@ class SweBenchRunner:
             parallel: This machine's lane's size, already computed.
 
         Returns:
-            Any: `(lanes, notes)`, this machine's lane first.
+            tuple: `(lanes, notes)`, this machine's lane first.
         """
         from dreamference.node.node_lanes import NodeLanes
         from dreamference.node.node_pairing import NodePairing
@@ -1280,9 +1436,10 @@ class SweBenchRunner:
         lanes: list[dict[str, Any]] | None = None,
         hold: SweBenchGateHold | None = None,
     ) -> str | None:
-        """Starts instances while the machine is quiet, memory and disk admit one more and `--until`
-        has not passed; waits for the running ones. With `lanes`, an instance goes to the first
-        model server with room and nothing in its way.
+        """Starts instances while the machine, memory, disk and `--until` admit one more.
+
+        Waits for the running ones. With `lanes`, an instance goes to the first model server with
+        room and nothing in its way.
 
         With `hold` in force (§18) this machine's server refuses everyone else, so open sessions
         and other requests no longer hold a start back; during a pause they do again, as before
@@ -1308,13 +1465,14 @@ class SweBenchRunner:
             while queue or active:
                 active = [(thread, run) for thread, run in active if thread.is_alive()]
                 if queue and stopped is None:
-                    if end is not None and datetime.now().astimezone() >= end:
-                        stopped = f"it is past {end:%H:%M} (--until)"
-                    else:
-                        stopped = SweBenchEvaluator.disk_problem(settings)
-                    if stopped:
-                        queue.clear()
-                        continue
+                    stopped = (
+                        f"it is past {end:%H:%M} (--until)"
+                        if end is not None and datetime.now().astimezone() >= end
+                        else SweBenchEvaluator.disk_problem(settings)
+                    )
+                if queue and stopped:
+                    queue.clear()
+                    continue
                 lane_of = NightShiftRunner.lane_of
                 free = [
                     lane
@@ -1322,97 +1480,28 @@ class SweBenchRunner:
                     if sum(1 for _, run in active if lane_of(run, vllm_host) == lane["host"])
                     < lane["parallel"]
                 ]
-                if queue and free:
-                    reason, lane = None, None
-                    priority = hold is not None and hold.priority()
-                    for candidate in free:
-                        if candidate.get("node") is None:
-                            blocked = cls.admission.start_blocker(
-                                candidate["host"],
-                                ragon_bin,
-                                active,
-                                settings,
-                                **({"priority": True} if priority else {}),
-                            )
-                        else:
-                            remote_gate = cls.gate.probe(candidate["host"]) or {}
-                            blocked = (
-                                "its model gate is closed for a benchmark run of its own"
-                                if remote_gate.get("state") == "closed"
-                                else "its model gate cannot apply this run's loop-guard arm (it predates it)"
-                                if cls.needs_gate_guard(manifest)
-                                and not remote_gate.get("loop_guard")
-                                else cls.admission.start_blocker(
-                                    candidate["host"], ragon_bin, active, settings, local=False
-                                )
-                            )
-                        if blocked is None:
-                            reason, lane = None, candidate
-                            break
-                        reason = reason or (
-                            blocked
-                            if candidate.get("node") is None
-                            else f"{candidate['name']}: {blocked}"
-                        )
-                    if lane is not None:
-                        instance_id = queue.pop(0)
-                        run = SweBenchInstanceRun(
+                lane, reason = cls._open_lane(
+                    free if queue else [], ragon_bin, active, manifest, settings, hold
+                )
+                if lane is not None:
+                    active.append(
+                        cls._start_instance(
                             store,
-                            rows[instance_id],
-                            manifest["images"][instance_id]["image"],
-                            manifest["model_name_or_path"],
+                            queue.pop(0),
+                            rows,
+                            manifest,
                             settings,
-                            SweBenchRuntime.directory(),
-                            lane.get("model_url") or model_url,
-                            time.time() + settings.task_timeout_s,
+                            lane,
+                            model_url,
                             extra_env,
-                            (indexes or {}).get(instance_id),
+                            indexes,
                             extra_mounts,
-                            issue=(manifest.get("stripped_issues") or {}).get(instance_id),
-                            refine=bool(manifest.get("refine", False)),
-                            task_rules=manifest.get("task_rules") or [],
-                            review_turn=bool(manifest.get("review_turn", False)),
-                            # A run made before the option existed had no hint.
-                            strategy_hint=str(manifest.get("strategy_hint_text") or ""),
-                            # A run made before refine-v2 existed has no key: it ran v1.
-                            refine_version=str(manifest.get("refine_version") or "v1"),
-                            hooks=manifest.get("hooks") or [],
-                            # The turn-end compaction arm (spec §16): Codex's key on each exec command
-                            # line; a run made before the option existed never set it.
-                            turn_end_percent=cls.turn_end_percent(
-                                str(manifest.get("turn_end_compaction") or AUTO_TURN_END),
-                                int(manifest.get("served_context") or 0),
-                                int(manifest.get("task_context") or settings.task_context),
-                            ),
-                            # A run made before the option existed never restarted.
-                            restart_after_compactions=int(
-                                manifest.get("restart_after_compactions") or 0
-                            ),
-                            # A run made before the option existed left the launcher's choice alone.
-                            apply_patch=str(manifest.get("apply_patch") or AUTO_APPLY_PATCH),
-                            exec_tool=str(manifest.get("exec_tool") or AUTO_EXEC_TOOL),
                         )
-                        run.lane_host = lane["host"]
-                        if lane.get("node"):
-                            run.notes.append(
-                                f"model server: {lane['name']} (a replica of this machine's model)"
-                            )
-                        thread = threading.Thread(
-                            target=cls._run_one, args=(run,), name=f"swe-{instance_id}", daemon=True
-                        )
-                        thread.start()
-                        active.append((thread, run))
-                        waiting_for = None
-                        continue
-                    # Said once per kind of reason: the free-memory figure in it moves every poll.
-                    kind = re.sub(r"[\d.]+", "#", reason)
-                    if kind != waiting_for:
-                        print(
-                            f"⏳ {datetime.now():%H:%M} waiting to start the next instance: "
-                            f"{reason.replace('the night run', 'this run')}.",
-                            flush=True,
-                        )
-                        waiting_for = kind
+                    )
+                    waiting_for = None
+                    continue
+                if reason:
+                    waiting_for = cls._say_waiting(reason, waiting_for)
                 cls.sleep(POLL_S)
         except KeyboardInterrupt:
             for _, run in active:
@@ -1421,6 +1510,120 @@ class SweBenchRunner:
                 thread.join()
             raise
         return stopped
+
+    @classmethod
+    def _open_lane(
+        cls,
+        free: list[dict[str, Any]],
+        ragon_bin: str,
+        active: list[tuple],
+        manifest: dict[str, Any],
+        settings: "swe_bench_settings.SweBenchSettings",
+        hold: SweBenchGateHold | None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        """The first free lane with nothing in its way, or None and the first lane's obstacle."""
+        if not free:
+            return None, ""
+        reason = ""
+        priority = hold is not None and hold.priority()
+        for candidate in free:
+            if candidate.get("node") is None:
+                blocked = cls.admission.start_blocker(
+                    candidate["host"],
+                    ragon_bin,
+                    active,
+                    settings,
+                    **({"priority": True} if priority else {}),
+                )
+            else:
+                remote_gate = cls.gate.probe(candidate["host"]) or {}
+                blocked = (
+                    "its model gate is closed for a benchmark run of its own"
+                    if remote_gate.get("state") == STATE_CLOSED
+                    else "its model gate cannot apply this run's loop-guard arm (it predates it)"
+                    if cls.needs_gate_guard(manifest) and not remote_gate.get("loop_guard")
+                    else cls.admission.start_blocker(
+                        candidate["host"], ragon_bin, active, settings, local=False
+                    )
+                )
+            if blocked is None:
+                return candidate, ""
+            reason = reason or (
+                blocked if candidate.get("node") is None else f"{candidate['name']}: {blocked}"
+            )
+        return None, reason
+
+    @classmethod
+    def _start_instance(  # noqa: PLR0913
+        cls,
+        store: SweBenchRunStore,
+        instance_id: str,
+        rows: dict[str, dict[str, Any]],
+        manifest: dict[str, Any],
+        settings: "swe_bench_settings.SweBenchSettings",
+        lane: dict[str, Any],
+        model_url: str,
+        extra_env: dict[str, str],
+        indexes: dict[str, dict[str, Any]] | None,
+        extra_mounts: list[str] | None,
+    ) -> tuple[threading.Thread, SweBenchInstanceRun]:
+        """Starts one instance on a lane, in a thread of its own."""
+        run = SweBenchInstanceRun(
+            store,
+            rows[instance_id],
+            manifest["images"][instance_id]["image"],
+            manifest["model_name_or_path"],
+            settings,
+            SweBenchRuntime.directory(),
+            lane.get("model_url") or model_url,
+            time.time() + settings.task_timeout_s,
+            extra_env,
+            (indexes or {}).get(instance_id),
+            extra_mounts,
+            issue=(manifest.get("stripped_issues") or {}).get(instance_id),
+            refine=bool(manifest.get("refine", False)),
+            task_rules=manifest.get("task_rules") or [],
+            review_turn=bool(manifest.get("review_turn", False)),
+            # A run made before the option existed had no hint.
+            strategy_hint=str(manifest.get("strategy_hint_text") or ""),
+            # A run made before refine-v2 existed has no key: it ran v1.
+            refine_version=str(manifest.get("refine_version") or "v1"),
+            hooks=manifest.get("hooks") or [],
+            # The turn-end compaction arm (spec §16): Codex's key on each exec command
+            # line; a run made before the option existed never set it.
+            turn_end_percent=cls.turn_end_percent(
+                str(manifest.get("turn_end_compaction") or AUTO_TURN_END),
+                int(manifest.get("served_context") or 0),
+                int(manifest.get("task_context") or settings.task_context),
+            ),
+            # A run made before the option existed never restarted.
+            restart_after_compactions=int(manifest.get("restart_after_compactions") or 0),
+            # A run made before the option existed left the launcher's choice alone.
+            apply_patch=str(manifest.get("apply_patch") or AUTO_APPLY_PATCH),
+            exec_tool=str(manifest.get("exec_tool") or AUTO_EXEC_TOOL),
+        )
+        run.lane_host = lane["host"]
+        if lane.get("node"):
+            run.notes.append(f"model server: {lane['name']} (a replica of this machine's model)")
+        thread = threading.Thread(
+            target=cls._run_one, args=(run,), name=f"swe-{instance_id}", daemon=True
+        )
+        thread.start()
+        return thread, run
+
+    @classmethod
+    def _say_waiting(cls, reason: str, waiting_for: str | None) -> str | None:
+        """Says what holds the next start back, once per kind of reason; returns the kind said."""
+        # Said once per kind of reason: the free-memory figure in it moves every poll.
+        kind = re.sub(r"[\d.]+", "#", reason)
+        if kind != waiting_for:
+            print(
+                f"⏳ {datetime.now():%H:%M} waiting to start the next instance: "
+                f"{reason.replace('the night run', 'this run')}.",
+                flush=True,
+            )
+            return kind
+        return waiting_for
 
     @classmethod
     def _run_one(cls, run: SweBenchInstanceRun) -> None:
@@ -1630,8 +1833,10 @@ class SweBenchRunner:
 
     @classmethod
     def default_name(cls) -> str:
-        """Returns:
-        str: `<date>-a`, or the next free letter.
+        """The name of a new run given none.
+
+        Returns:
+            str: `<date>-a`, or the next free letter.
         """
         today = datetime.now().strftime("%Y-%m-%d")
         existing = set(SweBenchRunStore.runs())
@@ -1642,7 +1847,9 @@ class SweBenchRunner:
 
     @classmethod
     def until_time(cls, until: str | None) -> datetime | None:
-        """Args:
+        """The moment `--until` names.
+
+        Args:
             until: `HH:MM`, or None.
 
         Returns:

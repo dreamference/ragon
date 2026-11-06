@@ -20,7 +20,7 @@ import threading
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, ClassVar, Final
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 from dreamference.night_shift.night_shift_autofill import NO_FINDINGS, NightShiftAutofill
 from dreamference.night_shift.night_shift_best_of_n import NightShiftBestOfN
@@ -32,6 +32,9 @@ from dreamference.night_shift.night_shift_recurring import NightShiftRecurring
 from dreamference.night_shift.night_shift_remote import NightShiftRemote
 from dreamference.night_shift.night_shift_report import NightShiftReport
 from dreamference.night_shift.night_shift_settings import NightShiftSettings
+
+if TYPE_CHECKING:
+    from dreamference.swe_bench.swe_bench_settings import SweBenchSettings
 
 # Free memory a night run never eats into: room above earlyoom's 5% line (~6.2 GiB here).
 MEMORY_RESERVE: Final[int] = 8 * GIB
@@ -499,7 +502,7 @@ class NightShiftRunner:
         vllm_host: str,
         ragon_bin: str,
         active: list[tuple],
-        settings: NightShiftSettings,
+        settings: "NightShiftSettings | SweBenchSettings",
         local: bool = True,
         priority: bool = False,
     ) -> str | None:
@@ -512,7 +515,7 @@ class NightShiftRunner:
             vllm_host: The model server the task would use.
             ragon_bin: The `ragon` executable.
             active: The running tasks.
-            settings: Night Shift settings.
+            settings: Night Shift's or a SWE-bench run's settings; only `task_memory` is read.
             local: Whether that server is this machine's. An open `ragon` session here uses this
                 machine's server, so it blocks this machine's lane and no other; a replica's own
                 users show up as its outside requests.

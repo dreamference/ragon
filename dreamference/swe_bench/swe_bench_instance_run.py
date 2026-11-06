@@ -493,6 +493,8 @@ class SweBenchInstanceRun:
         self.nudge_kinds: list[str] = []
         self.started = time.time()
         self.notes: list[str] = []
+        # The model server this instance's requests go to, when not this machine's (`lanes`).
+        self.lane_host: str | None = None
         # What Night Shift's start check reads from a running task: whether it is waiting on the
         # model, and its systemd scope. A container has no scope, so the check assumes it may
         # still grow to its full memory cap, which is the conservative reading.
