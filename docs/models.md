@@ -122,8 +122,9 @@ server_engine = "sglang"
 ```
 
 Remove the line (or set `server_engine = "ragon"`) to follow the default again. With
-[`ragon-admin adapter`](admin.md#ragon-admin-adapter) adapters installed, `server start` uses SGLang by
-itself until ragon-serve serves them.
+[`ragon-admin adapter`](admin.md#ragon-admin-adapter) adapters installed, `server start` stays on ragon-serve when
+the engine build serves adapters; with an older build it uses SGLang by itself and says so. `--engine sglang`
+always works.
 SGLang keeps its own limits and settings, below.
 
 #### Troubleshooting
