@@ -447,11 +447,7 @@
    "T201": 33
   },
   "dreamference/swe_bench/swe_bench_runtime.py": {
-   "D205": 4,
    "PLR2004": 2,
-   "PTH118": 1,
-   "PTH119": 3,
-   "PTH120": 1,
    "T201": 1
   },
   "dreamference/swe_bench/swe_bench_settings.py": {
@@ -606,5 +602,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1061
+ "total": 1052
 }

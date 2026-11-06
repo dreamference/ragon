@@ -1,5 +1,4 @@
-"""A copy of `ragon` that starts inside a SWE-bench instance image
-(specs/DREAMFERENCE_RAGON_SWE_BENCH.md §12).
+"""A copy of `ragon` that starts inside a SWE-bench instance image (specs/DREAMFERENCE_RAGON_SWE_BENCH.md §12).
 
 The installed binary is linked against this machine's C library (glibc 2.39 on the GB10); the
 instance images are Ubuntu 22.04 with glibc 2.35, where it fails at load ("version `GLIBC_2.38'
@@ -44,8 +43,10 @@ class SweBenchRuntime:
 
     @classmethod
     def directory(cls) -> Path:
-        """Returns:
-        Path: The runtime directory under the benchmark's cache.
+        """Returns the runtime directory.
+
+        Returns:
+            Path: The runtime directory under the benchmark's cache.
         """
         return swe_bench_settings.CACHE_DIR / "runtime"
 
@@ -68,8 +69,10 @@ class SweBenchRuntime:
 
     @classmethod
     def current_hash(cls) -> str | None:
-        """Returns:
-        Optional[str]: The source hash the existing runtime was built from, if there is one.
+        """Returns the source hash the existing runtime was built from, if there is one.
+
+        Returns:
+            Optional[str]: The source hash the existing runtime was built from, if there is one.
         """
         try:
             return (cls.directory() / STAMP_NAME).read_text().strip() or None
@@ -98,15 +101,15 @@ class SweBenchRuntime:
         try:
             loader, libraries = cls.host_libraries(ragon_bin)
             for library in [loader, *libraries]:
-                shutil.copy(os.path.realpath(library), staging / "lib" / os.path.basename(library))
+                shutil.copy(os.path.realpath(library), staging / "lib" / Path(library).name)
             for binary in cls._binaries(ragon_bin):
-                copy = staging / "bin" / os.path.basename(binary)
+                copy = staging / "bin" / Path(binary).name
                 shutil.copy(binary, copy)
                 subprocess.run(
                     [
                         patchelf,
                         "--set-interpreter",
-                        f"{CONTAINER_MOUNT}/lib/{os.path.basename(loader)}",
+                        f"{CONTAINER_MOUNT}/lib/{Path(loader).name}",
                         "--set-rpath",
                         f"{CONTAINER_MOUNT}/lib",
                         str(copy),
@@ -162,13 +165,15 @@ class SweBenchRuntime:
 
     @classmethod
     def _binaries(cls, ragon_bin: str) -> list[str]:
-        host = os.path.join(os.path.dirname(os.path.realpath(ragon_bin)), CODE_MODE_HOST_NAME)
+        host = str(Path(os.path.realpath(ragon_bin)).parent / CODE_MODE_HOST_NAME)
         return [os.path.realpath(ragon_bin)] + ([host] if Path(host).exists() else [])
 
     @classmethod
     def installed_ragon(cls) -> str | None:
-        """Returns:
-        Optional[str]: The installed branded `ragon`, or None if it has not been built.
+        """Returns the installed branded `ragon`, or None if it has not been built.
+
+        Returns:
+            Optional[str]: The installed branded `ragon`, or None if it has not been built.
         """
         path = CodexBrandedBuilder.executable_path()
         return path if Path(path).exists() else None
