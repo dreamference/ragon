@@ -1,4 +1,5 @@
-"""What a browse of the local network returns, from the node's side
+"""What a browse of the local network returns, from the node's side.
+
 (specs/DREAMFERENCE_RAGON_NODE.md §5): `ragon-admin node status` shows it so the owner sees what
 clients see. Clients themselves browse with the launcher's own code, not with this.
 
@@ -27,6 +28,15 @@ BASE_FIELDS: Final[frozenset[str]] = frozenset({"interface", "name", "host", "ad
 # Host names a GB10 is shipped with: DGX Spark, ASUS Ascent GX10, HP ZGX.
 GB10_NAMES: Final[re.Pattern] = re.compile(r"^(spark|gx10|zgx)-", re.IGNORECASE)
 
+# How many `;`-separated fields a parseable `avahi-browse -rtp` line carries.
+BROWSE_LINE_FIELDS: Final[int] = 10
+
+# The marker avahi-browse puts in the first field of a resolved line.
+BROWSE_RESOLVED_MARK: Final[str] = "="
+
+# The loopback interface: not a real network, no client sits behind it.
+LOOPBACK_INTERFACE: Final[str] = "lo"
+
 
 class NodeBrowser:
     """Browses `_ragon-node._tcp` through Avahi's own tool."""
@@ -49,10 +59,14 @@ class NodeBrowser:
         order: list[str] = []
         for line in output.splitlines():
             fields = line.split(";", 9)
-            if len(fields) < 10 or fields[0] != "=" or fields[4] != service_type:
+            if (
+                len(fields) < BROWSE_LINE_FIELDS
+                or fields[0] != BROWSE_RESOLVED_MARK
+                or fields[4] != service_type
+            ):
                 continue
             interface = fields[1]
-            if interface == "lo" or interface.startswith(("docker", "br-", "veth")):
+            if interface == LOOPBACK_INTERFACE or interface.startswith(("docker", "br-", "veth")):
                 continue
             entry: dict[str, str] = {}
             for record in fields[9].split('" "'):
@@ -89,7 +103,12 @@ class NodeBrowser:
             parsed = ipaddress.ip_address(address)
         except ValueError:
             return address
-        if parsed.version == 6 and parsed.is_link_local and parsed.scope_id is None and interface:
+        if (
+            isinstance(parsed, ipaddress.IPv6Address)
+            and parsed.is_link_local
+            and parsed.scope_id is None
+            and interface
+        ):
             return f"{address}%{interface}"
         return address
 
@@ -104,7 +123,7 @@ class NodeBrowser:
             parsed = ipaddress.ip_address(address.split("%", 1)[0])
         except ValueError:
             return 3
-        if parsed.version == 4:
+        if isinstance(parsed, ipaddress.IPv4Address):
             return 0
         return 2 if parsed.is_link_local else 1
 

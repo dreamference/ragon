@@ -248,10 +248,6 @@
   "dreamference/node/node_advertiser.py": {
    "T201": 19
   },
-  "dreamference/node/node_browser.py": {
-   "D205": 1,
-   "PLR2004": 5
-  },
   "dreamference/node/node_identity.py": {
    "D205": 2
   },
@@ -580,5 +576,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1010
+ "total": 1004
 }
