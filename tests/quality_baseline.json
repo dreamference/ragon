@@ -708,237 +708,49 @@
    "W291": 1,
    "W293": 1
   },
-  "tests/conftest.py": {
-   "C408": 3,
-   "D205": 1,
-   "PTH100": 1,
-   "PTH111": 1,
-   "PTH118": 2,
-   "PTH119": 6,
-   "PTH120": 1
-  },
-  "tests/test_admin_reference.py": {
-   "PTH100": 1,
-   "PTH118": 2,
-   "PTH120": 2
-  },
-  "tests/test_airgapped.py": {
-   "D205": 1
-  },
-  "tests/test_cli_entry_points.py": {
-   "SIM115": 1
-  },
-  "tests/test_code_index.py": {
-   "D205": 1,
-   "PTH115": 3,
-   "PTH118": 1,
-   "PTH211": 1
-  },
-  "tests/test_codex_branded_builder.py": {
-   "PTH115": 6,
-   "PTH118": 9,
-   "PTH119": 1,
-   "SIM115": 2
-  },
-  "tests/test_codex_test_runner.py": {
-   "B007": 1,
-   "PTH116": 1,
-   "PTH118": 6,
-   "PTH119": 2,
-   "PTH120": 2,
-   "PTH207": 2,
-   "PTH208": 1,
-   "RUF001": 2
-  },
-  "tests/test_conftest_guards.py": {
-   "PTH118": 7,
-   "RUF043": 1
-  },
-  "tests/test_context_budget_replay.py": {
-   "PTH100": 1,
-   "PTH118": 1,
-   "PTH120": 2
-  },
-  "tests/test_desktop.py": {
-   "D205": 1,
-   "PTH100": 1,
-   "PTH118": 2
-  },
-  "tests/test_desktop_parity.py": {
-   "PLR1702": 1
-  },
-  "tests/test_desktop_work.py": {
-   "D205": 1
-  },
-  "tests/test_diffusion_server.py": {
-   "N806": 3
-  },
-  "tests/test_diffusion_switched_off.py": {
-   "D205": 1
-  },
-  "tests/test_docs_index.py": {
-   "D205": 1,
-   "E501": 1,
-   "PTH118": 2
-  },
-  "tests/test_egress_audit.py": {
-   "D205": 1,
-   "E501": 7,
-   "PTH100": 1,
-   "PTH111": 2,
-   "PTH118": 7,
-   "PTH119": 2,
-   "PTH120": 3,
-   "RUF001": 1
-  },
-  "tests/test_fleet_provision.py": {
-   "PTH116": 2,
-   "RUF012": 2
-  },
-  "tests/test_image_search_service.py": {
-   "E741": 6
-  },
-  "tests/test_image_search_sidecar.py": {
-   "B023": 1,
-   "D205": 1
-  },
-  "tests/test_matrix_homeserver.py": {
-   "C901": 1,
-   "D205": 1,
-   "PTH116": 2,
-   "PTH118": 2,
-   "PTH208": 1,
-   "SIM115": 6
-  },
-  "tests/test_model_gate.py": {
-   "D205": 1,
-   "PLR1702": 1,
-   "RUF012": 1
-  },
-  "tests/test_night_shift.py": {
-   "D205": 1,
-   "PTH111": 2,
-   "PTH115": 1,
-   "RUF012": 4
-  },
   "tests/test_night_shift_best_of_n.py": {
-   "F811": 2,
-   "RET503": 1
+   "F811": 2
   },
   "tests/test_night_shift_compaction.py": {
-   "D205": 1,
    "F811": 7
   },
   "tests/test_node.py": {
-   "E501": 5,
-   "PTH111": 1,
-   "RUF043": 1,
-   "SIM115": 1
-  },
-  "tests/test_ragon_privacy.py": {
-   "PTH111": 1,
-   "PTH118": 2,
-   "PTH120": 1,
-   "SIM115": 1
-  },
-  "tests/test_ragon_prompt.py": {
-   "D205": 1
+   "E501": 5
   },
   "tests/test_ragon_slash_commands.py": {
-   "C901": 1,
-   "D205": 2,
-   "PTH119": 1,
-   "RUF001": 3
-  },
-  "tests/test_refine.py": {
-   "D205": 1
+   "C901": 1
   },
   "tests/test_release_install.py": {
-   "D205": 4,
    "E501": 4,
-   "PLR0913": 1,
-   "PTH115": 1,
-   "RET503": 1
-  },
-  "tests/test_release_notes.py": {
-   "PTH100": 1,
-   "PTH118": 1,
-   "PTH120": 2
-  },
-  "tests/test_runner.py": {
-   "PTH109": 1
+   "PLR0913": 1
   },
   "tests/test_sidecar_network.py": {
    "PLR0911": 1
   },
-  "tests/test_skills.py": {
-   "D205": 1
-  },
   "tests/test_swe_bench.py": {
-   "B018": 1,
    "C901": 2,
-   "D205": 1,
    "E501": 3,
    "PLR0911": 2,
    "PLR0912": 2,
-   "PLR0915": 1,
-   "RUF012": 1,
-   "RUF043": 1
-  },
-  "tests/test_swe_bench_best_of.py": {
-   "PTH100": 1,
-   "PTH118": 1,
-   "PTH120": 2
-  },
-  "tests/test_swe_bench_chooser.py": {
-   "PTH100": 1,
-   "PTH118": 1,
-   "PTH120": 2
+   "PLR0915": 1
   },
   "tests/test_swe_bench_chooser_v2.py": {
    "C901": 1,
-   "D205": 3,
-   "E731": 3,
-   "PLR0911": 1,
-   "PTH100": 1,
-   "PTH118": 1,
-   "PTH120": 3,
-   "RET503": 1,
-   "RUF005": 3,
-   "RUF015": 1
+   "PLR0911": 1
   },
   "tests/test_swe_bench_fresh.py": {
-   "PLR0913": 1,
-   "PTH100": 1,
-   "PTH118": 1,
-   "PTH120": 2
+   "PLR0913": 1
   },
   "tests/test_swe_bench_night_script.py": {
-   "E501": 1,
-   "PTH100": 1,
-   "PTH118": 1,
-   "PTH120": 2
+   "E501": 1
   },
   "tests/test_turn_end_compaction_bench.py": {
    "PLR0913": 2
   },
-  "tests/test_vllm_server.py": {
-   "ERA001": 1,
-   "PTH111": 1
-  },
-  "tests/test_web_commands.py": {
-   "PTH100": 1,
-   "PTH118": 2,
-   "PTH120": 2
-  },
   "tests/test_wifi_power_save.py": {
-   "D205": 1,
    "E501": 1
-  },
-  "tests/test_windows_installer.py": {
-   "D205": 1
   }
  },
  "ruff": "0.16.10",
- "total": 1920
+ "total": 1696
 }
