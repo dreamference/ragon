@@ -11,8 +11,12 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Final
 
 from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
+
+REPO_SEPARATOR: Final[str] = "/"
+BYTES_PER_UNIT: Final[int] = 1024
 
 # `docker -v` ends the host path at the first colon, so no host path may hold one.
 VOLUME_SEPARATOR = ":"
@@ -244,7 +248,7 @@ class ModelDownloader:
 
         # Attempt 1: Try containerized vllm-tensorizer if Docker is available
         if shutil.which("docker"):
-            try:
+            with contextlib.suppress(Exception):
                 hf_base = cls.get_hf_cache_dir()
                 dgx_base = cls.get_dgx_cache_dir()
 
@@ -331,8 +335,6 @@ class ModelDownloader:
                     if res.returncode == 0 and staging.exists():
                         staging.replace(tensors_file)
                         serialization_success = True
-            except Exception:
-                pass
 
         # Attempt 2: Try local tensorizer library (TensorSerializer)
         if not serialization_success:
@@ -388,7 +390,7 @@ class ModelDownloader:
 
         # Attempt 3: Try vLLM tensorize script module if available
         if not serialization_success:
-            try:
+            with contextlib.suppress(Exception):
                 import sys
 
                 cmd = [
@@ -404,8 +406,6 @@ class ModelDownloader:
                 res = subprocess.run(cmd, capture_output=True, text=True)
                 if res.returncode == 0 and tensors_file.exists():
                     serialization_success = True
-            except Exception:
-                pass
 
         if not serialization_success:
             # A failed attempt may have left part of the file, which would read as tensorized.
@@ -452,7 +452,7 @@ class ModelDownloader:
 
             return ReleaseAssetDownloader.is_present(model_key)
         repo_id = ModelMatrixRegistry.resolve_hf_repo(model_key)
-        if not repo_id or "/" not in repo_id:
+        if not repo_id or REPO_SEPARATOR not in repo_id:
             return False
         folder_name = "models--" + repo_id.replace("/", "--")
         cache_dir = cls.get_hf_cache_dir() / folder_name / "snapshots"
@@ -653,9 +653,9 @@ class ModelDownloader:
                 f.stat().st_size for f in cache_dir.rglob("*") if f.is_file() and not f.is_symlink()
             )
             for unit in ["B", "KB", "MB", "GB"]:
-                if total_size < 1024:
+                if total_size < BYTES_PER_UNIT:
                     return f"{total_size:.1f} {unit}"
-                total_size /= 1024
+                total_size /= BYTES_PER_UNIT
             return f"{total_size:.1f} TB"
         except Exception:
             return "unknown size"

@@ -173,25 +173,16 @@
    "PLR1702": 1
   },
   "dreamference/hardware/hardware_manager.py": {
-   "BLE001": 2,
-   "PLR1702": 4,
-   "PLR2004": 3,
-   "PTH110": 1,
-   "PTH118": 5,
-   "PTH123": 3,
-   "PTH208": 1,
-   "S110": 2
+   "PLR1702": 4
   },
   "dreamference/hardware/model_downloader.py": {
-   "BLE001": 5,
+   "BLE001": 3,
    "C901": 2,
    "PLR0911": 1,
    "PLR0912": 1,
    "PLR0915": 1,
    "PLR1702": 2,
-   "PLR2004": 2,
    "RUF001": 1,
-   "S110": 2,
    "T201": 23
   },
   "dreamference/mcp_server/code_index_search.py": {
@@ -659,5 +650,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1300
+ "total": 1277
 }

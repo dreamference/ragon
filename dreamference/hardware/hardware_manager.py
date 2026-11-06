@@ -9,6 +9,7 @@ import contextlib
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Final
 
 from dreamference.hardware.hardware_telemetry import HardwareTelemetry
@@ -20,6 +21,10 @@ from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
 # no `nvidia-smi` to ask. Read on an ASUS Ascent GX10 (`000f:01:00.0`, class 0x030000).
 GB10_PCI_VENDOR: Final[str] = "0x10de"
 GB10_PCI_DEVICE: Final[str] = "0x2e12"
+MEMINFO_PATH: Final[str] = "/proc/meminfo"
+NOT_AVAILABLE: Final[str] = "N/A"
+GB10_NAME: Final[str] = "GB10"
+MEMORY_FIELD_INDEX: Final[int] = 2
 PCI_DEVICES_DIR: Final[str] = "/sys/bus/pci/devices"
 DMI_DIR: Final[str] = "/sys/class/dmi/id"
 # Present on DGX OS only; the partner boxes ship DGX OS too (HP and Lenovo also document plain
@@ -39,10 +44,10 @@ class HardwareManager:
             MemoryMetrics: Dataclass containing total_gb, available_gb, and used_gb.
         """
         total_gb, avail_gb, used_gb = 0.0, 0.0, 0.0
-        meminfo_path = "/proc/meminfo"
-        if os.path.exists(meminfo_path):
-            try:
-                with open(meminfo_path, encoding="utf-8") as f:
+        meminfo_path = MEMINFO_PATH
+        if Path(meminfo_path).exists():
+            with contextlib.suppress(Exception):
+                with Path(meminfo_path).open(encoding="utf-8") as f:
                     content = f.read()
                 total_kb, avail_kb = 0, 0
                 for line in content.splitlines():
@@ -53,8 +58,6 @@ class HardwareManager:
                 total_gb = round(total_kb / (1024 * 1024), 2)
                 avail_gb = round(avail_kb / (1024 * 1024), 2)
                 used_gb = round((total_kb - avail_kb) / (1024 * 1024), 2)
-            except Exception:
-                pass
         return MemoryMetrics(total_gb=total_gb, available_gb=avail_gb, used_gb=used_gb)
 
     @classmethod
@@ -64,13 +67,13 @@ class HardwareManager:
         Returns:
             HardwareTelemetry: Dataclass containing GPU name, unified memory size, driver version, and architecture.
         """
-        gpu_name = "N/A"
+        gpu_name = NOT_AVAILABLE
         is_gb10 = False
-        driver_version = "N/A"
+        driver_version = NOT_AVAILABLE
         vram_gb = 0.0
 
         if shutil.which("nvidia-smi"):
-            try:
+            with contextlib.suppress(Exception):
                 res = subprocess.run(
                     [
                         "nvidia-smi",
@@ -87,11 +90,11 @@ class HardwareManager:
                     gpu_name = first_line[0].strip()
                     if len(first_line) > 1:
                         driver_version = first_line[1].strip()
-                    if len(first_line) > 2:
+                    if len(first_line) > MEMORY_FIELD_INDEX:
                         with contextlib.suppress(ValueError):
-                            vram_gb = round(float(first_line[2].strip()) / 1024.0, 2)
-            except Exception:
-                pass
+                            vram_gb = round(
+                                float(first_line[MEMORY_FIELD_INDEX].strip()) / 1024.0, 2
+                            )
 
         sys_mem = cls.get_system_memory()
         total_mem_gb = sys_mem.total_gb
@@ -99,11 +102,11 @@ class HardwareManager:
         # Qualification: the GPU names itself GB10, or the GB10's PCI id is on the bus (a box whose
         # driver is not installed yet has no nvidia-smi). Nothing else qualifies: "Blackwell" also
         # names discrete cards (RTX PRO 6000 Blackwell), and a large x86 server has 100 GB of RAM.
-        if "GB10" in gpu_name.upper():
+        if GB10_NAME in gpu_name.upper():
             is_gb10 = True
         elif cls.gb10_on_pci():
             is_gb10 = True
-            if gpu_name == "N/A":
+            if gpu_name == NOT_AVAILABLE:
                 gpu_name = "NVIDIA GB10 (no driver answering: nvidia-smi is missing or failed)"
 
         return HardwareTelemetry(
@@ -127,14 +130,14 @@ class HardwareManager:
             bool: True if a device with the GB10's vendor and device id is present.
         """
         try:
-            entries = os.listdir(PCI_DEVICES_DIR)
+            entries = [entry.name for entry in Path(PCI_DEVICES_DIR).iterdir()]
         except OSError:
             return False
         for entry in entries:
-            device = os.path.join(PCI_DEVICES_DIR, entry)
+            device = Path(PCI_DEVICES_DIR) / entry
             if (
-                cls._read_line(os.path.join(device, "vendor")) == GB10_PCI_VENDOR
-                and cls._read_line(os.path.join(device, "device")) == GB10_PCI_DEVICE
+                cls._read_line(device / "vendor") == GB10_PCI_VENDOR
+                and cls._read_line(device / "device") == GB10_PCI_DEVICE
             ):
                 return True
         return False
@@ -150,8 +153,8 @@ class HardwareManager:
         Returns:
             str: Vendor and product joined, or whichever of the two exists; empty if neither.
         """
-        vendor = cls._read_line(os.path.join(DMI_DIR, "sys_vendor"))
-        product = cls._read_line(os.path.join(DMI_DIR, "product_name"))
+        vendor = cls._read_line(Path(DMI_DIR) / "sys_vendor")
+        product = cls._read_line(Path(DMI_DIR) / "product_name")
         # "Dell Inc." and "Dell Pro Max ...": the product already names its maker.
         if product and vendor and product.lower().startswith(vendor.split()[0].lower()):
             return product
@@ -175,9 +178,9 @@ class HardwareManager:
         return ubuntu
 
     @staticmethod
-    def _read_line(path: str) -> str:
+    def _read_line(path: str | Path) -> str:
         try:
-            with open(path, encoding="utf-8", errors="replace") as handle:
+            with Path(path).open(encoding="utf-8", errors="replace") as handle:
                 return handle.readline().strip()
         except OSError:
             return ""
@@ -187,7 +190,7 @@ class HardwareManager:
         """Reads a shell-style `KEY="value"` file such as /etc/os-release; empty if unreadable."""
         values: dict[str, str] = {}
         try:
-            with open(path, encoding="utf-8", errors="replace") as handle:
+            with Path(path).open(encoding="utf-8", errors="replace") as handle:
                 for line in handle:
                     key, sep, value = line.strip().partition("=")
                     if sep and key and not key.startswith("#"):

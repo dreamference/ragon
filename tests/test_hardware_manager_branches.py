@@ -21,8 +21,8 @@ def _quiet_host(monkeypatch, tmp_path, *, smi_output):
     )
 
 
-def test_a_host_without_proc_meminfo_reports_zero_memory(monkeypatch):
-    monkeypatch.setattr(hardware_manager.os.path, "exists", lambda path: False)
+def test_a_host_without_proc_meminfo_reports_zero_memory(monkeypatch, tmp_path):
+    monkeypatch.setattr(hardware_manager, "MEMINFO_PATH", str(tmp_path / "no-meminfo"))
     metrics = HardwareManager.get_system_memory()
     assert (metrics.total_gb, metrics.available_gb, metrics.used_gb) == (0.0, 0.0, 0.0)
 
