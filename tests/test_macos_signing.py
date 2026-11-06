@@ -222,7 +222,7 @@ def run_gate(tmp_path: Path, sign: str, secrets: tuple[str, ...]) -> tuple[int, 
     env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output), "SIGN": sign}
     env.update(dict.fromkeys(secrets, "x"))
     result = subprocess.run(
-        [str(MACOS / "signing_gate.sh")], env=env, capture_output=True, text=True
+        ["bash", str(MACOS / "signing_gate.sh")], env=env, capture_output=True, text=True
     )
     return result.returncode, output.read_text(), result.stdout
 
