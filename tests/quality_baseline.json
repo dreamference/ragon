@@ -447,10 +447,6 @@
    "PLR2004": 2,
    "T201": 1
   },
-  "dreamference/swe_bench/swe_bench_settings.py": {
-   "D205": 3,
-   "PTH111": 2
-  },
   "dreamference/vllm_server/__init__.py": {
    "D104": 1
   },
@@ -599,5 +595,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1042
+ "total": 1037
 }
