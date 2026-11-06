@@ -534,3 +534,63 @@ A title containing `<`, `&` or `_` must come out as the same visible text on eve
 
 - Whether a thread started on a phone and opened in the web UI keeps the `chat` prompt's rules (this section says the new line replaces them at the next turn; the prompt itself stays).
 - Whether `terminal` gets a line at all (the cache cost is one line).
+
+### 17.7 What each channel can show (the capability matrix, proposal)
+
+What the bridges send today is in the first column of notes; "can" means the platform offers it and no bridge uses it yet. Rows the bridges already use are marked **built**.
+
+| Capability | terminal | web, desktop | `telegram` | `signal` | `matrix` | `discord` |
+|---|---|---|---|---|---|---|
+| Formatting | Markdown | Markdown, tables | bold, italic, code, fences with language, links, quotes, spoilers (HTML subset, **built**: bold, italic, code, links; fall back to plain text when Telegram rejects the entities) | style ranges: bold, italic, monospace, strikethrough, spoiler; no links, no quotes, no fences | `formatted_body` HTML subset: all of Telegram's, plus lists and headings | Discord Markdown: bold, italic, code, fences with language, quotes, spoilers, `[t](<url>)` |
+| Tables | yes | yes | no (monospace fence or image) | no | no | no |
+| Message limit | none | none | 4,096 | 2,000 UTF-16 units | 16,000 | 2,000 (the bridge splits at 1,900) |
+| Inline buttons | no | yes | callback and URL buttons (**built**: approvals, repo notices) | no | no (reactions ✅ ❌ and numbered replies stand in, **built**) | buttons and selects (**built**: approvals, link button) |
+| Edit a message for live progress | redraw | live | `sendMessageDraft` preview and edits (**built** for drafts) | edit of the status line (**built**, `--edit-timestamp`) | edit event (can) | edit (can) |
+| Files and images with a caption | by path | inline | `sendDocument` (**built**), photos with caption (can) | attachments with a message (can; **built** for `answer.md`) | `m.file` (**built**), `m.image` (can) | attachment (can) |
+| Typing indicator | spinner | spinner | `sendChatAction` (**built**) | typing (can) | typing (**built**) | typing (**built**) |
+| Embedded web UI | n/a | is the web UI | Mini App button (**built**, "Open Ragon") | none | widget (can, not planned) | activity (can, not planned) |
+| Reactions | none | none | can | can | read ✅ ❌ (**built**) | can |
+
+A cell marked "no" is a hard limit; the agent's form (§17.8) never relies on it.
+
+### 17.8 The neutral answer form
+
+The agent writes Markdown, and the **bridge** reads the answer as a short list of blocks. The model never writes channel markup (raw HTML and `<tg-button>` in its text stay text, as `blocks.rs` already enforces for the web). Seven blocks:
+
+| Block | The agent writes | Rich channel (Telegram, Matrix, Discord, web, desktop, terminal) | Medium (Signal) | Plain (any channel where a send fails, or a limit is hit) |
+|---|---|---|---|---|
+| `text` | paragraphs, lists, bold, italic, inline code | native formatting | style ranges | the text, markers removed |
+| `code` | a fence with a language | native fence with the language | monospace style range; over 12 lines, `answer.md` offered | the code indented by four spaces |
+| `citations` | `[n] title` plus its URL | link (§17.4) | title, then the URL on its own line | `[n] title URL` |
+| `choice` | a question and two to five options | buttons (Telegram, Discord); web and desktop buttons | numbered list, "reply with the number" | numbered list, "reply with the number" |
+| `progress` | none: the bridge makes it from the turn's events | one message edited in place | the status line edited, then replaced by the answer | one "working on it" message, then the answer |
+| `attachment` | a file path the turn made | file with caption, sent only after yes (§16.7) | the file after yes | the path and "I can send it if you say yes" |
+| `image` | an image path, or a search result | photo with caption (Telegram, Matrix, Discord); inline on web | attachment with the caption as its message | the caption and the source URL |
+
+Degrade rules: (1) a block a channel cannot show moves one column to the right, never dropped; (2) a table is a `code` block of aligned columns when it fits the limit, an `attachment` (`table.md`) when it does not; (3) a diff is a `code` block, an `attachment` over the limit; (4) splitting never cuts inside a block's markup (a fence is closed and reopened, a link is kept whole); (5) when the platform rejects a send, the same block is sent once more as `plain`; (6) text a bridge cannot parse is escaped, never passed as markup, and a title with `<`, `&` or `_` shows the same text on every channel (§17.4).
+
+### 17.9 What only a button may do
+
+Buttons exist only where §17.7 says so, and only the bridge renders them, never the model's text (§17.4's "never a link" stays: a button carries an id the bridge issued, not a URL that acts).
+
+| Action | Button needed | Confirmation |
+|---|---|---|
+| Apply a patch to the user's checkout | yes: "Apply" and "Not now" | the button press is the confirmation; the message names the repository and the files; one use, the press disables the buttons |
+| Run the tests or any command | yes | the same, plus the command shown in full |
+| Open the thread in the web UI | a URL or Mini App button, no confirmation (it only opens a page behind the user's own sign-in) | none |
+| Approve a plan | yes: "Approve", "Change", "Cancel" | the press; "Change" opens a reply for the edit |
+| Send a file, queue a night task | yes (already built, §16.7, §16.8) | unchanged |
+
+Where a channel has no buttons (Signal; Matrix without a widget) the same action is a plain yes/no question in the chat, as §16 says today, and nothing runs on a bare "ok" that does not answer the one pending question. On Discord a button works only for the user the bridge is paired to; a press by anyone else is refused and logged. A button older than the turn that made it, or one whose repository has changed since, answers "that is out of date" and does nothing.
+
+### 17.10 Acceptance
+
+One golden test per block per bridge (`ragon-rs/chat` for Telegram, Matrix and Discord; `ragon-rs/signal`), each feeding the same Markdown fixture from `ragon-rs/vectors/` and comparing the bytes the bridge would send (the request body, not a mock's call count): `text`, `code`, `citations`, `choice`, `progress`, `attachment`, `image`, which is 28 goldens. Beside them: one test per degrade rule (§17.8, 1 to 6) on the longest bridge limit; one that the matrix's limits and the bridges' constants agree (extends §17.5.4); one per §17.9 row that the press does what the table says and a stale press does nothing.
+
+### 17.11 What changes in code (added to §17.5)
+
+7. **A block reader** in `ragon-rs/chat/src/blocks.rs` (it already turns Markdown into the web's blocks) shared by the three bridges, and the same reading in `ragon-rs/signal/src/format.rs`.
+8. **Per-channel writers** for each block, one function per block and channel, the rows of §17.8.
+9. **Buttons** for `choice` and the §17.9 actions on Telegram and Discord; reply numbers elsewhere.
+10. **Photos** (`sendPhoto`, `m.image`, a Discord attachment) for `image`, with the caption.
+11. **The 28 goldens** and the degrade tests of §17.10.
