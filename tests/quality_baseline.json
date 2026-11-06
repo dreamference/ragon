@@ -193,10 +193,7 @@
    "RUF002": 1
   },
   "dreamference/night_shift/night_shift_index.py": {
-   "D205": 1,
-   "E501": 1,
-   "PLR2004": 2,
-   "PTH118": 1
+   "PLR2004": 2
   },
   "dreamference/night_shift/night_shift_queue.py": {
    "ANN401": 2,
@@ -587,5 +584,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1024
+ "total": 1021
 }

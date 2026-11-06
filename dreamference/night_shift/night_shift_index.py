@@ -1,5 +1,4 @@
-"""Refreshing a repository's code index before its night tasks start
-(specs/DREAMFERENCE_RAGON_CODE_INDEX.md §6.3).
+"""Refreshing a repository's code index before its night tasks start, per specs/DREAMFERENCE_RAGON_CODE_INDEX.md §6.3.
 
 A night task's `ragon exec` starts `ragon-code session`, which re-indexes while the task is
 already working. Running `ragon-code index --exact --wait` first means the task begins with a
@@ -35,8 +34,8 @@ class NightShiftIndex:
         Returns:
             Optional[str]: Absolute path to the binary, or None if it has not been built.
         """
-        path = os.path.join(INSTALL_DIR, "bin", "ragon-code")
-        return path if Path(path).is_file() and os.access(path, os.X_OK) else None
+        path = Path(INSTALL_DIR) / "bin" / "ragon-code"
+        return str(path) if path.is_file() and os.access(str(path), os.X_OK) else None
 
     @classmethod
     def refresh(cls, binary: str, repo: Path, timeout_s: float) -> str:
@@ -69,7 +68,10 @@ class NightShiftIndex:
             output, _ = process.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             cls._stop(process)
-            return f"stopped after {int(timeout_s // 60)} min ([night] index_timeout); the tasks start on the index as it was"
+            return (
+                f"stopped after {int(timeout_s // 60)} min ([night] index_timeout); "
+                "the tasks start on the index as it was"
+            )
         if process.returncode != 0:
             last = (output.strip().splitlines() or ["no output"])[-1]
             return f"not refreshed (exit {process.returncode}): {last[:200]}"
