@@ -6,11 +6,14 @@ model port. Changing a node (its model, starting or stopping its server) goes ov
 pairing, and is carried out by that node's own `ragon-admin`.
 """
 
-from typing import Any
+from typing import Any, Final
 
 from dreamference.node.node_browser import NodeBrowser
 from dreamference.node.node_identity import NodeIdentity
 from dreamference.node.node_pairing import NodePairing
+
+_FLAG_ON: Final[str] = "1"
+_COLON: Final[str] = ":"
 
 
 class NodeRemote:
@@ -18,7 +21,9 @@ class NodeRemote:
 
     @classmethod
     def list_lines(cls) -> list[str]:
-        """Returns:
+        """List the nodes on the network, one line each.
+
+        Returns:
         List[str]: One line per node on the network: name, address, the model it serves and
         its context, its load, its free memory (this machine's and paired nodes' only: memory
         is not on the open model port, so it is asked over the pairing), whether it is paired,
@@ -68,7 +73,7 @@ class NodeRemote:
                 tags.append("paired")
             else:
                 tags.append("not paired: `ragon-admin node add " + node["name"] + "` to manage it")
-            if node.get("main") != "1":
+            if node.get("main") != _FLAG_ON:
                 tags.append("not a coding model")
             role = forges.get(node.get("node") or "")
             if role:
@@ -93,6 +98,8 @@ class NodeRemote:
         from dreamference.night_shift.night_shift_host import GIB, NightShiftHost
         from dreamference.node.node_lanes import NodeLanes
 
+        available: object
+        total: object
         if node_id and node_id == mine:
             try:
                 available, total = (
@@ -117,7 +124,7 @@ class NodeRemote:
         Returns:
             str: The address as it goes in a URL (IPv6 in brackets).
         """
-        return f"[{address}]" if ":" in address and not address.startswith("[") else address
+        return f"[{address}]" if _COLON in address and not address.startswith("[") else address
 
     @classmethod
     def request(cls, name: str, request: str) -> int:

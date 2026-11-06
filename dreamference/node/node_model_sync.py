@@ -23,7 +23,7 @@ import sys
 import tarfile
 import time
 from pathlib import Path, PurePosixPath
-from typing import Any, Final
+from typing import IO, Any, Final
 
 GIB: Final[int] = 1024**3
 
@@ -37,6 +37,7 @@ LFS_BLOB: Final[re.Pattern] = re.compile(r"[0-9a-f]{64}")
 BLOBS: Final[str] = "blobs"
 SNAPSHOTS: Final[str] = "snapshots"
 PARENT: Final[str] = ".."
+_SLASH: Final[str] = "/"
 
 
 class NodeModelSync:
@@ -62,7 +63,7 @@ class NodeModelSync:
             repos += [
                 asset["repo"] for asset in ModelMatrixRegistry.get_engine_assets(model_key, engine)
             ]
-        return [repo for repo in dict.fromkeys(repos) if repo and "/" in repo]
+        return [repo for repo in dict.fromkeys(repos) if repo and _SLASH in repo]
 
     @classmethod
     def folder_name(cls, repo: str) -> str:
@@ -75,7 +76,9 @@ class NodeModelSync:
 
     @classmethod
     def hub(cls) -> Path:
-        """Returns:
+        """Return this machine's Hugging Face hub cache.
+
+        Returns:
         Path: This machine's Hugging Face hub cache.
         """
         from dreamference.hardware.model_downloader import ModelDownloader
@@ -198,7 +201,8 @@ class NodeModelSync:
             stdout=subprocess.PIPE,
         )
         ssh = subprocess.Popen(command, stdin=tar.stdout)
-        tar.stdout.close()
+        if tar.stdout is not None:
+            tar.stdout.close()
         code = ssh.wait()
         tar.wait()
         if code != 0 or tar.returncode not in (0, None):
@@ -269,32 +273,44 @@ class NodeModelSync:
         return 0
 
     @classmethod
-    def _unpack(cls, stream: Any, staging: Path, allowed: set, size: int) -> str | None:
+    def _unpack(cls, stream: IO[bytes], staging: Path, allowed: set, size: int) -> str | None:
         """Extracts the stream into `staging`; returns what was wrong with it, if anything.
 
         `size` is what the sender declared, counted as `size()` counts it: the free-space check was
         made for that much, so a copy that carries more is refused before it can fill the disk.
         """
         root = Path(staging).resolve()
-        carried = 0
         try:
             with tarfile.open(fileobj=stream, mode="r|") as archive:
-                for member in archive:
-                    carried += member.size if member.isreg() else 0
-                    refusal = (
-                        f"the copy carried more than the {size} bytes it declared"
-                        if carried > size
-                        else None
-                        if cls._stays_in_folder(member, root, allowed)
-                        else f"the copy carried {member.name}, which is not a folder of this model"
-                    )
-                    if refusal:
-                        return refusal
-                    # `data` also refuses devices and odd modes.
-                    archive.extract(member, staging, filter="data")
+                return cls._extract_all(archive, staging, root, allowed, size)
         except (tarfile.TarError, OSError) as error:
             return f"the copy was cut short or malformed ({error})"
+
+    @classmethod
+    def _extract_all(
+        cls, archive: tarfile.TarFile, staging: Path, root: Path, allowed: set, size: int
+    ) -> str | None:
+        """Extracts each member that passes `_refusal`; returns the first refusal, if any."""
+        carried = 0
+        for member in archive:
+            carried += member.size if member.isreg() else 0
+            refusal = cls._refusal(member, carried, size, root, allowed)
+            if refusal:
+                return refusal
+            # `data` also refuses devices and odd modes.
+            archive.extract(member, staging, filter="data")
         return None
+
+    @classmethod
+    def _refusal(
+        cls, member: tarfile.TarInfo, carried: int, size: int, root: Path, allowed: set
+    ) -> str | None:
+        """Says why a member of a copy is refused, or None when it may be extracted."""
+        if carried > size:
+            return f"the copy carried more than the {size} bytes it declared"
+        if cls._stays_in_folder(member, root, allowed):
+            return None
+        return f"the copy carried {member.name}, which is not a folder of this model"
 
     @classmethod
     def _stays_in_folder(cls, member: tarfile.TarInfo, root: Path, allowed: set) -> bool:
@@ -339,14 +355,23 @@ class NodeModelSync:
     def _verify(cls, staging: Path) -> str | None:
         """Checks every content-addressed weight file against its name."""
         for blob in staging.glob("*/blobs/*"):
-            if blob.is_file() and not blob.is_symlink() and LFS_BLOB.fullmatch(blob.name):
-                digest = hashlib.sha256()
-                with Path(blob).open("rb") as handle:
-                    for chunk in iter(lambda: handle.read(16 * 1024 * 1024), b""):
-                        digest.update(chunk)
-                if digest.hexdigest() != blob.name:
-                    return f"{blob.relative_to(staging)} does not match its checksum"
+            if (
+                blob.is_file()
+                and not blob.is_symlink()
+                and LFS_BLOB.fullmatch(blob.name)
+                and cls._sha256(blob) != blob.name
+            ):
+                return f"{blob.relative_to(staging)} does not match its checksum"
         return None
+
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        """Hashes a file in chunks."""
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(16 * 1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     @classmethod
     def _merge(cls, staging: Path, hub: Path) -> tuple:

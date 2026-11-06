@@ -20,6 +20,13 @@ import time
 from pathlib import Path
 from typing import Final
 
+_HOST_SAFE_EXTRA: Final[str] = "-."
+_FINGERPRINT_TAG: Final[str] = "SHA256:"
+_MIN_KEY_FIELDS: Final[int] = 3
+_COLON: Final[str] = ":"
+_DEFAULT_SSH_PORT: Final[int] = 22
+
+
 LOG: Final[logging.Logger] = logging.getLogger(__name__)
 
 # Seconds to wait for the first connection, which may sit at a password prompt.
@@ -50,7 +57,9 @@ class FleetSession:
         log_path: Path | None = None,
         identity: Path | None = None,
     ) -> None:
-        """Args:
+        """Hold one multiplexed ssh session to a machine.
+
+        Args:
         host: The machine's name or address.
         user: The account on it.
         run_dir: This run's private folder (0700): the control socket and the run's own
@@ -68,7 +77,7 @@ class FleetSession:
         self.identity = identity
         # The standard error of the last `open`, for the "Permission denied" hint of pairing.
         self.last_error = ""
-        safe = "".join(ch if ch.isalnum() or ch in "-." else "_" for ch in host)
+        safe = "".join(ch if ch.isalnum() or ch in _HOST_SAFE_EXTRA else "_" for ch in host)
         self.control_path = run_dir / f"cm-{safe}"
         self.known_hosts = run_dir / "known_hosts"
         self.askpass_env: dict | None = None
@@ -123,7 +132,9 @@ class FleetSession:
         ]
 
     def target(self) -> str:
-        """Returns:
+        """Return the `user@host` string for ssh.
+
+        Returns:
         str: `user@host` for ssh.
         """
         return f"{self.user}@{self.host}"
@@ -204,7 +215,9 @@ class FleetSession:
         return result.returncode == 0
 
     def is_open(self) -> bool:
-        """Returns:
+        """Report whether the master connection is alive.
+
+        Returns:
         bool: True if the master answers `ssh -O check`.
         """
         command = ["ssh", "-o", f"ControlPath={self.control_path}", "-O", "check", self.target()]
@@ -216,7 +229,9 @@ class FleetSession:
         self._spawn(command, capture=True)
 
     def host_key_fingerprint(self) -> str | None:
-        """Returns:
+        """Return the accepted host key's fingerprint.
+
+        Returns:
         Optional[str]: The SHA256 fingerprint of the host key the session accepted, printed so
         it can be compared with what the machine shows locally; None if none was stored.
         """
@@ -227,12 +242,14 @@ class FleetSession:
             capture=True,
         )
         for line in result.stdout.splitlines():
-            if "SHA256:" in line:
+            if _FINGERPRINT_TAG in line:
                 return line.split("SHA256:", 1)[1].split()[0]
         return None
 
     def host_key_lines(self) -> list[str]:
-        """Returns:
+        """Return the accepted host key lines.
+
+        Returns:
         List[str]: The host key the session accepted, as `known_hosts` lines without the host
         field (`<type> <key>`), for pinning the same key to the node id at pairing.
         """
@@ -242,7 +259,7 @@ class FleetSession:
         keys = []
         for line in result.stdout.splitlines():
             fields = line.split()
-            if line.startswith("#") or len(fields) < 3:
+            if line.startswith("#") or len(fields) < _MIN_KEY_FIELDS:
                 continue
             keys.append(" ".join(fields[1:3]))
         return keys
@@ -392,7 +409,7 @@ class FleetSession:
             f"{source}/",
             # rsync splits `host:path` at the first colon, so an IPv6 host goes in brackets.
             f"{self.user}@[{self.host}]:{destination}/"
-            if ":" in self.host
+            if _COLON in self.host
             else f"{self.target()}:{destination}/",
         ]
         result = self._spawn(command, capture=True)
@@ -410,8 +427,9 @@ class FleetSession:
         return result
 
     def pipe_into(self, producer: list[list[str]], remote_line: str) -> int:
-        """Streams the output of a local pipeline into a remote command (`docker save … | zstd`
-        into `zstd -d | docker load`).
+        """Stream the output of a local pipeline into a remote command.
+
+        That is `docker save … | zstd` into `zstd -d | docker load`.
 
         Args:
             producer: The local commands, piped one into the next.
@@ -448,7 +466,9 @@ class FleetSession:
 
     def _known_host_name(self) -> str:
         """The name the session's host key is filed under: `HostKeyAlias`, so never with a port."""
-        return self.host if self.ssh_port == 22 else f"{self.host}-port-{self.ssh_port}"
+        return (
+            self.host if self.ssh_port == _DEFAULT_SSH_PORT else f"{self.host}-port-{self.ssh_port}"
+        )
 
     @classmethod
     def _spawn(
@@ -497,7 +517,9 @@ class FleetSession:
 
     @classmethod
     def new_run_dir(cls) -> Path:
-        """Returns:
+        """Make the folder for one run's sockets and known-hosts file.
+
+        Returns:
         Path: A fresh 0700 folder for one run's sockets and known-hosts file, under
         `$XDG_RUNTIME_DIR` when there is one.
         """

@@ -42,12 +42,6 @@
    "assignment": 1,
    "var-annotated": 1
   },
-  "dreamference/node/node_model_sync.py": {
-   "union-attr": 1
-  },
-  "dreamference/node/node_remote.py": {
-   "assignment": 1
-  },
   "dreamference/runner/cline_runner.py": {
    "list-item": 1
   },
@@ -86,5 +80,5 @@
   }
  },
  "mypy": "2.4.0",
- "total": 48
+ "total": 46
 }

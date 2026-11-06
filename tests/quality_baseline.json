@@ -358,20 +358,10 @@
    "PLR1702": 1
   },
   "dreamference/node/fleet_bundle.py": {
-   "D205": 2,
-   "PLR2004": 2,
    "T201": 5
   },
   "dreamference/node/fleet_model_plan.py": {
    "PLR2004": 2
-  },
-  "dreamference/node/fleet_probe.py": {
-   "D205": 1,
-   "PLR2004": 10
-  },
-  "dreamference/node/fleet_session.py": {
-   "D205": 7,
-   "PLR2004": 5
   },
   "dreamference/node/node_advertiser.py": {
    "T201": 19
@@ -407,10 +397,6 @@
    "PLR2004": 1
   },
   "dreamference/node/node_model_sync.py": {
-   "ANN401": 1,
-   "D205": 1,
-   "PLR1702": 2,
-   "PLR2004": 1,
    "T201": 11
   },
   "dreamference/node/node_pairing.py": {
@@ -423,8 +409,6 @@
    "T201": 14
   },
   "dreamference/node/node_remote.py": {
-   "D205": 1,
-   "PLR2004": 2,
    "T201": 1
   },
   "dreamference/node/node_serve.py": {
@@ -997,5 +981,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 2348
+ "total": 2313
 }

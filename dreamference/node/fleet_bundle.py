@@ -51,7 +51,9 @@ class FleetBundle:
 
     @classmethod
     def target(cls) -> str:
-        """Returns:
+        """Name this machine's release target.
+
+        Returns:
         str: This machine's release target, `aarch64-unknown-linux-gnu` on a GB10.
         """
         machine = {"arm64": "aarch64", "amd64": "x86_64"}.get(
@@ -71,10 +73,10 @@ class FleetBundle:
         """
         from dreamference.runner.codex_branded_builder import CodexBrandedBuilder
 
-        if source == "this" and CodexBrandedBuilder.has_source():
+        if source == SOURCE_THIS and CodexBrandedBuilder.has_source():
             return cls.from_this()
         version = source.partition("=")[2] if source.startswith("release=") else None
-        if source == "this":
+        if source == SOURCE_THIS:
             from dreamference import __version__
 
             version = __version__
@@ -88,7 +90,9 @@ class FleetBundle:
 
     @classmethod
     def from_this(cls) -> Path | None:
-        """Returns:
+        """Build a bundle of the installed binaries and a wheel of this checkout.
+
+        Returns:
         Optional[Path]: A bundle of the binaries installed here and a wheel of this checkout,
         or None if a required binary is missing or the wheel could not be built.
         """

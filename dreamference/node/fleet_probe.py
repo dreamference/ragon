@@ -1,5 +1,6 @@
-"""Reading a machine's state before provisioning changes it (specs/DREAMFERENCE_RAGON_FLEET.md
-§7.1, steps 1 and 2).
+"""Read a machine's state before provisioning changes it.
+
+This is specs/DREAMFERENCE_RAGON_FLEET.md §7.1, steps 1 and 2.
 
 Ragon may not be installed there yet, so the probe is a plain POSIX shell script sent over the
 session. It changes nothing and prints `key=value` lines, which `parse` reads. Every step of a
@@ -9,6 +10,11 @@ second run on a finished node change nothing.
 
 import shlex
 from typing import Final
+
+_FLAG_ON: Final[str] = "1"
+_SPACE: Final[str] = " "
+_GB10: Final[str] = "GB10"
+
 
 # The script's fixed part. Model folders and images are appended per run by `script`.
 BASE_SCRIPT: Final[str] = r"""
@@ -84,7 +90,7 @@ class FleetProbe:
         state: dict[str, str] = {}
         for line in output.splitlines():
             key, sep, value = line.partition("=")
-            if sep and key and " " not in key:
+            if sep and key and _SPACE not in key:
                 state[key] = value.strip()
         return state
 
@@ -96,7 +102,7 @@ class FleetProbe:
             bool: True if the machine is a DGX Spark-class GB10 (`/etc/dgx-release`, or a GPU named
             GB10).
         """
-        return state.get("dgx") == "1" or "GB10" in state.get("gpu", "")
+        return state.get("dgx") == _FLAG_ON or _GB10 in state.get("gpu", "")
 
     @classmethod
     def missing_models(cls, state: dict[str, str], folders: list[str]) -> list[str]:
@@ -105,7 +111,7 @@ class FleetProbe:
         Returns:
             List[str]: Those it lacks.
         """
-        return [folder for folder in folders if state.get(f"model:{folder}") != "1"]
+        return [folder for folder in folders if state.get(f"model:{folder}") != _FLAG_ON]
 
     @classmethod
     def missing_images(cls, state: dict[str, str], images: list[str]) -> list[str]:
@@ -114,7 +120,7 @@ class FleetProbe:
         Returns:
             List[str]: Those it lacks.
         """
-        return [image for image in images if state.get(f"image:{image}") != "1"]
+        return [image for image in images if state.get(f"image:{image}") != _FLAG_ON]
 
     @classmethod
     def prepared(cls, state: dict[str, str]) -> bool:
@@ -125,9 +131,12 @@ class FleetProbe:
             `host check` reports, is already in place.
         """
         return (
-            state.get("docker_group") == "1"
-            and state.get("linger") == "1"
-            and state.get("avahi_file") == "1"
-            and (state.get("sandbox_profile") == "1" or state.get("userns_restricted") != "1")
+            state.get("docker_group") == _FLAG_ON
+            and state.get("linger") == _FLAG_ON
+            and state.get("avahi_file") == _FLAG_ON
+            and (
+                state.get("sandbox_profile") == _FLAG_ON
+                or state.get("userns_restricted") != _FLAG_ON
+            )
             and state.get("telemetry", "") not in ("enabled", "static", "enabled-runtime")
         )
