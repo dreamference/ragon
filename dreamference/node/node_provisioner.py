@@ -43,6 +43,10 @@ from dreamference.node.fleet_session import REMOTE_ADMIN, FleetSession
 from dreamference.node.node_pairing import NodePairing
 from dreamference.node.node_role_provisioner import NodeRoleProvisioner
 
+FLAG_SET: Final[str] = "1"
+FLAG_TRUE: Final[str] = "true"
+VERIFY_OK: Final[str] = "ok"
+SAFE_NAME_EXTRA: Final[str] = "-."
 LOG_DIR: Final[str] = str(Path("~/.local/state/dreamference/fleet").expanduser())
 
 # Where a bundle is copied to on the node before `install.sh --from` reads it.
@@ -292,7 +296,7 @@ class NodeProvisioner:
 
     def _session_for(self, host: str) -> FleetSession:
         address = self._address(host)
-        safe = "".join(ch if ch.isalnum() or ch in "-." else "_" for ch in host)
+        safe = "".join(ch if ch.isalnum() or ch in SAFE_NAME_EXTRA else "_" for ch in host)
         log = Path(LOG_DIR) / f"{datetime.date.today().isoformat()}-{safe}.log"
         session = FleetSession(address, self._user(host), self.run_dir, log_path=log)
         if self.role is not None:
@@ -365,7 +369,7 @@ class NodeProvisioner:
         if not self.options.get("os_update"):
             return True
         password = self.passwords.get(session.host)
-        if self._state(host).get("admin") == "1":
+        if self._state(host).get("admin") == FLAG_SET:
             session.run_admin(["server", "stop"], docker=True)
         print(f"⬆️  {host}: NVIDIA's OS and firmware update, then a reboot (§10.3).")
         update = session.sudo(
@@ -395,7 +399,10 @@ class NodeProvisioner:
     def _step_install(self, host: str, session: FleetSession) -> bool:
         assert self.bundle is not None
         version = FleetBundle.version(self.bundle)
-        if self._state(host).get("bundle") == version and self._state(host).get("admin") == "1":
+        if (
+            self._state(host).get("bundle") == version
+            and self._state(host).get("admin") == FLAG_SET
+        ):
             return True
         if not self._step_venv(host, session):
             return False
@@ -469,7 +476,7 @@ class NodeProvisioner:
         return self._reprobe(host, session)
 
     def _step_advertise(self, host: str, session: FleetSession) -> bool:
-        if self._state(host).get("advertised") == "1" and not self.options.get("web"):
+        if self._state(host).get("advertised") == FLAG_SET and not self.options.get("web"):
             return True
         arguments = (
             ["node", "enable"] if self.options.get("web") else ["node", "enable", "--no-web"]
@@ -508,7 +515,7 @@ class NodeProvisioner:
         if not self._images(host, session):
             return False
         self._record_copy(host, needed, time.monotonic() - started)
-        if state.get("searxng") == "true":
+        if state.get("searxng") == FLAG_TRUE:
             return True
         searxng = session.run_admin(["searxng", "start"], docker=True)
         if searxng.returncode != 0:
@@ -680,7 +687,7 @@ class NodeProvisioner:
         self.results[host].update(paired_record=record, node=record["node"])
         return True
 
-    # -- after the session: start and verify through the key (§7.1, steps 11–12) ------------------
+    # -- after the session: start and verify through the key (§7.1, steps 11-12) ------------------
 
     def _start_and_verify(self, host: str) -> None:
         record = self.results[host]["paired_record"]
@@ -704,7 +711,7 @@ class NodeProvisioner:
             return
         self.results[host]["state"] = "ready"
         self.results[host]["verify"] = self._verify(address, port, running)
-        self.results[host]["complete"] = self.results[host]["verify"] == "ok"
+        self.results[host]["complete"] = self.results[host]["verify"] == VERIFY_OK
         if not self.results[host]["complete"]:
             self.results[host]["left"] = f"ragon-admin node status {host}"
 
@@ -868,8 +875,10 @@ class NodeProvisioner:
 
     @classmethod
     def configured_model(cls) -> str:
-        """Returns:
-        str: This machine's configured main model, which new nodes get by default.
+        """Returns this machine's configured main model.
+
+        Returns:
+            str: This machine's configured main model, which new nodes get by default.
         """
         from dreamference.config import DreamferenceConfig
 

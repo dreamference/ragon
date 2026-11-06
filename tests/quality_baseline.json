@@ -419,20 +419,12 @@
    "T201": 11
   },
   "dreamference/node/node_pairing.py": {
-   "ANN401": 1,
-   "D205": 5,
-   "PLR2004": 5,
    "T201": 20
   },
   "dreamference/node/node_prepare.py": {
-   "D205": 1,
-   "PLR2004": 4,
    "T201": 11
   },
   "dreamference/node/node_provisioner.py": {
-   "D205": 1,
-   "PLR2004": 6,
-   "RUF003": 1,
    "T201": 14
   },
   "dreamference/node/node_remote.py": {
@@ -1031,5 +1023,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 2472
+ "total": 2448
 }

@@ -32,6 +32,10 @@ import subprocess
 from pathlib import Path
 from typing import Any, Final
 
+ROOT_USER: Final[str] = "root"
+DOCKER_GROUP: Final[str] = "docker"
+UNIT_ACTIVE: Final[str] = "active"
+BUBBLEWRAP_STEP: Final[str] = "let bubblewrap create its sandbox"
 TELEMETRY_UNIT: Final[str] = "nvidia-dgx-telemetry"
 LINGER_DIR: Final[str] = "/var/lib/systemd/linger"
 AVAHI_SERVICES_DIR: Final[str] = "/etc/avahi/services"
@@ -64,11 +68,13 @@ class NodePrepare:
 
     @classmethod
     def user(cls) -> str | None:
-        """Returns:
-        Optional[str]: The account the steps are for: the user who ran sudo.
+        """Returns the account the steps are for.
+
+        Returns:
+            str | None: The account the steps are for: the user who ran sudo.
         """
         name = os.environ.get("SUDO_USER")
-        return name if name and name != "root" else None
+        return name if name and name != ROOT_USER else None
 
     @classmethod
     def steps(cls, user: str) -> list[dict[str, Any]]:
@@ -143,11 +149,7 @@ class NodePrepare:
         # The sandbox check of `HostSafetySetup` runs bubblewrap from the invoking user's systemd,
         # which root does not have; this class checks the profile itself (`_sandbox_step`). Wi-Fi
         # power saving stays in: a node on Wi-Fi with it on is one clients cannot find.
-        return [
-            step
-            for step in HostSafetySetup.steps()
-            if step["name"] != "let bubblewrap create its sandbox"
-        ]
+        return [step for step in HostSafetySetup.steps() if step["name"] != BUBBLEWRAP_STEP]
 
     @classmethod
     def _docker_step(cls, user: str) -> dict[str, Any] | None:
@@ -159,7 +161,7 @@ class NodePrepare:
                 "why": "there is no `docker` group on this machine",
                 "manual": "install Docker (NVIDIA's DGX OS ships it), then run node prepare again",
             }
-        if user in members or cls._primary_group(user) == "docker":
+        if user in members or cls._primary_group(user) == DOCKER_GROUP:
             return None
         return {
             "name": "Docker without sudo",
@@ -221,7 +223,7 @@ class NodePrepare:
     def _telemetry_step(cls) -> dict[str, Any] | None:
         enabled = cls._systemctl("is-enabled", TELEMETRY_UNIT)
         active = cls._systemctl("is-active", TELEMETRY_UNIT)
-        if enabled not in ("enabled", "static", "enabled-runtime") and active != "active":
+        if enabled not in ("enabled", "static", "enabled-runtime") and active != UNIT_ACTIVE:
             return None
         return {
             "name": "NVIDIA's telemetry",

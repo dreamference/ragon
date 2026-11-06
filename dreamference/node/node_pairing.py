@@ -16,9 +16,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, ClassVar, Final
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 from dreamference.node.node_browser import NodeBrowser
+
+if TYPE_CHECKING:
+    from dreamference.node.fleet_session import FleetSession
 
 KEY_NAME: Final[str] = "ragon-node_ed25519"
 
@@ -37,6 +40,10 @@ NODE_ID: Final[re.Pattern] = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,63}")
 
 # The marker that tells Ragon's lines in `authorized_keys` from the user's own.
 KEY_COMMENT: Final[str] = "ragon-node"
+MIN_KEY_FIELDS: Final[int] = 2
+MIN_PARTIAL_ID_LENGTH: Final[int] = 4
+MIN_ANSWER_LINES: Final[int] = 2
+NEWLINE: Final[str] = "\n"
 
 # The key a first login offers when `~/.ssh/config` names none that exists (OpenSSH's default).
 DEFAULT_IDENTITY: Final[str] = ".ssh/id_ed25519"
@@ -50,22 +57,28 @@ class NodePairing:
 
     @classmethod
     def key_path(cls) -> Path:
-        """Returns:
-        Path: `~/.ssh/ragon-node_ed25519`, the private key used for nothing else.
+        """Returns the private key path.
+
+        Returns:
+            Path: `~/.ssh/ragon-node_ed25519`, the private key used for nothing else.
         """
         return Path("~/.ssh").expanduser() / KEY_NAME
 
     @classmethod
     def nodes_dir(cls) -> Path:
-        """Returns:
-        Path: `~/.config/dreamference/nodes`, one record per paired node and their host keys.
+        """Returns the directory of the node records.
+
+        Returns:
+            Path: `~/.config/dreamference/nodes`, one record per paired node and their host keys.
         """
         return Path("~/.config/dreamference/nodes").expanduser()
 
     @classmethod
     def known_hosts(cls) -> Path:
-        """Returns:
-        Path: The host-key file for paired nodes, apart from the user's own `known_hosts`.
+        """Returns the host-key file of the paired nodes.
+
+        Returns:
+            Path: The host-key file for paired nodes, apart from the user's own `known_hosts`.
         """
         return cls.nodes_dir() / "known_hosts"
 
@@ -86,8 +99,8 @@ class NodePairing:
         """
         fields = public_key.strip().split()
         if (
-            len(fields) < 2
-            or "\n" in public_key.strip()
+            len(fields) < MIN_KEY_FIELDS
+            or NEWLINE in public_key.strip()
             or not fields[0].startswith(("ssh-", "ecdsa-", "sk-"))
         ):
             raise ValueError("not a public key")
@@ -361,8 +374,10 @@ class NodePairing:
 
     @classmethod
     def paired(cls) -> list[dict[str, Any]]:
-        """Returns:
-        List[Dict[str, Any]]: Every paired node's record, by name.
+        """Returns the records of the paired nodes.
+
+        Returns:
+            list[dict[str, Any]]: Every paired node's record, by name.
         """
         records = []
         for path in sorted(cls.nodes_dir().glob("*.json")) if cls.nodes_dir().is_dir() else []:
@@ -397,7 +412,9 @@ class NodePairing:
                 record.get("name", "").lower(),
                 record["address"].lower(),
                 record["node"].lower(),
-            ) or (len(wanted) >= 4 and record["node"].lower().startswith(wanted)):
+            ) or (
+                len(wanted) >= MIN_PARTIAL_ID_LENGTH and record["node"].lower().startswith(wanted)
+            ):
                 if browse:
                     cls.resolve(record)  # refreshes and saves the address when the node has moved
                 return record
@@ -519,7 +536,7 @@ class NodePairing:
             shutil.rmtree(session.run_dir, ignore_errors=True)
 
     @classmethod
-    def pair_over_session(cls, session: Any) -> dict[str, Any] | None:
+    def pair_over_session(cls, session: "FleetSession") -> dict[str, Any] | None:
         """Pairs through an open provisioning session (`FleetSession`).
 
         the node's id and name are read over it, `node authorize` runs through it (no second
@@ -536,7 +553,11 @@ class NodePairing:
 
         answer = session.run(f"{REMOTE_ADMIN} node id && hostname")
         lines = answer.stdout.split()
-        if answer.returncode != 0 or len(lines) < 2 or not NODE_ID.fullmatch(lines[0]):
+        if (
+            answer.returncode != 0
+            or len(lines) < MIN_ANSWER_LINES
+            or not NODE_ID.fullmatch(lines[0])
+        ):
             print(f"❌ {session.host} did not report a node id (is Ragon installed there?).")
             return None
         record = {
@@ -611,8 +632,10 @@ class NodePairing:
     def authorize_on_node(
         cls, record: dict[str, Any], public_key: str, identity: Path | None = None
     ) -> bool:
-        """Sends the public key to the node's `ragon-admin node authorize`, over an ordinary SSH
-        login (password or the user's own key), which writes the restricted line.
+        """Sends the public key to the node's `ragon-admin node authorize`.
+
+        It goes over an ordinary SSH login (password or the user's own key), which writes the
+        restricted line.
 
         Args:
             record: The node's record.
@@ -734,7 +757,7 @@ class NodePairing:
                     return node
                 continue
             if wanted in (node["name"].lower(), node["address"].lower(), node["node"].lower()) or (
-                len(wanted) >= 4 and node["node"].lower().startswith(wanted)
+                len(wanted) >= MIN_PARTIAL_ID_LENGTH and node["node"].lower().startswith(wanted)
             ):
                 return node
         return None
