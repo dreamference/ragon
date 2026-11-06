@@ -80,6 +80,10 @@ PROMPT_ENV: Final[str] = "DREAMFERENCE_RAGON_PROMPT"
 # Refine mode (specs/DREAMFERENCE_RAGON_REFINE.md §5.3). The runner runs the study step itself, so
 # every `ragon exec` it starts is told to stay one session whatever the configuration says.
 REFINE_ENV: Final[str] = "DREAMFERENCE_RAGON_REFINE"
+# What kind of work these requests are, for an engine that picks a drafter by it; no output changes
+# (docs/dev/loop-guard.md).
+WORKLOAD_ENV: Final[str] = "DREAMFERENCE_RAGON_WORKLOAD"
+NIGHT_WORKLOAD: Final[str] = "night"
 TEST_TAIL_LINES: Final[int] = 200
 # The commit's own budget, its hooks included: it may start after the task's deadline has passed.
 COMMIT_TIMEOUT_S: Final[int] = 300
@@ -931,6 +935,7 @@ class NightShiftTaskRun:
         ProxyBypass.apply(env, self.model_host)
         env["GIT_TERMINAL_PROMPT"] = "0"
         env[REFINE_ENV] = "off"
+        env[WORKLOAD_ENV] = NIGHT_WORKLOAD
         if self.airgapped:
             env[AIRGAPPED_ENV] = self.airgapped
         prompt = getattr(self.settings, "prompt", None)
@@ -1003,6 +1008,7 @@ class NightShiftTaskRun:
             NIGHT_RUN_ENV: "1",
             "GIT_TERMINAL_PROMPT": "0",
             REFINE_ENV: "off",
+            WORKLOAD_ENV: NIGHT_WORKLOAD,
             # Gmail is this node's owner's; a task from another machine is never told about it.
             "DREAMFERENCE_RAGON_GMAIL": "false",
             # The task's own CODEX_HOME is not the owner's: its `ragon` starts no file index over
