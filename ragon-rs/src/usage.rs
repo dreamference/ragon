@@ -150,4 +150,77 @@ mod tests {
         assert_eq!(thousands(1_234_567), "1,234,567");
         assert_eq!(thousands(-12_345), "-12,345");
     }
+
+    #[test]
+    fn all_zero_counts_are_an_empty_session() {
+        let lines = report(Some([0, 0, 0, 0, 0]), Some([5, 0, 5, 0, 10]), Some(100));
+        assert_eq!(lines, ["Token usage", "  No tokens used yet in this session."]);
+    }
+
+    #[test]
+    fn negative_counts_are_an_empty_session() {
+        assert_eq!(report(Some([-5, 0, -1, 0, -6]), None, None).len(), 2);
+    }
+
+    #[test]
+    fn a_session_without_cached_input_has_no_cached_rows() {
+        let text = report(Some([100, 0, 20, 0, 120]), None, None).join("\n");
+        assert!(!text.contains("cached") && !text.contains("new"), "{text}");
+        assert!(text.starts_with("Token usage this session\n"), "{text}");
+    }
+
+    #[test]
+    fn reasoning_tokens_get_their_own_row() {
+        let text = report(Some([100, 0, 50, 30, 150]), None, None).join("\n");
+        assert!(text.contains("  reasoning"), "{text}");
+        assert!(text.contains("Total                150"), "{text}");
+    }
+
+    #[test]
+    fn without_a_last_request_there_is_no_context_block() {
+        let text = report(Some([100, 0, 20, 0, 120]), None, Some(1000)).join("\n");
+        assert!(!text.contains("Last request") && !text.contains("Context"), "{text}");
+        let text = report(Some([100, 0, 20, 0, 120]), Some([0, 0, 0, 0, 0]), Some(1000)).join("\n");
+        assert!(!text.contains("Last request"), "{text}");
+    }
+
+    #[test]
+    fn the_context_row_has_no_note_without_a_usable_window() {
+        for window in [None, Some(0), Some(-4)] {
+            let lines = report(Some([100, 0, 20, 0, 120]), Some([10, 0, 5, 0, 15]), window);
+            let last = lines.last().unwrap();
+            assert_eq!(last, "  Context               15", "{window:?}");
+        }
+    }
+
+    #[test]
+    fn cached_input_above_input_never_makes_new_negative() {
+        let text = report(Some([100, 150, 20, 0, 120]), None, None).join("\n");
+        assert!(text.lines().any(|l| l.starts_with("    new") && l.ends_with("  0") && !l.contains("-")), "{text}");
+    }
+
+    #[test]
+    fn the_last_request_block_follows_a_blank_line() {
+        let lines = report(Some([100, 0, 20, 0, 120]), Some([10, 0, 5, 0, 15]), Some(30));
+        let at = lines.iter().position(|l| l == "Last request").unwrap();
+        assert_eq!(lines[at - 1], "");
+        assert!(lines[at + 3].ends_with("of 30 (50% used)"), "{:?}", lines[at + 3]);
+    }
+
+    #[test]
+    fn percent_rounds_and_guards_a_zero_whole() {
+        assert_eq!(percent(1, 3), 33);
+        assert_eq!(percent(2, 3), 67);
+        assert_eq!(percent(5, 0), 0);
+        assert_eq!(percent(-5, 10), 0);
+        assert_eq!(percent(20, 10), 200);
+    }
+
+    #[test]
+    fn thousands_handles_the_edges_of_the_type() {
+        assert_eq!(thousands(-1), "-1");
+        assert_eq!(thousands(100_000), "100,000");
+        assert_eq!(thousands(i64::MAX), "9,223,372,036,854,775,807");
+        assert_eq!(thousands(i64::MIN), "-9,223,372,036,854,775,808");
+    }
 }

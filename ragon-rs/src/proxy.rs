@@ -112,4 +112,65 @@ mod tests {
         let once = merged(Some("a.example"), None, &hosts);
         assert_eq!(merged(Some(&once), Some(&once), &hosts), once);
     }
+
+    #[test]
+    fn loopback_names_are_the_three_local_spellings() {
+        assert_eq!(LOOPBACK, ["localhost", "127.0.0.1", "::1"]);
+    }
+
+    #[test]
+    fn a_url_loses_query_fragment_and_surrounding_space() {
+        assert_eq!(host_name("  http://host.example?x=1  ").as_deref(), Some("host.example"));
+        assert_eq!(host_name("http://host.example#top").as_deref(), Some("host.example"));
+        assert_eq!(host_name("host.example/v1/models").as_deref(), Some("host.example"));
+    }
+
+    #[test]
+    fn a_url_without_a_host_gives_none() {
+        assert_eq!(host_name("http://"), None);
+        assert_eq!(host_name("http:///path"), None);
+        assert_eq!(host_name("http://:8000"), None);
+        assert_eq!(host_name("   "), None);
+        assert_eq!(host_name("http://[]:8000"), None);
+    }
+
+    #[test]
+    fn an_ipv6_literal_loses_its_brackets_and_port() {
+        assert_eq!(host_name("http://[::1]:8000/v1").as_deref(), Some("::1"));
+        assert_eq!(host_name("[fd00::2]").as_deref(), Some("fd00::2"));
+    }
+
+    #[test]
+    fn user_info_is_never_a_host() {
+        assert_eq!(host_name("http://@host:1").as_deref(), Some("host"));
+        assert_eq!(host_name("ftp://a:b@c.example/x").as_deref(), Some("c.example"));
+    }
+
+    #[test]
+    fn entries_repeat_across_the_two_spellings_only_once_whatever_the_case() {
+        assert_eq!(merged(Some("Corp.Example"), Some("corp.example,LOCALHOST"), &[]), "Corp.Example,LOCALHOST,127.0.0.1,::1");
+    }
+
+    #[test]
+    fn blank_entries_and_stray_commas_are_dropped() {
+        assert_eq!(merged(Some(", a.example,, ,"), None, &[]), "a.example,localhost,127.0.0.1,::1");
+    }
+
+    #[test]
+    fn a_url_with_no_host_adds_nothing() {
+        let hosts = vec!["".to_string(), "http://".to_string(), "http://gb10:8000".to_string()];
+        assert_eq!(merged(None, None, &hosts), "localhost,127.0.0.1,::1,gb10");
+    }
+
+    #[test]
+    fn the_same_host_in_two_urls_is_listed_once() {
+        let hosts = vec!["http://gb10:8000/v1".to_string(), "https://gb10:9000".to_string()];
+        assert_eq!(merged(None, None, &hosts), "localhost,127.0.0.1,::1,gb10");
+    }
+
+    #[test]
+    fn the_direct_client_builds_for_any_timeout() {
+        assert!(direct_client(std::time::Duration::from_millis(1)).is_ok());
+        assert!(direct_client(std::time::Duration::from_secs(600)).is_ok());
+    }
 }

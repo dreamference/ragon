@@ -160,4 +160,83 @@ mod tests {
             .map(ToString::to_string);
         assert_eq!(exec_about, Some("Run Ragon non-interactively".into()));
     }
+
+    #[derive(Parser, Debug)]
+    #[command(name = "codex", about = "OpenAI Codex CLI")]
+    struct Sample {
+        /// Prompt for Codex
+        #[arg(long)]
+        prompt: Option<String>,
+    }
+
+    #[test]
+    fn the_parse_entry_point_yields_the_typed_arguments() {
+        let sample: Sample = parse(vec!["codex".into(), "--prompt".into(), "hi".into()]);
+        assert_eq!(sample.prompt.as_deref(), Some("hi"));
+        let sample: Sample = parse(vec!["codex".into()]);
+        assert_eq!(sample.prompt, None);
+    }
+
+    #[test]
+    fn a_line_pointing_at_the_vendors_documentation_is_dropped() {
+        assert_eq!(rebrand_text("Run it.\nSee https://developers.openai.com/codex/cli"), "Run it.");
+        assert_eq!(rebrand_text("Docs at OpenAI.com\nkeep"), "keep");
+        assert_eq!(rebrand_text(""), "");
+    }
+
+    #[test]
+    fn the_product_names_become_one_name() {
+        assert_eq!(rebrand_text("OpenAI Codex"), "Ragon");
+        assert_eq!(rebrand_text("Codex CLI is here"), "Ragon is here");
+        assert_eq!(rebrand_text("Codex, the agent"), "Ragon, the agent");
+    }
+
+    #[test]
+    fn a_capitalised_name_inside_a_longer_word_stays() {
+        assert_eq!(rebrand_text("Codexes and MyCodex"), "Codexes and MyCodex");
+    }
+
+    #[test]
+    fn a_lowercase_name_beside_a_path_mark_stays() {
+        for text in ["~/codex", "a/codex/b", "codex.toml", "my-codex", "codex_home", "user@codex", "codex@1"] {
+            assert_eq!(rebrand_text(text), text);
+        }
+    }
+
+    #[test]
+    fn every_standing_command_in_a_line_is_replaced() {
+        assert_eq!(rebrand_text("codex exec and codex resume"), "ragon exec and ragon resume");
+        assert_eq!(rebrand_text("(codex)"), "(ragon)");
+    }
+
+    #[test]
+    fn the_after_help_and_the_binary_name_are_rebranded() {
+        let command = rebrand_command(
+            Command::new("codex")
+                .bin_name("codex")
+                .display_name("Codex")
+                .after_help("More on Codex")
+                .before_help("About Codex"),
+        );
+        assert_eq!(command.get_bin_name(), Some("ragon"));
+        assert_eq!(command.get_display_name(), Some("Ragon"));
+        assert_eq!(command.get_after_help().map(ToString::to_string), Some("More on Ragon".into()));
+        assert_eq!(command.get_before_help().map(ToString::to_string), Some("About Ragon".into()));
+    }
+
+    #[test]
+    fn a_command_without_prose_is_left_alone() {
+        let command = rebrand_command(Command::new("tool").subcommand(Command::new("sub")));
+        assert!(command.get_about().is_none());
+        assert!(command.find_subcommand("sub").is_some_and(|sub| sub.get_about().is_none()));
+    }
+
+    #[test]
+    fn nested_subcommands_are_reached() {
+        let command = rebrand_command(
+            Command::new("codex").subcommand(Command::new("a").subcommand(Command::new("b").about("Codex deep"))),
+        );
+        let deep = command.find_subcommand("a").and_then(|a| a.find_subcommand("b")).and_then(|b| b.get_about());
+        assert_eq!(deep.map(ToString::to_string), Some("Ragon deep".into()));
+    }
 }

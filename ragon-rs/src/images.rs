@@ -141,4 +141,84 @@ mod tests {
         assert_eq!(offered(true, true), None);
         assert_eq!(offered(false, false), None);
     }
+
+    fn scratch_home(name: &str) -> PathBuf {
+        let home = std::env::temp_dir().join(format!("ragon-images-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        home
+    }
+
+    #[test]
+    fn the_switch_knows_four_off_words_and_nothing_else() {
+        for word in ["0", "false", "no", "off", "NO", " Off ", "False\n"] {
+            assert!(switched_off(Some(word)), "{word:?}");
+        }
+        for word in ["1", "true", "yes", "on", "off-ish", "disabled", " "] {
+            assert!(!switched_off(Some(word)), "{word:?}");
+        }
+    }
+
+    #[test]
+    fn the_names_the_admin_reads_are_stable() {
+        assert_eq!(MCP_SERVER, "ragon_images");
+        assert_eq!(ENV_SWITCH, "DREAMFERENCE_RAGON_IMAGES");
+        assert!(FORWARDED_ENV.contains(&"HOME") && FORWARDED_ENV.contains(&"DREAMFERENCE_RAGON_AIRGAPPED"));
+    }
+
+    #[test]
+    fn a_secret_without_the_admin_link_is_not_set_up() {
+        let home = scratch_home("secret-only");
+        std::fs::create_dir_all(home.join(".config/dreamference/image-search")).unwrap();
+        std::fs::write(home.join(SECRET_FILE), "s3cret").unwrap();
+        assert_eq!(admin_for(&home), None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_folder_in_place_of_the_secret_or_the_link_does_not_count() {
+        let home = scratch_home("folders");
+        std::fs::create_dir_all(home.join(SECRET_FILE)).unwrap();
+        std::fs::create_dir_all(home.join(ADMIN_LINK)).unwrap();
+        assert_eq!(admin_for(&home), None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_home_that_does_not_exist_gets_nothing() {
+        assert_eq!(admin_for(Path::new("/nonexistent/ragon-images-home")), None);
+    }
+
+    #[test]
+    fn an_empty_command_line_gets_the_declaration_or_nothing() {
+        assert!(with_server(Vec::new(), None).is_empty());
+        let out = strings(&with_server(Vec::new(), Some(Path::new("/x/ragon-admin"))));
+        assert_eq!(out.len(), 6);
+        assert_eq!(out.iter().filter(|arg| *arg == "-c").count(), 3);
+    }
+
+    #[test]
+    fn a_path_with_quotes_and_backslashes_survives_as_toml() {
+        let path = "/odd \"dir\\x/ragon-admin";
+        let out = strings(&with_server(vec!["ragon".into()], Some(Path::new(path))));
+        let value = out[2].strip_prefix("mcp_servers.ragon_images.command=").unwrap();
+        let parsed: toml::Table = toml::from_str(&format!("v = {value}")).unwrap();
+        assert_eq!(parsed["v"].as_str(), Some(path));
+    }
+
+    #[test]
+    fn every_forwarded_variable_is_named_in_the_declaration() {
+        let out = strings(&with_server(vec!["ragon".into()], Some(Path::new("/x/ragon-admin"))));
+        for name in FORWARDED_ENV {
+            assert!(out[6].contains(&format!("\"{name}\"")), "{name} in {}", out[6]);
+        }
+    }
+
+    #[test]
+    fn another_servers_declaration_does_not_stop_this_one() {
+        let other: Vec<OsString> = vec!["ragon".into(), "-c".into(), "mcp_servers.ragon_apps.enabled=false".into(), "exec".into()];
+        let out = with_server(other, Some(Path::new("/x/ragon-admin")));
+        assert_eq!(out.len(), 4 + 6);
+        assert_eq!(out.last().map(|a| a.to_string_lossy().into_owned()).as_deref(), Some("exec"));
+    }
 }

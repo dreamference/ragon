@@ -94,4 +94,72 @@ mod tests {
         assert_eq!(sent(RAGON_ENGINE_OWNER, None), ["custom exec", "function wait"]);
         assert_eq!(sent(RAGON_ENGINE_OWNER, Some("function")), ["function exec", "function wait"]);
     }
+
+    fn type_and_name(tools: &[serde_json::Value]) -> Vec<String> {
+        tools
+            .iter()
+            .map(|tool| format!("{} {}", tool["type"].as_str().unwrap_or_default(), tool["name"].as_str().unwrap_or_default()))
+            .collect()
+    }
+
+    #[test]
+    fn the_variable_has_its_documented_name() {
+        assert_eq!(ENV, "DREAMFERENCE_RAGON_EXEC_TOOL");
+    }
+
+    #[test]
+    fn the_switch_ignores_case_and_surrounding_space() {
+        assert!(as_function(&served(RAGON_ENGINE_OWNER), Some("FUNCTION")));
+        assert!(as_function(&served(RAGON_ENGINE_OWNER), Some("  Function\n")));
+        assert!(!as_function(&served("sglang"), Some("FREEFORM")));
+        assert!(!as_function(&served("vllm"), Some("\tfreeform ")));
+    }
+
+    #[test]
+    fn a_blank_setting_leaves_the_automatic_choice() {
+        assert!(as_function(&served("sglang"), Some("   ")));
+        assert!(!as_function(&served(RAGON_ENGINE_OWNER), Some("   ")));
+        assert!(!as_function(&served(RAGON_ENGINE_OWNER), Some("\n")));
+    }
+
+    #[test]
+    fn freeform_overrides_the_automatic_choice_on_every_owner() {
+        for owner in ["sglang", "vllm", "", "library", RAGON_ENGINE_OWNER] {
+            assert!(!as_function(&served(owner), Some("freeform")), "{owner}");
+            assert!(as_function(&served(owner), Some("function")), "{owner}");
+        }
+    }
+
+    #[test]
+    fn a_misspelt_form_is_not_a_form() {
+        for word in ["functions", "free-form", "free form", "func", "1", "true"] {
+            assert!(as_function(&served("sglang"), Some(word)), "{word}");
+            assert!(!as_function(&served(RAGON_ENGINE_OWNER), Some(word)), "{word}");
+        }
+    }
+
+    #[test]
+    fn no_tools_stay_no_tools() {
+        for function in [true, false] {
+            for dropped in [true, false] {
+                assert!(ragon_tools::flatten_with(Vec::new(), function, dropped).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_request_without_exec_keeps_wait_when_exec_is_a_function() {
+        let tools = vec![serde_json::json!({"type": "function", "name": "wait", "description": "Waits on a yielded `exec` cell"})];
+        let sent = type_and_name(&ragon_tools::flatten_with(tools, true, true));
+        assert_eq!(sent, ["function wait"]);
+    }
+
+    #[test]
+    fn an_unrelated_function_tool_passes_through_in_every_form() {
+        let tools = vec![serde_json::json!({"type": "function", "name": "shell", "description": "Run a command"})];
+        for (function, dropped) in [(true, true), (false, true), (true, false), (false, false)] {
+            let sent = type_and_name(&ragon_tools::flatten_with(tools.clone(), function, dropped));
+            assert_eq!(sent, ["function shell"], "function={function} dropped={dropped}");
+        }
+    }
 }
