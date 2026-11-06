@@ -502,7 +502,7 @@ def test_the_paths_the_mcp_server_asks_for_are_the_ones_served():
         assert path in rust, path
     import inspect
 
-    service = inspect.getsource(GmailSearchService)
+    service = inspect.getsource(inspect.getmodule(GmailSearchService))  # paths are module constants
     for path in (
         '"/search"',
         '"/message/"',

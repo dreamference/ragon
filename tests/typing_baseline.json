@@ -3,11 +3,6 @@
   "dreamference/audit/strace_parser.py": {
    "union-attr": 1
   },
-  "dreamference/chat/gmail_search_service.py": {
-   "arg-type": 2,
-   "assignment": 1,
-   "var-annotated": 1
-  },
   "dreamference/config/dreamference_config.py": {
    "assignment": 1
   },
@@ -62,5 +57,5 @@
   }
  },
  "mypy": "2.4.0",
- "total": 36
+ "total": 32
 }

@@ -197,6 +197,31 @@ NOT_CONNECTED_MESSAGE: Final[str] = (
 
 # Enough styling that the setup page reads as part of Ragon rather than as a server error. It is
 # the only page this project serves directly, and the user arrives at it from a polished UI.
+SEALED_MIN_LENGTH: Final[int] = 32
+TOKEN_REFRESH_MARGIN_SECONDS: Final[int] = 60
+DRIVE_FILE_SEGMENT_COUNT: Final[int] = 2
+CALENDAR_EVENT_SEGMENT_COUNT: Final[int] = 3
+KEY_ACCOUNTS: Final[str] = "accounts"
+KEY_EMAIL: Final[str] = "email"
+KEY_ACCESS_TOKEN: Final[str] = "access_token"
+SERVICE_GMAIL: Final[str] = "gmail"
+IMAP_AUTH_FAILED: Final[str] = "AUTHENTICATIONFAILED"
+IMAP_OK: Final[str] = "OK"
+DRIVE_SEARCH_PATH: Final[str] = "/drive/search"
+CALENDAR_EVENTS_PATH: Final[str] = "/calendar/events"
+MESSAGE_ID_SEPARATOR: Final[str] = "|"
+KEY_ERROR: Final[str] = "error"
+MIME_MULTIPART: Final[str] = "multipart"
+MIME_PLAIN: Final[str] = "text/plain"
+MIME_HTML: Final[str] = "text/html"
+OAUTH_START_PATH: Final[str] = "/api/google/oauth/start"
+DISCONNECT_PATH: Final[str] = "/disconnect"
+OAUTH_COMPLETE_PATH: Final[str] = "/api/google/oauth/complete"
+KEY_CODE: Final[str] = "code"
+KEY_STATE: Final[str] = "state"
+ROOT_PATH: Final[str] = "/"
+SEARCH_PATH: Final[str] = "/search"
+
 PAGE_STYLE: Final[str] = (
     # A neutral idiom: near-black text, grey secondary, hairline borders, a black pill for the one primary action.
     "body{margin:0;padding:48px 24px;background:#fff;color:#111827;"
@@ -336,7 +361,7 @@ class GmailSearchService:
             raw = base64.b64decode(blob.encode("ascii"))
         except (ValueError, AttributeError):
             return None
-        if len(raw) < 32:
+        if len(raw) < SEALED_MIN_LENGTH:
             return None
         nonce, tag, cipher = raw[:16], raw[16:32], raw[32:]
         key = cls._key(directory)
@@ -354,15 +379,15 @@ class GmailSearchService:
     def _raw(cls, directory: str | None = None) -> dict[str, Any]:
         """Reads credentials file. Migrates old single-account format if needed."""
         try:
-            with open(os.path.join(directory or CONFIG_DIR, CREDENTIALS_NAME)) as handle:
+            with (pathlib.Path(directory or CONFIG_DIR) / CREDENTIALS_NAME).open() as handle:
                 stored = json.load(handle)
         except (OSError, ValueError):
             return {"accounts": {}}
         if not isinstance(stored, dict):
             return {"accounts": {}}
-        if "accounts" not in stored:
+        if KEY_ACCOUNTS not in stored:
             # migrate legacy
-            if "email" in stored and "access_token" in stored:
+            if KEY_EMAIL in stored and KEY_ACCESS_TOKEN in stored:
                 return {"accounts": {stored["email"]: stored}}
             return {"accounts": {}}
         return stored
@@ -382,7 +407,7 @@ class GmailSearchService:
             if not sealed:
                 continue
 
-            if float(acc.get("expires_at", 0)) - time.time() < 60:
+            if float(acc.get("expires_at", 0)) - time.time() < TOKEN_REFRESH_MARGIN_SECONDS:
                 sealed_refresh = acc.get("refresh_token")
                 if not sealed_refresh:
                     continue
@@ -405,7 +430,7 @@ class GmailSearchService:
                 try:
                     with urllib.request.urlopen(req, timeout=10) as res:
                         data = json.load(res)
-                        if "access_token" in data:
+                        if KEY_ACCESS_TOKEN in data:
                             # Google may rotate the refresh token; the old one then stops working.
                             cls.save_token(
                                 address,
@@ -503,7 +528,7 @@ class GmailSearchService:
             bool: True if nothing is stored afterwards.
         """
         try:
-            os.remove(os.path.join(directory or CONFIG_DIR, CREDENTIALS_NAME))
+            (pathlib.Path(directory or CONFIG_DIR) / CREDENTIALS_NAME).unlink()
         except FileNotFoundError:
             return True
         except OSError:
@@ -521,7 +546,7 @@ class GmailSearchService:
             List[str]: Addresses, empty if GNOME has none or the host never looked.
         """
         try:
-            with open(os.path.join(directory or CONFIG_DIR, GNOME_HINT_NAME)) as handle:
+            with (pathlib.Path(directory or CONFIG_DIR) / GNOME_HINT_NAME).open() as handle:
                 found = json.load(handle)
         except (OSError, ValueError):
             return []
@@ -539,7 +564,7 @@ class GmailSearchService:
             bool: True if the file was written.
         """
         try:
-            with open(os.path.join(directory or CONFIG_DIR, GNOME_HINT_NAME), "w") as handle:
+            with (pathlib.Path(directory or CONFIG_DIR) / GNOME_HINT_NAME).open("w") as handle:
                 json.dump(addresses, handle)
         except OSError:
             return False
@@ -607,7 +632,7 @@ class GmailSearchService:
             A callable suitable for `IMAP4.authenticate`.
         """
         payload = f"user={address}\x01auth=Bearer {token}\x01\x01".encode()
-        answered = []
+        answered: list[bool] = []
 
         def respond(_challenge: bytes) -> bytes:
             if answered:
@@ -760,7 +785,7 @@ class GmailSearchService:
         Returns:
             str: The message; Gmail's keeps its own wording.
         """
-        if app == "gmail" or app not in APP_SCOPES:
+        if app == SERVICE_GMAIL or app not in APP_SCOPES:
             return MISSING_GMAIL_SCOPE.format(email=address)
         return MISSING_APP_SCOPE.format(app=APP_NAMES[app], email=address)
 
@@ -836,7 +861,7 @@ class GmailSearchService:
         if isinstance(detail, bytes):
             detail = detail.decode("utf-8", "replace")
         detail = str(detail) or type(error).__name__
-        if "AUTHENTICATIONFAILED" in detail:
+        if IMAP_AUTH_FAILED in detail:
             # Most often a grant made with Gmail access unticked, or one revoked since.
             detail += " -- reconnect this account and allow Gmail access"
         return detail
@@ -859,7 +884,7 @@ class GmailSearchService:
             status, rows = connection.list()
         except (imaplib.IMAP4.error, OSError):
             return ALL_MAIL_FALLBACK
-        if status != "OK":
+        if status != IMAP_OK:
             return ALL_MAIL_FALLBACK
         for row in rows or []:
             line = row.decode("utf-8", "replace") if isinstance(row, bytes) else str(row)
@@ -891,11 +916,11 @@ class GmailSearchService:
             List[bytes]: Matching UIDs.
         """
         try:
-            connection.literal = query.encode("utf-8")
+            connection.literal = query.encode("utf-8")  # type: ignore[assignment]  # imaplib sends bytes literals as given
             status, data = connection.uid("SEARCH", "CHARSET", "UTF-8", "X-GM-RAW")
         except (imaplib.IMAP4.error, OSError):
             status, data = "NO", None
-        if status != "OK" and query.isascii() and not LINE_BREAK.search(query):
+        if status != IMAP_OK and query.isascii() and not LINE_BREAK.search(query):
             # Some servers reject CHARSET on a non-standard search key. An ASCII query can be sent
             # the ordinary quoted way, so it is worth one retry before giving up; not one with a
             # line break, which would end the quoted string's line and start a command of its own.
@@ -904,7 +929,7 @@ class GmailSearchService:
                 status, data = connection.uid("SEARCH", "X-GM-RAW", f'"{escaped}"')
             except (imaplib.IMAP4.error, OSError):
                 return []
-        if status != "OK" or not data or not data[0]:
+        if status != IMAP_OK or not data or not data[0]:
             return []
         return data[0].split()
 
@@ -992,7 +1017,7 @@ class GmailSearchService:
                 )
             except (imaplib.IMAP4.error, OSError):
                 continue
-            if status != "OK" or not data:
+            if status != IMAP_OK or not data:
                 continue
             prefix, headers = b"", b""
             for item in data:
@@ -1046,7 +1071,7 @@ class GmailSearchService:
             if isinstance(item, tuple):
                 prefix, raw = item[0], item[1]
                 break
-        if status != "OK" or not raw:
+        if status != IMAP_OK or not raw:
             return {"error": "Message could not be read."}
         parsed = email.message_from_bytes(raw)
         return {
@@ -1084,16 +1109,16 @@ class GmailSearchService:
         if not accounts:
             return {"error": NOT_CONNECTED_MESSAGE}
         segments = [urllib.parse.unquote(part) for part in path.split("/")[2:]]
-        if path == "/drive/search":
+        if path == DRIVE_SEARCH_PATH:
             terms = arg("q")
             return (
                 GoogleWorkspaceReader.drive_search(accounts, terms, number("limit", 10))
                 if terms
                 else {"error": "q is required"}
             )
-        if path.startswith("/drive/file/") and len(segments) == 2:
+        if path.startswith("/drive/file/") and len(segments) == DRIVE_FILE_SEGMENT_COUNT:
             return GoogleWorkspaceReader.drive_read(accounts, segments[1])
-        if path == "/calendar/events":
+        if path == CALENDAR_EVENTS_PATH:
             now = time.time()
             start = arg("from") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
             end = arg("to") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 7 * 86400))
@@ -1105,14 +1130,14 @@ class GmailSearchService:
                 arg("q"),
                 number("limit", 25),
             )
-        if path.startswith("/calendar/event/") and len(segments) == 3:
+        if path.startswith("/calendar/event/") and len(segments) == CALENDAR_EVENT_SEGMENT_COUNT:
             return GoogleWorkspaceReader.calendar_event(accounts, segments[1], segments[2])
         return {"error": "not found"}
 
     @classmethod
     def message(cls, message_id: str) -> dict[str, Any]:
         """Reads one message body."""
-        if "|" in message_id:
+        if MESSAGE_ID_SEPARATOR in message_id:
             email, real_id = message_id.split("|", 1)
         else:
             email, real_id = None, message_id
@@ -1160,8 +1185,8 @@ class GmailSearchService:
         if email and email in connections:
             conn = connections[email]
             try:
-                status, data = conn.uid("SEARCH", None, "X-GM-MSGID", real_id)
-                if status == "OK" and data[0]:
+                status, data = conn.uid("SEARCH", None, "X-GM-MSGID", real_id)  # type: ignore[arg-type]  # None means no charset
+                if status == IMAP_OK and data[0]:
                     uid = data[0].split()[0].decode("ascii")
                     return cls._fetch_body(conn, uid)
             except Exception as e:
@@ -1170,11 +1195,11 @@ class GmailSearchService:
 
         for conn in connections.values():
             try:
-                status, data = conn.uid("SEARCH", None, "X-GM-MSGID", real_id)
-                if status == "OK" and data[0]:
+                status, data = conn.uid("SEARCH", None, "X-GM-MSGID", real_id)  # type: ignore[arg-type]  # None means no charset
+                if status == IMAP_OK and data[0]:
                     uid = data[0].split()[0].decode("ascii")
                     res = cls._fetch_body(conn, uid)
-                    if res and "error" not in res:
+                    if res and KEY_ERROR not in res:
                         return res
             except Exception:
                 pass
@@ -1234,15 +1259,15 @@ class GmailSearchService:
                 return payload.decode("utf-8", "replace")
 
         for part in message.walk():
-            if part.get_content_maintype() == "multipart":
+            if part.get_content_maintype() == MIME_MULTIPART:
                 continue
             # Attachments are skipped: a search tool answering from a PDF would need a parser this
             # container does not have, and the filename is already in the body's context.
             if (part.get("Content-Disposition") or "").lower().startswith("attachment"):
                 continue
-            if part.get_content_type() == "text/plain" and not plain:
+            if part.get_content_type() == MIME_PLAIN and not plain:
                 plain = decode(part)
-            elif part.get_content_type() == "text/html" and not markup:
+            elif part.get_content_type() == MIME_HTML and not markup:
                 markup = decode(part)
 
         if plain:
@@ -1368,7 +1393,7 @@ class GmailSearchService:
                 name = APP_NAMES[app]
                 full_access = (
                     ""
-                    if app == "gmail"
+                    if app == SERVICE_GMAIL
                     else (
                         f'<p class="note">ⓘ Google will describe {name} access as full access ("see, edit, create and '
                         "delete\"): GNOME's client may ask for nothing narrower. Ragon only reads; it has no way to "
@@ -1414,7 +1439,7 @@ class GmailSearchService:
                 if refused:
                     self._reply(403, {"error": refused})
                     return
-                if parsed.path == "/api/google/oauth/start":
+                if parsed.path == OAUTH_START_PATH:
                     app = (urllib.parse.parse_qs(parsed.query).get("app") or ["gmail"])[0]
                     app = app if app in APP_SCOPES else "gmail"
                     verifier = secrets.token_urlsafe(32)
@@ -1427,7 +1452,7 @@ class GmailSearchService:
                     self._reply(200, {"auth_url": cls.auth_url(app, state, challenge)})
                     return
 
-                if parsed.path == "/disconnect":
+                if parsed.path == DISCONNECT_PATH:
                     content_length = int(self.headers.get("Content-Length", 0))
                     post_data = self.rfile.read(content_length).decode("utf-8")
                     try:
@@ -1442,14 +1467,14 @@ class GmailSearchService:
                         return
                     self._reply(400, {"error": "Invalid request"})
                     return
-                if parsed.path == "/api/google/oauth/complete":
+                if parsed.path == OAUTH_COMPLETE_PATH:
                     content_length = int(self.headers.get("Content-Length", 0))
                     post_data = self.rfile.read(content_length).decode("utf-8")
                     try:
                         data = json.loads(post_data)
                         url = data.get("url", "")
                         q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-                        if "code" in q and "state" in q:
+                        if KEY_CODE in q and KEY_STATE in q:
                             code = q["code"][0]
                             state = q["state"][0]
                             started = cls.take_state(state)
@@ -1481,7 +1506,7 @@ class GmailSearchService:
                                     email_addr = user_data.get("email", "")
 
                                 app = started.get("app", "gmail")
-                                if email_addr and "access_token" in tdata:
+                                if email_addr and KEY_ACCESS_TOKEN in tdata:
                                     refused = cls.accept_grant(app, tdata, email_addr)
                                     if refused:
                                         self._reply(400, {"error": refused})
@@ -1500,7 +1525,7 @@ class GmailSearchService:
                 query = urllib.parse.parse_qs(parsed.query)
 
                 # OAuth redirect
-                if parsed.path == "/" and "code" in query and "state" in query:
+                if parsed.path == ROOT_PATH and KEY_CODE in query and KEY_STATE in query:
                     code = query["code"][0]
                     state = query["state"][0]
                     started = cls.take_state(state)
@@ -1534,7 +1559,7 @@ class GmailSearchService:
                                 email_addr = user_data.get("email", "")
 
                             app = started.get("app", "gmail")
-                            if email_addr and "access_token" in data:
+                            if email_addr and KEY_ACCESS_TOKEN in data:
                                 self._html(
                                     cls.grant_page(app, cls.accept_grant(app, data, email_addr))
                                 )
@@ -1568,7 +1593,7 @@ class GmailSearchService:
                     return
 
                 query = urllib.parse.parse_qs(parsed.query)
-                if parsed.path == "/search":
+                if parsed.path == SEARCH_PATH:
                     terms = (query.get("query") or [""])[0]
                     if not terms:
                         self._reply(400, {"error": "query is required"})

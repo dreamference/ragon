@@ -72,10 +72,6 @@
    "PLR0912": 1,
    "PLR0915": 1,
    "PLR1702": 9,
-   "PLR2004": 36,
-   "PTH107": 1,
-   "PTH118": 4,
-   "PTH123": 3,
    "S110": 2
   },
   "dreamference/chat/image_search_mcp.py": {
@@ -705,5 +701,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1506
+ "total": 1462
 }

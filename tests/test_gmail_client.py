@@ -2,6 +2,7 @@
 
 import io
 import json
+import pathlib
 import urllib.error
 from unittest.mock import patch
 
@@ -299,18 +300,29 @@ def test_token_storage_forget_and_gnome_hints_handle_os_errors(tmp_path, monkeyp
     # Trigger OSError paths on save_token, delete_token, forget, and save_gnome_accounts.
     GmailSearchService.save_token("b@x.com", "tok", 3600, directory)
     real_open = open
+    real_path_open = pathlib.Path.open
 
     def fail_text_write(file, mode="r", *a, **k):
         if mode == "w":
             raise OSError("ro")
         return real_open(file, mode, *a, **k)
 
+    def fail_path_write(self, mode="r", *a, **k):
+        if mode == "w":
+            raise OSError("ro")
+        return real_path_open(self, mode, *a, **k)
+
     monkeypatch.setattr("builtins.open", fail_text_write)
+    monkeypatch.setattr(pathlib.Path, "open", fail_path_write)
     assert GmailSearchService.save_token("b@x.com", "tok2", 3600, directory) is False
     assert GmailSearchService.delete_token("b@x.com", directory) is False
     assert GmailSearchService.save_gnome_accounts(["g@x.com"], directory) is False
 
-    monkeypatch.setattr("os.remove", lambda p: (_ for _ in ()).throw(PermissionError("denied")))
+    monkeypatch.setattr(
+        pathlib.Path,
+        "unlink",
+        lambda self, *a, **k: (_ for _ in ()).throw(PermissionError("denied")),
+    )
     assert GmailSearchService.forget(directory) is False
 
 
