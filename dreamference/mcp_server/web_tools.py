@@ -1,139 +1,47 @@
 """Web access tools for Ragon's MCP server.
 
-A deliberate departure from the project's air-gapped premise, and worth being explicit about: with
-these registered, the agent can reach the public internet. They exist because Codex cannot get web
-access any other way against a local model — its native `web_search` is a hosted Responses tool
-executed by the provider, so a vLLM backend answers `unsupported call: web_search` no matter how it
-is configured. Running the fetch locally through MCP is the only route, and it has the advantage
-that every request goes through code in this repository rather than a third-party service.
+`web_search` and `web_fetch` run the same programs `ragon` runs, `ragon-search` and `ragon-fetch`
+(`ragon-web-rs/`), with `--json`, and hand back what they print. There is one implementation of the
+ranking (duplicates merged, documentation first, no host filling the list), of the page reading
+(headings, code blocks and tables kept, menus dropped, a page drawn by scripts said so), of the
+`source` line to cite, and of the failure wording, so an IDE reaching the web through MCP gets what
+the terminal agent gets. An earlier copy of all that in Python had fallen behind.
 
-Search goes through a self-hosted SearXNG instance rather than any single engine's endpoint. That
-keeps the search side on the same footing as everything else here — a container this machine owns,
-with no account, no API key, and no third party seeing the query. SearXNG aggregates the upstream
-engines itself, so switching or adding engines is its configuration rather than this module's code.
-
-Its JSON API has two prerequisites, both set in ~/.config/searxng/settings.yml, which `ragon-admin
-searxng start` writes (`SearxngSettings`): `search.formats` must include `json` (SearXNG serves HTML
-only by default) and `server.limiter` must be off (the limiter is bot protection, and a local tool
-calling its own instance trips it). If the instance is
-down this tool reports that plainly instead of falling back to a public engine — a silent fallback
-would send queries somewhere the operator did not choose.
-
-Fetching needs no service at all: `requests` plus `bs4`, both already required. The whole capability
-stays inspectable and removable — delete the two entries from MCPToolRegistry and the agent is
-offline again.
-
-Both tools follow the air-gap level (specs/DREAMFERENCE_RAGON_AIRGAPPED.md §7), resolved on every
-call the way `ragon-search` and `ragon-fetch` resolve it for a command with no session: at `on`
-nothing is sent, at `off` nothing changes.
+When a program cannot be found or cannot run, the tool says so and what installs it; it does not
+fall back to a second implementation that would answer differently. Both programs follow the air-gap
+level themselves; the check made here as well only spares the process when nothing may be sent.
 """
 
-import codecs
-import contextlib
-import os
-import re
-from collections.abc import Iterator
+import json
+import shutil
+import subprocess
+from pathlib import Path
 from typing import Any, Final
-from urllib.parse import urlparse
 
-import requests
-
-from dreamference.mcp_server.request_deadline import RequestDeadline
-from dreamference.mcp_server.web_session import WebSession
-
-# Sent on every request. Some sites serve a stub or a challenge page to unknown agents, and the
-# point of a fetch tool is to return what a person would see.
-USER_AGENT: Final[str] = (
-    "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/140.0 Safari/537.36"
+# The most a call may take. The programs bound each request themselves; this bounds the process.
+PROCESS_TIMEOUT_S: Final[float] = 150.0
+# Where `ragon-admin codex build` puts them when PATH does not name them.
+BINARY_DIRS: Final[tuple[str, ...]] = ("~/.local/bin", "~/.local/share/dreamference/ragon/bin")
+MISSING_BINARY_HINT: Final[str] = (
+    "Install it with `ragon-admin codex build` (it builds ragon, ragon-search and ragon-fetch)."
 )
-# Self-hosted SearXNG. Bound to loopback by the container's port mapping, so nothing outside this
-# machine can query it. Overridable for an instance that lives elsewhere.
-SEARXNG_URL: Final[str] = os.getenv("DREAMFERENCE_SEARXNG_URL", "http://127.0.0.1:8888")
-# Printed when the instance cannot be reached, because the fix is a single command and the
-# alternative is an agent that quietly believes the web does not exist.
-# The command, not a `docker run` line: a container started by hand lands on Docker's default
-# bridge, whose DNS is a copy taken at start (dreamference/chat/sidecar_network.py).
-SEARXNG_START_HINT: Final[str] = "ragon-admin searxng start"
-
-# The time ranges SearXNG filters by, and the categories named differently there than in
-# `ragon-search --category` (ragon-web-rs/src/search.rs).
-TIME_RANGES: Final[frozenset[str]] = frozenset({"day", "week", "month", "year"})
-SEARXNG_CATEGORY_NAMES: Final[dict[str, str]] = {"social": "social media"}
-
-# Said when SearXNG answers but no engine does. It must not send the model to repair anything:
-# until recently it named `docker restart dreamference-searxng`, an agent ran it, and nothing
-# changed, because the engines were refusing this machine's address upstream. `ragon-search` says
-# the same with `ragon-fetch` (UNAVAILABLE_HINT in ragon-web-rs/src/search.rs).
-SEARCH_UNAVAILABLE_HINT: Final[str] = (
-    "Web search is unavailable for now: the search engines are refusing this machine's queries, "
-    "which usually passes within hours. Do not try to fix it or restart anything. If you know a "
-    "page that answers the question, read it with web_fetch (for example "
-    "https://en.wikipedia.org/wiki/Lisbon); otherwise tell the user that web search is "
-    "unavailable at the moment."
-)
-REQUEST_TIMEOUT_S: Final[float] = 25.0
-# The most one fetch may take. REQUEST_TIMEOUT_S applies to each read, so without a total a server
-# that sends a byte every few seconds held the call, and the MCP server waiting on it, for as long as
-# it liked. ragon-web-rs's REQUEST_DEADLINE is the same.
-REQUEST_DEADLINE_S: Final[float] = 120.0
-# Hard ceiling on what a single fetch will pull down, before any text extraction. A model cannot
-# use more than this anyway, and without it one link to a large binary stalls the whole session.
-MAX_DOWNLOAD_BYTES: Final[int] = 5 * 1024 * 1024
-# Default cap on the text handed back. Callers can ask for more, but not for the whole 5 MB.
-DEFAULT_MAX_CHARS: Final[int] = 20_000
-# How a Content-Type header names its charset.
-CHARSET_PARAM: Final[str] = "charset="
-MAX_CHARS_CEILING: Final[int] = 100_000
-# Everything that carries no prose. Dropped before text extraction so the result reads like the
-# page rather than like its source.
 # Returned, with nothing sent, when the configured air-gap level is `on`. The web commands' text
 # names `/airgapped`, a slash command an IDE's MCP client does not have, so this names the setting.
 AIRGAPPED_ON_MESSAGE: Final[str] = (
     "Web access is off on this machine (ragon_airgapped = on). Only the user can change that, "
     "with `ragon airgapped default off` or DREAMFERENCE_RAGON_AIRGAPPED."
 )
-_NON_CONTENT_TAGS: Final[tuple] = (
-    "script",
-    "style",
-    "noscript",
-    "svg",
-    "canvas",
-    "template",
-    "iframe",
-    "form",
-)
-
-
-@contextlib.contextmanager
-def _within_deadline() -> Iterator[WebSession]:
-    """A session for one call, whose requests all end at REQUEST_DEADLINE_S (RequestDeadline).
-
-    Yields:
-        WebSession: The session, closed when the block ends.
-
-    Raises:
-        requests.Timeout: The deadline passed before the block ended; whatever the shut-down
-            socket made the block raise is its cause.
-    """
-    deadline = RequestDeadline(REQUEST_DEADLINE_S)
-    expired = requests.Timeout(f"the page took longer than {REQUEST_DEADLINE_S:.0f} s to arrive")
-    try:
-        with deadline, WebSession() as session:
-            yield session
-    except Exception as error:
-        if deadline.expired.is_set():
-            raise expired from error
-        raise
-    if deadline.expired.is_set():
-        raise expired
+AIRGAPPED_ON: Final[str] = "on"
+AUTO_LANGUAGE: Final[str] = "auto"
+FINAL_URL: Final[str] = "final_url"
+DEFAULT_MAX_CHARS: Final[int] = 20_000
+MAX_CHARS_CEILING: Final[int] = 100_000
 
 
 class WebTools:
-    """Fetch and search primitives exposed to the agent over MCP.
+    """Fetch and search primitives exposed to the agent over MCP, by way of the web programs.
 
-    A classmethod namespace, like the other stateless helpers in this codebase: there is nothing
-    worth keeping between calls, and a shared session would only hide which request went where.
+    A classmethod namespace, like the other stateless helpers in this codebase.
     """
 
     @classmethod
@@ -152,155 +60,84 @@ class WebTools:
         return DreamferenceConfig.resolve_airgapped_level()
 
     @classmethod
-    def _require_http_url(cls, url: str) -> str:
-        """Validates that a URL is an ordinary web address.
+    def _binary(cls, name: str) -> str | None:
+        """Finds one of the web programs.
 
         Args:
-            url (str): Candidate URL.
+            name (str): `ragon-search` or `ragon-fetch`.
 
         Returns:
-            str: The URL, unchanged.
-
-        Raises:
-            ValueError: If the scheme is not http or https, which would let a `file://` or
-                `gopher://` argument turn a web tool into a local-file reader.
+            str | None: Its path, or None when it is installed nowhere known.
         """
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            raise ValueError(
-                f"Only http and https URLs are supported, got {parsed.scheme or 'no'} scheme"
-            )
-        if not parsed.netloc:
-            raise ValueError("URL has no host")
-        return url
+        found = shutil.which(name)
+        if found:
+            return found
+        for directory in BINARY_DIRS:
+            candidate = Path(directory).expanduser() / name
+            if candidate.is_file():
+                return str(candidate)
+        return None
 
     @classmethod
-    def _download(cls, url: str) -> requests.Response:
-        """Retrieves a URL with a size ceiling and a timeout.
-
-        Streamed rather than read whole, so the ceiling is enforced while the body arrives instead
-        of after it has already been buffered. The whole of it, redirects included, ends at
-        REQUEST_DEADLINE_S.
+    def _run(cls, name: str, arguments: list[str], echo: dict[str, str]) -> dict[str, Any]:
+        """Runs a web program with `--json` and returns what it reported.
 
         Args:
-            url (str): URL to retrieve.
+            name (str): `ragon-search` or `ragon-fetch`.
+            arguments (list[str]): Its arguments after `--json`.
+            echo (dict[str, str]): Fields every failure answer carries (the query or the URL).
 
         Returns:
-            requests.Response: The response, with `_body` holding at most MAX_DOWNLOAD_BYTES and
-            `_cut` telling whether the body was cut there.
+            dict[str, Any]: The program's JSON object, or {**echo, 'error': ...} when it is
+                missing, timed out, or printed nothing readable. A program's own error object
+                (exit 1) is returned as it printed it.
         """
-        with _within_deadline() as session:
-            response = session.get(
-                url,
-                headers={"User-Agent": USER_AGENT, "Accept-Language": "en"},
-                timeout=REQUEST_TIMEOUT_S,
-                stream=True,
+        binary = cls._binary(name)
+        if binary is None:
+            return {**echo, "error": f"{name} is not installed. {MISSING_BINARY_HINT}"}
+        try:
+            done = subprocess.run(
+                [binary, "--json", *arguments],
+                capture_output=True,
+                text=True,
+                timeout=PROCESS_TIMEOUT_S,
+                stdin=subprocess.DEVNULL,
+                check=False,
             )
-            response.raise_for_status()
-            chunks: list[bytes] = []
-            total = 0
-            response._cut = False  # type: ignore[attr-defined]
-            for chunk in response.iter_content(8192):
-                chunks.append(chunk)
-                total += len(chunk)
-                if total >= MAX_DOWNLOAD_BYTES:
-                    response._cut = True  # type: ignore[attr-defined]
-                    break
-        response._body = b"".join(chunks)  # type: ignore[attr-defined]
-        return response
-
-    @classmethod
-    def _html_to_text(cls, html: str) -> dict[str, str]:
-        """Reduces an HTML document to its title and readable text.
-
-        Args:
-            html (str): Raw HTML.
-
-        Returns:
-            Dict[str, str]: {'title', 'text'}.
-        """
-        from bs4 import BeautifulSoup
-
-        # html.parser rather than lxml: it is in the standard library, so this tool does not add a
-        # dependency to a project that has to install cleanly offline.
-        soup = BeautifulSoup(html, "html.parser")
-        for tag in soup(_NON_CONTENT_TAGS):
-            tag.decompose()
-
-        title = soup.title.get_text(strip=True) if soup.title else ""
-        text = soup.get_text("\n")
-        # Collapse the blank-line drifts that decomposing tags leaves behind, without joining
-        # paragraphs that were genuinely separate.
-        text = re.sub(r"[ \t]+", " ", text)
-        text = re.sub(r"\n\s*\n\s*", "\n\n", text).strip()
-        return {"title": title, "text": text}
+        except subprocess.TimeoutExpired:
+            return {**echo, "error": f"{name} took longer than {PROCESS_TIMEOUT_S:.0f} s"}
+        except OSError as error:
+            return {**echo, "error": f"{name} could not run: {error}. {MISSING_BINARY_HINT}"}
+        try:
+            reported = json.loads(done.stdout)
+        except ValueError:
+            reported = None
+        if isinstance(reported, dict):
+            return reported
+        detail = (done.stderr or done.stdout).strip()[:300]
+        return {**echo, "error": f"{name} failed (exit {done.returncode}): {detail}"}
 
     @classmethod
     def fetch(cls, url: str, max_chars: int = DEFAULT_MAX_CHARS) -> dict[str, Any]:
-        """Retrieves a web page and returns its readable text.
+        """Retrieves a web page and returns its readable text, as `ragon-fetch --json` does.
 
         Args:
             url (str): Absolute http(s) URL.
             max_chars (int): Maximum characters of text to return; clamped to MAX_CHARS_CEILING.
 
         Returns:
-            Dict[str, Any]: {'url', 'final_url', 'status', 'title', 'text', 'truncated'} on
-                success, or {'error': ...} on failure. Errors are returned rather than raised so
-                the agent sees what went wrong and can try a different source. At air-gap level
-                `on` the error is AIRGAPPED_ON_MESSAGE and no request is made.
+            dict[str, Any]: What `ragon-fetch --json` prints (url, final_url, source, status,
+                content_type, title, text, truncated), or {'error': ...} on failure. At air-gap
+                level `on` the error is AIRGAPPED_ON_MESSAGE and nothing is run.
         """
-        if cls.airgapped_level() == "on":
+        if cls.airgapped_level() == AIRGAPPED_ON:
             return {"url": url, "airgapped": "on", "error": AIRGAPPED_ON_MESSAGE}
-        try:
-            cls._require_http_url(url)
-            response = cls._download(url)
-        except ValueError as e:
-            return {"url": url, "error": str(e)}
-        except requests.RequestException as e:
-            return {"url": url, "error": f"request failed: {e}"}
-
         limit = max(1, min(int(max_chars), MAX_CHARS_CEILING))
-        content_type = response.headers.get("Content-Type", "")
-        raw: bytes = getattr(response, "_body", b"")
-        encoding = response.encoding or "utf-8"
-        try:
-            codecs.lookup(encoding)
-        except LookupError:
-            # The page's server names the charset: an unknown one used to raise out of this tool.
-            encoding = "utf-8"
-
-        is_html = "html" in content_type.lower()
-        if CHARSET_PARAM in content_type.lower():
-            decoded = raw.decode(encoding, errors="replace")
-        else:
-            # requests names ISO-8859-1 for any text/* reply without a charset, which turned every
-            # such UTF-8 page into mojibake. Bytes that are UTF-8 (a sequence cut by the download
-            # ceiling included) are read as UTF-8; others by their <meta> charset or their look.
-            try:
-                decoded = codecs.getincrementaldecoder("utf-8")().decode(raw, final=False)
-            except UnicodeDecodeError:
-                from bs4.dammit import UnicodeDammit
-
-                decoded = UnicodeDammit(raw, is_html=is_html).unicode_markup or ""
-        if is_html:
-            extracted = cls._html_to_text(decoded)
-            title, text = extracted["title"], extracted["text"]
-        else:
-            # Plain text, JSON, source files: hand them back as-is rather than running a markup
-            # parser over something that is not markup.
-            title = ""
-            text = decoded
-
-        return {
-            "url": url,
-            "final_url": response.url,
-            "status": response.status_code,
-            "content_type": content_type,
-            "title": title,
-            "text": text[:limit],
-            # A page cut at the download ceiling is truncated however short its text is.
-            "truncated": len(text) > limit or getattr(response, "_cut", False),
-        }
+        page = cls._run("ragon-fetch", ["--max-chars", str(limit), "--", url], {"url": url})
+        if FINAL_URL in page:
+            # The line to cite, the same address `ragon-fetch` prints as `Source:`.
+            page.setdefault("source", page[FINAL_URL])
+        return page
 
     @classmethod
     def search(
@@ -311,94 +148,27 @@ class WebTools:
         language: str = "auto",
         time_range: str = "",
     ) -> dict[str, Any]:
-        """Searches the web through the configured SearXNG instance.
-
-        SearXNG queries the upstream engines on this machine's behalf and returns their merged,
-        de-duplicated results as JSON, so no query leaves the host addressed to a search company
-        and no API key is involved. Which engines it consults is SearXNG's configuration, not this
-        module's — adding or removing one needs no change here.
+        """Searches the web as `ragon-search --json` does.
 
         Args:
             query (str): Search terms.
             max_results (int): Maximum results to return.
-            categories (str): SearXNG category, e.g. 'general', 'it', 'news', 'science'
-                ('social' is sent as SearXNG's 'social media').
+            categories (str): A category, e.g. 'general', 'it', 'news', 'science', 'social'.
             language (str): Result language code, or 'auto' to detect it from the query.
             time_range (str): 'day', 'week', 'month' or 'year' for recent results only; '' for any.
 
         Returns:
-            Dict[str, Any]: {'query', 'result_count', 'results': [{'title', 'url', 'snippet',
-                'engine'}]}, or {'error': ...} naming the endpoint and how to start it. At
-                air-gap level `on` the error is AIRGAPPED_ON_MESSAGE and nothing is sent.
+            dict[str, Any]: What `ragon-search --json` prints (query, result_count, answers,
+                results), or {'error': ...} naming the endpoint and how to start it. At air-gap
+                level `on` the error is AIRGAPPED_ON_MESSAGE and nothing is run.
         """
-        level = cls.airgapped_level()
-        if level == "on":
+        if cls.airgapped_level() == AIRGAPPED_ON:
             return {"query": query, "airgapped": "on", "error": AIRGAPPED_ON_MESSAGE}
         if not query.strip():
             return {"query": query, "error": "empty query"}
-
-        endpoint = f"{SEARXNG_URL.rstrip('/')}/search"
-        try:
-            with _within_deadline() as session:
-                response = session.get(
-                    endpoint,
-                    params={
-                        "q": query,
-                        "format": "json",
-                        "categories": SEARXNG_CATEGORY_NAMES.get(categories, categories),
-                        "language": language,
-                        **({"time_range": time_range} if time_range in TIME_RANGES else {}),
-                    },
-                    headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-                    timeout=REQUEST_TIMEOUT_S,
-                )
-                response.raise_for_status()
-                payload = response.json()
-        except requests.RequestException as e:
-            return {
-                "query": query,
-                "error": f"SearXNG at {SEARXNG_URL} is unreachable: {e}",
-                "hint": f"Start it with: {SEARXNG_START_HINT}",
-            }
-        except ValueError:
-            # HTML came back instead of JSON, which means `json` is missing from search.formats.
-            return {
-                "query": query,
-                "error": f"SearXNG at {SEARXNG_URL} did not return JSON",
-                "hint": (
-                    "SearXNG's settings do not enable its JSON API (no json in search.formats): "
-                    f"{SEARXNG_START_HINT} writes ones that do"
-                ),
-            }
-
-        limit = max(1, int(max_results))
-        results: list[dict[str, str]] = [
-            {
-                "title": item.get("title", ""),
-                "url": item.get("url", ""),
-                "snippet": item.get("content", ""),
-                "engine": item.get("engine", ""),
-            }
-            for item in payload.get("results", [])[:limit]
-        ]
-
-        answer = payload.get("answers") or []
-        failed = payload.get("unresponsive_engines") or []
-        if not results and not answer and failed:
-            # Every engine failed, which is not the same as the web having nothing to say. This
-            # used to come back as zero results: a SearXNG container whose DNS had gone stale
-            # answered every query that way, and the agent concluded the topic had no coverage.
-            reasons = "; ".join(f"{name}: {reason}" for name, reason in failed)
-            return {
-                "query": query,
-                "error": f"SearXNG could not reach any search engine: {reasons}",
-                "hint": SEARCH_UNAVAILABLE_HINT,
-            }
-        return {
-            "query": query,
-            "result_count": len(results),
-            # SearXNG sometimes has a direct answer (calculators, definitions, unit conversions).
-            # Surfacing it saves a fetch when it is the whole answer.
-            "answers": answer[:3],
-            "results": results,
-        }
+        arguments = ["-n", str(max(1, int(max_results))), "-c", categories or "general"]
+        if language and language != AUTO_LANGUAGE:
+            arguments += ["-l", language]
+        if time_range:
+            arguments += ["-t", time_range]
+        return cls._run("ragon-search", [*arguments, "--", query], {"query": query})

@@ -87,39 +87,6 @@ def test_stdio_loop_follows_json_rpc(tmp_path):
     assert replies[4]["error"]["code"] == -32700
 
 
-def test_web_search_reports_engines_that_all_failed_rather_than_no_results():
-    # A SearXNG container with stale DNS answered every query with zero results and a list of
-    # unresponsive engines; the tool passed that on as "0 results".
-    from unittest.mock import MagicMock, patch
-
-    from dreamference.mcp_server.web_tools import WebTools
-
-    response = MagicMock()
-    response.json.return_value = {
-        "results": [],
-        "answers": [],
-        "unresponsive_engines": [
-            ["duckduckgo", "HTTP connection error"],
-            ["brave", "HTTP connection error"],
-        ],
-    }
-    with patch("dreamference.mcp_server.web_session.WebSession.get", return_value=response):
-        outcome = WebTools.search("python asyncio")
-    assert "duckduckgo: HTTP connection error" in outcome["error"]
-    # The hint sends the model to a known page and to the user, never to repair the container:
-    # the engines refuse upstream, and a restart changes nothing.
-    assert "web_fetch" in outcome["hint"] and "tell the user" in outcome["hint"]
-    assert "docker" not in outcome["hint"] and "restart the" not in outcome["hint"]
-
-    response.json.return_value = {
-        "results": [{"title": "t", "url": "u", "content": "c", "engine": "brave"}],
-        "unresponsive_engines": [["duckduckgo", "timeout"]],
-    }
-    with patch("dreamference.mcp_server.web_session.WebSession.get", return_value=response):
-        outcome = WebTools.search("python asyncio")
-    assert outcome["result_count"] == 1 and "error" not in outcome
-
-
 def _fake_ragon_code(tmp_path, monkeypatch, script: str):
     """Installs a stand-in `ragon-code` where CodeIndexSearch looks for the real one."""
     from dreamference.mcp_server import code_index_search
@@ -217,20 +184,19 @@ def test_code_search_falls_back_to_the_context_engine(tmp_path, monkeypatch):
     assert engine.index_workspace.call_count == 4
 
 
-def test_web_search_sends_the_category_time_range_and_detected_language():
-    from unittest.mock import MagicMock, patch
+def test_web_search_hands_the_category_time_range_and_language_to_the_program():
+    # The wording of a failed search (every engine refusing, an unreachable instance) is the
+    # program's own, pinned by ragon-web-rs; this tool passes it on (tests/test_web_tools.py).
+    from unittest.mock import patch
 
     from dreamference.mcp_server.web_tools import WebTools
 
-    response = MagicMock()
-    response.json.return_value = {"results": [], "answers": [], "unresponsive_engines": []}
-    with patch("dreamference.mcp_server.web_session.WebSession.get", return_value=response) as get:
+    with patch.object(WebTools, "_run", return_value={}) as run:
         WebTools.search("climate summit", categories="social", time_range="week")
-        WebTools.search("climate summit", time_range="fortnight")
-    first, second = (call.kwargs["params"] for call in get.call_args_list)
-    assert first["categories"] == "social media" and first["time_range"] == "week"
-    assert first["language"] == "auto"
-    assert "time_range" not in second
+    name, arguments, echo = run.call_args.args
+    assert name == "ragon-search" and echo == {"query": "climate summit"}
+    assert arguments[arguments.index("-c") + 1] == "social"
+    assert arguments[arguments.index("-t") + 1] == "week" and "-l" not in arguments
 
 
 def _stdio_replies(tmp_path, stdin: bytes) -> list:

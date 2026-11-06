@@ -291,34 +291,30 @@ def test_a_leftover_duckduckgo_level_counts_as_on(monkeypatch):
 
 
 def test_at_off_the_mcp_search_asks_the_category_as_before(monkeypatch):
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     from dreamference.mcp_server.web_tools import WebTools
 
     monkeypatch.setenv("DREAMFERENCE_RAGON_AIRGAPPED", "off")
-    response = MagicMock()
-    response.json.return_value = {"results": []}
-    with patch("dreamference.mcp_server.web_session.WebSession.get", return_value=response) as get:
+    with patch.object(WebTools, "_run", return_value={"results": []}) as run:
         WebTools.search("python asyncio")
-    params = get.call_args.kwargs["params"]
-    assert params["categories"] == "general" and "engines" not in params
+    argv = run.call_args.args[1]
+    assert argv[argv.index("-c") + 1] == "general" and "-t" not in argv
 
 
 def test_the_mcp_web_tools_resolve_the_level_on_every_call(monkeypatch):
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     from dreamference.mcp_server.web_tools import AIRGAPPED_ON_MESSAGE, WebTools
 
     # The server is long-lived: a level set after it started applies to its next call (§7).
     monkeypatch.setenv("DREAMFERENCE_RAGON_AIRGAPPED", "off")
-    response = MagicMock()
-    response.json.return_value = {"results": []}
-    with patch("dreamference.mcp_server.web_session.WebSession.get", return_value=response) as get:
+    with patch.object(WebTools, "_run", return_value={"results": []}) as run:
         WebTools.search("python asyncio")
         monkeypatch.setenv("DREAMFERENCE_RAGON_AIRGAPPED", "on")
         found = WebTools.search("python asyncio")
         page = WebTools.fetch("https://example.com")
-    assert get.call_count == 1
+    assert run.call_count == 1
     assert found["error"] == AIRGAPPED_ON_MESSAGE and page["error"] == AIRGAPPED_ON_MESSAGE
 
 

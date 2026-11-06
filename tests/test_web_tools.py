@@ -1,299 +1,115 @@
-"""Tests for the MCP server's web tools: every request is a stand-in, nothing reaches the network."""
+"""Tests for the MCP server's web tools: they run `ragon-search` and `ragon-fetch`, here stand-ins."""
 
-from unittest.mock import MagicMock
+import json
+import re
+import stat
+from pathlib import Path
 
 import pytest
-import requests
 
 from dreamference.mcp_server import web_tools
-from dreamference.mcp_server.web_tools import MAX_DOWNLOAD_BYTES, WebTools
+from dreamference.mcp_server.web_tools import WebTools
 
-
-class Page:
-    """Stands in for a streamed `requests.Response`."""
-
-    def __init__(
-        self, body: bytes, content_type: str = "text/html", encoding: str | None = "utf-8"
-    ) -> None:
-        self.body = body
-        self.headers = {"Content-Type": content_type}
-        self.encoding = encoding
-        self.url = "https://example.org/final"
-        self.status_code = 200
-        self.read = 0
-
-    def raise_for_status(self) -> None:
-        """Answers like a 200."""
-
-    def iter_content(self, size: int):
-        """Yields the body in chunks of `size`, counting what was read."""
-        for start in range(0, len(self.body), size):
-            self.read += size
-            yield self.body[start : start + size]
+REPO = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture
-def online(monkeypatch):
-    """The air gap is off and every request's `get` is a mock."""
+def bindir(tmp_path, monkeypatch):
+    """A directory that is the whole PATH, and a way to put a stand-in program in it."""
+    monkeypatch.setattr(web_tools, "BINARY_DIRS", ())
+    monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(WebTools, "airgapped_level", classmethod(lambda cls: "off"))
-    get = MagicMock()
-    monkeypatch.setattr(web_tools.WebSession, "get", get)
-    return get
+
+    def install(name: str, body: str) -> Path:
+        path = tmp_path / name
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return path
+
+    install.dir = tmp_path
+    return install
 
 
-def test_fetch_at_air_gap_on_makes_no_request(monkeypatch, online):
-    monkeypatch.setattr(WebTools, "airgapped_level", classmethod(lambda cls: "on"))
+def argv_echo(name: str, out: Path) -> str:
+    """A script body that records its arguments, one per line, and prints a fixed object."""
+    return f'printf "%s\\n" "$@" > {out}\n'
+
+
+def test_the_tools_pass_on_what_the_programs_print_unchanged(bindir):
+    reply = {"query": "q", "result_count": 1, "answers": [], "results": [{"url": "https://a.dev"}]}
+    bindir("ragon-search", f"echo '{json.dumps(reply)}'\n")
+    assert WebTools.search("q") == reply
+
+
+def test_search_sends_its_options_as_the_program_takes_them(bindir):
+    out = bindir.dir / "argv"
+    bindir("ragon-search", argv_echo("s", out) + 'echo "{}"\n')
+    WebTools.search("-rf docs", 3, "social", "pt", "week")
+    assert out.read_text().split("\n")[:-1] == [
+        "--json", "-n", "3", "-c", "social", "-l", "pt", "-t", "week", "--", "-rf docs",
+    ]  # fmt: skip
+    WebTools.search("x")
+    assert "-l" not in out.read_text() and "-t" not in out.read_text()
+
+
+def test_fetch_clamps_the_limit_and_adds_the_source_to_cite(bindir):
+    out = bindir.dir / "argv"
+    page = {"url": "u", "final_url": "https://example.org/final", "status": 200, "text": "t"}
+    bindir("ragon-fetch", argv_echo("f", out) + f"echo '{json.dumps(page)}'\n")
+    outcome = WebTools.fetch("u", 10**9)
+    assert outcome == {**page, "source": "https://example.org/final"}
+    assert out.read_text().split("\n")[:5] == ["--json", "--max-chars", "100000", "--", "u"]
+
+
+def test_a_program_that_reports_an_error_has_its_wording_returned_as_it_is(bindir):
+    wording = "SearXNG could not reach any search engine: brave: blocked"
+    bindir("ragon-search", f"echo '{json.dumps({'error': wording})}'\nexit 1\n")
+    assert WebTools.search("q") == {"error": wording}
+
+
+def test_a_missing_program_is_said_with_what_installs_it(bindir):
+    for outcome in (WebTools.search("q"), WebTools.fetch("https://example.org")):
+        assert "is not installed" in outcome["error"] and "codex build" in outcome["error"]
+
+
+def test_a_program_that_prints_nothing_readable_is_said_with_its_exit(bindir):
+    bindir("ragon-fetch", "echo oops >&2\nexit 3\n")
     outcome = WebTools.fetch("https://example.org")
-    assert outcome["airgapped"] == "on" and outcome["error"] == web_tools.AIRGAPPED_ON_MESSAGE
-    online.assert_not_called()
+    assert outcome["url"] == "https://example.org"
+    assert "exit 3" in outcome["error"] and "oops" in outcome["error"]
 
 
-@pytest.mark.parametrize(
-    "url", ["file:///etc/passwd", "gopher://example.org/", "example.org", "http://"]
-)
-def test_fetch_refuses_anything_but_an_http_url_with_a_host_before_any_request(online, url):
-    assert "error" in WebTools.fetch(url)
-    online.assert_not_called()
+def test_a_program_that_takes_too_long_is_stopped_and_said(bindir, monkeypatch):
+    monkeypatch.setattr(web_tools, "PROCESS_TIMEOUT_S", 0.3)
+    bindir("ragon-search", "while :; do :; done\n")
+    assert "took longer" in WebTools.search("q")["error"]
 
 
-def test_fetch_returns_a_failed_request_as_an_error(online):
-    online.side_effect = requests.ConnectionError("refused")
-    assert WebTools.fetch("https://example.org")["error"] == "request failed: refused"
-
-
-def test_fetch_stops_reading_a_body_at_the_download_ceiling(online):
-    page = Page(b"a" * (MAX_DOWNLOAD_BYTES * 2), content_type="text/plain")
-    online.return_value = page
-    outcome = WebTools.fetch("https://example.org", max_chars=10)
-    assert page.read == MAX_DOWNLOAD_BYTES
-    assert outcome["text"] == "a" * 10 and outcome["truncated"] is True
-
-
-def test_fetch_reports_a_page_cut_at_the_download_ceiling_as_truncated(online):
-    # The text left after the markup is short, but the page went on past the ceiling: only the
-    # length of the text was compared with `max_chars`, so the cut page read as whole.
-    online.return_value = Page(
-        b"<p>hi</p><script>" + b"x" * (MAX_DOWNLOAD_BYTES * 2) + b"</script>"
-    )
-    outcome = WebTools.fetch("https://example.org")
-    assert outcome["text"] == "hi" and outcome["truncated"] is True
-
-
-def test_fetch_reduces_html_to_its_title_and_readable_text(online):
-    online.return_value = Page(
-        b"<html><head><title> The title </title><style>p {}</style></head>"
-        b"<body><script>steal()</script><p>One   two</p>\n\n\n<p>Three</p></body></html>"
-    )
-    outcome = WebTools.fetch("https://example.org")
-    assert outcome["title"] == "The title"
-    assert "steal" not in outcome["text"] and "p {}" not in outcome["text"]
-    assert outcome["text"].endswith("One two\n\nThree")
-    assert outcome["final_url"] == "https://example.org/final" and outcome["truncated"] is False
-
-
-def test_fetch_hands_back_text_that_is_not_markup_as_it_is(online):
-    online.return_value = Page(b"<not> markup", content_type="application/json", encoding=None)
-    assert WebTools.fetch("https://example.org")["text"] == "<not> markup"
-
-
-@pytest.mark.parametrize("content_type", ["text/html", "text/plain"])
-def test_fetch_reads_a_page_that_names_an_unknown_charset_as_utf8(online, content_type):
-    # The charset comes from the page's server: an unknown one used to raise LookupError out of a
-    # tool whose errors are returned, not raised.
-    online.return_value = Page(
-        "café".encode(), content_type=content_type, encoding="x-no-such-charset"
-    )
-    assert WebTools.fetch("https://example.org")["text"] == "café"
-
-
-@pytest.mark.parametrize(
-    "body, content_type",
-    [
-        ("<p>café</p>".encode(), "text/html"),
-        ("<meta charset='iso-8859-1'><p>café</p>".encode("latin-1"), "text/html"),
-        ("café".encode(), "text/plain"),
-    ],
-)
-def test_fetch_decodes_a_page_whose_server_names_no_charset_by_its_content(
-    online, body, content_type
-):
-    # requests answers ISO-8859-1 for any text/* reply without a charset (`response.encoding`),
-    # which turned every such UTF-8 page into mojibake ("cafÃ©").
-    online.return_value = Page(body, content_type=content_type, encoding="ISO-8859-1")
-    assert WebTools.fetch("https://example.org")["text"] == "café"
-
-
-def test_search_at_air_gap_on_or_with_an_empty_query_makes_no_request(monkeypatch, online):
+def test_at_air_gap_on_or_with_an_empty_query_nothing_is_run(bindir, monkeypatch):
+    marker = bindir.dir / "ran"
+    for name in ("ragon-search", "ragon-fetch"):
+        bindir(name, f"touch {marker}\necho '{{}}'\n")
     assert WebTools.search("   ")["error"] == "empty query"
     monkeypatch.setattr(WebTools, "airgapped_level", classmethod(lambda cls: "on"))
-    assert WebTools.search("python")["airgapped"] == "on"
-    online.assert_not_called()
+    for outcome in (WebTools.fetch("https://example.org"), WebTools.search("q")):
+        assert outcome["airgapped"] == "on" and outcome["error"] == web_tools.AIRGAPPED_ON_MESSAGE
+    assert not marker.exists()
 
 
-def test_search_names_an_unreachable_searxng_and_how_to_start_it(online):
-    online.side_effect = requests.ConnectionError("refused")
-    outcome = WebTools.search("python")
-    assert "is unreachable: refused" in outcome["error"]
-    assert web_tools.SEARXNG_START_HINT in outcome["hint"]
+def test_a_program_beside_ragon_is_found_when_path_does_not_name_it(bindir, monkeypatch):
+    monkeypatch.setenv("PATH", str(bindir.dir / "nowhere"))
+    monkeypatch.setattr(web_tools, "BINARY_DIRS", (str(bindir.dir),))
+    bindir("ragon-search", "echo '{\"result_count\": 0}'\n")
+    assert WebTools.search("q") == {"result_count": 0}
 
 
-def test_search_names_a_searxng_that_answers_without_json(online):
-    online.return_value.json.side_effect = ValueError("not json")
-    outcome = WebTools.search("python")
-    assert (
-        "did not return JSON" in outcome["error"]
-        and web_tools.SEARXNG_START_HINT in outcome["hint"]
-    )
-
-
-def test_search_keeps_at_most_max_results(online):
-    online.return_value.json.return_value = {
-        "results": [{"title": str(n), "url": f"u{n}"} for n in range(5)]
-    }
-    outcome = WebTools.search("python", max_results=2)
-    assert [r["title"] for r in outcome["results"]] == ["0", "1"]
-    assert outcome["results"][0] == {"title": "0", "url": "u0", "snippet": "", "engine": ""}
-
-
-def drip(head: bytes) -> int:
-    """Starts a stand-in on loopback that sends `head`, then a byte every 50 ms for at most 30 s.
-
-    Each read returns well within REQUEST_TIMEOUT_S, so only the total deadline ends a request.
-
-    Returns:
-        int: The stand-in's port.
-    """
-    import socket
-    import threading
-    import time
-
-    listener = socket.create_server(("127.0.0.1", 0))
-
-    def serve():
-        connection, _ = listener.accept()
-        with connection, listener:
-            connection.recv(65536)
-            try:
-                connection.sendall(head)
-                for _ in range(600):
-                    time.sleep(0.05)
-                    connection.sendall(b"a")
-            except OSError:
-                pass
-
-    threading.Thread(target=serve, daemon=True).start()
-    return listener.getsockname()[1]
-
-
-@pytest.mark.parametrize(
-    "scheme, head",
-    [
-        (
-            "http",
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5000000\r\n\r\n",
-        ),
-        ("http", b"HTTP/1.1 200 OK\r\nX-Slow: "),
-        # A TLS handshake record of 16 KiB, its body still to come.
-        ("https", b"\x16\x03\x03\x40\x00"),
-    ],
-    ids=["body", "headers", "tls-handshake"],
-)
-def test_a_page_sent_a_byte_at_a_time_ends_at_the_deadline(monkeypatch, loopback, scheme, head):
-    import time
-
-    port = drip(head)
-    monkeypatch.setattr(web_tools, "REQUEST_DEADLINE_S", 2.0)
-    started = time.monotonic()
-    with pytest.raises(requests.Timeout):
-        WebTools._download(f"{scheme}://127.0.0.1:{port}/")
-    assert time.monotonic() - started < 10
-
-
-@pytest.fixture
-def loopback(monkeypatch):
-    """The air gap is off and no proxy stands between a fetch and a stand-in on loopback."""
-    monkeypatch.setattr(WebTools, "airgapped_level", classmethod(lambda cls: "off"))
-    for name in ("http", "https", "all"):
-        monkeypatch.delenv(f"{name}_proxy", raising=False)
-        monkeypatch.delenv(f"{name.upper()}_PROXY", raising=False)
-
-
-def test_fetch_sends_no_netrc_credentials_to_a_page_or_where_it_redirects(loopback):
-    # requests adds the user's ~/.netrc login for the request's host and again for every redirect
-    # target, so a page could send the agent to a host the user keeps a password for and have it
-    # read what that login sees. ragon-fetch never reads .netrc.
-    import http.server
-    import os
-    import threading
-    from pathlib import Path
-
-    netrc = Path(os.environ["HOME"]) / ".netrc"
-    netrc.write_text("machine localhost login user password secret\n")
-    netrc.chmod(0o600)
-    seen: list = []
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            seen.append((self.path, self.headers.get("Authorization")))
-            if self.path == "/start":
-                self.send_response(302)
-                self.send_header("Location", f"http://localhost:{port}/final")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", "2")
-            self.end_headers()
-            self.wfile.write(b"ok")
-
-        def log_message(self, *args):
-            pass
-
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    port = server.server_address[1]
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        assert WebTools.fetch(f"http://127.0.0.1:{port}/start")["text"] == "ok"
-        assert WebTools.fetch(f"http://localhost:{port}/final")["text"] == "ok"
-        # A login written in the URL is the caller's own, and still goes.
-        assert WebTools.fetch(f"http://me:pw@localhost:{port}/final")["text"] == "ok"
-    finally:
-        server.shutdown()
-        server.server_close()
-    assert seen == [
-        ("/start", None),
-        ("/final", None),
-        ("/final", None),
-        ("/final", "Basic bWU6cHc="),
-    ]
-
-
-def test_a_page_sent_a_byte_at_a_time_through_a_proxy_ends_at_the_deadline(monkeypatch, loopback):
-    # Through a proxy requests opens its connections from another pool manager; the stand-in is
-    # the proxy, so the page's own host is never looked up.
-    import time
-
-    port = drip(b"HTTP/1.1 200 OK\r\nX-Slow: ")
-    for name in ("no_proxy", "NO_PROXY"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{port}")
-    monkeypatch.setattr(web_tools, "REQUEST_DEADLINE_S", 2.0)
-    started = time.monotonic()
-    with pytest.raises(requests.Timeout):
-        WebTools._download("http://page.invalid/")
-    assert time.monotonic() - started < 10
-
-
-def test_search_ends_at_the_deadline_when_searxng_answers_a_byte_at_a_time(monkeypatch, loopback):
-    import time
-
-    port = drip(
-        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 9000\r\n\r\n"
-    )
-    monkeypatch.setattr(web_tools, "SEARXNG_URL", f"http://127.0.0.1:{port}")
-    monkeypatch.setattr(web_tools, "REQUEST_DEADLINE_S", 2.0)
-    started = time.monotonic()
-    outcome = WebTools.search("python")
-    assert "took longer than 2 s" in outcome["error"]
-    assert time.monotonic() - started < 10
+def test_the_fields_the_tools_hand_back_are_the_ones_the_programs_document():
+    """Parity pin: the MCP page keys are the program's `--json` keys, plus the `source` to cite."""
+    source = REPO / "ragon-web-rs" / "src" / "bin" / "ragon-fetch.rs"
+    if not source.is_file():
+        pytest.skip("a release install has no ragon-web-rs sources")
+    documented = re.search(r"Emit JSON \(([^)]*)\)", source.read_text())
+    assert documented, "ragon-fetch's --json help no longer lists its fields"
+    fields = {name.strip() for name in documented.group(1).split(",")}
+    assert fields == {"url", "final_url", "status", "content_type", "title", "text", "truncated"}
+    assert "source" in (web_tools.__doc__ or "") and "source" in WebTools.fetch.__doc__
