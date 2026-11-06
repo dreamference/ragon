@@ -1,4 +1,6 @@
-"""The model gate (specs/DREAMFERENCE_RAGON_SWE_BENCH.md §18): its rules, the proxy itself in
+"""The model gate: its rules, the proxy, the host's side and `server start`.
+
+The model gate (specs/DREAMFERENCE_RAGON_SWE_BENCH.md §18): its rules, the proxy itself in
 front of a stand-in model server on scratch loopback ports, the host's side (container, pause,
 resume) and `server start` putting the engine behind it.
 
@@ -225,7 +227,7 @@ class StandIn(BaseHTTPRequestHandler):
     """A stand-in model server: /v1/models, and a chat endpoint that streams SSE."""
 
     protocol_version = "HTTP/1.1"
-    seen = []
+    seen = []  # noqa: RUF012
     second_chunk = threading.Event()
 
     def log_message(self, *args):
@@ -665,7 +667,7 @@ def test_the_service_runs_on_its_own_as_the_container_runs_it(tmp_path):
         stderr=subprocess.PIPE,
         text=True,
     )
-    try:
+    try:  # noqa: PLR1702
         for _ in range(100):
             try:
                 with urllib.request.urlopen(

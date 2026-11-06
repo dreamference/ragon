@@ -20,11 +20,11 @@ from dreamference.runner.codex_branded_builder import (
 )
 from dreamference.runner.codex_installer import CodexInstaller
 
-SUBMODULE_PRESENT = Path(os.path.join(CODEX_SUBMODULE_DIR, "codex-rs")).is_dir()
+SUBMODULE_PRESENT = Path(CODEX_SUBMODULE_DIR, "codex-rs").is_dir()
 
 
 def test_the_patch_series_is_ordered_and_non_empty():
-    names = [os.path.basename(p) for p in CodexBrandedBuilder.patches()]
+    names = [Path(p).name for p in CodexBrandedBuilder.patches()]
     assert names == sorted(names)
     assert any("brand" in name for name in names)
 
@@ -500,11 +500,11 @@ def test_the_build_compiles_the_exported_copy_not_the_submodule(tmp_path):
     ((command, cwd, env),) = calls
     # `ragon web` embeds the UI built just before (ragon-rs/web/build.rs).
     assert env["RAGON_WEB_UI_DIST"] == "/ui/dist"
-    assert cwd == os.path.join(str(tmp_path), "src", "codex-rs")
+    assert cwd == os.fspath(Path(str(tmp_path), "src", "codex-rs"))
     assert not cwd.startswith(CODEX_SUBMODULE_DIR)
     assert env["RUSTY_V8_ARCHIVE"] == "a"
     # A flag, not CARGO_TARGET_DIR, which sccache would hash into every crate's key.
-    assert command[command.index("--target-dir") + 1] == os.path.join(str(tmp_path), "target")
+    assert command[command.index("--target-dir") + 1] == os.fspath(Path(str(tmp_path), "target"))
     assert "CARGO_TARGET_DIR" not in env
     # Debug info is dropped at compile time, not stripped after: upstream's profile keeps it.
     assert env["CARGO_PROFILE_RELEASE_DEBUG"] == "none"
@@ -607,8 +607,8 @@ def test_ragon_admin_and_the_web_commands_are_linked_onto_path_for_the_models_sh
 
     # A web command is linked only once its binary exists: never a dangling link.
     builder.CodexBrandedBuilder.link_onto_path()
-    assert os.readlink(builder.PATH_LINK) == str(binary)
-    assert os.readlink(builder.ADMIN_PATH_LINK) == admin
+    assert str(Path(builder.PATH_LINK).readlink()) == str(binary)
+    assert str(Path(builder.ADMIN_PATH_LINK).readlink()) == admin
     assert not os.path.lexists(builder.SEARCH_PATH_LINK) and not os.path.lexists(
         builder.FETCH_PATH_LINK
     )
@@ -622,15 +622,15 @@ def test_ragon_admin_and_the_web_commands_are_linked_onto_path_for_the_models_sh
         installed[name] = str(path)
     builder.CodexBrandedBuilder.link_onto_path()
     # The Rust binaries, not a console script of this virtualenv.
-    assert os.readlink(builder.SEARCH_PATH_LINK) == installed["ragon-search"]
-    assert os.readlink(builder.FETCH_PATH_LINK) == installed["ragon-fetch"]
+    assert str(Path(builder.SEARCH_PATH_LINK).readlink()) == installed["ragon-search"]
+    assert str(Path(builder.FETCH_PATH_LINK).readlink()) == installed["ragon-fetch"]
     assert str(Path(builder.DELEGATE_PATH_LINK).readlink()) == installed["ragon-delegate"]
 
     # A real file of that name belongs to someone else and is left alone.
     Path(builder.ADMIN_PATH_LINK).unlink()
-    Path(builder.ADMIN_PATH_LINK).open("w").write("mine")
+    Path(builder.ADMIN_PATH_LINK).open("w").write("mine")  # noqa: SIM115
     builder.CodexBrandedBuilder.link_onto_path()
-    assert Path(builder.ADMIN_PATH_LINK).open().read() == "mine"
+    assert Path(builder.ADMIN_PATH_LINK).open().read() == "mine"  # noqa: SIM115
 
 
 def test_ragon_is_not_linked_onto_path_before_it_is_built(tmp_path, monkeypatch):
@@ -781,7 +781,7 @@ def test_ragon_code_builds_from_its_own_crate_and_is_linked_onto_path(tmp_path, 
     assert "CARGO_TARGET_DIR" not in env
     installed = tmp_path / "install" / "bin" / "ragon-code"
     assert os.access(installed, os.X_OK)
-    assert os.readlink(builder_module.CODE_PATH_LINK) == str(installed)
+    assert str(Path(builder_module.CODE_PATH_LINK).readlink()) == str(installed)
     # Current now: nothing is compiled again.
     assert CodexBrandedBuilder.build_code_index() is True
     assert len(calls) == 1
@@ -828,7 +828,7 @@ def test_ragon_docs_builds_from_its_own_crate_installs_its_runtime_and_is_linked
         "ragon-docs",
     ]
     installed = tmp_path / "install" / "bin" / "ragon-docs"
-    assert os.readlink(builder_module.DOCS_PATH_LINK) == str(installed)
+    assert str(Path(builder_module.DOCS_PATH_LINK).readlink()) == str(installed)
     assert setups == [1], "the run-time files are installed after the build"
     # A failed download does not fail the build.
     monkeypatch.setattr(DocsIndexSetup, "install", classmethod(lambda cls, machine=None: False))
@@ -836,19 +836,19 @@ def test_ragon_docs_builds_from_its_own_crate_installs_its_runtime_and_is_linked
 
 
 def test_the_docs_index_crate_is_committed_with_its_lockfile():
-    assert Path(os.path.join(builder_module.DOCS_CRATE_DIR, "Cargo.lock")).is_file()
-    assert Path(os.path.join(builder_module.DOCS_CRATE_DIR, "rust-toolchain.toml")).is_file()
+    assert Path(builder_module.DOCS_CRATE_DIR, "Cargo.lock").is_file()
+    assert Path(builder_module.DOCS_CRATE_DIR, "rust-toolchain.toml").is_file()
 
 
 def test_the_code_index_crate_is_committed_with_its_lockfile():
-    assert Path(os.path.join(builder_module.CODE_CRATE_DIR, "Cargo.lock")).is_file()
-    assert Path(os.path.join(builder_module.CODE_CRATE_DIR, "rust-toolchain.toml")).is_file()
+    assert Path(builder_module.CODE_CRATE_DIR, "Cargo.lock").is_file()
+    assert Path(builder_module.CODE_CRATE_DIR, "rust-toolchain.toml").is_file()
 
 
 def test_the_web_crate_is_committed_with_its_lockfile():
     # `--locked` fails without it, and the release build must resolve exactly what was tested.
-    assert Path(os.path.join(builder_module.WEB_CRATE_DIR, "Cargo.lock")).is_file()
-    assert Path(os.path.join(builder_module.WEB_CRATE_DIR, "Cargo.toml")).is_file()
+    assert Path(builder_module.WEB_CRATE_DIR, "Cargo.lock").is_file()
+    assert Path(builder_module.WEB_CRATE_DIR, "Cargo.toml").is_file()
 
 
 @pytest.mark.parametrize(

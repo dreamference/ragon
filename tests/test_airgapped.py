@@ -1,4 +1,6 @@
-"""`/airgapped` (specs/DREAMFERENCE_RAGON_AIRGAPPED.md): the Python side of the setting, and what
+"""`/airgapped`: the Python side of the setting.
+
+`/airgapped` (specs/DREAMFERENCE_RAGON_AIRGAPPED.md): the Python side of the setting, and what
 Python, the launcher and the web commands must agree on -- the default level, and one resolver.
 """
 

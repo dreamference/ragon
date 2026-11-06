@@ -10,9 +10,8 @@ from conftest import INSTALLED_BINARY_DIRS, MODEL_SERVER_PORTS, REAL_HOME, _inst
 
 
 def test_the_installed_binaries_are_recognised_by_path_link_and_name(tmp_path, monkeypatch):
-    assert _installed_binary(os.path.join(REAL_HOME, ".local/bin/ragon")) == os.path.join(
-        REAL_HOME, ".local/bin/ragon"
-    )
+    ragon_link = os.fspath(pathlib.Path(REAL_HOME, ".local/bin/ragon"))
+    assert _installed_binary(ragon_link) == ragon_link
     assert _installed_binary("~/.local/share/dreamference/ragon/bin/ragon-code").startswith(
         INSTALLED_BINARY_DIRS[1]
     )
@@ -25,20 +24,24 @@ def test_the_installed_binaries_are_recognised_by_path_link_and_name(tmp_path, m
         and _installed_binary("") == ""
     )
     # A bare name is looked up on PATH: `ragon` on PATH is the link in ~/.local/bin.
-    monkeypatch.setenv("PATH", os.path.join(REAL_HOME, ".local/bin"))
-    if pathlib.Path(os.path.join(REAL_HOME, ".local/bin/ragon")).exists():
+    monkeypatch.setenv("PATH", os.fspath(pathlib.Path(REAL_HOME, ".local/bin")))
+    if pathlib.Path(REAL_HOME, ".local/bin/ragon").exists():
         assert _installed_binary("ragon")
     monkeypatch.setenv("PATH", str(tmp_path))
     assert _installed_binary("ragon") == ""
 
 
 def test_running_the_installed_agent_fails_the_test(monkeypatch):
-    path = os.path.join(REAL_HOME, ".local/bin/ragon")
-    with pytest.raises(AssertionError, match="installed .*ragon"):
+    path = os.fspath(pathlib.Path(REAL_HOME, ".local/bin/ragon"))
+    with pytest.raises(AssertionError, match=r"installed .*ragon"):
         subprocess.run([path, "--version"], capture_output=True)
     with pytest.raises(AssertionError, match="installed"):
         subprocess.Popen(
-            [os.path.join(REAL_HOME, ".local/share/dreamference/ragon/bin/ragon"), "exec", "hi"]
+            [
+                os.fspath(pathlib.Path(REAL_HOME, ".local/share/dreamference/ragon/bin/ragon")),
+                "exec",
+                "hi",
+            ]
         )
 
 
@@ -56,7 +59,11 @@ def test_a_test_of_the_built_binary_opts_out_by_its_marker(listener):
     # The spawn goes through (and fails on the missing file, not on the guard) ...
     with pytest.raises(FileNotFoundError):
         subprocess.run(
-            [os.path.join(REAL_HOME, ".local/share/dreamference/ragon/bin/no-such-binary")]
+            [
+                os.fspath(
+                    pathlib.Path(REAL_HOME, ".local/share/dreamference/ragon/bin/no-such-binary")
+                )
+            ]
         )
     # ... and a connection to the model server's port is not refused by the guard either. The port
     # is this test's own listener: the guard itself is what keeps the suite off the live server,

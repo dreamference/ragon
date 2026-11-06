@@ -1,4 +1,6 @@
-"""The Python side of the code index: `ragon-admin code setup`, and the model server stopping
+"""The Python side of the code index.
+
+The Python side of the code index: `ragon-admin code setup`, and the model server stopping
 ragon-code's index runs before a load (specs/DREAMFERENCE_RAGON_CODE_INDEX.md §5, §9.2).
 The router itself is Rust, tested with `cargo test` in ragon-code-rs/.
 """
@@ -131,7 +133,7 @@ def test_scip_python_installs_from_the_lockfile_without_scripts(tmp_path, monkey
     assert command[1:3] == ["ci", "--ignore-scripts"]
     assert cwd == str(tmp_path / "indexers")
     assert (tmp_path / "indexers" / "package-lock.json").is_file()
-    assert os.readlink(tmp_path / "indexers" / "node") == str(node)
+    assert str(Path(tmp_path / "indexers" / "node").readlink()) == str(node)
 
 
 def test_no_node_keeps_python_on_the_universal_layer(tmp_path, monkeypatch):
@@ -144,7 +146,7 @@ def test_no_node_keeps_python_on_the_universal_layer(tmp_path, monkeypatch):
 def test_the_npm_lockfile_pins_both_npm_indexers_by_integrity():
     import json
 
-    with Path(os.path.join(code_setup.INDEXERS_SOURCE_DIR, "package-lock.json")).open() as handle:
+    with Path(code_setup.INDEXERS_SOURCE_DIR, "package-lock.json").open() as handle:
         lock = json.load(handle)
     for name, version in [("scip-python", "0.6.6"), ("scip-typescript", "0.4.0")]:
         entry = lock["packages"][f"node_modules/@sourcegraph/{name}"]
@@ -299,7 +301,7 @@ def test_toolchains_are_found_once_and_only_when_new_enough(tmp_path, monkeypatc
 
     monkeypatch.setattr(code_setup, "INDEXERS_DIR", str(tmp_path / "indexers"))
     CodeIndexSetup.record_toolchains({"go": str(goroot), "java": str(jdk)})
-    assert os.readlink(tmp_path / "indexers" / "go") == str(goroot)
+    assert str(Path(tmp_path / "indexers" / "go").readlink()) == str(goroot)
     # A toolchain no longer found loses its link, so ragon-code never runs a stale path.
     CodeIndexSetup.record_toolchains({"go": str(goroot)})
     assert not os.path.lexists(tmp_path / "indexers" / "java")
@@ -313,7 +315,7 @@ def test_maven_and_gradle_are_recorded_by_their_homes(tmp_path, monkeypatch):
     (maven / "bin" / "mvn").write_text("")
     links = tmp_path / "links"
     links.mkdir()
-    os.symlink(maven / "bin" / "mvn", links / "mvn")
+    Path(links / "mvn").symlink_to(maven / "bin" / "mvn")
     # A `gradle` that is a lone script, with no home around it, is not recorded.
     (links / "gradle").write_text("")
     which = {"mvn": str(links / "mvn"), "gradle": str(links / "gradle")}
@@ -323,7 +325,7 @@ def test_maven_and_gradle_are_recorded_by_their_homes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(code_setup, "INDEXERS_DIR", str(tmp_path / "indexers"))
     CodeIndexSetup.record_toolchains({"maven": str(maven)})
-    assert os.readlink(tmp_path / "indexers" / "maven") == str(maven)
+    assert str(Path(tmp_path / "indexers" / "maven").readlink()) == str(maven)
     CodeIndexSetup.record_toolchains({})
     assert not os.path.lexists(tmp_path / "indexers" / "maven")
 

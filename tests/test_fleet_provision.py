@@ -55,7 +55,7 @@ def test_the_session_offers_only_the_keys_named_for_the_host_never_the_whole_age
 def test_session_options_keep_the_socket_private_and_forward_nothing(tmp_path):
     run_dir = FleetSession.new_run_dir()
     try:
-        assert stat.S_IMODE(os.stat(run_dir).st_mode) == 0o700
+        assert stat.S_IMODE(Path(run_dir).stat().st_mode) == 0o700
         session = FleetSession("spark-1a2b", "owner", run_dir)
         first, later = session.options(first_contact=True), session.options()
         assert f"ControlPath={run_dir}/cm-spark-1a2b" in first
@@ -146,7 +146,7 @@ def test_askpass_answers_its_own_host_over_the_socket(tmp_path, monkeypatch, cap
     before = set(threading.enumerate())
     askpass.start("/usr/bin/false")
     try:
-        assert stat.S_IMODE(os.stat(askpass.socket_path).st_mode) == 0o600
+        assert stat.S_IMODE(Path(askpass.socket_path).stat().st_mode) == 0o600
         assert "node askpass" in askpass.script_path.read_text()
         for key, value in askpass.environment("spark-1").items():
             monkeypatch.setenv(key, value)
@@ -477,8 +477,8 @@ class StandIn:
 
 
 class FakeSession:
-    machines = {}
-    order = []
+    machines = {}  # noqa: RUF012
+    order = []  # noqa: RUF012
 
     def __init__(self, host, user, run_dir, ssh_port=22, log_path=None):
         self.host, self.user, self.ssh_port = host, user, ssh_port

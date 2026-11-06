@@ -24,12 +24,12 @@ from dreamference.audit import (
 from dreamference.audit.egress_audit import IMAGE_PROMPT
 from dreamference.audit.egress_verdict import FAIL, PASS, TRACE_FAILED
 
-FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "egress")
+FIXTURES = os.fspath(Path(__file__).resolve().parent / "fixtures" / "egress")
 ALLOWED = EgressAudit.allowed_ports("http://localhost:8000")
 
 
 def fixture(name: str) -> EgressTrace:
-    with Path(os.path.join(FIXTURES, name)).open() as handle:
+    with Path(FIXTURES, name).open() as handle:
         return StraceParser.parse(handle.read())
 
 
@@ -115,7 +115,7 @@ def test_a_session_that_showed_nothing_is_not_a_pass():
 def test_a_local_port_off_the_allowlist_fails():
     trace = StraceParser.parse(
         '7 connect(3, {sa_family=AF_INET, sin_port=htons(8001), sin_addr=inet_addr("127.0.0.1")}, 16) = 0\n'
-        '7 connect(4, {sa_family=AF_INET6, sin6_port=htons(8000), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "::1", &sin6_addr), sin6_scope_id=0}, 28) = 0\n'
+        '7 connect(4, {sa_family=AF_INET6, sin6_port=htons(8000), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "::1", &sin6_addr), sin6_scope_id=0}, 28) = 0\n'  # noqa: E501
         '7 execve("/bin/true", ["true"], 0x0 /* 1 var */) = 0\n'
     )
     assert trace.destinations == {"127.0.0.1:8001": 1, "[::1]:8000": 1}
@@ -211,7 +211,7 @@ json.dump({{"args": args, "cwd": os.getcwd(), "CODEX_HOME": os.environ.get("CODE
            "adapter": os.environ.get("DREAMFERENCE_RAGON_ADAPTER"),
            "docs": os.environ.get("DREAMFERENCE_RAGON_DOCS"),
            "worktree": os.environ.get("DREAMFERENCE_RAGON_WORKTREE")}}, open({str(calls)!r}, "w"))
-shutil.copy({os.path.join(FIXTURES, "exec_pass.strace")!r}, args[args.index("-o") + 1])
+shutil.copy({os.fspath(Path(FIXTURES, "exec_pass.strace"))!r}, args[args.index("-o") + 1])
 open(args[len(args) - 2], "w").write("pong")
 """)
     strace.chmod(strace.stat().st_mode | stat.S_IEXEC)
@@ -243,7 +243,7 @@ open(args[len(args) - 2], "w").write("pong")
     assert call["args"][-1] == "Reply with exactly: pong"
     # Neither the user's home nor the user's repository: both are scratch, and gone afterwards.
     assert call["CODEX_HOME"] != str(home) and not Path(call["CODEX_HOME"]).exists()
-    assert os.path.basename(call["cwd"]) == "repo" and not Path(call["cwd"]).exists()
+    assert Path(call["cwd"]).name == "repo" and not Path(call["cwd"]).exists()
     assert (
         'vllm_host = "http://localhost:8000"' in call["config"]
         and "code_index_enabled = false" in call["config"]
@@ -329,7 +329,7 @@ args = sys.argv[1:]
 json.dump({{"args": args, "HOME": os.environ["HOME"], "XDG_RUNTIME_DIR": os.environ["XDG_RUNTIME_DIR"],
            "CODEX_HOME": os.environ["CODEX_HOME"], "host": os.environ.get("DREAMFERENCE_VLLM_HOST")}},
           open({str(calls)!r}, "w"))
-shutil.copy({os.path.join(FIXTURES, "exec_pass.strace")!r}, args[args.index("-o") + 1])
+shutil.copy({os.fspath(Path(FIXTURES, "exec_pass.strace"))!r}, args[args.index("-o") + 1])
 web = os.path.join(os.environ["CODEX_HOME"], "web")
 os.makedirs(web, exist_ok=True)
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
@@ -363,7 +363,7 @@ print("pong")
     # The server's HOME and runtime folder are scratch: no advertised node, no user's app-server.
     for key in ("HOME", "XDG_RUNTIME_DIR", "CODEX_HOME"):
         assert (
-            os.path.basename(os.path.dirname(call[key])).startswith("ragon-audit-")
+            Path(Path(call[key]).parent).name.startswith("ragon-audit-")
             and not Path(call[key]).exists()
         )
     assert call["host"] == "http://localhost:8000"
@@ -458,9 +458,9 @@ sessions = os.path.join(home, "sessions", "2015", "10", "02")
 os.makedirs(sessions)
 with open(os.path.join(sessions, "rollout-test.jsonl"), "w") as handle:
     handle.write(json.dumps({{"type": "event_msg", "payload": {{"type": "task_complete", "last_agent_message": "pong"}}}}) + "\\n")
-shutil.copy({os.path.join(FIXTURES, "tui_pass.strace")!r}, args[args.index("-o") + 1])
+shutil.copy({os.fspath(Path(FIXTURES, "tui_pass.strace"))!r}, args[args.index("-o") + 1])
 record["typed"].append(sys.stdin.readline().strip()); save()
-""")
+""")  # noqa: RUF001, E501
     strace.chmod(strace.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{strace.parent}{os.pathsep}{os.environ['PATH']}")
     for name in ("SETTLE_AFTER_READY_S", "SETTLE_AFTER_REPLY_S", "TYPE_PAUSE_S"):
@@ -647,7 +647,7 @@ args = sys.argv[1:]
 json.dump({{"args": args, "HOME": os.environ.get("HOME"), "audit": os.environ.get("RAGON_APP_AUDIT"),
            "bin": os.environ.get("RAGON_BIN"), "CODEX_HOME": os.environ.get("CODEX_HOME"),
            "preview": os.environ.get("RAGON_APP_AUDIT_PREVIEW")}}, open({str(calls)!r}, "w"))
-shutil.copy({os.path.join(FIXTURES, "exec_pass.strace")!r}, args[args.index("-o") + 1])
+shutil.copy({os.fspath(Path(FIXTURES, "exec_pass.strace"))!r}, args[args.index("-o") + 1])
 # The app's preview tab loads the audit's page and runs its script (unless told not to).
 if not os.environ.get("NO_PREVIEW"):
     import urllib.request
@@ -670,7 +670,7 @@ if not os.environ.get("NO_PREVIEW"):
     assert call["args"][-1] == "/opt/Ragon"
     assert call["audit"] == "40" and call["bin"] == "/opt/ragon"
     # Chromium's profile and the app's data folder land in the scratch home, never the user's.
-    assert call["HOME"] != os.path.expanduser("~") and call["HOME"].endswith("home-dir")
+    assert call["HOME"] != str(Path("~").expanduser()) and call["HOME"].endswith("home-dir")
     assert call["CODEX_HOME"] != str(tmp_path / "codex-home")
     # The app opens no window on `ragon web` (ASK §18.6): a
     # connection to it or to 3000 is a finding, and the app's allowlist is the `exec` session's.
@@ -719,8 +719,8 @@ def test_the_desktop_app_needs_a_display_and_a_build(monkeypatch, capsys):
 # The loopback connect is one to the model server on 8000.
 CHROMIUM_PROBE = (
     "2628928 connect(23<UDPv6:[10868489]>, {sa_family=AF_INET6, sin6_port=htons(443), sin6_flowinfo=htonl(0), "
-    'inet_pton(AF_INET6, "2001:4860:4860::8888", &sin6_addr), sin6_scope_id=0}, 28) = -1 ENETUNREACH (Network is unreachable)\n'
-    '2628930 connect(24<TCP:[10873001]>, {sa_family=AF_INET, sin_port=htons(8000), sin_addr=inet_addr("127.0.0.1")}, 16) = -1 EINPROGRESS (Operation now in progress)\n'
+    'inet_pton(AF_INET6, "2001:4860:4860::8888", &sin6_addr), sin6_scope_id=0}, 28) = -1 ENETUNREACH (Network is unreachable)\n'  # noqa: E501
+    '2628930 connect(24<TCP:[10873001]>, {sa_family=AF_INET, sin_port=htons(8000), sin_addr=inet_addr("127.0.0.1")}, 16) = -1 EINPROGRESS (Operation now in progress)\n'  # noqa: E501
     '2628931 execve("/opt/Ragon", ["/opt/Ragon", "--type=utility"], 0xffff /* 40 vars */) = 0\n'
 )
 
@@ -791,7 +791,7 @@ def test_a_labelled_resolver_socket_still_yields_its_query_names():
     query = "\\x12\\x34\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x07example\\x03com\\x00\\x00\\x01\\x00\\x01"
     text = (
         '5 connect(7<UDP:[555]>, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("127.0.0.53")}, 16) = 0\n'
-        f'5 sendmmsg(7<UDP:[127.0.0.1:40000->127.0.0.53:53]>, [{{msg_hdr={{msg_name=NULL, msg_namelen=0, msg_iov=[{{iov_base="{query}", iov_len=29}}], msg_iovlen=1, msg_controllen=0, msg_flags=0}}, msg_len=29}}], 1, MSG_NOSIGNAL) = 1\n'
+        f'5 sendmmsg(7<UDP:[127.0.0.1:40000->127.0.0.53:53]>, [{{msg_hdr={{msg_name=NULL, msg_namelen=0, msg_iov=[{{iov_base="{query}", iov_len=29}}], msg_iovlen=1, msg_controllen=0, msg_flags=0}}, msg_len=29}}], 1, MSG_NOSIGNAL) = 1\n'  # noqa: E501
     )
     trace = StraceParser.parse(text)
     assert trace.dns_names == {"example.com": 1} and trace.destinations == {}
@@ -980,14 +980,16 @@ def _image_search_set_up(tmp_path, monkeypatch):
     link.parent.mkdir()
     link.write_text(STALE_ADMIN)
     link.chmod(0o755)
-    real_link = os.path.expanduser("~/.local/bin/ragon-admin")
-    Path(os.path.dirname(real_link)).mkdir(exist_ok=True, parents=True)
+    real_link = os.fspath(Path("~/.local/bin/ragon-admin").expanduser())
+    Path(Path(real_link).parent).mkdir(exist_ok=True, parents=True)
     Path(real_link).symlink_to(link)
     return store
 
 
 def _web_stand_ins(tmp_path, monkeypatch, answer: str):
-    """A traced `ragon web serve` that only says it listens, and a `ragon web ask` that records each
+    """A traced `ragon web serve` and a stand-in `ragon web ask`.
+
+    The serve only says it listens; the ask records each
     question and what the scratch home held, and answers `answer` to the image question.
     """
     strace = tmp_path / "bin" / "strace"
@@ -995,7 +997,7 @@ def _web_stand_ins(tmp_path, monkeypatch, answer: str):
     strace.write_text(f"""#!{os.sys.executable}
 import os, shutil, signal, sys, time
 args = sys.argv[1:]
-shutil.copy({os.path.join(FIXTURES, "exec_pass.strace")!r}, args[args.index("-o") + 1])
+shutil.copy({os.fspath(Path(FIXTURES, "exec_pass.strace"))!r}, args[args.index("-o") + 1])
 web = os.path.join(os.environ["CODEX_HOME"], "web")
 os.makedirs(web, exist_ok=True)
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
@@ -1099,12 +1101,12 @@ def test_a_tool_server_that_cannot_start_is_named_and_the_question_not_asked(
         (
             "![A petrel](/images/0123456789abcdef.jpg)",
             False,
-            "answered with an image line, but 0123456789abcdef.jpg is not in the image search store: the service did not answer it",
+            "answered with an image line, but 0123456789abcdef.jpg is not in the image search store: the service did not answer it",  # noqa: E501
         ),
         (
             "![A petrel](/images/0123456789abcdef.jpg)",
             True,
-            "answered with an image from the image search service (0123456789abcdef.jpg); the image search service stored 1 new image",
+            "answered with an image from the image search service (0123456789abcdef.jpg); the image search service stored 1 new image",  # noqa: E501
         ),
     ],
 )

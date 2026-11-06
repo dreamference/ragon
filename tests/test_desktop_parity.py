@@ -139,7 +139,7 @@ def phase_2_methods() -> dict[str, list[str]]:
     section = text[text.index("## 2. Every feature") : text.index("## 3. The look")]
     known = methods_in(PROTOCOL_DIR / "ClientRequest.ts")
     found: dict[str, list[str]] = {}
-    for line in section.splitlines():
+    for line in section.splitlines():  # noqa: PLR1702
         cells = cells_of(line) if line.startswith("|") else []
         if len(cells) < 4 or set(cells[0]) <= {"-", " "}:
             continue

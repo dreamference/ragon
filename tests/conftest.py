@@ -1,4 +1,6 @@
-"""Guards shared by every test: nothing may touch the machine's containers, services or the real
+"""Guards shared by every test: nothing may touch the machine.
+
+Guards shared by every test: nothing may touch the machine's containers, services or the real
 home folder.
 
 Below: no real `docker` command that changes something, no sudo and no systemd unit.
@@ -13,10 +15,10 @@ import pytest
 
 # Resolved before any test changes HOME. Every dreamference module is imported here, so the
 # constants they compute from the home folder at import exist to be redirected below.
-REAL_HOME = os.path.realpath(os.path.expanduser("~"))
+REAL_HOME = os.path.realpath(Path("~").expanduser())
 # The checkout may itself live under the home folder; paths into it (the codex submodule, the
 # patch series, the desktop project) are source the tests read, not state they could clobber.
-CHECKOUT = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+CHECKOUT = os.path.realpath(os.fspath(Path(Path(__file__).parent, os.pardir)))
 import dreamference.cli.dreamference_cli_controller  # noqa: E402,F401 - imports every subsystem
 import dreamference.mcp_server  # noqa: E402,F401
 from dreamference.chat.google_service import GoogleService  # noqa: E402
@@ -239,7 +241,7 @@ def _refuse_real_docker(monkeypatch, request):
                 argv[0] if isinstance(argv, (list, tuple)) and argv else str(argv).split(" ")[0]
             )
             if (
-                os.path.basename(str(program)) == "docker"
+                Path(str(program)).name == "docker"
                 and _changes_something(argv)
                 and not _throwaway_forge(request, argv)
             ):
@@ -249,9 +251,7 @@ def _refuse_real_docker(monkeypatch, request):
             # `server start` stops the code index's scopes before its host-safety pre-flight
             # (specs/DREAMFERENCE_RAGON_CODE_INDEX.md §9.2): a test must never stop, freeze or
             # start a unit of the user's own systemd.
-            if os.path.basename(str(program)) in ("systemctl", "systemd-run") and _changes_systemd(
-                argv
-            ):
+            if Path(str(program)).name in ("systemctl", "systemd-run") and _changes_systemd(argv):
                 raise AssertionError(
                     f"a test tried to run a real systemd command: {argv!r}; mock it"
                 )
@@ -259,11 +259,11 @@ def _refuse_real_docker(monkeypatch, request):
             # machine or become root.
             # Wi-Fi power saving (vllm_server/wifi_power_save.py): a test may never change this
             # machine's network, which a benchmark night or an SSH session depends on.
-            if os.path.basename(str(program)) in ("nmcli", "iw") and _changes_network(argv):
+            if Path(str(program)).name in ("nmcli", "iw") and _changes_network(argv):
                 raise AssertionError(f"a test tried to change the network: {argv!r}; mock it")
-            if os.path.basename(str(program)) in ("ssh", "scp", "rsync", "sudo", "sg"):
+            if Path(str(program)).name in ("ssh", "scp", "rsync", "sudo", "sg"):
                 raise AssertionError(
-                    f"a test tried to run a real {os.path.basename(str(program))}: {argv!r}; mock it"
+                    f"a test tried to run a real {Path(str(program)).name}: {argv!r}; mock it"
                 )
             # The suite is offline by construction (AGENTS.md): the installed `ragon` and the other
             # binaries of the install would wait for, and reach, this machine's model server. A
@@ -349,7 +349,7 @@ INSTALLED_BINARY_MARK: str = "installed_binary"
 
 # Where a release install and `ragon-admin codex build` put the binaries, and the links to them.
 INSTALLED_BINARY_DIRS: tuple = tuple(
-    os.path.join(REAL_HOME, d)
+    os.fspath(Path(REAL_HOME, d))
     for d in (".local/bin", ".local/share/dreamference", ".cache/dreamference/ragon-codex")
 )
 
@@ -367,7 +367,7 @@ def _installed_binary(program) -> str:
     # `~` means the real home here, whatever HOME a test has set.
     if located == "~" or located.startswith("~" + os.sep):
         located = REAL_HOME + located[1:]
-    for candidate in (os.path.abspath(located), os.path.realpath(located)):
+    for candidate in (os.path.abspath(located), os.path.realpath(located)):  # noqa: PTH100
         if any(candidate == d or candidate.startswith(d + os.sep) for d in INSTALLED_BINARY_DIRS):
             return candidate
     return ""
@@ -457,7 +457,7 @@ READ_ONLY_SYSTEMCTL: tuple = (
 def _changes_systemd(argv) -> bool:
     words = [str(w) for w in argv[1:]] if isinstance(argv, (list, tuple)) else str(argv).split()[1:]
     if (
-        os.path.basename(str(argv[0] if isinstance(argv, (list, tuple)) else str(argv).split()[0]))
+        Path(str(argv[0] if isinstance(argv, (list, tuple)) else str(argv).split()[0])).name
         == "systemd-run"
     ):
         return True
@@ -578,17 +578,17 @@ def _under_real_home(value) -> bool:
 # vars across the container boundary) is exercised against these instead. Their shapes are those
 # of the Qwen 3.5 122B and Qwen 3.6 35B recipes the registry carried until recently.
 VLLM_TEST_RECIPES = {
-    "test-vllm-dflash": dict(
-        name="Test vLLM recipe (INT4 AutoRound + external drafter)",
-        params_b=122.0,
-        supported_precisions=["AUTOROUND-INT4"],
-        min_memory_gb=71.5,
-        max_memory_gb=120.0,
-        compatible_gb10=True,
-        notes="Test only.",
-        hf_repo_id="example/vllm-dflash-int4-AutoRound",
-        supports_vision=True,
-        launch_overrides={
+    "test-vllm-dflash": {
+        "name": "Test vLLM recipe (INT4 AutoRound + external drafter)",
+        "params_b": 122.0,
+        "supported_precisions": ["AUTOROUND-INT4"],
+        "min_memory_gb": 71.5,
+        "max_memory_gb": 120.0,
+        "compatible_gb10": True,
+        "notes": "Test only.",
+        "hf_repo_id": "example/vllm-dflash-int4-AutoRound",
+        "supports_vision": True,
+        "launch_overrides": {
             "attention_backend": "flash_attn",
             "docker_image": "example-vllm-dflash:1",
             "enable_prefix_caching": True,
@@ -616,17 +616,17 @@ VLLM_TEST_RECIPES = {
             },
             "tool_call_parser": "qwen3_xml",
         },
-    ),
-    "test-vllm-nvfp4": dict(
-        name="Test vLLM recipe (NVFP4 + self-speculation)",
-        params_b=35.0,
-        supported_precisions=["NVFP4"],
-        min_memory_gb=25.0,
-        max_memory_gb=60.0,
-        compatible_gb10=True,
-        notes="Test only.",
-        hf_repo_id="example/vllm-moe-NVFP4",
-        launch_overrides={
+    },
+    "test-vllm-nvfp4": {
+        "name": "Test vLLM recipe (NVFP4 + self-speculation)",
+        "params_b": 35.0,
+        "supported_precisions": ["NVFP4"],
+        "min_memory_gb": 25.0,
+        "max_memory_gb": 60.0,
+        "compatible_gb10": True,
+        "notes": "Test only.",
+        "hf_repo_id": "example/vllm-moe-NVFP4",
+        "launch_overrides": {
             "attention_backend": "flashinfer",
             "env": {"VLLM_MARLIN_USE_ATOMIC_ADD": "1"},
             "extra_args": ["--max-num-seqs", "4", "--tensor-parallel-size", "1", "--dtype", "auto"],
@@ -642,17 +642,17 @@ VLLM_TEST_RECIPES = {
             },
             "tool_call_parser": "qwen3_xml",
         },
-    ),
-    "test-vllm-dflash-draft": dict(
-        name="Test drafter",
-        params_b=0.8,
-        supported_precisions=["BF16"],
-        min_memory_gb=1.5,
-        max_memory_gb=2.5,
-        compatible_gb10=True,
-        notes="Test only.",
-        hf_repo_id="example/vllm-dflash-drafter",
-    ),
+    },
+    "test-vllm-dflash-draft": {
+        "name": "Test drafter",
+        "params_b": 0.8,
+        "supported_precisions": ["BF16"],
+        "min_memory_gb": 1.5,
+        "max_memory_gb": 2.5,
+        "compatible_gb10": True,
+        "notes": "Test only.",
+        "hf_repo_id": "example/vllm-dflash-drafter",
+    },
 }
 
 

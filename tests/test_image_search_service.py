@@ -342,9 +342,9 @@ def test_the_funnel_fetches_thumbnails_persists_winners_and_answers_markdown(tmp
     service, fetcher = _service(tmp_path, {"q": cands}, table)
 
     result = service.search(["q"])
-    lines = [l for l in result["response"].splitlines() if l.startswith("![")]
+    lines = [l for l in result["response"].splitlines() if l.startswith("![")]  # noqa: E741
     assert 1 <= len(lines) <= 4
-    assert all("](/images/" in l and l.endswith(".jpg)") for l in lines)
+    assert all("](/images/" in l and l.endswith(".jpg)") for l in lines)  # noqa: E741
     # Thumbnail fetches carried the SearXNG exemption; full downloads carried none.
     thumb_calls = [c for c in fetcher.calls if "image_proxy" in c["url"]]
     full_calls = [c for c in fetcher.calls if "image_proxy" not in c["url"]]
@@ -364,7 +364,7 @@ def test_visually_identical_candidates_collapse_to_one(tmp_path):
     service, _ = _service(tmp_path, {"q": cands}, table)
 
     result = service.search(["q"])
-    lines = [l for l in result["response"].splitlines() if l.startswith("![")]
+    lines = [l for l in result["response"].splitlines() if l.startswith("![")]  # noqa: E741
     assert len(lines) == 1
 
 
@@ -440,7 +440,7 @@ def test_the_vision_verdict_filters_out_unrelated_images_rather_than_padding(tmp
     service, _ = _service(tmp_path, {"q": cands}, table, ranker=_FilteringRanker([1]))
 
     result = service.search(["q"])
-    lines = [l for l in result["response"].splitlines() if l.startswith("![")]
+    lines = [l for l in result["response"].splitlines() if l.startswith("![")]  # noqa: E741
     assert len(lines) == 1
     assert "image 1" in lines[0]
 
@@ -479,7 +479,7 @@ def test_a_requested_count_is_satisfied_when_enough_images_survive(tmp_path):
     service, _ = _service(tmp_path, {"q": cands}, table)
 
     result = service.search(["q"], count=6)
-    lines = [l for l in result["response"].splitlines() if l.startswith("![")]
+    lines = [l for l in result["response"].splitlines() if l.startswith("![")]  # noqa: E741
     assert len(lines) == 6
 
 
@@ -492,7 +492,7 @@ def test_a_requested_count_larger_than_the_supply_returns_what_exists(tmp_path):
     service, _ = _service(tmp_path, {"q": cands}, table)
 
     result = service.search(["q"], count=10)
-    lines = [l for l in result["response"].splitlines() if l.startswith("![")]
+    lines = [l for l in result["response"].splitlines() if l.startswith("![")]  # noqa: E741
     assert len(lines) == 2
 
 

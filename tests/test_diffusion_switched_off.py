@@ -1,4 +1,6 @@
-"""Diffusion is switched off (DIFFUSION_ENABLED): never started, never downloaded,
+"""Diffusion is switched off (DIFFUSION_ENABLED).
+
+Diffusion is switched off (DIFFUSION_ENABLED): never started, never downloaded,
 never shown. The sidecar's code stays and is still tested in tests/test_diffusion_server.py; the
 last test here turns the switch on and checks that everything comes back.
 """

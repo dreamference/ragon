@@ -237,7 +237,7 @@ def test_block_diffusion_fills_blocks_most_confident_first_and_stops_at_eos():
 
     from dreamference.vllm_server.diffusion_openai_service import block_diffusion_sample
 
-    MASK, EOS, VOCAB = 99, 9, 100
+    MASK, EOS, VOCAB = 99, 9, 100  # noqa: N806
     target = [5, 6, 7, EOS, 1, 1, 1, 1]
     masks_seen = []
 

@@ -1,4 +1,6 @@
-"""The desktop app's shell (specs/DREAMFERENCE_RAGON_DESKTOP_ELECTRON.md): what `ragon-admin
+"""The desktop app's shell.
+
+The desktop app's shell (specs/DREAMFERENCE_RAGON_DESKTOP_ELECTRON.md): what `ragon-admin
 desktop` builds and installs, and what the Electron project must keep.
 """
 
@@ -308,7 +310,10 @@ def test_run_says_when_the_packaged_binary_has_no_profile(capsys):
 def test_the_profile_install_is_announced_before_sudo_runs(capsys):
     with patch("shutil.which", return_value="/usr/bin/x"), patch("subprocess.run") as run:
         run.return_value.returncode = 0
-        assert DesktopInstaller.install_apparmor_profile([os.path.abspath(__file__)]) is True
+        assert (
+            DesktopInstaller.install_apparmor_profile([os.fspath(Path(__file__).absolute())])
+            is True
+        )
     out = capsys.readouterr().out
     assert "sudo tee /etc/apparmor.d/ragon-desktop-dev" in out
     assert run.call_args_list[0].args[0][:2] == ["sudo", "tee"]
@@ -389,7 +394,7 @@ def test_cargo_is_found_in_the_rustup_location_as_well_as_on_path():
     from dreamference.chat.desktop_installer import CARGO_BIN
 
     with patch("os.path.isfile", return_value=True), patch("os.access", return_value=True):
-        assert DesktopInstaller.cargo_path() == os.path.join(CARGO_BIN, "cargo")
+        assert DesktopInstaller.cargo_path() == os.fspath(Path(CARGO_BIN, "cargo"))
 
 
 def test_the_toolchain_is_node_only():
@@ -546,7 +551,7 @@ def test_cache_is_cleared_without_signing_the_user_out():
         assert DesktopRunner.clear_webview_cache() is True
 
     removed = rmtree.call_args[0][0]
-    assert removed.endswith(os.path.join("dev.dreamference.ragon", "Cache"))
+    assert removed.endswith(os.fspath(Path("dev.dreamference.ragon", "Cache")))
     assert "Cookies" not in removed
     # The launcher's `ragon app` empties the same folder.
     app_rs = (Path(DESKTOP_PROJECT_DIR).parent / "ragon-rs" / "src" / "app.rs").read_text(

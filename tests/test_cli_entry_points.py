@@ -22,7 +22,7 @@ def test_there_is_no_python_ragon_entry_point():
     import dreamference.cli as cli
 
     assert not hasattr(cli, "ragon_main")
-    assert "ragon=" not in pathlib.Path("setup.py").open().read()
+    assert "ragon=" not in pathlib.Path("setup.py").open().read()  # noqa: SIM115
 
 
 def test_unknown_arguments_are_rejected(capsys):

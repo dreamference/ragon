@@ -1,4 +1,6 @@
-"""The desktop app's windows (specs/DREAMFERENCE_RAGON_DESKTOP.md, on Electron per
+"""The desktop app's windows.
+
+The desktop app's windows (specs/DREAMFERENCE_RAGON_DESKTOP.md, on Electron per
 specs/DREAMFERENCE_RAGON_DESKTOP_ELECTRON.md).
 
 Ask and Work are views of each app window, and every window shares the app's one app-server (the

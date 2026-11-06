@@ -1,9 +1,10 @@
-"""`ragon-admin matrix` (specs/DREAMFERENCE_RAGON_CHAT.md §5) with Docker, systemd, Tailscale and the
+"""`ragon-admin matrix` with Docker, systemd, Tailscale and the homeserver replaced.
+
+`ragon-admin matrix` (specs/DREAMFERENCE_RAGON_CHAT.md §5) with Docker, systemd, Tailscale and the
 homeserver replaced: `_run` and `_http` are the module's only ways out, and both are stand-ins here.
 """
 
 import json
-import os
 import pathlib
 import subprocess
 from typing import Any
@@ -26,7 +27,7 @@ class Machine:
         self.container = False
         self.registered: list[str] = []
 
-    def run(
+    def run(  # noqa: C901
         self, argv: list[str], timeout: int = 120, env: dict[str, str] | None = None
     ) -> subprocess.CompletedProcess:
         self.runs.append(argv)
@@ -84,7 +85,7 @@ class Machine:
             assert auth["type"] == "m.login.registration_token" and auth["session"] == "s1"
             if (
                 auth["token"]
-                != json.load(pathlib.Path(MatrixHomeserver._path("matrix-admin.json")).open())[
+                != json.load(pathlib.Path(MatrixHomeserver._path("matrix-admin.json")).open())[  # noqa: SIM115
                     "registration_token"
                 ]
             ):
@@ -147,11 +148,11 @@ def test_start_builds_a_homeserver_with_no_route_out_and_a_bot_account(machine, 
     assert run[-1] == mh.MATRIX_IMAGE and "@sha256:" in mh.MATRIX_IMAGE
     # The loopback proxy points at the container.
     service = (
-        pathlib.Path(os.path.join(MatrixHomeserver.unit_dir(), mh.PROXY_SERVICE_UNIT)).open().read()
+        pathlib.Path(MatrixHomeserver.unit_dir(), mh.PROXY_SERVICE_UNIT).open().read()  # noqa: SIM115
     )
     assert f"ExecStart={mh.SOCKET_PROXYD} {mh.MATRIX_ADDRESS}:{mh.MATRIX_PORT}" in service
     socket = (
-        pathlib.Path(os.path.join(MatrixHomeserver.unit_dir(), mh.PROXY_SOCKET_UNIT)).open().read()
+        pathlib.Path(MatrixHomeserver.unit_dir(), mh.PROXY_SOCKET_UNIT).open().read()  # noqa: SIM115
     )
     assert "ListenStream=127.0.0.1:6167" in socket
     # tailscale serve fronts the proxy, never the container's address.
@@ -162,7 +163,7 @@ def test_start_builds_a_homeserver_with_no_route_out_and_a_bot_account(machine, 
         "--https=443",
         mh.PROXY_URL,
     ]
-    config = json.load(pathlib.Path(MatrixHomeserver._path("matrix.json")).open())
+    config = json.load(pathlib.Path(MatrixHomeserver._path("matrix.json")).open())  # noqa: SIM115
     assert config == {
         "user_id": "@ragon:node.tail1234.ts.net",
         "access_token": "bot-token",
@@ -170,8 +171,8 @@ def test_start_builds_a_homeserver_with_no_route_out_and_a_bot_account(machine, 
         "server_name": "node.tail1234.ts.net",
         "allowed": [],
     }
-    assert os.stat(MatrixHomeserver._path("matrix.json")).st_mode & 0o777 == 0o600
-    assert os.stat(MatrixHomeserver.chat_dir()).st_mode & 0o777 == 0o700
+    assert pathlib.Path(MatrixHomeserver._path("matrix.json")).stat().st_mode & 0o777 == 0o600
+    assert pathlib.Path(MatrixHomeserver.chat_dir()).stat().st_mode & 0o777 == 0o700
     assert "add-user" in capsys.readouterr().out
 
 
@@ -220,11 +221,13 @@ def test_add_user_prints_the_password_once_and_stores_none(machine, capsys):
     ]
     password = register[-1]["password"]
     assert password in out
-    for name in os.listdir(MatrixHomeserver.chat_dir()):
-        assert password not in pathlib.Path(MatrixHomeserver._path(name)).open().read(), name
-    assert json.load(pathlib.Path(MatrixHomeserver._path("matrix.json")).open())["allowed"] == [
-        "@owner:node.tail1234.ts.net"
-    ]
+    for entry in pathlib.Path(MatrixHomeserver.chat_dir()).iterdir():
+        assert password not in pathlib.Path(MatrixHomeserver._path(entry.name)).read_text(), (
+            entry.name
+        )
+    assert json.loads(pathlib.Path(MatrixHomeserver._path("matrix.json")).read_text())[
+        "allowed"
+    ] == ["@owner:node.tail1234.ts.net"]
     assert MatrixHomeserver.add_user("Bad Name") == 2
 
 

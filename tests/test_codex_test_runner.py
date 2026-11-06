@@ -1,6 +1,5 @@
 """Codex's own tests run on Ragon's patched export, never the submodule, minus a reasoned skip list."""
 
-import glob
 import os
 import pathlib
 import re
@@ -15,19 +14,17 @@ from dreamference.runner import codex_test_runner as runner_module
 from dreamference.runner.codex_branded_builder import CODEX_SUBMODULE_DIR
 from dreamference.runner.codex_test_runner import CodexTestRunner
 
-SUBMODULE_PRESENT = pathlib.Path(os.path.join(CODEX_SUBMODULE_DIR, "codex-rs")).is_dir()
+SUBMODULE_PRESENT = pathlib.Path(CODEX_SUBMODULE_DIR, "codex-rs").is_dir()
 
 
 def _workspace_packages() -> dict:
     """Maps each Codex workspace package name to its directory, read from the submodule's manifests."""
     packages = {}
-    for manifest in glob.glob(
-        os.path.join(CODEX_SUBMODULE_DIR, "codex-rs", "**", "Cargo.toml"), recursive=True
-    ):
+    for manifest in map(str, pathlib.Path(CODEX_SUBMODULE_DIR, "codex-rs").rglob("Cargo.toml")):
         with pathlib.Path(manifest).open() as handle:
             match = re.search(r'^\[package\]\s*\nname = "([^"]+)"', handle.read(), re.M)
         if match:
-            packages[match.group(1)] = os.path.dirname(manifest)
+            packages[match.group(1)] = str(pathlib.Path(manifest).parent)
     return packages
 
 
@@ -47,7 +44,7 @@ def test_every_skipped_package_and_target_exists_in_the_pinned_codex():
         assert entry["name"] in packages
     for entry in skips["target"]:
         assert pathlib.Path(
-            os.path.join(packages[entry["package"]], "tests", f"{entry['test']}.rs")
+            os.fspath(pathlib.Path(packages[entry["package"]], "tests", f"{entry['test']}.rs"))
         ).is_file()
 
 
@@ -163,7 +160,7 @@ def test_the_run_tests_the_export_and_never_the_submodule(tmp_path, monkeypatch)
         assert CodexTestRunner.run() == 100
     overlay.assert_called_once_with(str(tmp_path / "test-src"))
     assert len(calls) == 3
-    for command, cwd, env in calls:
+    for _command, cwd, env in calls:
         assert cwd == str(tmp_path / "test-src" / "codex-rs")
         assert not cwd.startswith(CODEX_SUBMODULE_DIR)
         assert env["RAGON_UPSTREAM_TESTS"] == "1"
@@ -198,9 +195,9 @@ def test_the_temporary_directory_name_has_no_path_separators_the_tests_decode(
 ):
     monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
     path = CodexTestRunner.make_temp_dir()
-    assert os.path.dirname(path) == str(tmp_path)
-    assert re.fullmatch(r"pct[a-z0-9]{11}", os.path.basename(path))
-    assert os.stat(path).st_mode & 0o777 == 0o700
+    assert str(pathlib.Path(path).parent) == str(tmp_path)
+    assert re.fullmatch(r"pct[a-z0-9]{11}", pathlib.Path(path).name)
+    assert pathlib.Path(path).stat().st_mode & 0o777 == 0o700
 
 
 def test_a_nextest_download_that_fails_its_checksum_is_not_used(tmp_path, monkeypatch):
@@ -231,7 +228,7 @@ expression: rendered
 │ model:     gpt-5   /model to change   │
 ╰───────────────────────────────────────╯
 › Ask Codex to do anything
-"""
+"""  # noqa: RUF001
 
 
 def test_a_snapshot_that_only_renames_codex_is_accepted():
@@ -250,7 +247,7 @@ def test_a_snapshot_with_any_other_change_is_refused():
     assert not CodexTestRunner.differs_only_by_name(
         BOXED_UPSTREAM, renamed.replace("gpt-5", "gpt-6")
     )
-    assert not CodexTestRunner.differs_only_by_name(BOXED_UPSTREAM, renamed.replace("›", ">"))
+    assert not CodexTestRunner.differs_only_by_name(BOXED_UPSTREAM, renamed.replace("›", ">"))  # noqa: RUF001
 
 
 def test_the_overlay_replaces_upstream_snapshots_and_applies_the_test_patches(
@@ -313,13 +310,11 @@ def test_the_overlay_snapshots_keep_upstreams_widths():
     # than the terminal or a box with one row sticking out, and
     # `slash_side_requests_forked_side_question_while_task_running` failed on it.
     wrong = []
-    for path in glob.glob(
-        os.path.join(runner_module.SNAPSHOT_OVERLAY_DIR, "**", "*.snap"), recursive=True
-    ):
+    for path in map(str, pathlib.Path(runner_module.SNAPSHOT_OVERLAY_DIR).rglob("*.snap")):
         relative = os.path.relpath(path, runner_module.SNAPSHOT_OVERLAY_DIR)
         with pathlib.Path(path).open(encoding="utf-8") as handle:
             lines = handle.read().split("\n")
-        with pathlib.Path(os.path.join(CODEX_SUBMODULE_DIR, "codex-rs", relative)).open(
+        with pathlib.Path(CODEX_SUBMODULE_DIR, "codex-rs", relative).open(
             encoding="utf-8"
         ) as handle:
             upstream = handle.read().split("\n")
@@ -358,8 +353,8 @@ def test_insta_never_rewrites_snapshots_in_an_ordinary_run(monkeypatch):
 
 
 def test_the_shipped_test_patches_touch_only_test_files():
-    for name in os.listdir(runner_module.TEST_PATCHES_DIR):
-        with pathlib.Path(os.path.join(runner_module.TEST_PATCHES_DIR, name)).open() as handle:
+    for name in (entry.name for entry in pathlib.Path(runner_module.TEST_PATCHES_DIR).iterdir()):
+        with (pathlib.Path(runner_module.TEST_PATCHES_DIR) / name).open() as handle:
             paths = re.findall(r"^\+\+\+ b/(\S+)", handle.read(), flags=re.M)
         assert paths, name
         for path in paths:
@@ -387,7 +382,7 @@ def test_the_temporary_directory_keeps_png_off_a_base64_boundary():
     path = CodexTestRunner.make_temp_dir()
     try:
         # As the runner makes it, under /tmp (this test's own root may be elsewhere).
-        root = f"/tmp/{os.path.basename(path)}"
+        root = f"/tmp/{pathlib.Path(path).name}"
         encoded = base64.b64encode(f"{root}/.tmpABCDEF/frame.png".encode()).decode()
         assert "cG5n" not in encoded
     finally:

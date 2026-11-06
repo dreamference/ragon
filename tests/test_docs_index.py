@@ -1,4 +1,6 @@
-"""The Python side of the local file index (specs/DREAMFERENCE_RAGON_LOCAL_INDEX.md): the pinned
+"""The Python side of the local file index.
+
+The Python side of the local file index (specs/DREAMFERENCE_RAGON_LOCAL_INDEX.md): the pinned
 run-time files `ragon-admin docs setup` installs, and the docs egress scenario's verdict. Nothing
 here downloads anything or runs strace: fetches are stubbed, traces are text.
 """
@@ -331,7 +333,7 @@ def test_a_trace_with_no_destination_passes_once_the_work_was_done():
 def test_any_destination_fails_even_on_loopback():
     for line in (
         '102 connect(5, {sa_family=AF_INET, sin_port=htons(8000), sin_addr=inet_addr("127.0.0.1")}, 16) = 0\n',
-        '102 connect(5, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("140.82.112.3")}, 16) = -1 EINPROGRESS\n',
+        '102 connect(5, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("140.82.112.3")}, 16) = -1 EINPROGRESS\n',  # noqa: E501
         '102 connect(5, {sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("127.0.0.53")}, 16) = 0\n',
     ):
         verdict = DocsEgressAudit.judge(StraceParser.parse(CLEAN + line), indexed=True, found=True)
@@ -341,7 +343,7 @@ def test_any_destination_fails_even_on_loopback():
 
 def test_the_fixture_is_a_readable_pdf_and_a_folder_the_index_takes(tmp_path):
     folder = DocsEgressAudit.make_fixture(str(tmp_path))
-    assert folder == os.path.join(str(tmp_path), "Documents")
+    assert folder == os.fspath(pathlib.Path(str(tmp_path), "Documents"))
     # Every parser the index has is exercised: a page, a Word file (a ZIP), mail with an attachment.
     assert sorted(entry.name for entry in pathlib.Path(folder).iterdir()) == [
         "gulls.docx",
@@ -354,7 +356,7 @@ def test_the_fixture_is_a_readable_pdf_and_a_folder_the_index_takes(tmp_path):
         "terns.html",
     ]
     assert zipfile.is_zipfile(pathlib.Path(folder) / "gulls.docx")
-    with pathlib.Path(os.path.join(folder, "report.pdf")).open("rb") as handle:
+    with pathlib.Path(folder, "report.pdf").open("rb") as handle:
         data = handle.read()
     assert data.startswith(b"%PDF-1.4") and b"startxref" in data
     # The xref offsets point at the objects.

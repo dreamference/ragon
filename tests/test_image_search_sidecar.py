@@ -1,4 +1,6 @@
-"""The image search and speech-to-text sidecars, and the image_search MCP tool
+"""The image search and speech-to-text sidecars, and the image_search MCP tool.
+
+The image search and speech-to-text sidecars, and the image_search MCP tool
 (specs/DREAMFERENCE_RAGON_ASK.md §6, §7). No container is started: docker is a recorder.
 """
 
@@ -403,7 +405,7 @@ def test_server_start_starts_each_only_on_a_node_without_one(monkeypatch, sideca
     assert ensure() is None
     monkeypatch.setattr(NodeIdentity, "read", classmethod(lambda cls: "node-1"))
     for existing in ("running", "exited"):
-        monkeypatch.setattr(sidecar, "state", classmethod(lambda cls, *a: existing))
+        monkeypatch.setattr(sidecar, "state", classmethod(lambda cls, *a: existing))  # noqa: B023
         assert ensure() is None
     monkeypatch.setattr(sidecar, "state", classmethod(lambda cls, *a: ""))
     assert ensure() is True

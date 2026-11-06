@@ -3,13 +3,15 @@
 import importlib.util
 import json
 import os
+import pathlib
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = str(pathlib.Path(__file__).resolve().parent.parent)
 
 
 def load():
     spec = importlib.util.spec_from_file_location(
-        "context_budget_replay", os.path.join(ROOT, "scripts", "context_budget_replay.py")
+        "context_budget_replay",
+        os.fspath(pathlib.Path(ROOT, "scripts", "context_budget_replay.py")),
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
