@@ -105,6 +105,10 @@ The owner's decision: a subset of SWE-bench Multilingual (C, C++, Rust weighted,
 Every `docker` call goes through `SweBenchDocker`, and the cache and results directories are module-level constants, so the tests (`tests/test_swe_bench.py`, where a container is a scratch git repository) never start a container or touch the real cache.
 
 
+## The 1.0 development gate's verdict
+
+`scripts/swe_bench_verdict.py --slice <list> --baseline <runs...> --candidate <runs...>` judges two graded runs by the rule written before the run (release scope D1): paired per instance on the slice, the candidate is not worse than the baseline when a one-sided test rejects "it resolves 3 or more instances per 100 fewer" at p = 0.05 (`--margin`, `--alpha`). The statistic is the paired normal approximation on the per-instance difference; the output names it, the discordant counts and the verdict, and `--json` prints it whole. A run is one or several reports: a directory is every `grading.json` under it, a file is one report, and the latest report holding an instance decides it, so shards and regrades union. Every slice instance must be graded in both runs, or the exit code is 2 and the missing ids are named (an ungraded task is never counted as a failure silently); instances outside the slice are ignored and counted. Exit codes: 0 pass, 1 fail, 2 mismatch or unreadable input. The gate's slice is a fixed-seed list stratified by repository; this script does not draw it.
+
 ## Published release results
 
 Only numbers tied to a release are published; nightly results stay internal. A release's entry is `docs/releases/<version>.json`, recorded by `scripts/release_benchmark.py record` from the report of the night that qualified the release, the night given by id and never guessed, with the previous default's result beside it. `render` rewrites the Benchmarks page (`docs/benchmarks.md`); the release workflow's `validate` job runs `check`. A release with no entry shows no number. No hostname, address, user name or home path goes in an entry (the script refuses them).
