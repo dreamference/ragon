@@ -39,6 +39,9 @@ use anyhow::bail;
 pub use ragon_node_locator::Node;
 use ragon_node_locator as locator;
 
+/// How long a machine with a node id waits for anything to listen on its own model port.
+const OWN_PORT_WAIT: Duration = Duration::from_secs(30);
+
 /// How long a browse may take when nothing answers.
 const BROWSE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -401,6 +404,58 @@ pub fn state_verdict(node: &Node, state: &str, answers: bool) -> Result<Option<S
     }
 }
 
+/// Whether [`Resolution::Host`] means this node's own port rather than a host somebody configured:
+/// only the node id says so, and it may be a leftover on a machine that serves nothing.
+fn on_own_port(inputs: &Inputs) -> bool {
+    inputs.is_node && inputs.configured.as_deref().is_none_or(|host| host.trim().is_empty())
+}
+
+/// What a machine with a node id and nothing on its port is told.
+///
+/// `ragon node use` alone does not help here: a node uses its own server whatever is remembered,
+/// so the id has to go first.
+pub fn no_own_server_message(host: &str) -> String {
+    format!(
+        "This machine is marked as a node, but no model server answers at {host}.\n\
+         - To serve a model here: ragon-admin server start\n\
+         - To use a node on the network: remove ~/.config/dreamference/node-id, then, \
+         if it is not found by itself: ragon node use <address>"
+    )
+}
+
+/// Waits up to `limit` for anything to listen on this node's own model port, then gives up with
+/// [`no_own_server_message`]. Something listening is enough: the model gate takes the port before
+/// the engine starts loading, and the wait for a model that is still loading is
+/// `wait_for_model`'s, as long as it takes.
+async fn wait_for_own_port(host: &str, limit: Duration) -> anyhow::Result<()> {
+    let client = crate::proxy::direct_client(Duration::from_secs(1))?;
+    if port_listens(&client, host).await {
+        return Ok(());
+    }
+    eprintln!("⏳ Looking for the model server on this machine at {host}...");
+    let started = Instant::now();
+    while started.elapsed() < limit {
+        eprint!(".");
+        let _ = std::io::stderr().flush();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if port_listens(&client, host).await {
+            eprintln!();
+            return Ok(());
+        }
+    }
+    eprintln!();
+    bail!("{}", no_own_server_message(host));
+}
+
+/// Whether anything accepts a connection at `host`, whatever it answers or fails to answer.
+async fn port_listens(client: &reqwest::Client, host: &str) -> bool {
+    let base = host.trim_end_matches('/');
+    match client.get(format!("{base}/v1/models")).send().await {
+        Ok(_) => true,
+        Err(error) => !error.is_connect(),
+    }
+}
+
 /// Reads the tiers' inputs from the environment and the files.
 pub fn inputs() -> Inputs {
     let configured = crate::configured_vllm_host();
@@ -427,7 +482,12 @@ pub async fn resolve_host(interactive: bool) -> anyhow::Result<String> {
     let resolution = resolve(&inputs, &MdnsBrowser);
     let missed = browse_missed(&resolution);
     let (node, state, remember, note) = match resolution {
-        Resolution::Host(host) => return Ok(host),
+        Resolution::Host(host) => {
+            if on_own_port(&inputs) {
+                wait_for_own_port(&host, OWN_PORT_WAIT).await?;
+            }
+            return Ok(host);
+        }
         Resolution::Refused(message) => bail!("{}", with_hint(message, wifi_hint(missed))),
         Resolution::NoneFound => {
             // A machine with a model server on loopback that has not written its node id yet
@@ -972,6 +1032,62 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+
+    #[test]
+    fn only_the_node_id_means_this_machines_own_port() {
+        assert!(on_own_port(&Inputs { is_node: true, ..Inputs::default() }));
+        assert!(on_own_port(&Inputs { is_node: true, configured: Some(" ".into()), ..Inputs::default() }));
+        // A configured host is waited for as long as it takes, even one on loopback.
+        assert!(!on_own_port(&Inputs { is_node: true, configured: Some(crate::DEFAULT_VLLM_HOST.into()), ..Inputs::default() }));
+        assert!(!on_own_port(&Inputs::default()));
+    }
+
+    /// A loopback address nothing listens on: a port the kernel just gave out and took back.
+    fn nothing_listens() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", listener.local_addr().unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_node_id_with_nothing_on_the_port_stops_with_what_to_do() {
+        let host = nothing_listens();
+        let started = Instant::now();
+        let error = wait_for_own_port(&host, Duration::from_secs(1)).await.unwrap_err().to_string();
+        assert!(started.elapsed() < Duration::from_secs(10), "the wait is bounded");
+        assert_eq!(error, no_own_server_message(&host));
+        for remedy in ["ragon-admin server start", "~/.config/dreamference/node-id", "ragon node use <address>"] {
+            assert!(error.contains(remedy), "{remedy} missing from: {error}");
+        }
+    }
+
+    #[test]
+    fn the_message_for_the_default_host_names_no_address() {
+        let message = no_own_server_message(crate::DEFAULT_VLLM_HOST);
+        assert!(message.contains("no model server answers at http://localhost:"), "{message}");
+        assert!(!message.split(|c: char| !(c.is_ascii_digit() || c == '.')).any(|word| word.matches('.').count() == 3));
+    }
+
+    /// A port that accepts and never answers, as a gate can while its engine loads: not a machine
+    /// that serves nothing, so the wait is left to `wait_for_model`.
+    #[tokio::test]
+    async fn a_listener_that_does_not_answer_yet_is_not_a_missing_server() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let host = format!("http://{}", listener.local_addr().unwrap());
+        wait_for_own_port(&host, Duration::ZERO).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_server_that_comes_up_during_the_wait_ends_it() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let late = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            tokio::net::TcpListener::bind(address).await.unwrap()
+        });
+        wait_for_own_port(&format!("http://{address}"), Duration::from_secs(20)).await.unwrap();
+        drop(late.await.unwrap());
+    }
 
     /// A browser that answers from a list and records what it was asked for.
     struct Fixed {

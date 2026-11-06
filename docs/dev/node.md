@@ -10,7 +10,7 @@ Ragon is a client and a node, and `ragon` finds the node.
 - Anything else is a **client**: the launcher (`ragon-rs/src/node.rs`) resolves the model server through tiers:
   1. `DREAMFERENCE_VLLM_HOST`/`vllm_host`;
   2. `RAGON_NODE`;
-  3. node → loopback;
+  3. node → loopback, for 30 s if nothing listens there: a leftover node id on a machine that serves nothing ends in a message and a non-zero exit (`wait_for_own_port`), while anything on the port, as the gate is during a load, gets the launcher's usual wait. With `--no-gate` the port may stay closed through a load, so `ragon` started then gives up too;
   4. the node remembered in `$CODEX_HOME/node.json`, found again **by id**;
   5. an mDNS browse of `_ragon-node._tcp` with the `mdns-sd` crate.
 
