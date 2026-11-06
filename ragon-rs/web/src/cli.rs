@@ -84,8 +84,17 @@ pub fn overlay_name(home: &Path) -> Option<String> {
     }
     let name = value.get("overlay_name")?.as_str()?.trim().to_ascii_lowercase();
     let plain = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
-    let own = name.starts_with("ragon-");
+    // A peer enrolled under an earlier prefix keeps its name: the label still ends with this node's id.
+    let own = name.starts_with("ragon-") || carries_node_id(&name, home);
     (plain && own && name.contains('.')).then_some(name)
+}
+
+/// Whether the overlay name's first label ends with `-<this node's id>`.
+fn carries_node_id(name: &str, home: &Path) -> bool {
+    let Ok(id) = std::fs::read_to_string(home.join(".config/dreamference/node-id")) else { return false };
+    let id = id.trim().to_ascii_lowercase();
+    let label = name.split('.').next().unwrap_or("");
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && label.ends_with(&format!("-{id}"))
 }
 
 /// This machine's addresses and names on the network: what a device on the LAN may put in `Host`.
@@ -777,6 +786,20 @@ mod tests {
         assert_eq!(overlay_name(&home), None);
         std::fs::write(&file, "not json").unwrap();
         assert_eq!(overlay_name(&home), None);
+    }
+
+    #[test]
+    fn a_peer_enrolled_under_an_earlier_prefix_still_answers_to_its_name() {
+        let home = scratch("overlay-earlier");
+        let file = home.join(".config/dreamference/remote/remote.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let name = "old-00000000-0000-4000-8000-000000000000.netbird.selfhosted";
+        std::fs::write(&file, format!(r#"{{"overlay_name": "{name}", "node_peer": true}}"#)).unwrap();
+        assert_eq!(overlay_name(&home), None, "no node id yet");
+        std::fs::write(home.join(".config/dreamference/node-id"), "11111111-1111-4111-8111-111111111111\n").unwrap();
+        assert_eq!(overlay_name(&home), None, "another node's id");
+        std::fs::write(home.join(".config/dreamference/node-id"), "00000000-0000-4000-8000-000000000000\n").unwrap();
+        assert_eq!(overlay_name(&home).as_deref(), Some(name));
     }
 
     #[test]
