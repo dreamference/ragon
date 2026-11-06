@@ -965,6 +965,9 @@ class SweBenchRunner:
             # The runner orchestrates `--refine` itself; the launcher's own refine mode
             # would turn each step into two sessions, whatever the setting says.
             "DREAMFERENCE_RAGON_REFINE": "off",
+            # Named on every request, so a run never depends on the engine's inference of the
+            # drafter (docs/dev/loop-guard.md); no output changes.
+            "DREAMFERENCE_RAGON_WORKLOAD": "swe-bench",
         }
         # The turn-end compaction arm (spec §16): Codex's key on every exec command
         # line (`SweBenchInstanceRun`), the launcher's switch beside it, only when the run asks.
