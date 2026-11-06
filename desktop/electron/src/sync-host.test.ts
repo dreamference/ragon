@@ -397,6 +397,7 @@ describe("the sync host", () => {
     r.hub.push({ id: 1, kind: "approve", thread: "t-1", request: 7, decision: "accept", by: "the phone" });
     await until(() => r.hub.ack(1) !== undefined);
     expect(r.hub.ack(1)).toMatchObject({ id: 1, ok: true });
+    await until(() => r.received().some((message) => message.id === 7) && r.told.some((told) => told.text === "Approved from the phone"), 30000);
     expect(r.received()).toContainEqual({ id: 7, result: { decision: "accept" } });
     expect(r.told).toContainEqual({ text: "Approved from the phone", thread: "t-1" });
 
@@ -509,6 +510,8 @@ describe("the sync host", () => {
     // A published thread's request is answered, acked and told about its own thread, whatever the hub named.
     r.hub.push({ id: 10, kind: "approve", thread: "t-4", request: 14, decision: "decline", by: "the phone" });
     expect(await acked(10)).toEqual({ id: 10, ok: true, thread: "t-1" });
+    // The answer reaches the scripted agent's log, and the notice is told, a moment after the ack on a slow host: await both.
+    await until(() => r.received().some((message) => message.id === 14) && r.told.some((told) => told.text === "Declined from the phone"), 30000);
     expect(r.received()).toContainEqual({ id: 14, result: { decision: "decline" } });
     expect(r.told).toContainEqual({ text: "Declined from the phone", thread: "t-1" });
     expect(r.told.some((told) => ["t-3", "t-5", "t-eph", "t-nowhere"].includes(told.thread ?? ""))).toBe(false);
