@@ -631,3 +631,113 @@ def test_a_bot_token_the_homeserver_did_not_answer_for_is_kept(machine):
     machine.request = unreachable_whoami
     assert MatrixHomeserver.start() == 0
     assert machine.registered == [mh.BOT_LOCALPART]
+
+
+# -- the overlay path ---------------------------------------------------------------------------
+
+OVERLAY_NAME = "ragon-node-1.netbird.selfhosted"
+
+
+@pytest.fixture
+def overlay(machine, monkeypatch, tmp_path):
+    """A node with remote access: the overlay name, an address on wt0, socat, and a certificate."""
+    from dreamference.remote.remote_certificate_authority import RemoteCertificateAuthority
+
+    real = machine.run
+    state = {"socat": True, "address": "198.51.100.7"}
+
+    def run(argv, timeout=120, env=None):
+        if argv[:2] == ["socat", "-V"]:
+            machine.runs.append(argv)
+            return subprocess.CompletedProcess(argv, 0 if state["socat"] else 127, "", "")
+        if argv[:1] == ["ip"]:
+            machine.runs.append(argv)
+            if not state["address"]:
+                return subprocess.CompletedProcess(argv, 1, "", "")
+            info = [{"addr_info": [{"local": state["address"]}]}]
+            return subprocess.CompletedProcess(argv, 0, json.dumps(info), "")
+        return real(argv, timeout, env)
+
+    machine.run = run
+    machine.state = state
+    monkeypatch.setattr(MatrixHomeserver, "overlay_name", classmethod(lambda cls: OVERLAY_NAME))
+    monkeypatch.setattr(MatrixHomeserver, "unit_dir", classmethod(lambda cls: str(tmp_path)))
+    issued = []
+
+    def ensure(label, names, renew_before_days=60):
+        issued.append((label, names))
+        return pathlib.Path("/c/matrix.crt"), pathlib.Path("/c/matrix.key")
+
+    monkeypatch.setattr(
+        RemoteCertificateAuthority,
+        "ensure_certificate",
+        classmethod(lambda cls, label, names, renew_before_days=60: ensure(label, names)),
+    )
+    machine.issued = issued
+    machine.units = tmp_path
+    return machine
+
+
+def test_a_new_homeserver_on_a_node_with_remote_access_is_named_for_the_overlay(overlay, capsys):
+    assert MatrixHomeserver.start() == 0
+    run = overlay.argv("docker", "run")[0]
+    assert f"TUWUNEL_SERVER_NAME={OVERLAY_NAME}" in [
+        run[i + 1] for i, arg in enumerate(run) if arg == "-e"
+    ]
+    assert overlay.issued == [("matrix", [OVERLAY_NAME])]
+    assert not overlay.argv("tailscale", "serve"), "no tailscale serve on the overlay path"
+    unit = (overlay.units / mh.TLS_SERVICE_UNIT).read_text()
+    assert "bind=198.51.100.7" in unit and f"OPENSSL-LISTEN:{mh.TLS_PORT}" in unit
+    assert "cert=/c/matrix.crt,key=/c/matrix.key" in unit
+    assert f"TCP:127.0.0.1:{mh.MATRIX_PORT}" in unit
+    assert ["systemctl", "--user", "restart", mh.TLS_SERVICE_UNIT] in overlay.runs
+    assert f"https://{OVERLAY_NAME}:{mh.TLS_PORT}" in capsys.readouterr().out
+
+
+def test_an_existing_tailnet_homeserver_keeps_its_name_and_its_serve(overlay):
+    MatrixHomeserver._save(
+        "matrix-admin.json",
+        {"server_name": "node.tail1234.ts.net", "registration_token": "t" * 64, "push": False},
+    )
+    assert MatrixHomeserver.start() == 0
+    assert overlay.argv("tailscale", "serve")
+    assert not overlay.issued and not (overlay.units / mh.TLS_SERVICE_UNIT).exists()
+
+
+def test_the_overlay_path_refuses_without_socat_or_an_overlay_address(overlay, caplog):
+    overlay.state["socat"] = False
+    assert MatrixHomeserver.start() == 1
+    assert "socat" in caplog.text
+    overlay.state["socat"] = True
+    overlay.state["address"] = None
+    assert MatrixHomeserver.start() == 1
+    assert "no address" in caplog.text
+
+
+def test_stop_and_remove_take_the_overlay_unit_down_not_tailscale(overlay):
+    assert MatrixHomeserver.start() == 0
+    overlay.runs.clear()
+    assert MatrixHomeserver.stop() == 0
+    assert ["systemctl", "--user", "disable", "--now", mh.TLS_SERVICE_UNIT] in overlay.runs
+    assert not overlay.argv("tailscale", "serve")
+    assert MatrixHomeserver.remove(True) == 0
+    assert not (overlay.units / mh.TLS_SERVICE_UNIT).exists()
+
+
+def test_add_user_and_status_name_the_overlay_address(overlay, capsys):
+    assert MatrixHomeserver.start() == 0
+    capsys.readouterr()
+    assert MatrixHomeserver.add_user("alice") == 0
+    assert f"https://{OVERLAY_NAME}:{mh.TLS_PORT}" in capsys.readouterr().out
+    assert MatrixHomeserver.status() == 0
+    assert "Overlay:" in capsys.readouterr().out
+
+
+def test_without_remote_access_the_overlay_name_is_none(monkeypatch):
+    monkeypatch.setattr(
+        "dreamference.remote.remote_settings.RemoteSettings.read", classmethod(lambda cls: None)
+    )
+    monkeypatch.setattr(
+        "dreamference.node.node_identity.NodeIdentity.read", classmethod(lambda cls: "node-1")
+    )
+    assert MatrixHomeserver.overlay_name() is None

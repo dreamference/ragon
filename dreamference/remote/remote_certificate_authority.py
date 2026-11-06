@@ -241,6 +241,35 @@ class RemoteCertificateAuthority:
         return certificate, key
 
     @classmethod
+    def ensure_certificate(
+        cls, label: str, names: list[str], renew_before_days: int = 60
+    ) -> tuple[Path, Path] | None:
+        """Keeps a server certificate for `names`, issuing a new one when it is due.
+
+        Args:
+            label: The file name under `certs/` (`matrix`).
+            names: The DNS names it must cover.
+            renew_before_days: A certificate expiring sooner than this is replaced.
+
+        Returns:
+            Optional[Tuple[Path, Path]]: The certificate and its key, or None when openssl failed.
+        """
+        folder = RemoteSettings.path("certs")
+        certificate, key = folder / f"{label}.crt", folder / f"{label}.key"
+        if certificate.is_file() and key.is_file():
+            due = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=renew_before_days)
+            expires = cls.expiry(certificate)
+            names_result = cls._run(
+                ["openssl", "x509", "-in", str(certificate), "-noout", "-ext", "subjectAltName"]
+            )
+            covered = names_result.returncode == 0 and all(
+                f"DNS:{name}" in names_result.stdout for name in names
+            )
+            if expires is not None and expires > due and covered:
+                return certificate, key
+        return cls.issue(label, names)
+
+    @classmethod
     def expiry(cls, certificate: Path) -> datetime.datetime | None:
         """When a certificate expires.
 

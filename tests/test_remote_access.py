@@ -151,6 +151,19 @@ def test_the_ca_is_name_constrained_and_signs_only_what_it_may():
 
 
 @needs_openssl
+def test_a_certificate_for_the_overlay_name_is_kept_until_it_is_due():
+    name = "ragon-1.netbird.selfhosted"
+    assert RemoteCertificateAuthority.ensure(BOX)
+    first = RemoteCertificateAuthority.ensure_certificate("matrix", [name])
+    assert first is not None
+    before = first[0].read_text()
+    assert RemoteCertificateAuthority.ensure_certificate("matrix", [name]) == first
+    assert first[0].read_text() == before, "a valid certificate is not re-issued"
+    RemoteCertificateAuthority.ensure_certificate("matrix", [name], renew_before_days=10000)
+    assert first[0].read_text() != before, "one due for renewal is"
+
+
+@needs_openssl
 def test_a_reissue_that_cannot_be_signed_keeps_the_old_key_and_certificate(monkeypatch):
     RemoteCertificateAuthority.ensure(BOX)
     certificate, key = RemoteCertificateAuthority.issue("control-plane", [BOX])

@@ -5,8 +5,10 @@
 tuwunel runs as the container `dreamference-matrix` on an **internal** Docker network, so it has no
 route to anything but this host: no federation, no URL previews, no push gateway, because nothing
 can be reached, not because a setting says so. The host reaches it through a loopback proxy (two
-user units running systemd's own `systemd-socket-proxyd`), and the phone through `tailscale serve`
-in front of that proxy, under the node's tailnet name. That name is the Matrix server name, which is
+user units running systemd's own `systemd-socket-proxyd`), and the phone, on a node with remote
+access, through a TLS unit on the overlay address (a certificate for the node's overlay name from
+its own CA, `serve_on_overlay`), otherwise through `tailscale serve` in front of that proxy, under
+the node's tailnet name. That name is the Matrix server name, which is
 permanent (every account's id ends in it), so it is chosen once, kept in `matrix-admin.json`, and a
 later `start` refuses when Tailscale reports another one.
 
@@ -17,6 +19,7 @@ writes it. Everything that touches Docker, systemd, Tailscale or HTTP goes throu
 
 import contextlib
 import json
+import logging
 import os
 import pathlib
 import re
@@ -27,6 +30,8 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any, Final
+
+LOG: Final[logging.Logger] = logging.getLogger(__name__)
 
 MATRIX_CONTAINER: Final[str] = "dreamference-matrix"
 # tuwunel 1.9.3, the multi-architecture index, pinned by digest.
@@ -47,6 +52,13 @@ MATRIX_PORT: Final[int] = 6167
 PROXY_URL: Final[str] = f"http://127.0.0.1:{MATRIX_PORT}"
 PROXY_SOCKET_UNIT: Final[str] = "ragon-matrix-proxy.socket"
 PROXY_SERVICE_UNIT: Final[str] = "ragon-matrix-proxy.service"
+# On a node with remote access the phone reaches the homeserver by the node's overlay name, over TLS
+# from the node's own CA: a user unit running `socat`, bound to the overlay address only, in front of
+# the loopback proxy. 8448 is Matrix's alternate HTTPS port; it needs no privilege to bind.
+TLS_SERVICE_UNIT: Final[str] = "ragon-matrix-tls.service"
+TLS_PORT: Final[int] = 8448
+TLS_CERTIFICATE_LABEL: Final[str] = "matrix"
+OVERLAY_INTERFACE: Final[str] = "wt0"
 SOCKET_PROXYD: Final[str] = "/usr/lib/systemd/systemd-socket-proxyd"
 BOT_LOCALPART: Final[str] = "ragon"
 MEMORY_LIMIT: Final[str] = "1g"
@@ -60,6 +72,7 @@ TAILSCALE_INSTALL: Final[str] = (
 HTTP_OK: Final[int] = 200
 HTTP_UNAUTHORIZED: Final[int] = 401
 BACKEND_RUNNING: Final[str] = "Running"
+UNIT_ACTIVE: Final[str] = "active"
 DOCKER_TRUE: Final[str] = "true"
 AUTH_SESSION_KEY: Final[str] = "session"
 STAGE_TOKEN: Final[str] = "m.login.registration_token"
@@ -178,6 +191,112 @@ class MatrixHomeserver:
             return None
         name = (status.get("Self") or {}).get("DNSName") or ""
         return name.rstrip(".") or None
+
+    # -- the overlay -------------------------------------------------------------------------
+
+    @classmethod
+    def overlay_name(cls) -> str | None:
+        """The node's overlay name, when remote access is set up on this machine.
+
+        Returns:
+            Optional[str]: `ragon-<id>.netbird.selfhosted`, or None without remote access.
+        """
+        from dreamference.node.node_identity import NodeIdentity
+        from dreamference.remote.remote_settings import RemoteSettings
+
+        node_id = NodeIdentity.read()
+        if not node_id or not RemoteSettings.read():
+            return None
+        return RemoteSettings.overlay_name(node_id)
+
+    @classmethod
+    def overlay_address(cls) -> str | None:
+        """The address the overlay interface holds here (the only one the TLS unit binds).
+
+        Returns:
+            Optional[str]: The IPv4 address, or None when the overlay is not up.
+        """
+        result = cls._run(["ip", "-j", "-4", "addr", "show", "dev", OVERLAY_INTERFACE], timeout=30)
+        if result.returncode != 0:
+            return None
+        try:
+            interfaces = json.loads(result.stdout)
+            return str(interfaces[0]["addr_info"][0]["local"])
+        except (ValueError, LookupError, TypeError):
+            return None
+
+    @classmethod
+    def tls_unit(cls, address: str, certificate: str, key: str) -> str:
+        """The TLS unit's text.
+
+        Args:
+            address: The overlay address to bind.
+            certificate: The certificate file.
+            key: Its key file.
+
+        Returns:
+            str: The unit file.
+        """
+        listen = (
+            f"OPENSSL-LISTEN:{TLS_PORT},bind={address},reuseaddr,fork,verify=0,"
+            f"cert={certificate},key={key}"
+        )
+        return (
+            "# Written by `ragon-admin matrix start`: the homeserver on the overlay, over TLS from the\n"
+            "# node's CA (specs/DREAMFERENCE_RAGON_REMOTE_ACCESS.md §8).\n"
+            "[Unit]\nDescription=Ragon Matrix homeserver, on the overlay\n"
+            f"After={PROXY_SOCKET_UNIT}\n\n"
+            f"[Service]\nExecStart=socat {listen} TCP:127.0.0.1:{MATRIX_PORT}\n"
+            "Restart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n"
+        )
+
+    @classmethod
+    def serve_on_overlay(cls, name: str) -> bool:
+        """Issues the certificate for `name` and (re)starts the TLS unit. Logs why on failure.
+
+        Args:
+            name: The node's overlay name.
+
+        Returns:
+            bool: True when the homeserver is offered on the overlay.
+        """
+        from dreamference.remote.remote_certificate_authority import RemoteCertificateAuthority
+
+        if cls._run(["socat", "-V"], timeout=30).returncode != 0:
+            LOG.error(
+                "❌ The overlay path needs `socat` (sudo apt install socat); then run this again."
+            )
+            return False
+        address = cls.overlay_address()
+        if not address:
+            LOG.error(
+                f"❌ The overlay interface {OVERLAY_INTERFACE} has no address: is this node enrolled "
+                "(`ragon-admin remote status`)?"
+            )
+            return False
+        issued = RemoteCertificateAuthority.ensure_certificate(TLS_CERTIFICATE_LABEL, [name])
+        if issued is None:
+            LOG.error("❌ The node's CA could not issue the homeserver's certificate.")
+            return False
+        directory = pathlib.Path(cls.unit_dir())
+        directory.mkdir(exist_ok=True, parents=True)
+        (directory / TLS_SERVICE_UNIT).write_text(
+            cls.tls_unit(address, str(issued[0]), str(issued[1])), encoding="utf-8"
+        )
+        steps = [
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "enable", TLS_SERVICE_UNIT],
+            ["systemctl", "--user", "restart", TLS_SERVICE_UNIT],
+        ]
+        if not all(cls._run(step, timeout=60).returncode == 0 for step in steps):
+            LOG.error("❌ Could not start the TLS unit (systemd user units).")
+            return False
+        return True
+
+    @classmethod
+    def stop_overlay(cls) -> None:
+        """Takes the homeserver off the overlay (a no-op when it was never on it)."""
+        cls._run(["systemctl", "--user", "disable", "--now", TLS_SERVICE_UNIT], timeout=60)
 
     # -- Docker ---------------------------------------------------------------------------------
 
@@ -427,6 +546,45 @@ class MatrixHomeserver:
     # -- commands -------------------------------------------------------------------------------
 
     @classmethod
+    def _chosen_name(cls, admin: dict[str, Any]) -> str | None:
+        """The server name this start uses.
+
+        A new homeserver on a node with remote access is named for the overlay; an existing one
+        keeps its name until `matrix remove` (REMOTE_ACCESS §14.4).
+
+        Args:
+            admin: The admin file (empty for a new homeserver).
+
+        Returns:
+            Optional[str]: The overlay name or the tailnet name; None when neither is available.
+        """
+        overlay = cls.overlay_name()
+        if overlay and (not admin or admin.get("server_name") == overlay):
+            return overlay
+        return cls.tailscale_name()
+
+    @classmethod
+    def _offer(cls, name: str) -> str | None:
+        """Offers the homeserver outside this machine: on the overlay, else through Tailscale.
+
+        Args:
+            name: The server name.
+
+        Returns:
+            Optional[str]: The URL a phone signs in to; None (after printing why) on the overlay
+            path when it could not be set up.
+        """
+        if name == cls.overlay_name():
+            return f"https://{name}:{TLS_PORT}" if cls.serve_on_overlay(name) else None
+        served = cls._run(["tailscale", "serve", "--bg", "--https=443", PROXY_URL], timeout=60)
+        if served.returncode != 0:
+            print(
+                "⚠️  `tailscale serve` refused; if HTTPS is off for your tailnet, turn it on once in the Tailscale "
+                f"admin console (DNS → HTTPS Certificates), then run this again. ({served.stderr.strip()[:300]})"
+            )
+        return f"https://{name}"
+
+    @classmethod
     def _prepare(cls) -> tuple[str, dict[str, Any], bool] | None:
         """Checks the machine and the server name, and creates the admin file and network.
 
@@ -442,11 +600,11 @@ class MatrixHomeserver:
                 "the model (`ragon-admin node enable`)."
             )
             return None
-        name = cls.tailscale_name()
+        admin = cls._load("matrix-admin.json")
+        name = cls._chosen_name(admin)
         if not name:
             print(f"❌ {TAILSCALE_INSTALL}")
             return None
-        admin = cls._load("matrix-admin.json")
         if admin.get("server_name") and admin["server_name"] != name:
             print(
                 f"❌ This homeserver is {admin['server_name']}, but Tailscale now names this machine {name}.\n"
@@ -469,6 +627,26 @@ class MatrixHomeserver:
         return name, admin, push
 
     @classmethod
+    def _bring_up(cls, name: str, admin: dict[str, Any], push: bool) -> bool:
+        """Starts the container and the loopback proxy and waits for the homeserver to answer.
+
+        Returns:
+            bool: False (after printing why) when it did not come up.
+        """
+        if not cls._ensure_container(name, admin, push):
+            return False
+        address = cls.container_address() or MATRIX_ADDRESS
+        if not cls.install_proxy(f"{address}:{MATRIX_PORT}"):
+            print("❌ Could not start the loopback proxy (systemd user units).")
+            return False
+        if not cls.wait_until_answering():
+            print(
+                f"❌ The homeserver is not answering on {PROXY_URL}; `docker logs {MATRIX_CONTAINER}` says why."
+            )
+            return False
+        return True
+
+    @classmethod
     def start(cls) -> int:
         """Starts (or creates) the homeserver, the proxy, the bot account and `tailscale serve`.
 
@@ -479,16 +657,7 @@ class MatrixHomeserver:
         if prepared is None:
             return 1
         name, admin, push = prepared
-        if not cls._ensure_container(name, admin, push):
-            return 1
-        address = cls.container_address() or MATRIX_ADDRESS
-        if not cls.install_proxy(f"{address}:{MATRIX_PORT}"):
-            print("❌ Could not start the loopback proxy (systemd user units).")
-            return 1
-        if not cls.wait_until_answering():
-            print(
-                f"❌ The homeserver is not answering on {PROXY_URL}; `docker logs {MATRIX_CONTAINER}` says why."
-            )
+        if not cls._bring_up(name, admin, push):
             return 1
         config = cls._load("matrix.json")
         if not cls._ensure_bot(config, admin):
@@ -496,15 +665,10 @@ class MatrixHomeserver:
         config.update({"homeserver": PROXY_URL, "server_name": name})
         config.setdefault("allowed", [])
         cls._save("matrix.json", config)
-        served = cls._run(["tailscale", "serve", "--bg", "--https=443", PROXY_URL], timeout=60)
-        if served.returncode != 0:
-            print(
-                "⚠️  `tailscale serve` refused; if HTTPS is off for your tailnet, turn it on once in the Tailscale "
-                f"admin console (DNS → HTTPS Certificates), then run this again. ({served.stderr.strip()[:300]})"
-            )
-        print(
-            f"✅ The Matrix homeserver is running as https://{name} (no route out of this machine)."
-        )
+        url = cls._offer(name)
+        if url is None:
+            return 1
+        print(f"✅ The Matrix homeserver is running as {url} (no route out of this machine).")
         if not config["allowed"]:
             print(
                 "   Next: `ragon-admin matrix add-user <name>` for your account, then `ragon chat start`."
@@ -533,14 +697,31 @@ class MatrixHomeserver:
         if answer["user_id"] not in allowed:
             allowed.append(answer["user_id"])
         cls._save("matrix.json", config)
+        if admin["server_name"] == cls.overlay_name():
+            where = f"with the overlay on): sign in to https://{admin['server_name']}:{TLS_PORT}"
+        else:
+            where = f"with Tailscale on): sign in to https://{admin['server_name']}"
         print(
             f"✅ Created {answer['user_id']}. Its password, shown this once and stored nowhere:\n\n"
             f"    {password}\n\n"
-            f"In Element X on your phone (with Tailscale on): sign in to https://{admin['server_name']} as "
+            f"In Element X on your phone ({where} as "
             f"{localpart} with that password, then accept the invite from Ragon. "
             "`ragon chat start` (or a restart of it) opens the room."
         )
         return 0
+
+    @classmethod
+    def _take_down_front(cls) -> None:
+        """Stops whatever offers the homeserver outside this machine.
+
+        That is the TLS unit on the overlay for an overlay-named homeserver, `tailscale serve` for a
+        tailnet-named one.
+        """
+        name = cls._load("matrix-admin.json").get("server_name")
+        if name and name == cls.overlay_name():
+            cls.stop_overlay()
+        else:
+            cls._run(["tailscale", "serve", "--https=443", "off"], timeout=60)
 
     @classmethod
     def stop(cls) -> int:
@@ -550,7 +731,7 @@ class MatrixHomeserver:
         listen again) and the container is stopped (`unless-stopped` keeps it stopped). The
         accounts and messages stay in the volume.
         """
-        cls._run(["tailscale", "serve", "--https=443", "off"], timeout=60)
+        cls._take_down_front()
         cls._run(["systemctl", "--user", "disable", "--now", PROXY_SOCKET_UNIT], timeout=60)
         cls._run(["systemctl", "--user", "stop", PROXY_SERVICE_UNIT], timeout=60)
         cls._run(["docker", "stop", MATRIX_CONTAINER], timeout=660)
@@ -575,7 +756,13 @@ class MatrixHomeserver:
             else "internal, no route out"
         )
         print(f"Network:     {network}")
-        print(f"Tailscale:   {cls.tailscale_name() or 'not running'}")
+        if admin["server_name"] == cls.overlay_name():
+            running = cls._run(["systemctl", "--user", "is-active", TLS_SERVICE_UNIT], timeout=30)
+            serving = "serving" if running.stdout.strip() == UNIT_ACTIVE else "not serving"
+            front = f"Overlay:     https://{admin['server_name']}:{TLS_PORT} ({serving})"
+        else:
+            front = f"Tailscale:   {cls.tailscale_name() or 'not running'}"
+        print(front)
         print(f"Bot:         {config.get('user_id', 'not created')}")
         print(
             f"Allowed:     {', '.join(config.get('allowed', [])) or 'nobody yet (`ragon-admin matrix add-user <name>`)'}"  # noqa: E501
@@ -607,7 +794,7 @@ class MatrixHomeserver:
                 "This deletes the homeserver, every account on it and every message. Run it again with --yes."
             )
             return 1
-        cls._run(["tailscale", "serve", "--https=443", "off"], timeout=60)
+        cls._take_down_front()
         cls._run(["systemctl", "--user", "disable", "--now", PROXY_SOCKET_UNIT], timeout=60)
         cls._run(["systemctl", "--user", "stop", PROXY_SERVICE_UNIT], timeout=60)
         cls._run(["docker", "rm", "-f", MATRIX_CONTAINER], timeout=660)
@@ -616,7 +803,7 @@ class MatrixHomeserver:
         for name in ("matrix.json", "matrix-admin.json", "matrix-state.json"):
             with contextlib.suppress(FileNotFoundError):
                 pathlib.Path(cls._path(name)).unlink()
-        for name in (PROXY_SOCKET_UNIT, PROXY_SERVICE_UNIT):
+        for name in (PROXY_SOCKET_UNIT, PROXY_SERVICE_UNIT, TLS_SERVICE_UNIT):
             with contextlib.suppress(FileNotFoundError):
                 (pathlib.Path(cls.unit_dir()) / name).unlink()
         print("✅ The Matrix homeserver and its accounts are deleted.")
