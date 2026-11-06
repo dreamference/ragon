@@ -25,6 +25,12 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Final
 
+CLASS_TEXT: Final[str] = "class"
+COUNT_2: Final[int] = 2
+INIT_TEXT: Final[str] = "__init__"
+PY_TEXT: Final[str] = ".py"
+SLASH_TEXT: Final[str] = "/"
+
 # The phrase a name is replaced with, by kind: `[file 1]`, `[module 1]`, `[class 1]`, `[function 1]`.
 # A file and its module share a number: `[file 2]` and `[module 2]` are the same file.
 PHRASES: Final[dict] = {
@@ -58,7 +64,9 @@ class SweBenchNameStripper:
 
     @classmethod
     def english(cls) -> frozenset[str]:
-        """Returns:
+        """English.
+
+        Returns:
         FrozenSet[str]: The lowercase words of the system word list; empty when there is none,
         which `is_english` reads as "every word is English".
         """
@@ -72,7 +80,9 @@ class SweBenchNameStripper:
 
     @classmethod
     def is_english(cls, word: str) -> bool:
-        """Args:
+        """Is english.
+
+        Args:
             word: A plain name, letters only.
 
         Returns:
@@ -104,23 +114,25 @@ class SweBenchNameStripper:
             for start in range(1, len(parts) - 1):
                 found.setdefault("/".join(parts[start:]), ("file", path))
             found.setdefault(pure.name, ("file", path))
-            if pure.suffix == ".py":
-                module = list(parts[:-1]) + ([] if pure.stem == "__init__" else [pure.stem])
-                if len(module) >= 2:
+            if pure.suffix == PY_TEXT:
+                module = list(parts[:-1]) + ([] if pure.stem == INIT_TEXT else [pure.stem])
+                if len(module) >= COUNT_2:
                     found.setdefault(".".join(module), ("module", path))
-                if pure.stem != "__init__":
+                if pure.stem != INIT_TEXT:
                     found.setdefault(pure.stem, ("module", path))
         for context in HUNK_CONTEXT.findall(patch or ""):
             match = DEFINITION.match(context)
             if match:
                 name = match.group(2)
-                found.setdefault(name, ("class" if match.group(1) == "class" else "function", name))
+                found.setdefault(
+                    name, ("class" if match.group(1) == CLASS_TEXT else "function", name)
+                )
         for kind, name in CHANGED_DEFINITION.findall(patch or ""):
-            found.setdefault(name, ("class" if kind == "class" else "function", name))
+            found.setdefault(name, ("class" if kind == CLASS_TEXT else "function", name))
         triples = [
             (name, kind, group)
             for name, (kind, group) in found.items()
-            if name not in GENERIC and len(name) > 2
+            if name not in GENERIC and len(name) > COUNT_2
         ]
         return sorted(triples, key=lambda triple: (-len(triple[0]), triple[0]))
 
@@ -153,7 +165,7 @@ class SweBenchNameStripper:
             `.py`. Any other plain name matches anywhere except as a quoted value.
         """
         escaped = re.escape(name)
-        if "/" in name:
+        if SLASH_TEXT in name:
             escaped = re.escape(name).replace("/", r"[/\\]")
         whole = rf"(?<![\w]){escaped}(?![\w])"
         if cls.distinctive(name):

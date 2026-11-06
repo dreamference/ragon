@@ -37,6 +37,9 @@ from dreamference.swe_bench import swe_bench_settings
 from dreamference.swe_bench.swe_bench_docker import SweBenchDocker
 from dreamference.swe_bench.swe_bench_runtime import SweBenchRuntime
 
+CONFIG_DB_TEXT: Final[str] = "_config.db"
+EXACT_TEXT: Final[str] = "exact"
+
 # The arms `--code-index` accepts.
 ARMS: Final[tuple] = ("off", "universal", "exact")
 
@@ -89,7 +92,9 @@ class SweBenchCodeIndex:
 
     @classmethod
     def host_binary(cls) -> str | None:
-        """Returns:
+        """Host binary.
+
+        Returns:
         Optional[str]: The installed `ragon-code` (beside `ragon`), or None if absent; or
         the one `DREAMFERENCE_SWE_BENCH_RAGON_CODE` names, to measure a build of it that
         is not installed (the arm then differs from the plain one in `ragon-code` alone).
@@ -100,14 +105,16 @@ class SweBenchCodeIndex:
         ragon = SweBenchRuntime.installed_ragon()
         if not ragon:
             return None
-        path = os.path.join(os.path.dirname(os.path.realpath(ragon)), "ragon-code")
+        path = str(Path(os.path.realpath(ragon)).parent / "ragon-code")
         return path if Path(path).exists() else None
 
     # -- the binary for the container ----------------------------------------------------------
 
     @classmethod
     def runtime_dir(cls) -> Path:
-        """Returns:
+        """Runtime dir.
+
+        Returns:
         Path: The relocated `ragon-code`, kept apart from `ragon`'s runtime so that
         runtime's hash, which a run's manifest pins, does not change when this one appears.
         A build named by `DREAMFERENCE_SWE_BENCH_RAGON_CODE` gets a directory of its own,
@@ -120,7 +127,9 @@ class SweBenchCodeIndex:
 
     @classmethod
     def ensure_runtime(cls, patchelf: str) -> str | None:
-        """Builds the relocated `ragon-code` unless the one on disk was made from the installed
+        """Builds the relocated `ragon-code` unless the one on disk is current.
+
+        The one on disk counts as current if it was made from the installed
         binary. Same treatment as `ragon`: the instance images have an older glibc.
 
         Args:
@@ -149,14 +158,14 @@ class SweBenchCodeIndex:
         try:
             loader, libraries = SweBenchRuntime.host_libraries(binary)
             for library in [loader, *libraries]:
-                shutil.copy(os.path.realpath(library), staging / "lib" / os.path.basename(library))
+                shutil.copy(os.path.realpath(library), staging / "lib" / Path(library).name)
             copy = staging / "bin" / "ragon-code"
             shutil.copy(binary, copy)
             patched = cls.execute(
                 [
                     patchelf,
                     "--set-interpreter",
-                    f"{CODE_MOUNT}/lib/{os.path.basename(loader)}",
+                    f"{CODE_MOUNT}/lib/{Path(loader).name}",
                     "--set-rpath",
                     f"{CODE_MOUNT}/lib",
                     str(copy),
@@ -177,7 +186,9 @@ class SweBenchCodeIndex:
 
     @classmethod
     def index_dir(cls, row: dict[str, Any], arm: str = "universal") -> Path:
-        """Args:
+        """Index dir.
+
+        Args:
             row: The instance's dataset row.
             arm: `universal` or `exact`: each has a cache of its own.
 
@@ -187,13 +198,15 @@ class SweBenchCodeIndex:
         repo = str(row["repo"]).replace("/", "__")
         return (
             swe_bench_settings.CACHE_DIR
-            / ("index-exact" if arm == "exact" else "index")
+            / ("index-exact" if arm == EXACT_TEXT else "index")
             / f"{repo}@{str(row['base_commit'])[:16]}"
         )
 
     @classmethod
     def record(cls, row: dict[str, Any], arm: str = "universal") -> dict[str, Any] | None:
-        """Args:
+        """Record.
+
+        Args:
             row: The instance's dataset row.
             arm: `universal` or `exact`.
 
@@ -209,7 +222,7 @@ class SweBenchCodeIndex:
             return None
         if not isinstance(record, dict):
             return None
-        if arm == "exact":
+        if arm == EXACT_TEXT:
             return record if record.get("layers") == ["exact"] else None
         if not (directory / "cbm" / str(record.get("graph_db"))).is_file():
             return None
@@ -265,7 +278,7 @@ class SweBenchCodeIndex:
         if binary is None:
             print("❌ ragon-code is not installed: run `ragon-admin codex build` first.")
             return None
-        if arm == "exact":
+        if arm == EXACT_TEXT:
             return cls.ensure_exact(row, image, binary)
         directory = cls.index_dir(row)
         shutil.rmtree(directory, ignore_errors=True)
@@ -295,7 +308,7 @@ class SweBenchCodeIndex:
             output, code = "timed out", 124
         (directory / "index.log").write_text(output)
         graphs = sorted(
-            path.name for path in (directory / "cbm").glob("*.db") if path.name != "_config.db"
+            path.name for path in (directory / "cbm").glob("*.db") if path.name != CONFIG_DB_TEXT
         )
         shutil.rmtree(checkout, ignore_errors=True)  # queries read the container's own /testbed
         if code != 0 or not graphs:
@@ -435,7 +448,7 @@ class SweBenchCodeIndex:
             Dict[str, Any]: `mounts` (`docker run -v` values, both read-only), `env` (what
             `ragon-code` and the launcher read) and `path` (the directory to put on `PATH`).
         """
-        if arm == "exact":
+        if arm == EXACT_TEXT:
             return {
                 "mounts": [
                     f"{cls.runtime_dir()}:{CODE_MOUNT}:ro",
@@ -494,7 +507,9 @@ class SweBenchCodeIndex:
 
     @classmethod
     def cached(cls) -> list[str]:
-        """Returns:
+        """Cached.
+
+        Returns:
         List[str]: The names of the cached indexes.
         """
         root = swe_bench_settings.CACHE_DIR / "index"

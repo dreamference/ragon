@@ -1,4 +1,5 @@
-"""The upstream SWE-bench harness, in a virtualenv of its own
+"""The upstream SWE-bench harness, in a virtualenv of its own.
+
 (specs/DREAMFERENCE_RAGON_SWE_BENCH.md §6.1, §12).
 
 Grading is always the harness's: this module installs it, hands it a dataset file and a
@@ -25,6 +26,10 @@ from typing import Any, Final
 
 from dreamference.swe_bench import swe_bench_settings
 from dreamference.swe_bench.swe_bench_docker import SweBenchDocker
+
+COUNT_2: Final[int] = 2
+ERROR_PATCH_FAILED_TEXT: Final[str] = "error: patch failed"
+PATCH_DOES_NOT_APPLY_TEXT: Final[str] = "patch does not apply"
 
 # A patch that applies to any repository and fixes nothing.
 NOOP_PATCH: Final[str] = (
@@ -83,14 +88,18 @@ class SweBenchHarness:
 
     @classmethod
     def venv_dir(cls) -> Path:
-        """Returns:
+        """Venv dir.
+
+        Returns:
         Path: The harness's virtualenv.
         """
         return swe_bench_settings.CACHE_DIR / "venv"
 
     @classmethod
     def tool(cls, name: str) -> str:
-        """Args:
+        """Tool.
+
+        Args:
             name: An executable of the virtualenv (`swebench`, `python`, `patchelf`).
 
         Returns:
@@ -100,7 +109,9 @@ class SweBenchHarness:
 
     @classmethod
     def installed_version(cls) -> str | None:
-        """Returns:
+        """Installed version.
+
+        Returns:
         Optional[str]: The installed harness version, or None when there is no virtualenv.
         """
         if not Path(cls.tool("python")).exists():
@@ -153,7 +164,9 @@ class SweBenchHarness:
 
     @classmethod
     def snapshot_path(cls, dataset: str) -> Path:
-        """Args:
+        """Snapshot path.
+
+        Args:
             dataset: A dataset name or id.
 
         Returns:
@@ -164,8 +177,9 @@ class SweBenchHarness:
 
     @classmethod
     def download_dataset(cls, dataset: str, force: bool = False) -> dict[str, Any] | None:
-        """Downloads a dataset's `test` split once and keeps it as a local file, so `run` and
-        `eval` need no network and every run sees the same rows. A dataset pinned in
+        """Downloads a dataset's `test` split once and keeps it as a local file.
+
+        So `run` and `eval` need no network and every run sees the same rows. A dataset pinned in
         `DATASET_REVISIONS` is fetched at that revision.
 
         Args:
@@ -197,7 +211,7 @@ class SweBenchHarness:
             env=environment,
         )
         lines = result.stdout.splitlines()
-        if result.returncode != 0 or len(lines) < 2:
+        if result.returncode != 0 or len(lines) < COUNT_2:
             print(f"❌ Could not download {dataset}: {result.stderr.strip()[-400:]}")
             return None
         meta = json.loads(lines[0])
@@ -210,7 +224,9 @@ class SweBenchHarness:
 
     @classmethod
     def dataset_meta(cls, dataset: str) -> dict[str, Any]:
-        """Args:
+        """Dataset meta.
+
+        Args:
             dataset: A dataset name or id.
 
         Returns:
@@ -433,7 +449,9 @@ class SweBenchHarness:
     def test_patch_failed(
         cls, work_dir: Path, run_id: str, model_name: str, instance_id: str
     ) -> bool:
-        """Tells whether the instance's test patch failed to apply on top of the model's, the case
+        """Tells whether the instance's test patch failed to apply on top of the model's.
+
+        This is the case
         §5.1 keeps visible instead of stripping test files from the model's patch.
 
         `git apply` words its refusals in several ways (`patch does not apply`, `already exists in
@@ -478,4 +496,4 @@ class SweBenchHarness:
                 applying = False
             elif applying and line.startswith("error:"):
                 return True
-        return "error: patch failed" in text or "patch does not apply" in text
+        return ERROR_PATCH_FAILED_TEXT in text or PATCH_DOES_NOT_APPLY_TEXT in text

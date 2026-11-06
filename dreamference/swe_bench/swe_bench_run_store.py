@@ -1,4 +1,6 @@
-"""One run's files (specs/DREAMFERENCE_RAGON_SWE_BENCH.md §4):
+"""One run's files.
+
+See specs/DREAMFERENCE_RAGON_SWE_BENCH.md §4:
 
 ```text
 runs/<run>/manifest.json       what was measured; written once
@@ -20,6 +22,14 @@ from typing import Any, Final
 
 from dreamference.swe_bench import swe_bench_settings
 from dreamference.swe_bench.swe_bench_scratch import SweBenchScratch
+
+COMMAND_EXECUTION_TEXT: Final[str] = "command_execution"
+COMPACTED_TEXT: Final[str] = "compacted"
+COMPACTION_GAP_SECONDS: Final[int] = 2
+ITEM_COMPLETED_TEXT: Final[str] = "item.completed"
+MCP_TOOL_CALL_TEXT: Final[str] = "mcp_tool_call"
+NEWLINE_BYTE: Final[bytes] = b"\n"
+TURN_COMPLETED_TEXT: Final[str] = "turn.completed"
 
 # Statuses after which an instance's agent phase is over and its prediction is written.
 FINISHED_STATUSES: Final[tuple] = ("done", "empty", "stalled", "timeout", "error")
@@ -43,7 +53,9 @@ class SweBenchRunStore:
     """Reads and writes a run directory."""
 
     def __init__(self, name: str) -> None:
-        """Args:
+        """Init.
+
+        Args:
         name: The run's name.
         """
         self.name = name
@@ -51,7 +63,9 @@ class SweBenchRunStore:
 
     @classmethod
     def runs(cls) -> list[str]:
-        """Returns:
+        """Runs.
+
+        Returns:
         List[str]: The names of the runs on disk, oldest first: by their manifest, written once
         when the run starts (the directory's own time moves with every report and gate file).
         """
@@ -67,7 +81,9 @@ class SweBenchRunStore:
 
     @classmethod
     def latest(cls) -> str | None:
-        """Returns:
+        """Latest.
+
+        Returns:
         Optional[str]: The most recently started run, if any.
         """
         runs = cls.runs()
@@ -81,7 +97,9 @@ class SweBenchRunStore:
         return self.directory / "manifest.json"
 
     def manifest(self) -> dict[str, Any] | None:
-        """Returns:
+        """Manifest.
+
+        Returns:
         Optional[Dict[str, Any]]: The manifest, or None when the run does not exist.
         """
         return self._read(self.manifest_path)
@@ -104,7 +122,9 @@ class SweBenchRunStore:
     # -- instances -----------------------------------------------------------------------------
 
     def state(self, instance_id: str) -> dict[str, Any] | None:
-        """Args:
+        """State.
+
+        Args:
             instance_id: The instance.
 
         Returns:
@@ -123,7 +143,9 @@ class SweBenchRunStore:
         self._write(self.directory / "instances" / f"{instance_id}.json", state)
 
     def states(self) -> dict[str, dict[str, Any]]:
-        """Returns:
+        """States.
+
+        Returns:
         Dict[str, Dict[str, Any]]: Every instance state on disk, by instance id.
         """
         directory = self.directory / "instances"
@@ -137,13 +159,17 @@ class SweBenchRunStore:
         return found
 
     def finished(self) -> list[str]:
-        """Returns:
+        """Finished.
+
+        Returns:
         List[str]: Instances whose prediction is written, in the order they finished.
         """
         return [prediction["instance_id"] for prediction in self.predictions()]
 
     def log_path(self, instance_id: str) -> Path:
-        """Args:
+        """Log path.
+
+        Args:
             instance_id: The instance.
 
         Returns:
@@ -187,24 +213,30 @@ class SweBenchRunStore:
             if not isinstance(event, dict):
                 continue
             item = event.get("item") or {}
-            if event.get("type") == "item.completed" and item.get("type") == "command_execution":
+            if (
+                event.get("type") == ITEM_COMPLETED_TEXT
+                and item.get("type") == COMMAND_EXECUTION_TEXT
+            ):
                 stats["commands"] += 1
                 if RAGON_CODE_QUERY.search(str(item.get("command", ""))):
                     stats["ragon_code_calls"] += 1
-            elif event.get("type") == "item.completed" and item.get("type") == "mcp_tool_call":
+            elif (
+                event.get("type") == ITEM_COMPLETED_TEXT and item.get("type") == MCP_TOOL_CALL_TEXT
+            ):
                 # A tool call is something the agent did, like a command, and counts as one.
                 stats["commands"] += 1
                 if RAGON_CODE_TOOL.match(str(item.get("tool", ""))):
                     stats["ragon_code_calls"] += 1
-            elif event.get("type") == "turn.completed":
+            elif event.get("type") == TURN_COMPLETED_TEXT:
                 usage = event.get("usage") or {}
                 for key in ("input_tokens", "cached_input_tokens", "output_tokens"):
                     stats[key] += int(usage.get(key) or 0)
         return stats
 
     def compactions(self, instance_id: str) -> dict[str, Any] | None:
-        """The compactions of an instance's sessions, from the rollouts kept in its scratch
-        `codex-home` (compaction survey §1, §3.5): one per `compacted` record. A
+        """The compactions of an instance's sessions.
+
+        Read from the rollouts kept in its scratch `codex-home` (compaction survey §1, §3.5): one per `compacted` record. A
         compaction's time is the gap between its record and the last earlier record more than
         2 s before it, which covers the compaction request's prefill and the summary's decode
         (an upper bound by a second or two).
@@ -245,13 +277,16 @@ class SweBenchRunStore:
                     ).timestamp()
                 except (ValueError, KeyError):
                     stamp = None  # counted, but not timed
-                if record.get("type") == "compacted":
+                if record.get("type") == COMPACTED_TEXT:
                     before = (
                         None
                         if stamp is None
-                        else next((t for t in reversed(earlier) if stamp - t > 2), None)
+                        else next(
+                            (t for t in reversed(earlier) if stamp - t > COMPACTION_GAP_SECONDS),
+                            None,
+                        )
                     )
-                    seconds.append(None if before is None else stamp - before)
+                    seconds.append(None if before is None or stamp is None else stamp - before)
                 if stamp is not None:
                     earlier.append(stamp)
         return {"count": len(seconds), "seconds": seconds}
@@ -264,7 +299,9 @@ class SweBenchRunStore:
         return self.directory / "predictions.jsonl"
 
     def predictions(self) -> list[dict[str, Any]]:
-        """Returns:
+        """Predictions.
+
+        Returns:
         List[Dict[str, Any]]: The predictions written so far. A torn last line (the run was
         killed mid-write) is ignored, so its instance simply runs again.
         """
@@ -301,7 +338,7 @@ class SweBenchRunStore:
             try:
                 with Path(self.predictions_path).open("rb") as handle:
                     handle.seek(-1, os.SEEK_END)
-                    torn = handle.read(1) != b"\n"
+                    torn = handle.read(1) != NEWLINE_BYTE
             except OSError:
                 pass
             with Path(self.predictions_path).open("a") as handle:
@@ -313,7 +350,9 @@ class SweBenchRunStore:
 
     @classmethod
     def eval_directory_name(cls, variant: str | None = None) -> str:
-        """Args:
+        """Eval directory name.
+
+        Args:
             variant: A grading series other than the plain one (`drop-test-hunks`), or None.
 
         Returns:
@@ -322,7 +361,9 @@ class SweBenchRunStore:
         return f"eval-{variant}" if variant else "eval"
 
     def gradings(self, variant: str | None = None) -> list[int]:
-        """Args:
+        """Gradings.
+
+        Args:
             variant: The grading series; None for the plain one.
 
         Returns:
@@ -338,7 +379,9 @@ class SweBenchRunStore:
         )
 
     def grading_dir(self, number: int, variant: str | None = None) -> Path:
-        """Args:
+        """Grading dir.
+
+        Args:
             number: The grading number.
             variant: The grading series; None for the plain one.
 
@@ -348,7 +391,9 @@ class SweBenchRunStore:
         return self.directory / self.eval_directory_name(variant) / str(number)
 
     def grading(self, number: int, variant: str | None = None) -> dict[str, Any]:
-        """Args:
+        """Grading.
+
+        Args:
             number: The grading number.
             variant: The grading series; None for the plain one.
 
@@ -364,7 +409,9 @@ class SweBenchRunStore:
     def write_grading(
         self, number: int, record: dict[str, Any], variant: str | None = None
     ) -> None:
-        """Args:
+        """Write grading.
+
+        Args:
         number: The grading number.
         record: The grading record, as `grading()` returns it.
         variant: The grading series; None for the plain one.

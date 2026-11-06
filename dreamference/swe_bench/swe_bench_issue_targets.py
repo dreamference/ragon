@@ -1,4 +1,5 @@
-"""What an issue names, and the example it shows, as the `issue-v1` hooks' conditions
+"""What an issue names, and the example it shows, as the `issue-v1` hooks' conditions.
+
 (specs/DREAMFERENCE_RAGON_SWE_BENCH.md §20).
 
 Extraction is by rule from the issue's text, with no model call: repository paths, dotted module
@@ -15,6 +16,14 @@ import re
 import textwrap
 import warnings
 from typing import Any, Final
+
+COUNT_2: Final[int] = 2
+COUNT_3: Final[int] = 3
+COUNT_4: Final[int] = 4
+DEFINITION_TEXT: Final[str] = "definition"
+PROSE_TEXT: Final[str] = "prose"
+PYTHON_TEXT: Final[str] = "python"
+PAREN_TEXT: Final[str] = "("
 
 # At most this many things to read before the first edit: past it the hold stops being a check
 # and becomes a reading list. Kept in priority order (below), the rest recorded as dropped.
@@ -232,7 +241,9 @@ class SweBenchIssueTargets:
 
     @classmethod
     def split(cls, text: str) -> tuple[str, list[tuple[str, str]]]:
-        """Args:
+        """Split.
+
+        Args:
             text: The issue.
 
         Returns:
@@ -287,7 +298,7 @@ class SweBenchIssueTargets:
                 if (
                     not re.search(r"\.(" + CODE_SUFFIXES + r")$", name)
                     and name not in dotted
-                    and len(last) >= 3
+                    and len(last) >= COUNT_3
                     and last not in NOT_CODE
                     and name.split(".")[0] not in COMMON_NAMES
                 ):
@@ -304,7 +315,7 @@ class SweBenchIssueTargets:
         names = [
             name
             for name in names
-            if len(name) >= 3 and name not in COMMON_NAMES and not name.startswith("__")
+            if len(name) >= COUNT_3 and name not in COMMON_NAMES and not name.startswith("__")
         ]
         return {"paths": paths, "dotted": dotted, "names": names}
 
@@ -346,7 +357,9 @@ class SweBenchIssueTargets:
 
     @classmethod
     def python_example(cls, body: str) -> dict[str, Any] | None:
-        """Args:
+        """Python example.
+
+        Args:
             body: A code block.
 
         Returns:
@@ -368,7 +381,7 @@ class SweBenchIssueTargets:
                 return None
             if not any(isinstance(node, ast.Call) for node in ast.walk(tree)):
                 return None
-            if len(tree.body) < 2 and not isinstance(
+            if len(tree.body) < COUNT_2 and not isinstance(
                 tree.body[0], (ast.Import, ast.ImportFrom, ast.Assign)
             ):
                 # One bare expression: a printed value (`array([[True, False]])`), not a program.
@@ -378,9 +391,9 @@ class SweBenchIssueTargets:
         for line in code:
             stripped = line.strip()
             if (
-                len(stripped) < 4
+                len(stripped) < COUNT_4
                 or stripped.startswith("#")
-                or "(" not in stripped
+                or PAREN_TEXT not in stripped
                 or re.match(r"(import|from)\s", stripped)
             ):
                 continue
@@ -401,7 +414,9 @@ class SweBenchIssueTargets:
 
     @classmethod
     def shell_example(cls, body: str, shell_block: bool) -> dict[str, Any] | None:
-        """Args:
+        """Shell example.
+
+        Args:
             body: A code block.
             shell_block: Whether its language is a shell's, where unprompted lines are commands.
 
@@ -430,11 +445,11 @@ class SweBenchIssueTargets:
             if not words:
                 continue
             program = re.sub(r"^python[0-9.]*$", "python", words[0].split("/")[-1])
-            if program in SETUP_PROGRAMS or "=" in program:
+            if program in SETUP_PROGRAMS or PAREN_TEXT in program:
                 continue
             arguments = [word for word in words[1:] if not word.startswith("-")]
             argument = arguments[0].split("/")[-1].split("::")[0] if arguments else ""
-            if program == "python" and words[1:2] == ["-m"] and len(words) > 2:
+            if program == PYTHON_TEXT and words[1:2] == ["-m"] and len(words) > COUNT_2:
                 program, argument = (
                     words[2],
                     (arguments[1].split("/")[-1] if len(arguments) > 1 else ""),
@@ -472,7 +487,9 @@ class SweBenchIssueTargets:
 
     @classmethod
     def parse_listing(cls, output: str) -> tuple[list[str], dict[str, list[str]]]:
-        """Args:
+        """Parse listing.
+
+        Args:
             output: What `resolve_script` printed.
 
         Returns:
@@ -484,7 +501,7 @@ class SweBenchIssueTargets:
         definitions: dict[str, list[str]] = {}
         for line in definitions_part.splitlines():
             parts = line.split(":", 2)
-            if len(parts) != 3:
+            if len(parts) != COUNT_3:
                 continue
             match = DEFINITION.match(parts[2])
             if match and not TEST_PATH.search(parts[0]):
@@ -597,7 +614,7 @@ class SweBenchIssueTargets:
             resolved, why = cls.resolve_path(path, files)
             if resolved is None:
                 dropped.append({"text": path, "why": why})
-            elif source == "prose":
+            elif source == PROSE_TEXT:
                 add_file(resolved, source, path)
             else:
                 later.append((resolved, source, path))
@@ -635,7 +652,7 @@ class SweBenchIssueTargets:
                 add_definition(name, where, "name", name)
         for resolved, source, path in later:
             add_file(resolved, source, path)
-        for target in [t for t in targets if t["kind"] == "definition"]:
+        for target in [t for t in targets if t["kind"] == DEFINITION_TEXT]:
             if any(path in target_files for path in target["files"]):
                 # Reading the file reads the definition.
                 targets.remove(target)
@@ -653,7 +670,9 @@ class SweBenchIssueTargets:
 
     @classmethod
     def names_to_resolve(cls, text: str) -> list[str]:
-        """Args:
+        """Names to resolve.
+
+        Args:
             text: The issue.
 
         Returns:
@@ -664,6 +683,6 @@ class SweBenchIssueTargets:
         names = list(found["names"])
         for name in found["dotted"]:
             for part in name.split(".")[-2:]:
-                if part not in names and part not in COMMON_NAMES and len(part) >= 3:
+                if part not in names and part not in COMMON_NAMES and len(part) >= COUNT_3:
                     names.append(part)
         return names[:MAX_NAMES]
