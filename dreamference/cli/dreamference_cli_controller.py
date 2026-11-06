@@ -2799,9 +2799,15 @@ class DreamferenceCLIController:
             help="Manage the private Matrix homeserver for chatting with Ragon from a phone",
         )
         matrix_subparsers = matrix_parser.add_subparsers(dest="matrix_command")
-        matrix_subparsers.add_parser(
+        matrix_start_parser = matrix_subparsers.add_parser(
             "start",
-            help="Start the homeserver (no route out), its loopback proxy and `tailscale serve`",
+            help="Start the homeserver (no route out), its loopback proxy and its way in from the phone",
+        )
+        matrix_start_parser.add_argument(
+            "--network",
+            choices=["overlay", "tailscale"],
+            default=None,
+            help="Where a NEW homeserver is reached: the remote-access overlay (default when set up) or Tailscale",
         )
         matrix_subparsers.add_parser(
             "stop", help="Stop the homeserver; accounts and messages are kept"
@@ -5072,7 +5078,7 @@ class DreamferenceCLIController:
             from dreamference.chat.matrix_homeserver import MatrixHomeserver
 
             actions = {
-                "start": MatrixHomeserver.start,
+                "start": lambda: MatrixHomeserver.start(getattr(args, "network", None)),
                 "stop": MatrixHomeserver.stop,
                 "status": MatrixHomeserver.status,
                 "add-user": lambda: MatrixHomeserver.add_user(args.name),

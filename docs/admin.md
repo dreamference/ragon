@@ -1017,7 +1017,11 @@ Manage the private Matrix homeserver for chatting with Ragon from a phone.
 
 #### `ragon-admin matrix start`
 
-Start the homeserver (no route out), its loopback proxy and `tailscale serve`.
+Start the homeserver (no route out), its loopback proxy and its way in from the phone.
+
+| Option | Description |
+|---|---|
+| `--network` | Where a NEW homeserver is reached: the remote-access overlay (default when set up) or Tailscale. One of: `overlay`, `tailscale`. |
 
 #### `ragon-admin matrix stop`
 

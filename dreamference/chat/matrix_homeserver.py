@@ -26,6 +26,7 @@ import re
 import secrets
 import string
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -78,6 +79,10 @@ AUTH_SESSION_KEY: Final[str] = "session"
 STAGE_TOKEN: Final[str] = "m.login.registration_token"
 STAGE_DUMMY: Final[str] = "m.login.dummy"
 LOCALPART: Final = re.compile(r"^[a-z0-9._=-]{1,64}$")
+
+
+NETWORK_OVERLAY: Final[str] = "overlay"
+NETWORK_TAILSCALE: Final[str] = "tailscale"
 
 
 class MatrixHomeserver:
@@ -546,22 +551,63 @@ class MatrixHomeserver:
     # -- commands -------------------------------------------------------------------------------
 
     @classmethod
-    def _chosen_name(cls, admin: dict[str, Any]) -> str | None:
+    def _say(cls, line: str) -> None:
+        """Prints one line of what the command is doing or why it stopped."""
+        sys.stdout.write(line + "\n")
+
+    @classmethod
+    def _existing_name(cls, admin: dict[str, Any], network: str | None) -> str | None:
+        """The name an existing homeserver keeps, or None (after saying so) if `network` contradicts it."""
+        overlay = cls.overlay_name()
+        kept = admin.get("server_name")
+        if network == NETWORK_OVERLAY and kept != overlay:
+            cls._say(
+                f"❌ This homeserver is {kept}: a Matrix server name cannot change, so it stays on its "
+                "network until `ragon-admin matrix remove --yes`; then start again with --network overlay."
+            )
+            return None
+        if network == NETWORK_TAILSCALE and kept == overlay:
+            cls._say(
+                f"❌ This homeserver is {kept}, on the remote-access overlay, and cannot move: run "
+                "`ragon-admin matrix remove --yes` (it deletes every account) and start again with "
+                "--network tailscale."
+            )
+            return None
+        return overlay if overlay and kept == overlay else cls.tailscale_name()
+
+    @classmethod
+    def _chosen_name(cls, admin: dict[str, Any], network: str | None = None) -> str | None:
         """The server name this start uses.
 
-        A new homeserver on a node with remote access is named for the overlay; an existing one
-        keeps its name until `matrix remove` (REMOTE_ACCESS §14.4).
+        A new homeserver on a node with remote access is named for the overlay unless Tailscale
+        is asked for; an existing one keeps its name until `matrix remove` (REMOTE_ACCESS §14.4).
 
         Args:
             admin: The admin file (empty for a new homeserver).
+            network: `overlay`, `tailscale` or None for the default.
 
         Returns:
-            Optional[str]: The overlay name or the tailnet name; None when neither is available.
+            Optional[str]: The overlay name or the tailnet name; None (after printing why) when
+            the one asked for is not available.
         """
+        if admin:
+            return cls._existing_name(admin, network)
         overlay = cls.overlay_name()
-        if overlay and (not admin or admin.get("server_name") == overlay):
+        if network == NETWORK_OVERLAY and not overlay:
+            cls._say(
+                "❌ This machine has no remote access yet, so there is no overlay name: set it up with "
+                "`ragon-admin remote`, or use --network tailscale."
+            )
+            return None
+        if overlay and network != NETWORK_TAILSCALE:
+            cls._say(
+                f"💡 New homeserver on the remote-access overlay, as {overlay} (--network tailscale for Tailscale)."
+            )
             return overlay
-        return cls.tailscale_name()
+        name = cls.tailscale_name()
+        if name:
+            cls._say(f"💡 New homeserver on Tailscale, as {name}.")
+        return name
 
     @classmethod
     def _offer(cls, name: str) -> str | None:
@@ -585,7 +631,7 @@ class MatrixHomeserver:
         return f"https://{name}"
 
     @classmethod
-    def _prepare(cls) -> tuple[str, dict[str, Any], bool] | None:
+    def _prepare(cls, network: str | None = None) -> tuple[str, dict[str, Any], bool] | None:
         """Checks the machine and the server name, and creates the admin file and network.
 
         Returns:
@@ -601,9 +647,10 @@ class MatrixHomeserver:
             )
             return None
         admin = cls._load("matrix-admin.json")
-        name = cls._chosen_name(admin)
+        name = cls._chosen_name(admin, network)
         if not name:
-            print(f"❌ {TAILSCALE_INSTALL}")
+            if not (network == NETWORK_OVERLAY or (admin and network)):
+                print(f"❌ {TAILSCALE_INSTALL}")
             return None
         if admin.get("server_name") and admin["server_name"] != name:
             print(
@@ -647,13 +694,16 @@ class MatrixHomeserver:
         return True
 
     @classmethod
-    def start(cls) -> int:
+    def start(cls, network: str | None = None) -> int:
         """Starts (or creates) the homeserver, the proxy, the bot account and `tailscale serve`.
+
+        Args:
+            network: `overlay`, `tailscale` or None (the overlay when remote access is set up).
 
         Returns:
             int: The exit code.
         """
-        prepared = cls._prepare()
+        prepared = cls._prepare(network)
         if prepared is None:
             return 1
         name, admin, push = prepared

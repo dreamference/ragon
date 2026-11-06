@@ -741,3 +741,32 @@ def test_without_remote_access_the_overlay_name_is_none(monkeypatch):
         "dreamference.node.node_identity.NodeIdentity.read", classmethod(lambda cls: "node-1")
     )
     assert MatrixHomeserver.overlay_name() is None
+
+
+def test_network_tailscale_names_a_new_homeserver_for_the_tailnet_even_with_an_overlay(
+    overlay, capsys
+):
+    assert MatrixHomeserver.start("tailscale") == 0
+    assert overlay.argv("tailscale", "serve") and not overlay.issued
+    assert "on Tailscale" in capsys.readouterr().out
+
+
+def test_network_overlay_without_remote_access_says_so(overlay, monkeypatch, capsys):
+    monkeypatch.setattr(MatrixHomeserver, "overlay_name", classmethod(lambda cls: None))
+    assert MatrixHomeserver.start("overlay") == 1
+    assert "no remote access" in capsys.readouterr().out
+    assert not overlay.argv("docker", "run")
+
+
+def test_an_existing_homeserver_cannot_switch_network_until_removed(overlay, capsys):
+    assert MatrixHomeserver.start() == 0
+    capsys.readouterr()
+    assert MatrixHomeserver.start("tailscale") == 1
+    assert "matrix remove" in capsys.readouterr().out
+    assert MatrixHomeserver.start("overlay") == 0
+    assert MatrixHomeserver.start() == 0
+
+
+def test_the_default_start_says_which_network_it_chose(overlay, capsys):
+    assert MatrixHomeserver.start() == 0
+    assert "remote-access overlay" in capsys.readouterr().out
