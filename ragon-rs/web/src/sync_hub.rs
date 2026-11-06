@@ -437,3 +437,72 @@ async fn notices(State(server): State<Arc<Server>>, Query(query): Query<HashMap<
     let (notices, latest) = live.notices(after);
     json_response(StatusCode::OK, json!({ "notices": notices, "latest": latest }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn parts(response: Response) -> (StatusCode, Value) {
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn not_found_is_a_plain_404() {
+        let response = not_found();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&bytes[..], b"Not found.\n");
+    }
+
+    #[tokio::test]
+    async fn json_response_sets_status_and_content_type() {
+        let response = json_response(StatusCode::IM_A_TEAPOT, json!({ "a": 1 }));
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+        let (status, body) = parts(response).await;
+        assert_eq!(status, StatusCode::IM_A_TEAPOT);
+        assert_eq!(body, json!({ "a": 1 }));
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_deleted_thread_is_404_or_410() {
+        assert_eq!(parts(refused(Refusal::NotFound)).await, (StatusCode::NOT_FOUND, json!({ "error": "no such thread" })));
+        assert_eq!(parts(refused(Refusal::Gone)).await, (StatusCode::GONE, json!({ "error": "the thread was deleted" })));
+    }
+
+    #[tokio::test]
+    async fn a_mismatch_reports_what_the_hub_holds() {
+        let (status, body) = parts(refused(Refusal::Mismatch { length: 7, hash: "h".into() })).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body, json!({ "error": "mismatch", "length": 7, "hash": "h" }));
+    }
+
+    #[tokio::test]
+    async fn an_owned_thread_names_the_fork_to_publish_under() {
+        let (status, body) = parts(refused(Refusal::Owned { fork: "f".into(), thread: "t".into() })).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body, json!({ "error": "owned", "fork": "f", "thread": "t" }));
+    }
+
+    #[tokio::test]
+    async fn forbidden_bad_request_and_io_carry_their_reason() {
+        assert_eq!(parts(refused(Refusal::Forbidden("no"))).await, (StatusCode::FORBIDDEN, json!({ "error": "no" })));
+        assert_eq!(parts(refused(Refusal::BadRequest("bad"))).await, (StatusCode::BAD_REQUEST, json!({ "error": "bad" })));
+        let io = Refusal::from(std::io::Error::other("disk"));
+        assert_eq!(parts(refused(io)).await, (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": "disk" })));
+    }
+
+    #[test]
+    fn the_caps_are_what_the_routes_assume() {
+        assert_eq!(MAX_WAIT, Duration::from_secs(30));
+        assert_eq!(READ_CAP, 16 << 20);
+        assert_eq!(HOST_POST_CAP, 16 << 20);
+    }
+
+    #[test]
+    fn the_route_table_builds() {
+        // Axum panics on a malformed or overlapping route; building proves the table is valid.
+        let _ = routes();
+    }
+}

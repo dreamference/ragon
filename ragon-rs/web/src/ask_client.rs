@@ -333,3 +333,54 @@ async fn conversation(client: &mut Client, question: &str) -> Result<String, Str
     println!();
     Ok(answer)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_from_reads_every_field() {
+        let saved = saved_from(r#"{"path":"a/b.png","text":"hello","vision":true}"#).unwrap();
+        assert_eq!(saved, Saved { path: "a/b.png".into(), text: Some("hello".into()), vision: true });
+    }
+
+    #[test]
+    fn saved_from_defaults_text_and_vision() {
+        let saved = saved_from(r#"{"path":"x"}"#).unwrap();
+        assert_eq!(saved, Saved { path: "x".into(), text: None, vision: false });
+    }
+
+    #[test]
+    fn saved_from_without_a_path_is_refused() {
+        let err = saved_from(r#"{"text":"t"}"#).unwrap_err();
+        assert!(err.contains("no path"), "{err}");
+    }
+
+    #[test]
+    fn saved_from_a_non_string_path_is_refused() {
+        assert!(saved_from(r#"{"path":3}"#).is_err());
+    }
+
+    #[test]
+    fn saved_from_not_json_names_the_body() {
+        let err = saved_from("<html>").unwrap_err();
+        assert!(err.contains("<html>"), "{err}");
+    }
+
+    #[test]
+    fn form_escape_keeps_unreserved_bytes() {
+        assert_eq!(form_escape("aZ09-_.~"), "aZ09-_.~");
+    }
+
+    #[test]
+    fn form_escape_percent_encodes_the_rest() {
+        assert_eq!(form_escape("a b&c=d/é"), "a%20b%26c%3Dd%2F%C3%A9");
+        assert_eq!(form_escape(""), "");
+    }
+
+    #[test]
+    fn made_file_is_a_plain_value_type() {
+        let file = MadeFile { name: "n".into(), bytes: 2 };
+        assert_eq!(file.clone(), file);
+    }
+}
