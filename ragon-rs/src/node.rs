@@ -41,6 +41,13 @@ use ragon_node_locator as locator;
 
 /// How long a machine with a node id waits for anything to listen on its own model port.
 const OWN_PORT_WAIT: Duration = Duration::from_secs(30);
+/// How long one look at the own port may spend connecting. Shorter than the limit on the whole
+/// request, so that a connection not made in time counts as nothing listening: Windows tries a
+/// refused loopback connection again for about two seconds before it reports the refusal.
+const OWN_PORT_CONNECT_LIMIT: Duration = Duration::from_secs(1);
+/// How long one look at the own port waits in all; running out after connecting means something
+/// listens and has not answered yet.
+const OWN_PORT_ANSWER_LIMIT: Duration = Duration::from_secs(2);
 
 /// How long a browse may take when nothing answers.
 const BROWSE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -428,7 +435,7 @@ pub fn no_own_server_message(host: &str) -> String {
 /// the engine starts loading, and the wait for a model that is still loading is
 /// `wait_for_model`'s, as long as it takes.
 async fn wait_for_own_port(host: &str, limit: Duration) -> anyhow::Result<()> {
-    let client = crate::proxy::direct_client(Duration::from_secs(1))?;
+    let client = reqwest::Client::builder().no_proxy().connect_timeout(OWN_PORT_CONNECT_LIMIT).timeout(OWN_PORT_ANSWER_LIMIT).build()?;
     if port_listens(&client, host).await {
         return Ok(());
     }
