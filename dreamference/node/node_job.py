@@ -42,6 +42,14 @@ from typing import Any, BinaryIO, Final
 from dreamference.runner.safe_git import SafeGit
 
 GIT_DIR_FLAG: Final[str] = "--git-dir"
+PARENT_DIR: Final[str] = ".."
+MAX_BINDS: Final[int] = 16
+STATUS_QUEUED: Final[str] = "queued"
+STATUS_DONE: Final[str] = "done"
+STATUS_CANCELLED: Final[str] = "cancelled"
+AIRGAP_ON: Final[str] = "on"
+MODULE_NOT_FOUND: Final[str] = "ModuleNotFoundError"
+NO_MODULE_NAMED: Final[str] = "No module named"
 JOB_ID: Final[re.Pattern] = re.compile(r"\d{8}-\d{4}-[0-9a-f]{3}")
 REPO_SLUG: Final[re.Pattern] = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}")
 COMMIT: Final[re.Pattern] = re.compile(r"[0-9a-f]{40}")
@@ -102,8 +110,9 @@ class NodeJob:
 
     @classmethod
     def jobs_dir(cls) -> Path:
-        """Returns:
-        Path: `$CODEX_HOME/jobs` (`~/.ragon/jobs`): the job repositories and one folder per job.
+        """`$CODEX_HOME/jobs` (`~/.ragon/jobs`).
+
+        The job repositories and one folder per job.
         """
         codex_home = os.environ.get("CODEX_HOME") or str(Path("~/.ragon").expanduser())
         return Path(codex_home) / "jobs"
@@ -118,7 +127,7 @@ class NodeJob:
         Raises:
             ValueError: If the slug is not a plain name (it comes from another machine).
         """
-        if not slug or not REPO_SLUG.fullmatch(slug) or ".." in slug:
+        if not slug or not REPO_SLUG.fullmatch(slug) or PARENT_DIR in slug:
             raise ValueError(f"not a repository name: {slug!r}")
         return cls.jobs_dir() / "repos" / f"{slug}.git"
 
@@ -212,7 +221,7 @@ class NodeJob:
         if out is not None and (
             not isinstance(out, str)
             or not OUT_PATH.fullmatch(out)
-            or ".." in out.split("/")
+            or PARENT_DIR in out.split("/")
             or out.startswith("/")
         ):
             raise ValueError("--out names a folder inside the repository, such as `checkpoints`")
@@ -262,10 +271,10 @@ class NodeJob:
 
     @classmethod
     def bindable_roots(cls) -> list[str]:
-        """Returns:
-        List[str]: The folders under which a sender may ask for a read-only bind: `[node]
-        bindable` in this node's user-level `config.toml`. None by default; it is the node
-        owner's decision, never the sender's.
+        """The folders under which a sender may ask for a read-only bind.
+
+        `[node] bindable` in this node's user-level `config.toml`. None by default; it is the
+        node owner's decision, never the sender's.
         """
         from dreamference.night_shift.night_shift_settings import NightShiftSettings
 
@@ -295,7 +304,7 @@ class NodeJob:
             isinstance(path, str) and path.startswith("/") for path in binds
         ):
             raise ValueError("--bind names absolute paths on the node")
-        if len(binds) > 16:
+        if len(binds) > MAX_BINDS:
             raise ValueError("a job may bind at most 16 paths")
         roots = cls.bindable_roots() if binds else []
         resolved = []
@@ -313,9 +322,7 @@ class NodeJob:
 
     @classmethod
     def node_airgap_level(cls) -> str:
-        """Returns:
-        str: This node's configured `/airgapped` level.
-        """
+        """This node's configured `/airgapped` level."""
         from dreamference.config import DreamferenceConfig
 
         # The stricter of this instance's file and the launcher's two, as the sender's level.
@@ -342,8 +349,10 @@ class NodeJob:
 
     @classmethod
     def write(cls, record: dict[str, Any]) -> None:
-        """Args:
-        record: The job's record, replaced whole.
+        """Replace the job's record whole.
+
+        Args:
+            record: The job's record.
         """
         directory = cls.job_dir(record["id"])
         directory.mkdir(parents=True, exist_ok=True)
@@ -353,9 +362,7 @@ class NodeJob:
 
     @classmethod
     def records(cls) -> list[dict[str, Any]]:
-        """Returns:
-        List[Dict[str, Any]]: Every job on this node, oldest first.
-        """
+        """Every job on this node, oldest first."""
         found = []
         for path in sorted(cls.jobs_dir().glob("*/record.json")) if cls.jobs_dir().is_dir() else []:
             if JOB_ID.fullmatch(path.parent.name):
@@ -366,9 +373,7 @@ class NodeJob:
 
     @classmethod
     def now(cls) -> str:
-        """Returns:
-        str: The local time, RFC 3339.
-        """
+        """The local time, RFC 3339."""
         return datetime.now().astimezone().isoformat(timespec="seconds")
 
     # -- starting it -----------------------------------------------------------------------------
@@ -551,10 +556,10 @@ class NodeJob:
 
     @classmethod
     def user_bus_environment(cls) -> dict[str, str]:
-        """Returns:
-        Dict[str, str]: The environment in which `systemd-run --user` and `systemctl --user`
-        find the user's service manager. A forced command reached without a PAM session has
-        no `XDG_RUNTIME_DIR`; the directory is the same for every session of the user.
+        """The environment in which `systemd-run --user` and `systemctl --user` find the user's service manager.
+
+        A forced command reached without a PAM session has no `XDG_RUNTIME_DIR`; the directory
+        is the same for every session of the user.
         """
         environment = dict(os.environ)
         runtime = f"/run/user/{os.getuid()}"
@@ -647,7 +652,7 @@ class NodeJob:
             int: The command's exit code (the test's, if the command passed and it failed).
         """
         record = cls.read(job_id)
-        if record is None or record.get("status") != "queued":
+        if record is None or record.get("status") != STATUS_QUEUED:
             print(f"❌ no queued job {job_id}", file=sys.stderr)
             return 1
         directory = cls.job_dir(job_id)
@@ -671,7 +676,7 @@ class NodeJob:
                     else "git worktree add left no administrative folder in the repository"
                 )
                 return 1
-            network = record["airgapped"] != "on"
+            network = record["airgapped"] != AIRGAP_ON
             with Path(log).open("ab") as sink:
                 env_dir, problem = cls._environment(record, tree, network, sink)
                 if problem:
@@ -709,7 +714,7 @@ class NodeJob:
         finally:
             cls._remove_tree(repo, tree)
             current = cls.read(job_id) or {}
-            if current.get("status") == "cancelled":
+            if current.get("status") == STATUS_CANCELLED:
                 record["status"] = "cancelled"
             else:
                 record["status"] = "done" if code == 0 else "failed"
@@ -865,14 +870,15 @@ class NodeJob:
                 tail = handle.read().decode("utf-8", "replace")
         except OSError:
             return False
-        return "ModuleNotFoundError" in tail or "No module named" in tail
+        return MODULE_NOT_FOUND in tail or NO_MODULE_NAMED in tail
 
     # -- artifacts (§13.3) -----------------------------------------------------------------------
 
     @classmethod
     def _keep_out(cls, record: dict[str, Any], tree: Path, directory: Path) -> int:
-        """Moves what the job wrote under `--out` out of the worktree, so it is kept as files beside
-        the job and never committed.
+        """Move what the job wrote under `--out` out of the worktree.
+
+        It is kept as files beside the job and never committed.
 
         Returns:
             int: How many files were kept.
@@ -1112,7 +1118,7 @@ class NodeJob:
                 time.sleep(poll_s)
         if record.get("note"):
             print(f"\n{record['note']}", file=sys.stderr)
-        if record.get("status") == "done":
+        if record.get("status") == STATUS_DONE:
             return 0
         code = (
             record.get("test_exit_code")

@@ -18,12 +18,18 @@ import subprocess
 import tarfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from dreamference.node.node_identity import NodeIdentity
 from dreamference.node.node_job import DEFAULT_MEMORY, DEFAULT_TIME, JOB_ID, NodeJob
 from dreamference.node.node_pairing import NodePairing
 from dreamference.runner.safe_git import SafeGit
+
+SLUG_SAFE_PUNCTUATION: Final[str] = "._-"
+IPV6_SEPARATOR: Final[str] = ":"
+SSH_CONNECTION_LOST: Final[int] = 255
+COMMAND_SEPARATOR: Final[str] = "--"
+OPTION_ASSIGN: Final[str] = "="
 
 
 class NodeJobSender:
@@ -31,9 +37,9 @@ class NodeJobSender:
 
     @classmethod
     def sent_dir(cls) -> Path:
-        """Returns:
-        Path: `~/.config/dreamference/nodes/jobs`: which node each job went to, and from
-        which repository.
+        """`~/.config/dreamference/nodes/jobs`.
+
+        Which node each job went to, and from which repository.
         """
         return NodePairing.nodes_dir() / "jobs"
 
@@ -59,15 +65,14 @@ class NodeJobSender:
             f"{NodeIdentity.read() or ''}:{os.path.realpath(repo)}".encode()
         ).hexdigest()[:10]
         name = "".join(
-            c if c.isalnum() or c in "._-" else "-" for c in Path(os.path.realpath(repo)).name
+            c if c.isalnum() or c in SLUG_SAFE_PUNCTUATION else "-"
+            for c in Path(os.path.realpath(repo)).name
         )
         return f"{name.strip('.-') or 'repo'}-{digest}"[:80]
 
     @classmethod
     def new_id(cls) -> str:
-        """Returns:
-        str: A job id, `<date>-<time>-<3 hex>`, the shape of a Night Shift task id.
-        """
+        """A job id, `<date>-<time>-<3 hex>`, the shape of a Night Shift task id."""
         return f"{datetime.now():%Y%m%d-%H%M}-{random.randrange(0x1000):03x}"
 
     @classmethod
@@ -84,7 +89,7 @@ class NodeJobSender:
                 f"{record['name']} is not on the network: no node answering a browse carries its id, "
                 f"so its remembered address was not tried."
             )
-        host = f"[{address}]" if ":" in address else address
+        host = f"[{address}]" if IPV6_SEPARATOR in address else address
         return f"ssh://{record['user']}@{host}:{record.get('ssh_port') or 22}/jobs/{slug}.git"
 
     @classmethod
@@ -240,7 +245,7 @@ class NodeJobSender:
         cls._remember(request["id"], record, repo, request["repo"])
         payload = base64.urlsafe_b64encode(json.dumps(request).encode()).decode()
         code = NodePairing.run(record, f"job-submit {payload}", capture=False).returncode
-        if code == 255:
+        if code == SSH_CONNECTION_LOST:
             # The stream was lost, not the job: it carries on there.
             print(
                 f"⚠️  The connection to {record['name']} ended; the job carries on there. "
@@ -256,8 +261,10 @@ class NodeJobSender:
 
     @classmethod
     def split_run_arguments(cls, words: list[str]) -> Any:
-        """Separates `node run`'s own options from the job's command in what follows the node's
-        name: `--memory 16G --test "pytest -q" -- python train.py --epochs 3`.
+        """Separate `node run`'s own options from the job's command.
+
+        The input is what follows the node's name: `--memory 16G --test "pytest -q" -- python
+        train.py --epochs 3`.
 
         Args:
             words: Everything after the node's name.
@@ -279,8 +286,8 @@ class NodeJobSender:
         parser.add_argument("--setup", default=None)
         parser.add_argument("--out", default=None)
         parser.add_argument("--bind", action="append", default=[])
-        if "--" in words:
-            at = words.index("--")
+        if COMMAND_SEPARATOR in words:
+            at = words.index(COMMAND_SEPARATOR)
             return parser.parse_args(words[:at]), words[at + 1 :]
         options, _command = parser.parse_known_args([])
         index = 0
@@ -297,7 +304,7 @@ class NodeJobSender:
             word = words[index].split("=", 1)[0]
             if word not in own:
                 break
-            index += 1 if "=" in words[index] else own[word]
+            index += 1 if OPTION_ASSIGN in words[index] else own[word]
         options, _ = parser.parse_known_args(words[:index])
         if words[index:] and words[index].startswith("-"):
             parser.error(f"unrecognized arguments: {words[index]}")
@@ -360,8 +367,10 @@ class NodeJobSender:
 
     @classmethod
     def fetch(cls, job_id: str) -> int:
-        """Brings a job's result branch into the repository it was sent from, and its `--out`
-        files to `received_dir`; then tells the node it may prune the job a day later.
+        """Bring a job's result back and let the node prune the job.
+
+        The result branch goes into the repository it was sent from and the `--out` files to
+        `received_dir`; then the node is told it may prune the job a day later.
 
         Args:
             job_id: The job's id.

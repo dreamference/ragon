@@ -372,19 +372,15 @@
   "dreamference/node/node_job.py": {
    "BLE001": 2,
    "C901": 1,
-   "D205": 8,
    "PLR0913": 1,
-   "PLR2004": 9,
    "PTH111": 2,
    "T201": 3
   },
   "dreamference/node/node_job_sender.py": {
    "ANN401": 1,
    "BLE001": 1,
-   "D205": 4,
    "PLR0911": 1,
    "PLR0913": 2,
-   "PLR2004": 5,
    "T201": 20
   },
   "dreamference/node/node_lanes.py": {
@@ -951,5 +947,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 2200
+ "total": 2174
 }
