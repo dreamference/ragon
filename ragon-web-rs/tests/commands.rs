@@ -1182,3 +1182,155 @@ fn a_page_that_redirects_to_a_google_search_is_read_there() {
     assert_eq!(stdout(&output), "the search page itself\n");
     assert_eq!(proxy.requests().len(), 2);
 }
+
+/// A home directory whose config turns the URL router on at `router` (None: only names it).
+fn router_home(name: &str, backends: &str, router: Option<&str>) -> std::path::PathBuf {
+    let home = fresh_cache_dir().join(name);
+    let dir = home.join(".config/dreamference");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut config = format!("[search]\nbackends = [{backends}]\n");
+    if let Some(url) = router {
+        config.push_str(&format!("router_url = \"{url}\"\n"));
+    }
+    std::fs::write(dir.join("config.toml"), config).unwrap();
+    home
+}
+
+#[test]
+fn the_router_is_not_asked_unless_the_config_turns_it_on() {
+    let router = Server::start(|_| response("200 OK", "application/json", b"{}", ""));
+    let searxng =
+        Server::start(|_| response("200 OK", "application/json", SEARXNG_JSON.as_bytes(), ""));
+    let home = router_home(
+        "off",
+        "\"searxng\"",
+        Some(&format!("{}/route", router.base)),
+    );
+    let output = search(
+        &["lisbon"],
+        &[
+            ("DREAMFERENCE_SEARXNG_URL", &searxng.base),
+            ("HOME", home.to_str().unwrap()),
+        ],
+    );
+    assert!(output.status.success());
+    assert!(router.requests().is_empty());
+    assert!(!stdout(&output).contains("NOTE"));
+}
+
+#[test]
+fn the_router_is_tried_first_and_only_addresses_that_answer_are_kept() {
+    let pages = Server::start(|line| {
+        if line.starts_with("GET /live ") {
+            response("200 OK", "text/html", b"<html><body>page</body></html>", "")
+        } else {
+            response("404 Not Found", "text/plain", b"gone", "")
+        }
+    });
+    let body = format!(
+        r#"{{"results": [{{"url": "{b}/live", "title": "Live page", "snippet": "found"}},
+            {{"url": "{b}/invented", "title": "Invented", "snippet": "never existed"}}]}}"#,
+        b = pages.base
+    );
+    let router =
+        Server::start(move |_| response("200 OK", "application/json", body.as_bytes(), ""));
+    let searxng = Server::start(|_| response("500 Server Error", "text/plain", b"no", ""));
+    let home = router_home(
+        "on",
+        "\"router\", \"searxng\"",
+        Some(&format!("{}/route", router.base)),
+    );
+    let output = search(
+        &["lisbon"],
+        &[
+            ("DREAMFERENCE_SEARXNG_URL", &searxng.base),
+            ("HOME", home.to_str().unwrap()),
+        ],
+    );
+    let printed = stdout(&output);
+    assert!(output.status.success(), "{printed}");
+    assert!(printed.contains("Live page"), "{printed}");
+    assert!(!printed.contains("Invented"), "{printed}");
+    assert!(!printed.contains("NOTE"), "{printed}");
+    assert!(router.requests()[0].starts_with("GET /route?q=lisbon"));
+    assert!(searxng.requests().is_empty());
+    assert!(
+        pages
+            .requests()
+            .iter()
+            .any(|line| line.starts_with("GET /invented"))
+    );
+}
+
+#[test]
+fn a_router_that_fails_falls_back_to_searxng_and_says_so() {
+    let router = Server::start(|_| response("503 Unavailable", "text/plain", b"down", ""));
+    let searxng =
+        Server::start(|_| response("200 OK", "application/json", SEARXNG_JSON.as_bytes(), ""));
+    let home = router_home(
+        "fall",
+        "\"router\"",
+        Some(&format!("{}/route", router.base)),
+    );
+    let envs = [
+        ("DREAMFERENCE_SEARXNG_URL", searxng.base.as_str()),
+        ("HOME", home.to_str().unwrap()),
+    ];
+    let output = search(&["lisbon"], &envs);
+    let printed = stdout(&output);
+    assert!(output.status.success(), "{printed}");
+    assert!(printed.starts_with("NOTE: the URL router at "), "{printed}");
+    assert!(printed.contains("answered by SearXNG instead"));
+    assert!(printed.contains("Lisbon - BBC Weather"));
+    let json = search(&["--json", "lisbon"], &envs);
+    let json = stdout(&json);
+    assert!(json.contains("\"note\""), "{json}");
+}
+
+#[test]
+fn a_router_whose_every_address_is_dead_falls_back_and_a_router_with_no_address_too() {
+    let pages = Server::start(|_| response("404 Not Found", "text/plain", b"gone", ""));
+    let body = format!(
+        r#"{{"results": [{{"url": "{}/invented", "title": "Invented"}}]}}"#,
+        pages.base
+    );
+    let router =
+        Server::start(move |_| response("200 OK", "application/json", body.as_bytes(), ""));
+    let searxng =
+        Server::start(|_| response("200 OK", "application/json", SEARXNG_JSON.as_bytes(), ""));
+    for (name, url) in [
+        ("dead", Some(format!("{}/route", router.base))),
+        ("unset", None),
+    ] {
+        let home = router_home(name, "\"router\"", url.as_deref());
+        let output = search(
+            &["lisbon"],
+            &[
+                ("DREAMFERENCE_SEARXNG_URL", &searxng.base),
+                ("HOME", home.to_str().unwrap()),
+            ],
+        );
+        let printed = stdout(&output);
+        assert!(printed.starts_with("NOTE: "), "{name}: {printed}");
+        assert!(!printed.contains("Invented"), "{name}: {printed}");
+        assert!(
+            printed.contains("Lisbon - BBC Weather"),
+            "{name}: {printed}"
+        );
+    }
+}
+
+#[test]
+fn the_router_is_refused_at_airgapped_on() {
+    let router = Server::start(|_| response("200 OK", "application/json", b"{}", ""));
+    let home = router_home("air", "\"router\"", Some(&format!("{}/route", router.base)));
+    let output = search(
+        &["lisbon"],
+        &[
+            ("DREAMFERENCE_RAGON_AIRGAPPED", "on"),
+            ("HOME", home.to_str().unwrap()),
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(router.requests().is_empty());
+}

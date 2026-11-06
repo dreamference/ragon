@@ -341,6 +341,7 @@ mod tests {
             result_count: results.len(),
             answers: vec![],
             results,
+            note: None,
         }
     }
 

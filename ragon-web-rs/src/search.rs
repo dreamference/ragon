@@ -248,6 +248,10 @@ pub struct SearchPayload {
     /// objects with an `answer` field in newer ones; kept as they came.
     pub answers: Vec<Value>,
     pub results: Vec<SearchResult>,
+    /// What the reader should be told about how this was answered (the URL router failed and
+    /// SearXNG answered). Absent, and so absent from the JSON, when there is nothing to say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// A search that produced no results to show, and why.
@@ -363,12 +367,21 @@ pub fn search_with(
             hint: None,
         });
     }
+    let backend = crate::backend::chosen(base_url, node);
+    if let Some(refusal) = crate::backend::refused_at(level, backend.as_ref()) {
+        return Err(refusal);
+    }
     let cache = crate::cache::Cache::open();
     let time_range = options.time_range.as_deref().unwrap_or_default();
+    // Another backend's answers are kept apart from SearXNG's, whose keys stay as they were.
+    let which = match backend.name() {
+        crate::backend::SEARXNG => String::new(),
+        other => format!("|{other}"),
+    };
     let key = crate::cache::key(
         base_url,
         query,
-        &format!("{}|{time_range}", options.searxng_category()),
+        &format!("{}|{time_range}{which}", options.searxng_category()),
         &options.language,
     );
     let now = std::time::SystemTime::now();
@@ -381,10 +394,6 @@ pub fn search_with(
     }
     if let Some(cache) = &cache {
         std::thread::sleep(cache.reserve(now));
-    }
-    let backend = crate::backend::chosen(base_url, node);
-    if let Some(refusal) = crate::backend::refused_at(level, backend.as_ref()) {
-        return Err(refusal);
     }
     let payload = backend.fetch(query, options)?;
     let found = from_searxng(query, &payload, max_results, level)?;
@@ -590,12 +599,19 @@ pub fn from_searxng(
         result_count: results.len(),
         answers: answers.into_iter().take(3).collect(),
         results,
+        note: payload
+            .get(crate::backend::NOTE_KEY)
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
 /// The text `ragon-search` prints for a payload.
 pub fn render_text(payload: &SearchPayload) -> String {
     let mut out = String::new();
+    if let Some(note) = &payload.note {
+        out.push_str(&format!("NOTE: {note}\n\n"));
+    }
     for answer in &payload.answers {
         let answer = match answer {
             Value::String(text) => text.clone(),
