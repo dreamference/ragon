@@ -336,10 +336,6 @@
    "PLR0911": 1,
    "PLR0913": 1,
    "PLR1702": 3,
-   "PTH111": 2,
-   "PTH119": 1,
-   "PTH120": 1,
-   "PTH208": 2,
    "T201": 18
   },
   "dreamference/runner/continue_installer.py": {
@@ -612,5 +608,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1074
+ "total": 1068
 }

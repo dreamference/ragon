@@ -260,7 +260,7 @@ class CodexTestRunner:
         patches = (
             sorted(
                 str(pathlib.Path(TEST_PATCHES_DIR, name))
-                for name in os.listdir(TEST_PATCHES_DIR)
+                for name in [entry.name for entry in pathlib.Path(TEST_PATCHES_DIR).iterdir()]
                 if name.endswith(".patch")
             )
             if pathlib.Path(TEST_PATCHES_DIR).is_dir()
@@ -269,7 +269,7 @@ class CodexTestRunner:
         for patch in patches:
             if CodexBrandedBuilder.git_apply(source_dir, "--check", patch).returncode != 0:
                 print(
-                    f"❌ codex-tests/patches/{os.path.basename(patch)} does not apply to the test export."
+                    f"❌ codex-tests/patches/{pathlib.Path(patch).name} does not apply to the test export."
                 )
                 return False
             CodexBrandedBuilder.git_apply(source_dir, patch).check_returncode()
@@ -356,7 +356,7 @@ class CodexTestRunner:
                 refused.append(relative)
                 continue
             target = str(pathlib.Path(SNAPSHOT_OVERLAY_DIR, relative))
-            pathlib.Path(os.path.dirname(target)).mkdir(exist_ok=True, parents=True)
+            pathlib.Path(target).parent.mkdir(exist_ok=True, parents=True)
             with pathlib.Path(target).open("w") as handle:
                 handle.write(ragon)
         pending = [
@@ -488,7 +488,7 @@ class CodexTestRunner:
             dict: The environment.
         """
         environment = DesktopRunner._environment()
-        real_home = os.path.expanduser("~")
+        real_home = str(pathlib.Path("~").expanduser())
         # Named before HOME moves, or rustup and Cargo would look for their toolchains in the
         # empty test home.
         environment.setdefault("RUSTUP_HOME", str(pathlib.Path(real_home, ".rustup")))
@@ -553,12 +553,12 @@ class CodexTestRunner:
         Returns:
             Optional[str]: The directory, or None if this toolchain has none.
         """
-        rustup_home = os.environ.get("RUSTUP_HOME", os.path.expanduser("~/.rustup"))
+        rustup_home = os.environ.get("RUSTUP_HOME", str(pathlib.Path("~/.rustup").expanduser()))
         target = CodexBrandedBuilder.host_target()
         toolchains = str(pathlib.Path(rustup_home, "toolchains"))
         if not pathlib.Path(toolchains).is_dir():
             return None
-        for name in sorted(os.listdir(toolchains)):
+        for name in sorted([entry.name for entry in pathlib.Path(toolchains).iterdir()]):
             candidate = str(
                 pathlib.Path(toolchains, name, "lib", "rustlib", target, "bin", "gcc-ld")
             )
