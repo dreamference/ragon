@@ -40,7 +40,9 @@ class SweBenchGateHold:
         subnet: str | None,
         label: str | None = None,
     ) -> None:
-        """Args:
+        """The arguments this hold runs on.
+
+        Args:
         store: The run.
         vllm_host: This machine's model server, where the gate answers.
         subnet: The run's internal network; None leaves the gate open (nothing could tell
@@ -68,6 +70,7 @@ class SweBenchGateHold:
     # -- the `with` block ----------------------------------------------------------------------
 
     def __enter__(self) -> "SweBenchGateHold":
+        """Opens the hold: starts the heartbeat and writes the run's record to the gate."""
         self.started = time.time()
         self._earlier = self.read(self.store)
         self.tick()
@@ -76,6 +79,7 @@ class SweBenchGateHold:
         return self
 
     def __exit__(self, *_: Any) -> None:
+        """Closes the hold: stops the heartbeat, clears the record and persists the final one."""
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=HEARTBEAT_S + 5)
@@ -106,7 +110,9 @@ class SweBenchGateHold:
         self.tick()
 
     def progress(self) -> dict[str, Any]:
-        """Returns:
+        """The run's progress, as the gate will report it.
+
+        Returns:
         Dict[str, Any]: `done`, `total` and `eta_s` (None until an instance has finished):
         the instances left times the median instance's time, over the parallelism.
         """
@@ -163,7 +169,9 @@ class SweBenchGateHold:
             self._persist(now)
 
     def priority(self) -> bool:
-        """Returns:
+        """Whether the run goes first right now.
+
+        Returns:
         bool: Whether the gate is refusing everyone but this run right now (in force and not
         paused): the run then neither waits for open sessions nor for other requests.
         """
@@ -171,7 +179,9 @@ class SweBenchGateHold:
         return self.enforced and live.get("state") == "closed"
 
     def paused(self) -> bool:
-        """Returns:
+        """Whether a pause is letting other requests through right now.
+
+        Returns:
         bool: Whether a pause is letting other requests through right now.
         """
         return self.enforced and (self.live or {}).get("state") == "paused"
@@ -180,7 +190,9 @@ class SweBenchGateHold:
 
     @classmethod
     def read(cls, store: SweBenchRunStore) -> dict[str, Any]:
-        """Args:
+        """The run's record of the gate, from its directory.
+
+        Args:
             store: A run.
 
         Returns:

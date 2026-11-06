@@ -385,8 +385,6 @@
   "dreamference/swe_bench/swe_bench_gate_hold.py": {
    "ANN401": 1,
    "BLE001": 1,
-   "D105": 2,
-   "D205": 5,
    "PLR2004": 2,
    "S110": 1,
    "SIM105": 1
@@ -608,5 +606,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1068
+ "total": 1061
 }
