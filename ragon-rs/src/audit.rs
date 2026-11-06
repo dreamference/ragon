@@ -603,4 +603,67 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("127.0.0.1:8000") && line.ends_with("model server")));
         assert!(lines.last().unwrap().starts_with("Not judged: Windows' own traffic"));
     }
+
+    #[test]
+    fn a_url_without_a_port_gets_its_schemes_default() {
+        assert_eq!(model_endpoint("https://node.local/v1"), Some((None, 443)));
+        assert_eq!(model_endpoint("http://node.local"), Some((None, 80)));
+        assert_eq!(model_endpoint("10.0.0.5:8000"), Some((Some(IpAddr::from([10, 0, 0, 5])), 8000)));
+    }
+
+    #[test]
+    fn a_malformed_model_url_gives_nothing() {
+        assert_eq!(model_endpoint("http://host:notaport"), None);
+        assert_eq!(model_endpoint("http://host:99999"), None);
+        assert_eq!(model_endpoint("http://[::1/v1"), None);
+    }
+
+    #[test]
+    fn a_bracketed_address_and_localhost_are_read() {
+        assert_eq!(model_endpoint("http://[::1]:8000/v1"), Some((Some("::1".parse().unwrap()), 8000)));
+        assert_eq!(model_endpoint("http://LocalHost:18000"), Some((Some(IpAddr::from([127, 0, 0, 1])), 18000)));
+    }
+
+    #[test]
+    fn a_name_lookup_other_than_localhost_fails_the_audit() {
+        let events = [
+            start(ROOT, 1, "ragon.exe"),
+            connect(ROOT, "127.0.0.1", 8000),
+            Event::Lookup { pid: ROOT, name: "example.com".to_string() },
+            Event::Lookup { pid: ROOT, name: "localhost".to_string() },
+        ];
+        let (status, problems) = judge(&session(&events, ROOT), MODEL, true);
+        assert_eq!(status, Status::Fail);
+        assert!(problems.iter().any(|p| p.contains("example.com")));
+        assert!(!problems.iter().any(|p| p.contains("localhost")));
+    }
+
+    #[test]
+    fn a_networked_git_helper_fails_the_audit() {
+        let events = [start(ROOT, 1, "ragon.exe"), start(101, ROOT, "Git-Remote-HTTPS.exe"), connect(ROOT, "127.0.0.1", 8000)];
+        let (status, problems) = judge(&session(&events, ROOT), MODEL, true);
+        assert_eq!(status, Status::Fail);
+        assert!(problems.iter().any(|p| p.contains("reach a remote")));
+    }
+
+    #[test]
+    fn the_vendor_blackhole_port_is_named_in_its_problem() {
+        let events = [start(ROOT, 1, "ragon.exe"), connect(ROOT, "127.0.0.1", 8000), connect(ROOT, "127.0.0.1", BLACKHOLE_PORT)];
+        let (status, problems) = judge(&session(&events, ROOT), MODEL, true);
+        assert_eq!(status, Status::Fail);
+        assert!(problems.iter().any(|p| p.contains("upstream vendor")));
+    }
+
+    #[test]
+    fn a_command_line_without_egress_prints_the_usage_and_exits_2() {
+        assert_eq!(run_cli(&[]), 2);
+        assert_eq!(run_cli(&["other".to_string()]), 2);
+    }
+
+    #[test]
+    fn a_process_started_outside_the_tree_is_not_in_it() {
+        let events = [start(ROOT, 1, "ragon.exe"), start(101, ROOT, "a.exe"), start(102, 101, "b.exe"), start(200, 1, "other.exe")];
+        let tree = process_tree(&events, ROOT);
+        assert!(tree.contains(&102) && !tree.contains(&200));
+    }
 }
