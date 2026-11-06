@@ -51,6 +51,8 @@ scp -qr scripts/setup_macos_runner.sh scripts/macos/ci-runner <mac>:/tmp/ \
        --token "$(gh api -X POST repos/dreamference/ragon/actions/runners/registration-token --jq .token)"
 ```
 
+The script also runs from a pipe on the Mac itself (`curl -fsSL <raw URL> | NETBIRD_SETUP_KEY=… bash -s -- --overlay netbird --overlay-url <management URL> --name <name> --token …`): with no `ci-runner/` beside it, it fetches the three runner scripts from the public repository. This is how a Mac away from the node joins; the one-time key and the token live only on that line.
+
 `ssh -t` lets `sudo` ask the administrator's password once. Add `--dry-run` to list what it would
 change without a password or any change.
 

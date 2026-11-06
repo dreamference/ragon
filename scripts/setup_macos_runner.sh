@@ -139,7 +139,18 @@ daemon=/Library/LaunchDaemons/actions.runner.dreamference-ragon.mac.plist
 if [[ -f $daemon ]]; then say "runner LaunchDaemon installed"; elif [[ -z $token ]]; then
     say "no --token given; the runner is not set up"
 else
-    [[ -f $RUNNER_DIR_SRC/setup.sh ]] || { echo "ci-runner/ must sit beside this script" >&2; exit 1; }
+    if [[ ! -f $RUNNER_DIR_SRC/setup.sh ]]; then
+        # Run from a pipe (curl ... | bash -s): fetch the runner scripts from the public repository.
+        RUNNER_DIR_SRC="$(mktemp -d)/ci-runner"
+        say "ci-runner/ is not beside this script; fetching it from the repository"
+        if ((!dry)); then
+            mkdir -p "$RUNNER_DIR_SRC"
+            for f in setup.sh job-started.sh job-completed.sh; do
+                curl -fsSL "https://raw.githubusercontent.com/dreamference/ragon/main/scripts/macos/ci-runner/$f" -o "$RUNNER_DIR_SRC/$f" \
+                    || { echo "could not fetch ci-runner/$f" >&2; exit 1; }
+            done
+        fi
+    fi
     extra=()
     [[ -n $runner_name ]] && extra+=(--name "$runner_name")
     [[ -n $runner_labels ]] && extra+=(--labels "$runner_labels")
