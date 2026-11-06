@@ -1,5 +1,6 @@
-"""The systemd user timer that starts the night run (specs/DREAMFERENCE_RAGON_NIGHT_SHIFT.md §5.1):
-`ragon-admin night enable|disable|status`.
+"""The systemd user timer that starts the night run, `ragon-admin night enable|disable|status`.
+
+(specs/DREAMFERENCE_RAGON_NIGHT_SHIFT.md §5.1)
 
 A user service has neither `~/.local/bin` nor the virtualenv on its PATH, so the unit names
 `ragon-admin` by its absolute path and sets a PATH that reaches `ragon-search`, `ragon-fetch`
@@ -7,7 +8,6 @@ and Cargo for the agent's shell. Without lingering, a user timer stops at logout
 """
 
 import getpass
-import os
 import shutil
 import subprocess
 import sys
@@ -37,15 +37,19 @@ class NightShiftScheduler:
 
     @classmethod
     def unit_dir(cls) -> Path:
-        """Returns:
-        Path: `~/.config/systemd/user`.
+        """Path: `~/.config/systemd/user`.
+
+        Returns:
+            Path: the directory.
         """
-        return Path(os.path.expanduser("~/.config/systemd/user"))
+        return Path("~/.config/systemd/user").expanduser()
 
     @classmethod
     def admin_executable(cls) -> str:
-        """Returns:
-        str: The absolute path of this environment's `ragon-admin`.
+        """Absolute path of this environment's `ragon-admin`.
+
+        Returns:
+            str: the path.
         """
         candidate = Path(sys.executable).parent / "ragon-admin"
         return (
@@ -66,7 +70,7 @@ class NightShiftScheduler:
             tuple: (timer text, service text).
         """
         start, end = NightShiftSettings.parse_window(window)
-        home = os.path.expanduser("~")
+        home = str(Path("~").expanduser())
         path = ":".join(
             [
                 f"{home}/.local/bin",
@@ -205,8 +209,10 @@ class NightShiftScheduler:
 
     @classmethod
     def lingering(cls) -> bool:
-        """Returns:
-        bool: True if systemd keeps this user's services running after logout.
+        """Whether systemd keeps this user's services running after logout.
+
+        Returns:
+            bool: True if lingering is on.
         """
         try:
             result = subprocess.run(

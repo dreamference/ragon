@@ -226,9 +226,7 @@
    "T201": 6
   },
   "dreamference/night_shift/night_shift_scheduler.py": {
-   "D205": 4,
    "PLR2004": 1,
-   "PTH111": 2,
    "T201": 5
   },
   "dreamference/night_shift/night_shift_settings.py": {
@@ -602,5 +600,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1052
+ "total": 1046
 }
