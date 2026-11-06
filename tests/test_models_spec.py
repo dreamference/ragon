@@ -150,7 +150,7 @@ def _nvfp4_canary_source() -> str:
     from dreamference.cli import dreamference_cli_controller as controller
 
     source = inspect.getsource(controller)
-    start = source.index('if "nvfp4" in args.model.lower():')
+    start = source.index("if _ARG_NVFP4 in args.model.lower():")
     return source[
         start : source.index("cls._run_tool_call_canary(vllm_mgr, args.model, engine)", start)
     ]

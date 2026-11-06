@@ -115,6 +115,47 @@ _ARG_SWE_BENCH: Final[str] = "SWE-bench"
 _ARG_TENSORIZER: Final[str] = "tensorizer"
 _ARG_TENSORIZE_CACHE: Final[str] = "tensorize-cache"
 _ARG_THINK: Final[str] = "<think>"
+_ARG_ADD: Final[str] = "add"
+_ARG_ASKPASS: Final[str] = "askpass"
+_ARG_AUDIT: Final[str] = "audit"
+_ARG_AUTHORIZE: Final[str] = "authorize"
+_ARG_BANG: Final[str] = "!"
+_ARG_BENCHMARK_SERVER: Final[str] = "benchmark_server"
+_ARG_CANCEL: Final[str] = "cancel"
+_ARG_CHECK: Final[str] = "check"
+_ARG_CLEAR_TENSORIZE_CACHE: Final[str] = "clear-tensorize-cache"
+_ARG_CODE: Final[str] = "code"
+_ARG_CODEX: Final[str] = "codex"
+_ARG_DISABLE: Final[str] = "disable"
+_ARG_DOCS: Final[str] = "docs"
+_ARG_EGRESS: Final[str] = "egress"
+_ARG_ENABLE: Final[str] = "enable"
+_ARG_ENDPOINTS: Final[str] = "endpoints"
+_ARG_FETCH: Final[str] = "fetch"
+_ARG_GOOGLE: Final[str] = "google"
+_ARG_HOST: Final[str] = "host"
+_ARG_ID: Final[str] = "id"
+_ARG_INDEX: Final[str] = "index"
+_ARG_JOBS: Final[str] = "jobs"
+_ARG_MATRIX: Final[str] = "matrix"
+_ARG_NIGHT: Final[str] = "night"
+_ARG_NODE: Final[str] = "node"
+_ARG_NVFP4: Final[str] = "nvfp4"
+_ARG_OK: Final[str] = "ok"
+_ARG_ON: Final[str] = "on"
+_ARG_PAUSE: Final[str] = "pause"
+_ARG_PREPARE: Final[str] = "prepare"
+_ARG_PROVISION: Final[str] = "provision"
+_ARG_REMOVE: Final[str] = "remove"
+_ARG_SEARXNG: Final[str] = "searxng"
+_ARG_SERVER: Final[str] = "server"
+_ARG_SERVE_JOB: Final[str] = "serve-job"
+_ARG_SETUP: Final[str] = "setup"
+_ARG_SWE_BENCH_CMD: Final[str] = "swe-bench"
+_ARG_SYNC_MODEL: Final[str] = "sync-model"
+_ARG_TEST: Final[str] = "test"
+_ARG_VOICE: Final[str] = "voice"
+_ARG_WEB: Final[str] = "web"
 _SLOT_BUSY_FRACTION: Final[float] = 0.5
 _HTTP_OK: Final[int] = 200
 _MIN_FENCE_PARTS: Final[int] = 2
@@ -3877,11 +3918,11 @@ class DreamferenceCLIController:
                 cls.display_header()
                 sys.exit(0 if clear_tensorizer_cache() else 1)
 
-        elif args.command == "clear-tensorize-cache":
+        elif args.command == _ARG_CLEAR_TENSORIZE_CACHE:
             # The older spelling of `clear tensorize-cache`; it used to parse and then do nothing.
             cls.display_header()
             sys.exit(0 if clear_tensorizer_cache() else 1)
-        elif args.command == "endpoints":
+        elif args.command == _ARG_ENDPOINTS:
             cls.display_header()
             table = Table(
                 title="Available Endpoints (standard /v1 API)",
@@ -3928,8 +3969,8 @@ class DreamferenceCLIController:
                 "\n💡 Use with any client that speaks the standard /v1 chat-completions API: point its base_url at the endpoint above."
             )
 
-        elif args.command == "server":
-            if args.server_command == "start":
+        elif args.command == _ARG_SERVER:
+            if args.server_command == _ARG_START:
                 cls._refuse_during_night_run("server start")
                 cls.display_header()
                 # An explicit --model wins; otherwise the configured main model serves, so
@@ -4084,7 +4125,7 @@ class DreamferenceCLIController:
                             f"   Loaded in: {monitor.get_status()['elapsed_seconds']:.1f} seconds\n"
                         )
 
-                        if "nvfp4" in args.model.lower():
+                        if _ARG_NVFP4 in args.model.lower():
                             print("🧪 Running NVFP4 kernel backend canary test...")
                             try:
                                 import requests
@@ -4105,9 +4146,9 @@ class DreamferenceCLIController:
                                     },
                                     timeout=60,
                                 )
-                                if resp.status_code == 200:
+                                if resp.status_code == _HTTP_OK:
                                     text = resp.json()["choices"][0]["text"].strip()
-                                    if text and all(c == "!" for c in text if c.strip()):
+                                    if text and all(c == _ARG_BANG for c in text if c.strip()):
                                         print("❌ NVFP4 Canary Failed: Output corrupted (all '!'). Wrong SM12x CUTLASS backend selected.")  # fmt: skip  # noqa: E501
                                         cls._suggest_engine_fallback(
                                             args.model, engine, "the NVFP4 canary"
@@ -4139,7 +4180,7 @@ class DreamferenceCLIController:
                             while _time.time() < deadline and not diffusion_mgr.check_health():
                                 _time.sleep(2)
                             state = diffusion_mgr.get_load_state()
-                            if state == "ok":
+                            if state == _ARG_OK:
                                 print(f"🌫️  Diffusion model ready at {diffusion_mgr.host}/v1")
                             elif state not in ("loading", None):
                                 # The load failed and will not recover by waiting; this used to
@@ -4195,7 +4236,7 @@ class DreamferenceCLIController:
                 if fallback_reason:
                     cls._fall_back_to_sglang(vllm_mgr, args, fallback_reason, raw_argv)
                     return
-            if args.server_command == "stop":
+            if args.server_command == _ARG_STOP:
                 cls.display_header()
                 vllm_mgr = VLLMServerManager(host=f"http://localhost:{args.port}")
                 vllm_mgr.stop_server(port=args.port)
@@ -4208,7 +4249,7 @@ class DreamferenceCLIController:
                     ).stop_server(port=args.diffusion_port)
                 else:
                     DiffusionServerManager.remove_leftover(args.diffusion_port)
-            elif args.server_command == "remove":
+            elif args.server_command == _ARG_REMOVE:
                 cls.display_header()
                 vllm_mgr = VLLMServerManager(host=f"http://localhost:{args.port}")
                 vllm_mgr.remove_server(port=args.port)
@@ -4221,7 +4262,7 @@ class DreamferenceCLIController:
                     ).remove_server(port=args.diffusion_port)
                 else:
                     DiffusionServerManager.remove_leftover(args.diffusion_port)
-            elif args.server_command == "logs":
+            elif args.server_command == _ARG_LOGS:
                 cls.display_header()
                 vllm_mgr = VLLMServerManager(host=f"http://localhost:{args.port}")
                 try:
@@ -4229,10 +4270,10 @@ class DreamferenceCLIController:
                 except KeyboardInterrupt:
                     print("\nStopped tailing logs.")
 
-        elif args.command == "audit":
+        elif args.command == _ARG_AUDIT:
             from dreamference.audit import EgressAudit
 
-            if args.audit_command == "egress":
+            if args.audit_command == _ARG_EGRESS:
                 if args.docs:
                     from dreamference.audit import DocsEgressAudit
 
@@ -4264,15 +4305,15 @@ class DreamferenceCLIController:
             print("usage: ragon-admin audit {egress}")
             sys.exit(2)
 
-        elif args.command == "swe-bench":
+        elif args.command == _ARG_SWE_BENCH_CMD:
             from dreamference.swe_bench.swe_bench_command import SweBenchCommand
 
             sys.exit(SweBenchCommand.dispatch(args))
 
-        elif args.command == "node":
+        elif args.command == _ARG_NODE:
             from dreamference.node import NodeAdvertiser
 
-            if args.node_command == "enable":
+            if args.node_command == _ARG_ENABLE:
                 enabled = NodeAdvertiser.enable(no_web=args.no_web, yes=args.yes)
                 if enabled and not args.no_forge:
                     # The forge is part of the node (FORGEJO O1); a node works without it, so its
@@ -4281,7 +4322,7 @@ class DreamferenceCLIController:
 
                     ForgeService.setup()
                 sys.exit(0 if enabled else 1)
-            if args.node_command == "disable":
+            if args.node_command == _ARG_DISABLE:
                 disabled = NodeAdvertiser.disable()
                 if disabled:
                     # The forge listens only where the node advertises itself (FORGEJO §0.3).
@@ -4289,34 +4330,34 @@ class DreamferenceCLIController:
 
                     ForgeService.rebind()
                 sys.exit(0 if disabled else 1)
-            if args.node_command == "status" and not args.name:
+            if args.node_command == _ARG_STATUS and not args.name:
                 print(NodeAdvertiser.status())
                 sys.exit(0)
-            if args.node_command == "id":
+            if args.node_command == _ARG_ID:
                 from dreamference.node import NodeIdentity
 
                 print(NodeIdentity.ensure())
                 sys.exit(0)
             from dreamference.node import NodePairing, NodeRemote, NodeServe
 
-            if args.node_command == "status":
+            if args.node_command == _ARG_STATUS:
                 sys.exit(NodeRemote.status(args.name))
-            if args.node_command == "list":
+            if args.node_command == _ARG_LIST:
                 print("\n".join(NodeRemote.list_lines()))
                 sys.exit(0)
-            if args.node_command == "add":
+            if args.node_command == _ARG_ADD:
                 sys.exit(
                     0 if NodePairing.add(args.name, user=args.user, ssh_port=args.ssh_port) else 1
                 )
-            if args.node_command == "remove":
+            if args.node_command == _ARG_REMOVE:
                 sys.exit(0 if NodePairing.remove(args.name) else 1)
-            if args.node_command == "set":
+            if args.node_command == _ARG_SET:
                 sys.exit(NodeRemote.set_model(args.name, args.model))
-            if args.node_command == "start":
+            if args.node_command == _ARG_START:
                 sys.exit(NodeRemote.start(args.name))
-            if args.node_command == "stop":
+            if args.node_command == _ARG_STOP:
                 sys.exit(NodeRemote.stop(args.name))
-            if args.node_command == "sync-model":
+            if args.node_command == _ARG_SYNC_MODEL:
                 from dreamference.node import NodeModelSync
                 from dreamference.node.node_adapter_sync import NodeAdapterSync
 
@@ -4330,7 +4371,7 @@ class DreamferenceCLIController:
             if args.node_command in ("run", "jobs", "logs", "cancel", "fetch", "job-exec"):
                 from dreamference.node import NodeJob, NodeJobSender
 
-                if args.node_command == "run":
+                if args.node_command == _ARG_RUN:
                     # argparse hands everything after the node's name to the command, options
                     # included, so the options written after the name are read here.
                     options, job_command = NodeJobSender.split_run_arguments(args.job_command)
@@ -4347,13 +4388,13 @@ class DreamferenceCLIController:
                             binds=(args.bind or []) + options.bind,
                         )
                     )
-                if args.node_command == "jobs":
+                if args.node_command == _ARG_JOBS:
                     sys.exit(NodeJobSender.jobs(args.name))
-                if args.node_command == "logs":
+                if args.node_command == _ARG_LOGS:
                     sys.exit(NodeJobSender.logs(args.job))
-                if args.node_command == "cancel":
+                if args.node_command == _ARG_CANCEL:
                     sys.exit(NodeJobSender.cancel(args.job))
-                if args.node_command == "fetch":
+                if args.node_command == _ARG_FETCH:
                     sys.exit(NodeJobSender.fetch(args.job))
                 sys.exit(NodeJob.execute(args.job))
             from dreamference.node.node_power_settings import COMMANDS as POWER_COMMANDS
@@ -4362,7 +4403,7 @@ class DreamferenceCLIController:
                 from dreamference.node.node_power_settings import NodePowerSettings
 
                 sys.exit(NodePowerSettings.dispatch(args))
-            if args.node_command == "provision":
+            if args.node_command == _ARG_PROVISION:
                 from dreamference.node.node_provisioner import NodeProvisioner
 
                 options = {
@@ -4388,17 +4429,17 @@ class DreamferenceCLIController:
                     )
                 }
                 sys.exit(NodeProvisioner(args.hosts, options).run())
-            if args.node_command == "prepare":
+            if args.node_command == _ARG_PREPARE:
                 from dreamference.node.node_prepare import NodePrepare
 
                 sys.exit(0 if NodePrepare.run() else 1)
-            if args.node_command == "askpass":
+            if args.node_command == _ARG_ASKPASS:
                 from dreamference.node.fleet_askpass import FleetAskpass
 
                 sys.exit(FleetAskpass.ask())
-            if args.node_command == "authorize":
+            if args.node_command == _ARG_AUTHORIZE:
                 sys.exit(0 if NodeServe.authorize(sys.stdin.read()) else 1)
-            if args.node_command == "serve-job":
+            if args.node_command == _ARG_SERVE_JOB:
                 sys.exit(NodeServe.serve(os.environ.get("SSH_ORIGINAL_COMMAND"), key_tag=args.key))
             print(
                 "usage: ragon-admin node {enable,disable,status,list,add,remove,set,start,stop,sync-model,run,jobs,logs,cancel,fetch}"
@@ -4408,38 +4449,38 @@ class DreamferenceCLIController:
         elif args.command in ForgeCommand.COMMANDS:
             sys.exit(ForgeCommand.dispatch(args))
 
-        elif args.command == "host":
+        elif args.command == _ARG_HOST:
             from dreamference.vllm_server import HostSafetySetup
 
-            if args.host_command == "check":
+            if args.host_command == _ARG_CHECK:
                 sys.exit(0 if HostSafetySetup.check() else 1)
-            if args.host_command == "setup":
+            if args.host_command == _ARG_SETUP:
                 sys.exit(0 if HostSafetySetup.setup(yes=args.yes) else 1)
             print("usage: ragon-admin host {check,setup}")
             sys.exit(2)
 
-        elif args.command == "night":
+        elif args.command == _ARG_NIGHT:
             from dreamference.night_shift import (
                 NightShiftRunner,
                 NightShiftScheduler,
                 NightShiftSettings,
             )
 
-            if args.night_command == "enable":
+            if args.night_command == _ARG_ENABLE:
                 sys.exit(
                     0
                     if NightShiftScheduler.enable(args.window or NightShiftSettings().window)
                     else 1
                 )
-            if args.night_command == "disable":
+            if args.night_command == _ARG_DISABLE:
                 sys.exit(0 if NightShiftScheduler.disable() else 1)
-            if args.night_command == "status":
+            if args.night_command == _ARG_STATUS:
                 print(NightShiftScheduler.status())
                 from dreamference.vllm_server.model_gate import ModelGate
 
                 print("\n".join(ModelGate.describe(config.vllm_host)))
                 sys.exit(0)
-            if args.night_command == "run":
+            if args.night_command == _ARG_RUN:
                 sys.exit(
                     NightShiftRunner.run(
                         until=args.until,
@@ -4451,7 +4492,8 @@ class DreamferenceCLIController:
             if args.night_command in ("pause", "resume"):
                 sys.exit(
                     cls.handle_gate_pause(
-                        config.vllm_host, args.duration if args.night_command == "pause" else None
+                        config.vllm_host,
+                        args.duration if args.night_command == _ARG_PAUSE else None,
                     )
                 )
             if args.night_command in ("autofill",):
@@ -4465,20 +4507,20 @@ class DreamferenceCLIController:
             )
             sys.exit(2)
 
-        elif args.command == "code":
+        elif args.command == _ARG_CODE:
             from dreamference.cli.code_index_setup import CodeIndexSetup
 
-            if args.code_command == "setup":
+            if args.code_command == _ARG_SETUP:
                 sys.exit(0 if CodeIndexSetup.install() else 1)
             print("usage: ragon-admin code setup")
             sys.exit(2)
 
-        elif args.command == "codex":
+        elif args.command == _ARG_CODEX:
             import subprocess
 
             from dreamference.runner.codex_branded_builder import CodexBrandedBuilder
 
-            if args.codex_command == "build":
+            if args.codex_command == _ARG_BUILD:
                 cls._refuse_during_night_run("codex build")
                 # Only a node has Python, so building here marks the machine as one: the launcher
                 # then uses the local model server and never browses for another.
@@ -4496,7 +4538,7 @@ class DreamferenceCLIController:
 
                     EgressAudit.after_build()
                 sys.exit(0 if built else 1)
-            if args.codex_command == "test":
+            if args.codex_command == _ARG_TEST:
                 from dreamference.runner.codex_test_runner import CodexTestRunner
 
                 sys.exit(
@@ -4514,7 +4556,7 @@ class DreamferenceCLIController:
             codex_bin = CodexInstaller.get_codex_executable()
             if codex_bin is None:
                 sys.exit(1)
-            if args.codex_command == "start":
+            if args.codex_command == _ARG_START:
                 print("🚀 Starting ragon's app-server daemon...")
                 subprocess.Popen(
                     [codex_bin, "app-server", "daemon", "start"],
@@ -4523,7 +4565,7 @@ class DreamferenceCLIController:
                     start_new_session=True,
                 )
                 print("✅ ragon's app-server daemon started.")
-            elif args.codex_command == "stop":
+            elif args.codex_command == _ARG_STOP:
                 print("🛑 Stopping ragon's app-server daemon...")
                 returncode = subprocess.call([codex_bin, "app-server", "daemon", "stop"])
                 if returncode != 0:
@@ -4531,7 +4573,7 @@ class DreamferenceCLIController:
                     sys.exit(returncode)
                 print("✅ ragon's app-server daemon stopped.")
 
-        elif args.command == "logs":
+        elif args.command == _ARG_LOGS:
             cls.display_header()
             vllm_mgr = VLLMServerManager(host=f"http://localhost:{args.port}")
             try:
@@ -4539,7 +4581,7 @@ class DreamferenceCLIController:
             except KeyboardInterrupt:
                 print("\nStopped tailing logs.")
 
-        elif args.command == "benchmark_server":
+        elif args.command == _ARG_BENCHMARK_SERVER:
             cls.display_header()
             import subprocess
 
@@ -4606,7 +4648,7 @@ class DreamferenceCLIController:
             except KeyboardInterrupt:
                 print("\n⏹️  Benchmark cancelled.")
 
-        elif args.command == "index":
+        elif args.command == _ARG_INDEX:
             cls._refuse_during_night_run("index")
             cls.display_header()
             target_dir = args.dir or os.getcwd()
@@ -4619,32 +4661,32 @@ class DreamferenceCLIController:
             console.print(f"   Files Indexed: {summary['total_indexed_files']}")
             console.print(f"   AST Symbols:   {summary['total_ast_symbols']}")
 
-        elif args.command == "docs":
-            if args.docs_command == "setup":
+        elif args.command == _ARG_DOCS:
+            if args.docs_command == _ARG_SETUP:
                 from dreamference.runner.docs_index_setup import DocsIndexSetup
 
                 sys.exit(0 if DocsIndexSetup.install() else 1)
             print("usage: ragon-admin docs {setup}")
             sys.exit(2)
 
-        elif args.command == "searxng":
+        elif args.command == _ARG_SEARXNG:
             from dreamference.cli.searxng_command import SearxngCommand
 
             sys.exit(SearxngCommand.run(args.searxng_command))
 
-        elif args.command == "google":
+        elif args.command == _ARG_GOOGLE:
             cls._run_google(args.google_command)
 
-        elif args.command == "images":
+        elif args.command == _ARG_IMAGES:
             sys.exit(cls._run_images(args, config))
 
         elif args.command == ADAPTER_COMMAND:
             sys.exit(AdapterCommand.run(args, config))
 
-        elif args.command == "voice":
+        elif args.command == _ARG_VOICE:
             sys.exit(cls._run_voice(args.voice_command))
 
-        elif args.command == "matrix":
+        elif args.command == _ARG_MATRIX:
             from dreamference.chat.matrix_homeserver import MatrixHomeserver
 
             actions = {
@@ -4652,7 +4694,7 @@ class DreamferenceCLIController:
                 "stop": MatrixHomeserver.stop,
                 "status": MatrixHomeserver.status,
                 "add-user": lambda: MatrixHomeserver.add_user(args.name),
-                "push": lambda: MatrixHomeserver.set_push(args.state == "on"),
+                "push": lambda: MatrixHomeserver.set_push(args.state == _ARG_ON),
                 "remove": lambda: MatrixHomeserver.remove(args.yes),
             }
             action = actions.get(args.matrix_command or "")
@@ -4697,7 +4739,7 @@ class DreamferenceCLIController:
                 sys.exit(2)
             sys.exit(action())
 
-        elif args.command == "web":
+        elif args.command == _ARG_WEB:
             cls.display_header()
             # Lazy for the same reason as the context engine: web_canvas imports it, and
             # `ragon-admin web` is the only subcommand that needs either.
