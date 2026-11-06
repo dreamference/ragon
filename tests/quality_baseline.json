@@ -221,11 +221,6 @@
    "PLR2004": 3
   },
   "dreamference/night_shift/night_shift_host.py": {
-   "D205": 4,
-   "PLR2004": 6,
-   "PTH115": 1,
-   "PTH118": 1,
-   "PTH119": 4,
    "RUF002": 1
   },
   "dreamference/night_shift/night_shift_index.py": {
@@ -241,11 +236,9 @@
    "PTH111": 1
   },
   "dreamference/night_shift/night_shift_remote.py": {
-   "D205": 2,
    "E501": 1,
    "PLR0911": 1,
    "PLR1702": 1,
-   "PLR2004": 6,
    "T201": 7
   },
   "dreamference/night_shift/night_shift_report.py": {
@@ -274,14 +267,11 @@
    "ANN401": 1,
    "BLE001": 2,
    "C901": 2,
-   "D205": 3,
    "E501": 1,
    "PLR0911": 2,
    "PLR0912": 1,
    "PLR0913": 1,
-   "PLR1702": 3,
-   "PLR2004": 9,
-   "PTH120": 1
+   "PLR1702": 3
   },
   "dreamference/node/__init__.py": {
    "D205": 1
