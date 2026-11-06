@@ -1143,4 +1143,121 @@ mod tests {
         let speech = [one.clone(), advert("bbbb2222", "speech", false)];
         assert_eq!(choose(&speech, None, None).unwrap().node.name, "gx10", "one coding node among several");
     }
+
+    #[test]
+    fn a_join_request_without_a_usable_code_or_with_a_stray_option_is_usage() {
+        let args = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<String>>();
+        assert_eq!(Request::from_args(&args(&[])), Request::Usage);
+        assert_eq!(Request::from_args(&args(&["leave", "--code", "12345678"])), Request::Usage);
+        assert_eq!(Request::from_args(&args(&["join"])), Request::Usage);
+        assert_eq!(Request::from_args(&args(&["join", "--code"])), Request::Usage, "a flag with no value");
+        assert_eq!(Request::from_args(&args(&["join", "--code", "1234"])), Request::Usage, "four digits");
+        assert_eq!(Request::from_args(&args(&["join", "--code", "12345678", "--bogus"])), Request::Usage);
+        assert_eq!(
+            Request::from_args(&args(&["join", "--code=1234-5678", "--node"])),
+            Request::Join { code: "12345678".into(), node: None },
+            "a --node with no value leaves the node unnamed"
+        );
+    }
+
+    #[test]
+    fn a_code_is_exactly_eight_ascii_digits_once_spaces_and_dashes_are_dropped() {
+        assert_eq!(parse_code(" 1234 - 5678 ").as_deref(), Some("12345678"));
+        assert_eq!(parse_code("1234567"), None, "seven digits");
+        assert_eq!(parse_code("123456789"), None, "nine digits");
+        assert_eq!(parse_code("1234abcd"), None, "letters");
+        assert_eq!(parse_code(""), None);
+        assert_eq!(parse_code("\u{0661}\u{0662}\u{0663}\u{0664}\u{0665}\u{0666}\u{0667}\u{0668}"), None, "non-ASCII digits");
+    }
+
+    #[test]
+    fn der_refuses_every_malformed_length_and_tag() {
+        // Truncated: the length promises more than is there.
+        assert!(der(&[0x30, 0x05, 0x01]).is_err());
+        // Nothing, or a tag with no length byte.
+        assert!(der(&[]).is_err());
+        assert!(der(&[0x30]).is_err());
+        // Indefinite length (0x80) and a five-byte length are refused.
+        assert!(der(&[0x30, 0x80, 0x00, 0x00]).is_err());
+        assert!(der(&[0x30, 0x85, 0, 0, 0, 0, 1, 0]).is_err());
+        // A long form for a length under 0x80, and a leading zero in the length, are not DER.
+        assert!(der(&[0x04, 0x81, 0x05, 1, 2, 3, 4, 5]).is_err());
+        assert!(der(&[0x04, 0x82, 0x00, 0x81]).is_err());
+        // A multi-byte tag.
+        assert!(der(&[0x1f, 0x01, 0x00]).is_err());
+        // A well-formed element comes back with its rest.
+        assert_eq!(der(&[0x04, 0x02, 0xaa, 0xbb, 0xcc]).unwrap(), (0x04, &[0xaa, 0xbb][..], &[0xcc][..]));
+    }
+
+    #[test]
+    fn der_all_and_der_only_check_the_count_and_the_tag() {
+        assert!(der_all(&[]).unwrap().is_empty());
+        let two = [0x04, 0x01, 0xaa, 0x04, 0x01, 0xbb];
+        assert_eq!(der_all(&two).unwrap().len(), 2);
+        assert!(der_only(&two, 0x04).is_err(), "two elements where one is wanted");
+        assert!(der_only(&[0x04, 0x01, 0xaa], 0x30).is_err(), "the wrong tag");
+        assert!(der_only(&[], 0x04).is_err(), "no element");
+        assert_eq!(der_only(&[0x04, 0x01, 0xaa], 0x04).unwrap(), &[0xaa][..]);
+        assert!(der_all(&[0x04, 0x01, 0xaa, 0x04]).is_err(), "a truncated second element");
+    }
+
+    #[test]
+    fn a_client_archive_is_found_only_for_a_pinned_system() {
+        assert_eq!(client_archive("plan9", "mips"), None);
+        assert_eq!(client_archive("linux", "sparc"), None);
+        assert!(!os_name().is_empty() && os_name() != "macos");
+        assert!(!arch_name().is_empty() && arch_name() != "x86_64" && arch_name() != "aarch64");
+    }
+
+    #[test]
+    fn a_tar_that_is_not_there_or_not_a_tar_gives_none() {
+        use std::io::Write;
+        assert_eq!(file_from_tar_gz(b"not gzip at all", "netbird"), None);
+        assert_eq!(file_from_tar_gz(&[], "netbird"), None);
+        let gz = |bytes: &[u8]| {
+            let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(bytes).unwrap();
+            encoder.finish().unwrap()
+        };
+        assert_eq!(file_from_tar_gz(&gz(&[]), "netbird"), None, "an empty archive");
+        assert_eq!(file_from_tar_gz(&gz(&[0u8; 1024]), "netbird"), None, "only the end-of-archive blocks");
+        // A header whose size field is not octal stops the walk.
+        let mut header = [0u8; 512];
+        header[..7].copy_from_slice(b"netbird");
+        header[124..135].copy_from_slice(b"zzzzzzzzzzz");
+        assert_eq!(file_from_tar_gz(&gz(&header), "netbird"), None);
+    }
+
+    #[test]
+    fn trust_commands_name_the_tool_and_refuse_what_cannot_be_trusted() {
+        let ca = Path::new("/tmp/ca.pem");
+        let trust = trust_commands("linux", ca, "0123456789abcdef", Some("update-ca-trust")).unwrap();
+        assert_eq!(trust[0].last().unwrap(), "/etc/pki/ca-trust/source/anchors/ragon-node-01234567.crt");
+        assert_eq!(trust[1], ["sudo", "update-ca-trust", "extract"]);
+        assert!(trust_commands("linux", ca, "id", None).unwrap_err().contains("neither"));
+        assert!(trust_commands("linux", ca, "id", Some("something-else")).is_err());
+        assert_eq!(trust_commands("freebsd", ca, "id", None).unwrap_err(), "remote access is not supported on freebsd");
+        assert_eq!(trust_commands("windows", ca, "id", None).unwrap()[0][..3], ["certutil", "-addstore", "-f"]);
+    }
+
+    #[test]
+    fn the_key_file_is_refused_where_the_folder_cannot_be_made() {
+        let dir = std::env::temp_dir().join(format!("ragon-join-key-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let blocker = dir.join("file");
+        std::fs::write(&blocker, "x").unwrap();
+        assert!(write_key_file(&blocker.join("inner"), "key").is_err(), "a file stands where the folder should be");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failing_or_missing_step_stops_the_run_and_names_it() {
+        let missing = run_steps("test", &[vec!["/nonexistent/ragon-step".to_string()]]).unwrap_err();
+        assert!(missing.starts_with("/nonexistent/ragon-step:"), "{missing}");
+        #[cfg(unix)]
+        {
+            let failed = run_steps("test", &[vec!["true".into()], vec!["false".into()], vec!["/nonexistent/never".into()]]).unwrap_err();
+            assert!(failed.starts_with("`false` failed"), "{failed}");
+        }
+    }
 }

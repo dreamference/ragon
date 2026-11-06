@@ -1123,4 +1123,149 @@ mod tests {
             assert_eq!(crate::compaction::hook_hash_for(command, &hook), codex_hash(&hook, command), "{}", hook.subcommand);
         }
     }
+
+    #[test]
+    fn an_unknown_piece_is_empty_and_a_known_one_has_no_marker_line() {
+        assert_eq!(piece("no-such-piece"), "");
+        assert_eq!(piece(""), "");
+        let study = piece("study");
+        assert!(!study.is_empty());
+        assert!(!study.lines().any(|line| line.starts_with("<!-- ") && line.ends_with(" -->")), "{study}");
+        assert_eq!(task_piece("study"), study.replace("{subject}", "task"));
+    }
+
+    #[test]
+    fn a_version_without_its_own_piece_falls_back_to_the_plain_one() {
+        let plain = piece("fix-rules");
+        assert!(!plain.is_empty());
+        assert_eq!(versioned_piece("fix-rules", "v1"), plain, "v1 is the plain piece");
+        assert_eq!(versioned_piece("fix-rules", "v99"), plain, "an unknown version falls back");
+        assert_eq!(versioned_piece("no-such-piece", "v2"), "");
+        assert_ne!(versioned_piece("study-sections", "v2"), versioned_piece("study-sections", "v1"), "v2 has its own sections");
+    }
+
+    #[test]
+    fn an_empty_refinement_is_replaced_by_the_no_refined_text_and_a_given_one_is_trimmed() {
+        let empty = fix_block("  \n ", "v1");
+        assert!(empty.contains(&task_piece("no-refined")), "{empty}");
+        let given = fix_block("\n  Change the parser.\n\n", "v1");
+        assert!(given.contains("Change the parser."));
+        assert!(!given.contains("{refined}") && !given.contains("{rules}") && !given.contains("{heading}"));
+        assert!(!given.contains("{subject}"));
+        assert!(fix_prompt("Do X", "r", "v1").starts_with("Do X\n\n"));
+    }
+
+    #[test]
+    fn a_task_that_looks_like_a_placeholder_is_left_as_written() {
+        let prompt = study_prompt("explain {sections} and {writes}", READ_ONLY_WRITES, false, "v1");
+        assert!(prompt.contains("explain {sections} and {writes}"), "the task is substituted last");
+        assert!(!prompt.contains("{intro}"));
+        let hinted = study_prompt("t", READ_ONLY_WRITES, true, "v1");
+        let plain = study_prompt("t", READ_ONLY_WRITES, false, "v1");
+        assert!(hinted.contains(&task_piece("study-code-index")) && !plain.contains(&task_piece("study-code-index")));
+    }
+
+    #[test]
+    fn the_switch_is_a_truthy_variable_or_a_boolean_setting_and_an_empty_variable_is_unset() {
+        let table = |text: &str| text.parse::<toml::Table>().unwrap();
+        let on = table("ragon_refine = true");
+        let off = table("ragon_refine = false");
+        let wrong_type = table("ragon_refine = \"yes\"");
+        for truthy in ["1", "true", "YES", " On ", "TRUE"] {
+            assert!(enabled(Some(truthy), &off), "{truthy:?}");
+        }
+        for falsy in ["0", "false", "off", "no", "maybe", "2"] {
+            assert!(!enabled(Some(falsy), &on), "{falsy:?}");
+        }
+        assert!(enabled(Some("  "), &on) && enabled(Some(""), &on), "an empty variable defers to the setting");
+        assert!(enabled(None, &on) && !enabled(None, &off));
+        assert_eq!(enabled(None, &wrong_type), DEFAULT, "a string is not a boolean");
+        assert_eq!(enabled(None, &toml::Table::new()), DEFAULT);
+    }
+
+    #[test]
+    fn the_version_is_the_first_known_one_and_anything_else_passes_to_the_next_tier() {
+        let table = |text: &str| text.parse::<toml::Table>().unwrap();
+        assert_eq!(known_version(Some(" V2 ")), Some("v2"));
+        assert_eq!(known_version(Some("v3")), None);
+        assert_eq!(known_version(Some("")), None);
+        assert_eq!(known_version(None), None);
+        assert_eq!(version(Some("v2"), &table("ragon_refine_version = \"v1\"")), "v2", "the variable wins");
+        assert_eq!(version(Some("v9"), &table("ragon_refine_version = \"v2\"")), "v2", "a bad variable defers");
+        assert_eq!(version(None, &table("ragon_refine_version = \"nope\"")), DEFAULT_VERSION);
+        assert_eq!(version(None, &table("ragon_refine_version = 2")), DEFAULT_VERSION, "not a string");
+        assert_eq!(version(Some(""), &toml::Table::new()), DEFAULT_VERSION);
+    }
+
+    #[test]
+    fn the_last_version_flag_wins_and_a_trailing_one_has_no_value() {
+        assert_eq!(version_flag(&os(&["ragon", "--refine-version", "v1", "--refine-version=v2"])), Some("v2".into()));
+        assert_eq!(version_flag(&os(&["ragon", "--refine-version=v2", "--refine-version", "v1"])), Some("v1".into()));
+        assert_eq!(version_flag(&os(&["ragon", "--refine-version"])), None, "no value after it");
+        assert_eq!(version_flag(&os(&["ragon", "--refine-version=", "x"])), Some(String::new()));
+        assert_eq!(version_flag(&os(&["ragon", "--", "--refine-version=v2"])), None, "after a double dash");
+        assert_eq!(version_flag(&os(&["--refine-version=v2"])), None, "the program name is not a flag");
+        assert_eq!(version_flag(&os(&["ragon", "--refine-versions=v2"])), None, "a longer option is another option");
+    }
+
+    #[test]
+    fn the_last_switch_wins_and_the_program_name_and_the_tail_are_not_read() {
+        assert_eq!(flag_setting(&os(&["ragon", "--refine", "--no-refine"])), Some(false));
+        assert_eq!(flag_setting(&os(&["ragon", "--no-refine", "--refine"])), Some(true));
+        assert_eq!(flag_setting(&os(&["--refine"])), None);
+        assert_eq!(flag_setting(&os(&["ragon", "exec", "--", "--refine"])), None);
+        assert_eq!(flag_setting(&os(&["ragon"])), None);
+    }
+
+    #[test]
+    fn the_flags_are_exported_and_a_bad_version_is_reported_and_ignored() {
+        let (exports, notice) = flag_exports(&os(&["ragon", "--refine", "--refine-version", "v2"]));
+        assert_eq!(exports, [(ENV, "on".to_string()), (VERSION_ENV, "v2".to_string())]);
+        assert_eq!(notice, None);
+        let (exports, notice) = flag_exports(&os(&["ragon", "--no-refine"]));
+        assert_eq!(exports, [(ENV, "off".to_string())]);
+        assert_eq!(notice, None);
+        let (exports, notice) = flag_exports(&os(&["ragon", "--refine-version=v7"]));
+        assert!(exports.is_empty());
+        let notice = notice.unwrap();
+        assert!(notice.contains("`--refine-version v7` is not a version") && notice.contains("v1, v2"), "{notice}");
+        assert_eq!(flag_exports(&os(&["ragon", "exec", "task"])), (Vec::new(), None));
+    }
+
+    #[test]
+    fn the_prompt_is_put_in_place_or_appended_when_it_is_the_last_word() {
+        let args = os(&["ragon", "exec", "old"]);
+        let at_end = with_prompt(args.clone(), &ExecPrompt { exec: 1, prompt: Some(1) }, "new");
+        assert_eq!(at_end, os(&["ragon", "exec", "new"]));
+        let none = with_prompt(os(&["ragon", "exec"]), &ExecPrompt { exec: 1, prompt: None }, "new");
+        assert_eq!(none, os(&["ragon", "exec", "new"]));
+        let beyond = with_prompt(os(&["ragon", "exec"]), &ExecPrompt { exec: 1, prompt: Some(5) }, "new");
+        assert_eq!(beyond, os(&["ragon", "exec", "new"]), "an index past the end appends");
+    }
+
+    #[test]
+    fn the_study_options_are_dropped_with_their_values_in_every_spelling() {
+        let tokens = strings(&["-s", "danger-full-access", "--sandbox=workspace-write", "-oout.txt", "--json", "--full-auto", "--keep", "-m", "model", "--output-schema", "s.json"]);
+        assert_eq!(without_study_options(&tokens), strings(&["--keep", "-m", "model"]));
+        // A short option glued to its value is dropped, a long option that merely starts the same is kept.
+        assert_eq!(without_study_options(&strings(&["--sandboxed"])), strings(&["--sandboxed"]));
+        assert_eq!(without_study_options(&strings(&["-s"])), Vec::<String>::new(), "a value-less trailing option");
+    }
+
+    #[test]
+    fn only_the_listed_flags_mean_full_access() {
+        assert!(has_full_access(&strings(&["exec", "--yolo"])));
+        assert!(has_full_access(&strings(&["--dangerously-bypass-approvals-and-sandbox"])));
+        assert!(!has_full_access(&strings(&["exec", "--yolo-ish", "yolo"])));
+        assert!(!has_full_access(&[]));
+    }
+
+    #[test]
+    fn the_study_step_has_no_command_to_study_for_anything_but_a_task() {
+        let command = codex_like();
+        for args in [&["resume"][..], &["exec", "resume", "id"], &["exec", "review"], &["--json"], &[]] {
+            let original = os(&[&["ragon"][..], args].concat());
+            assert!(study_args(&command, &original, Path::new("/tmp/out"), false).is_none(), "{args:?}");
+        }
+    }
 }

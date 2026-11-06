@@ -382,4 +382,69 @@ mod tests {
         let interrupted = Run { argv, notice: None, label: "provision".into() };
         assert_eq!(interrupted.run_with(&mut enter(), false), ["node provision: stopped by a signal"]);
     }
+
+    #[test]
+    fn the_help_flags_print_the_help_whatever_their_case() {
+        let help = help();
+        for args in ["help", "HELP", "-h", "--help", "--HELP extra words"] {
+            assert_eq!(plan_with(args, true, false, admin()).unwrap_err(), help, "{args}");
+        }
+    }
+
+    #[test]
+    fn a_control_character_in_an_argument_is_refused_before_the_terminal_is_asked() {
+        let refused = plan_with("add bad\u{7}host", false, false, admin()).unwrap_err();
+        assert_eq!(refused.len(), 1);
+        assert!(refused[0].starts_with("/node: ") && refused[0].contains("is not a host name or an option"), "{refused:?}");
+        assert!(plan_with("list \u{1b}[2J", true, false, None).is_err());
+    }
+
+    #[test]
+    fn the_subcommand_is_checked_before_the_terminal_and_the_install() {
+        let unknown = plan_with("frobnicate", false, false, None).unwrap_err();
+        assert!(unknown[0].contains("unknown subcommand \"frobnicate\""), "{unknown:?}");
+        assert!(unknown[0].contains("Usage: /node <"), "{unknown:?}");
+        let nameless = plan_with("remove", false, false, None).unwrap_err();
+        assert_eq!(nameless, ["/node remove needs a node's name (see /node list)."]);
+    }
+
+    #[test]
+    fn the_subcommand_is_lowercased_but_its_arguments_are_kept_as_typed() {
+        let run = plan_with("ADD Gx10-AB --User Owner", true, false, admin()).unwrap();
+        assert_eq!(argv(&run)[1..], ["node", "add", "Gx10-AB", "--User", "Owner"]);
+        assert_eq!(run.label, "add Gx10-AB --User Owner");
+    }
+
+    #[test]
+    fn the_terminal_message_repeats_the_words_for_a_shell() {
+        let refused = plan_with("  add   gx10-77c0  ", false, false, admin()).unwrap_err();
+        assert!(refused[0].contains("`ragon-admin node add gx10-77c0`"), "{refused:?}");
+        assert!(refused[0].contains("needs a terminal"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_an_executable_regular_file_counts_as_ragon_admin() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ragon-node-cmd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("ragon-admin");
+        std::fs::write(&file, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!is_executable(&file), "no execute bit");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(is_executable(&file));
+        assert!(!is_executable(&dir), "a directory");
+        assert!(!is_executable(&dir.join("missing")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_help_lists_every_subcommand() {
+        let text = help().join("\n");
+        for subcommand in SUBCOMMANDS {
+            assert!(text.contains(&format!("/node {subcommand}")), "{subcommand}");
+        }
+        assert!(usage_line().contains(&SUBCOMMANDS.join("|")));
+    }
 }

@@ -1163,4 +1163,128 @@ mod tests {
         assert!(lines.iter().any(|line| line == "new row"), "{lines:?}");
         assert!(!lines.iter().any(|line| line == "## Review"));
     }
+
+    fn add(test: Option<&str>, on: Option<&str>, best_of: Option<u32>, task: &str) -> Request {
+        Request::Add { test: test.map(String::from), on: on.map(String::from), best_of, task: task.into() }
+    }
+
+    fn usage_text(request: Request) -> String {
+        match request {
+            Request::Usage(text) => text,
+            other => panic!("expected a usage message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_best_of_option_takes_a_whole_number_from_one() {
+        assert_eq!(Request::from_line("add --best-of 3 fix it"), add(None, None, Some(3), "fix it"));
+        assert_eq!(Request::from_line("add --best-of=1 fix it"), add(None, None, Some(1), "fix it"));
+        for bad in ["0", "-2", "two", "1.5", "99999999999"] {
+            let text = usage_text(Request::from_line(&format!("add --best-of {bad} fix it")));
+            assert!(text.contains(&format!("{bad:?} is not a number of attempts")), "{bad}: {text}");
+        }
+        assert_eq!(usage_text(Request::from_line("add --best-of=")), "--best-of needs a number of attempts");
+        assert_eq!(attempt_count("").unwrap_err(), "--best-of needs a number of attempts");
+    }
+
+    #[test]
+    fn best_of_with_a_node_is_refused_and_names_the_node() {
+        let text = usage_text(Request::from_line("add --on spark-1 --best-of 2 fix it"));
+        assert!(text.starts_with("--best-of applies to a task run here: spark-1 "), "{text}");
+        let shell = ["add", "--best-of", "2", "--on=spark-1", "fix"].map(String::from);
+        assert!(usage_text(Request::from_args(&shell)).contains("Queue it on spark-1 itself"));
+    }
+
+    #[test]
+    fn a_node_name_is_a_host_name_not_a_path_or_an_option() {
+        for good in ["spark-1", "gx10.local", "a", "N_1", &"a".repeat(63)] {
+            assert_eq!(node_name(good).unwrap(), good);
+        }
+        for bad in ["-rf", ".hidden", "a/b", "a b", "spark;1", "é", &"a".repeat(64)] {
+            assert_eq!(node_name(bad).unwrap_err(), format!("--on: {bad:?} is not a node's name"), "{bad}");
+        }
+        assert_eq!(node_name("").unwrap_err(), "--on needs a node's name (see ragon-admin node list)");
+        assert!(usage_text(Request::from_line("add --on ../etc fix")).contains("is not a node's name"));
+        assert!(usage_text(Request::from_line("add --on")).contains("needs a node's name"));
+    }
+
+    #[test]
+    fn a_test_command_is_quoted_inline_or_one_word_and_an_open_quote_is_an_error() {
+        assert_eq!(Request::from_line("add --test \"cargo test -q\" fix it"), add(Some("cargo test -q"), None, None, "fix it"));
+        assert_eq!(Request::from_line("add --test 'make check' fix it"), add(Some("make check"), None, None, "fix it"));
+        assert_eq!(Request::from_line("add --test=pytest fix it"), add(Some("pytest"), None, None, "fix it"));
+        assert_eq!(usage_text(Request::from_line("add --test \"cargo test fix it")), "--test: no closing \"");
+        assert_eq!(usage_text(Request::from_line("add --test 'oops")), "--test: no closing '");
+        assert_eq!(usage_text(Request::from_line("add --test")), "--test needs a command");
+    }
+
+    #[test]
+    fn a_task_that_only_starts_like_an_option_is_still_a_task() {
+        for task in ["--tests are flaky", "--only the parser", "--best-offer expires"] {
+            let line = format!("add {task}");
+            assert_eq!(Request::from_line(&line), add(None, None, None, task), "{task}");
+        }
+    }
+
+    #[test]
+    fn the_options_come_in_any_order_before_the_task() {
+        let expected = add(Some("t"), Some("spark-1"), None, "do it --on later");
+        assert_eq!(Request::from_line("add --on spark-1 --test t do it --on later"), expected);
+        assert_eq!(Request::from_line("add --test=t --on=spark-1 do it --on later"), expected);
+        let shell = ["add", "--test", "t", "--on", "spark-1", "do", "it", "--on", "later"].map(String::from);
+        assert_eq!(Request::from_args(&shell), expected);
+    }
+
+    #[test]
+    fn the_shell_form_names_what_is_missing() {
+        let args = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<String>>();
+        assert_eq!(usage_text(Request::from_args(&args(&["add", "--test"]))), "--test needs a value");
+        assert_eq!(usage_text(Request::from_args(&args(&["add", "--on"]))), "--on needs a value");
+        assert_eq!(usage_text(Request::from_args(&args(&["add"]))), "Nothing to queue: ragon night add <task>");
+        assert_eq!(usage_text(Request::from_args(&args(&["add", "--best-of", "zero", "x"]))).contains("\"zero\""), true);
+        assert_eq!(usage_text(Request::from_line("add   ")), "Nothing to queue: /night add <task>");
+    }
+
+    #[test]
+    fn show_apply_and_drop_take_exactly_one_id_and_list_and_report_none() {
+        assert_eq!(Request::from_line("show t1"), Request::Show("t1".into()));
+        assert_eq!(Request::from_line("apply t1"), Request::Apply("t1".into()));
+        assert_eq!(Request::from_line("drop t1"), Request::Drop("t1".into()));
+        for line in ["show", "apply a b", "drop", "list extra", "report extra", "frobnicate", "LIST"] {
+            assert_eq!(usage_text(Request::from_line(line)), USAGE, "{line}");
+        }
+        assert_eq!(Request::from_line("  "), Request::List);
+    }
+
+    #[test]
+    fn the_window_is_read_from_the_timer_marker_and_the_config() {
+        assert_eq!(window_from_timer("[Timer]\n# Night Shift window: 01:00-07:00 \nx=y\n").as_deref(), Some("01:00-07:00"));
+        assert_eq!(window_from_timer("[Timer]\nOnCalendar=daily\n"), None);
+        assert_eq!(window_from_toml("[night]\nwindow = \"22:00-06:00\"\n").as_deref(), Some("22:00-06:00"));
+        assert_eq!(window_from_toml("[night]\nwindow = 5\n"), None, "not a string");
+        assert_eq!(window_from_toml("[night]\nbest_of = 3\n"), None, "no window key");
+        assert_eq!(window_from_toml("[other]\nwindow = \"x\"\n"), None, "wrong table");
+        assert_eq!(window_from_toml("this is = = not toml"), None);
+    }
+
+    #[test]
+    fn ages_lines_and_fields_are_shortened_for_the_list() {
+        use chrono::TimeDelta;
+        assert_eq!(short_age(TimeDelta::minutes(-5)), "0m", "a clock set back");
+        assert_eq!(short_age(TimeDelta::minutes(59)), "59m");
+        assert_eq!(short_age(TimeDelta::minutes(60)), "1h");
+        assert_eq!(short_age(TimeDelta::minutes(2879)), "47h");
+        assert_eq!(short_age(TimeDelta::minutes(2880)), "2d");
+        assert_eq!(first_line("one\ntwo", 10), "one");
+        assert_eq!(first_line("", 10), "");
+        assert_eq!(first_line("abcdefghij", 10), "abcdefghij");
+        assert_eq!(first_line("abcdefghijk", 10), "abcdefghi…");
+        let value = serde_json::json!({"a": "x", "n": 3});
+        assert_eq!(text(&value, "a"), "x");
+        assert_eq!(text(&value, "n"), "", "not a string");
+        assert_eq!(text(&value, "missing"), "");
+        assert_eq!(last_change(&serde_json::json!({"history": []})), None);
+        assert_eq!(last_change(&serde_json::json!({"history": [{"at": "not a time"}]})), None);
+        assert!(last_change(&serde_json::json!({"history": [{"at": "2026-01-02T03:04:05+00:00"}]})).is_some());
+    }
 }
