@@ -960,5 +960,149 @@ mod tests {
         assert!(err("Bad Request: message thread not found").is_topic_gone());
         assert!(!err("Bad Request: TOPIC_NOT_MODIFIED").is_topic_gone());
         assert!(!err("Bad Request: can't parse entities").is_topic_gone());
+        // Whatever the case, and in every wording the Bot API has used.
+        assert!(err("bad request: topic not found").is_topic_gone());
+        assert!(err("Bad Request: MESSAGE_THREAD_INVALID").is_topic_gone());
+        // What is printed is the description alone: the request's URL carries the token.
+        assert_eq!(err("Bad Request: TOPIC_CLOSED").to_string(), "Bad Request: TOPIC_CLOSED");
+    }
+
+    #[test]
+    fn a_key_that_names_no_telegram_chat_has_no_target() {
+        assert_eq!(target("telegram:-5/-6"), Some((-5, Some(-6))));
+        assert_eq!(target("telegram:"), None);
+        assert_eq!(target("telegram:x"), None);
+        assert_eq!(target("telegram:1/2/3"), None);
+        assert_eq!(target("discord:1"), None);
+        assert_eq!(topic_key(5, None), "telegram:5");
+    }
+
+    #[test]
+    fn an_api_root_loses_its_trailing_slash() {
+        let api = TelegramApi::new("http://stand-in/", "TOKEN");
+        assert_eq!(api.base, "http://stand-in/botTOKEN");
+        assert_eq!(api.files, "http://stand-in/file/botTOKEN");
+    }
+
+    #[test]
+    fn an_approval_button_is_a_hex_nonce_and_a_choice() {
+        assert_eq!(approval_callback("a:ff01:2"), Some(("ff01".to_string(), 2)));
+        let longest = "f".repeat(32);
+        assert_eq!(approval_callback(&format!("a:{longest}:0")), Some((longest, 0)));
+        for data in ["", "a", "a:ff01", "b:ff01:2", "a::2", "a:xyz:2", "a:ff01:x", "a:ff01:-1", "a:ff01:2:3"] {
+            assert_eq!(approval_callback(data), None, "{data}");
+        }
+        assert_eq!(approval_callback(&format!("a:{}:0", "f".repeat(33))), None);
+    }
+
+    #[test]
+    fn a_photo_is_its_largest_size_and_a_document_has_defaults() {
+        let message = json!({
+            "photo": [
+                { "file_id": "small", "width": 90, "height": 90 },
+                { "file_id": "large", "width": 800, "height": 600 },
+                { "file_id": "tall", "width": 100, "height": 100 },
+            ],
+            "document": { "file_id": "doc" },
+        });
+        let (files, dropped) = attachments_of(&message);
+        assert_eq!(
+            files,
+            [
+                Attached { file_id: "large".to_string(), name: "photo.jpg".to_string(), mime: "image/jpeg".to_string() },
+                Attached { file_id: "doc".to_string(), name: "file".to_string(), mime: "application/octet-stream".to_string() },
+            ]
+        );
+        assert!(dropped.is_empty());
+    }
+
+    #[test]
+    fn a_recording_is_taken_and_other_kinds_are_named() {
+        let message = json!({
+            "voice": { "file_id": "v" },
+            "audio": { "file_id": "a", "file_name": "talk.mp3", "mime_type": "audio/mpeg" },
+            "sticker": {},
+            "video": {},
+            "poll": {},
+            "contact": null,
+        });
+        let (files, dropped) = attachments_of(&message);
+        assert_eq!(
+            files,
+            [
+                Attached { file_id: "v".to_string(), name: "voice.ogg".to_string(), mime: "audio/ogg".to_string() },
+                Attached { file_id: "a".to_string(), name: "talk.mp3".to_string(), mime: "audio/mpeg".to_string() },
+            ]
+        );
+        assert_eq!(dropped, ["a video", "a sticker", "a poll"]);
+
+        let (files, dropped) = attachments_of(&json!({ "text": "hello", "document": { "file_name": "no id" } }));
+        assert!(files.is_empty() && dropped.is_empty());
+    }
+
+    #[test]
+    fn only_a_topic_message_has_a_topic() {
+        assert_eq!(topic_of_message(&json!({ "is_topic_message": true, "message_thread_id": 7 })), Some(7));
+        // A reply in a chat without topics has a thread id too.
+        assert_eq!(topic_of_message(&json!({ "message_thread_id": 7 })), None);
+        assert_eq!(topic_of_message(&json!({ "is_topic_message": false, "message_thread_id": 7 })), None);
+        assert_eq!(topic_of_message(&json!({ "is_topic_message": true })), None);
+    }
+
+    #[test]
+    fn app_is_offered_only_with_a_mini_app() {
+        let names = |value: Value| -> Vec<String> { value["commands"].as_array().unwrap().iter().map(|command| command["command"].as_str().unwrap().to_string()).collect() };
+        assert_eq!(names(commands(false)), ["new", "stop", "threads", "use", "status", "night", "help"]);
+        assert_eq!(names(commands(true)), ["new", "stop", "threads", "use", "status", "night", "app", "help"]);
+    }
+
+    #[test]
+    fn the_menu_button_and_app_reply_follow_the_mini_app_address() {
+        let url = "https://node.example/app";
+        assert_eq!(menu_button(1, None), json!({ "chat_id": 1, "menu_button": { "type": "default" } }));
+        assert_eq!(menu_button(1, Some(url)), json!({ "chat_id": 1, "menu_button": { "type": "web_app", "text": "Ragon", "web_app": { "url": url } } }));
+
+        let opens = app_reply(1, Some(url));
+        assert_eq!(opens["reply_markup"]["inline_keyboard"][0][0]["web_app"]["url"], url);
+        let explains = app_reply(1, None);
+        assert!(explains.get("reply_markup").is_none());
+        assert!(explains["text"].as_str().unwrap().contains("telegram_mini_app_url"));
+    }
+
+    #[test]
+    fn a_topic_is_added_only_when_there_is_one() {
+        assert_eq!(in_topic(json!({ "chat_id": 1 }), None), json!({ "chat_id": 1 }));
+        assert_eq!(in_topic(json!({ "chat_id": 1 }), Some(7)), json!({ "chat_id": 1, "message_thread_id": 7 }));
+    }
+
+    #[test]
+    fn approval_buttons_are_coloured_only_for_approve_and_decline() {
+        let keyboard = approval_keyboard("ab", &["Approve".to_string(), "Approve for this session".to_string(), "Decline".to_string()]);
+        let row = |n: usize| &keyboard["inline_keyboard"][n][0];
+        assert_eq!(row(0)["callback_data"], "a:ab:0");
+        assert_eq!(row(0)["style"], "success");
+        assert!(row(1).get("style").is_none());
+        assert_eq!(row(2)["callback_data"], "a:ab:2");
+        assert_eq!(row(2)["style"], "danger");
+
+        // A question's own options keep the app's style.
+        let question = approval_keyboard("ab", &["Yes".to_string(), "No".to_string()]);
+        assert!(question["inline_keyboard"][0][0].get("style").is_none());
+        assert!(question["inline_keyboard"][1][0].get("style").is_none());
+        let single = approval_keyboard("ab", &["Approve".to_string()]);
+        assert!(single["inline_keyboard"][0][0].get("style").is_none());
+    }
+
+    #[test]
+    fn a_closed_approval_shows_its_outcome_as_a_dead_button() {
+        assert_eq!(closed_keyboard("Approved."), json!({ "inline_keyboard": [[{ "text": "Approved", "disabled": {} }]] }));
+    }
+
+    #[test]
+    fn a_tail_counts_characters_not_bytes() {
+        assert_eq!(tail("short", 10), "short");
+        assert_eq!(tail("short", 5), "short");
+        assert_eq!(tail("héllo", 4), "éllo");
+        assert_eq!(tail("ééé", 2), "éé");
     }
 }

@@ -1202,6 +1202,7 @@ async fn repo_turns_send_no_content_to_telegram_or_discord() {
     let socket_path = root_dir.join("run").join("s.sock");
     let mut app_server = fake_app_server(&socket_path).await;
     let config = Config {
+        phone_admin: None,
         codex_home: codex_home.clone(),
         socket: socket_path,
         launch: Launch { ragon: fake_ragon, env: Vec::new(), log: state_dir.join("app-server.log") },

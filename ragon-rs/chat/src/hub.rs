@@ -1950,3 +1950,233 @@ impl Hub {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn turn(items: &[(&str, &str, Option<&str>)]) -> Turn {
+        Turn {
+            chat: "telegram:1".to_string(),
+            id: None,
+            items: items.iter().map(|(id, text, phase)| (id.to_string(), text.to_string(), phase.map(str::to_string))).collect(),
+            error: None,
+            dirty: false,
+            last_draft: Instant::now(),
+            watch: Watch::new(0),
+            limit_reason: None,
+            started_ms: 0,
+        }
+    }
+
+    fn pending(method: &str, params: Value) -> Pending {
+        Pending {
+            chat: "telegram:1".to_string(),
+            thread: "t1".to_string(),
+            request: Value::Null,
+            method: method.to_string(),
+            params,
+            replies: Vec::new(),
+            free_text: false,
+            deadline: Instant::now(),
+            seq: 0,
+            local: None,
+        }
+    }
+
+    #[test]
+    fn every_outbound_message_names_its_chat() {
+        let chat = || "matrix:!room".to_string();
+        let messages = [
+            Outbound::Draft { chat: chat(), text: String::new() },
+            Outbound::Message { chat: chat(), markdown: String::new() },
+            Outbound::Notice { chat: chat(), text: String::new() },
+            Outbound::RepoTypedRefusal { chat: chat(), repo: RepoName::parse("owner/repo").unwrap() },
+            Outbound::Approval { chat: chat(), id: String::new(), text: String::new(), options: Vec::new() },
+            Outbound::ApprovalClosed { chat: chat(), id: String::new(), outcome: String::new() },
+            Outbound::ThreadNamed { chat: chat(), name: String::new() },
+            Outbound::File { chat: chat(), name: String::new(), bytes: Vec::new() },
+            Outbound::TurnEnded { chat: chat() },
+        ];
+        for message in &messages {
+            assert_eq!(message.chat(), "matrix:!room");
+        }
+    }
+
+    #[test]
+    fn a_chat_key_says_its_adapter_and_whether_it_leaves_the_machine() {
+        assert_eq!(adapter_of("telegram:5/7"), "telegram");
+        assert_eq!(adapter_of("matrix:!room:server"), "matrix");
+        assert_eq!(adapter_of("bare"), "bare");
+        assert!(off_node("telegram") && off_node("discord"));
+        assert!(!off_node("matrix") && !off_node("signal") && !off_node(""));
+        assert!(airgap_pause("discord").contains("so Discord is paused"));
+        assert!(airgap_pause("telegram").contains("so Telegram is paused"));
+    }
+
+    #[test]
+    fn only_a_telegram_key_has_a_topic() {
+        assert_eq!(topic_of("telegram:5/7"), Some("7"));
+        assert_eq!(topic_of("telegram:5"), None);
+        assert_eq!(topic_of("telegram:5/"), None);
+        assert_eq!(topic_of("discord:5/7"), None);
+        assert_eq!(topic_of("matrix:!a/b"), None);
+        assert_eq!(base_of("telegram:5/7"), "telegram:5");
+        assert_eq!(base_of("telegram:5"), "telegram:5");
+        // A slash in another adapter's key is part of its id.
+        assert_eq!(base_of("matrix:!a/b"), "matrix:!a/b");
+    }
+
+    #[test]
+    fn a_query_parameter_keeps_only_unreserved_bytes() {
+        assert_eq!(query_escape("Az09-_.~"), "Az09-_.~");
+        assert_eq!(query_escape("telegram:-5/7"), "telegram%3A-5%2F7");
+        assert_eq!(query_escape("a b&c=d"), "a%20b%26c%3Dd");
+        assert_eq!(query_escape("é"), "%C3%A9");
+        assert_eq!(query_escape(""), "");
+    }
+
+    #[test]
+    fn a_thread_id_is_short_and_plain() {
+        assert!(valid_thread("abc-DEF_123"));
+        assert!(valid_thread(&"a".repeat(64)));
+        assert!(!valid_thread(""));
+        assert!(!valid_thread(&"a".repeat(65)));
+        for thread in ["a/b", "../a", "a b", "a.b", "é"] {
+            assert!(!valid_thread(thread), "{thread}");
+        }
+    }
+
+    #[test]
+    fn a_night_task_carries_the_exchange_it_was_asked_after() {
+        assert_eq!(with_context("  fix it \n", None), "fix it");
+        let both = with_context("fix it", Some(&(" why? ".to_string(), " because ".to_string())));
+        assert_eq!(both, "fix it\n\nContext, from the phone conversation this was asked in:\n\nQuestion: why?\n\nAnswer: because");
+        let blank = with_context("fix it", Some(&("  ".to_string(), "because".to_string())));
+        assert!(!blank.contains("Question:") && blank.ends_with("Answer: because"));
+
+        let long = with_context("t", Some(&("q".repeat(1_501), "a".repeat(3_001))));
+        assert!(long.contains(&format!("Question: {}…\n", "q".repeat(1_500))));
+        assert!(long.ends_with(&format!("Answer: {}…", "a".repeat(3_000))));
+    }
+
+    #[test]
+    fn the_night_queue_is_lines_for_a_phone() {
+        assert!(night_status_text(&json!({ "tasks": [] })).contains("queue is empty"));
+        assert!(night_status_text(&json!({})).contains("queue is empty"));
+        let tasks = json!({ "tasks": [
+            { "id": "n1", "status": "queued", "repo": "ragon", "task": "fix it" },
+            { "id": "n2", "status": "done" },
+        ] });
+        assert_eq!(night_status_text(&tasks), "Night Shift:\n• n1 — queued [ragon] fix it\n• n2 — done [] ");
+    }
+
+    #[test]
+    fn a_file_size_rounds_up_to_a_whole_kilobyte() {
+        assert_eq!(file_limit("telegram"), 50 * 1024 * 1024);
+        assert_eq!(file_limit("matrix"), 20 * 1024 * 1024);
+        assert_eq!(file_limit("discord"), 20 * 1024 * 1024);
+        assert_eq!(size(0), "1 KB");
+        assert_eq!(size(1024), "1 KB");
+        assert_eq!(size(1025), "2 KB");
+        assert_eq!(size(1024 * 1024 - 1), "1024 KB");
+        assert_eq!(size(1024 * 1024), "1.0 MB");
+        assert_eq!(size(3 * 1024 * 1024 + 512 * 1024), "3.5 MB");
+    }
+
+    #[test]
+    fn queued_inputs_become_one_turn_with_the_images_last() {
+        assert_eq!(text_input("hi"), json!([{ "type": "text", "text": "hi", "text_elements": [] }]));
+        let image = json!({ "type": "localImage", "path": "/tmp/a.png" });
+        let input = merged(vec![text_input("one"), json!([image.clone()]), text_input("  "), text_input("two"), json!("not a list")]);
+        assert_eq!(input, json!([{ "type": "text", "text": "one\n\ntwo", "text_elements": [] }, image]));
+        assert_eq!(merged(vec![text_input(" ")]), json!([]));
+        assert_eq!(merged(Vec::new()), json!([]));
+    }
+
+    #[test]
+    fn durations_and_names_stay_short() {
+        for (ms, text) in [(0, "0s"), (45_000, "45s"), (59_999, "59s"), (60_000, "1m00s"), (130_000, "2m10s"), (3_600_000, "1h00m"), (57_660_000, "16h01m")] {
+            assert_eq!(duration(ms), text);
+        }
+        assert_eq!(cut("héllo", 5), "héllo");
+        assert_eq!(cut("héllo", 2), "hé…");
+        assert_eq!(thread_name("\n  \n  First line  \nsecond"), "First line");
+        assert_eq!(thread_name(""), "");
+        assert_eq!(thread_name(&"n".repeat(61)), format!("{}…", "n".repeat(60)));
+    }
+
+    #[test]
+    fn a_draft_is_every_message_so_far() {
+        let mut turn = turn(&[]);
+        assert_eq!(turn.draft(), "");
+        turn.delta("i1", " Hello");
+        assert!(turn.dirty);
+        turn.delta("i1", " world ");
+        turn.delta("i2", "  ");
+        turn.delta("i3", "More");
+        assert_eq!(turn.draft(), "Hello world\n\nMore");
+    }
+
+    #[test]
+    fn a_completed_item_replaces_what_its_deltas_said() {
+        let mut turn = turn(&[]);
+        turn.completed_item(&json!({ "text": "no id" }));
+        assert!(turn.items.is_empty() && !turn.dirty);
+
+        turn.delta("i1", "partial");
+        turn.dirty = false;
+        turn.completed_item(&json!({ "id": "i1", "text": "whole", "phase": "commentary" }));
+        turn.completed_item(&json!({ "id": "i2", "text": "next" }));
+        assert!(turn.dirty);
+        assert_eq!(turn.items, [("i1".to_string(), "whole".to_string(), Some("commentary".to_string())), ("i2".to_string(), "next".to_string(), None)]);
+    }
+
+    #[test]
+    fn the_answer_is_the_final_items_or_the_last_message() {
+        assert_eq!(turn(&[]).answer(), "");
+        assert_eq!(turn(&[("1", "first", None), ("2", "last", None), ("3", "  ", None)]).answer(), "last");
+        assert_eq!(turn(&[("1", "one", Some("final_answer")), ("2", "between", None), ("3", "two", Some("final_answer"))]).answer(), "one\n\ntwo");
+    }
+
+    #[test]
+    fn a_short_last_word_brings_the_answer_it_points_at() {
+        let long = "a".repeat(EARLIER_ANSWER);
+        let longer = "b".repeat(EARLIER_ANSWER + 1);
+        let pointer = "The answer above stands.";
+        assert_eq!(turn(&[("1", &long, None), ("2", &longer, None), ("3", pointer, None)]).answer(), format!("{longer}\n\n{pointer}"));
+
+        // Never commentary, and never a message too short to be an answer.
+        assert_eq!(turn(&[("1", &long, Some("commentary")), ("2", pointer, None)]).answer(), pointer);
+        let short = "a".repeat(EARLIER_ANSWER - 1);
+        assert_eq!(turn(&[("1", &short, None), ("2", pointer, None)]).answer(), pointer);
+
+        // A last word that is an answer in itself stands alone.
+        let substantive = "c".repeat(SUBSTANTIVE);
+        assert_eq!(turn(&[("1", &long, None), ("2", &substantive, None)]).answer(), substantive);
+    }
+
+    #[test]
+    fn an_approval_is_answered_in_the_shape_its_method_asks() {
+        let command = pending("item/commandExecution/requestApproval", json!({}));
+        assert_eq!(Hub::payload(&command, &Reply::Approve), json!({ "decision": "accept" }));
+        assert_eq!(Hub::payload(&command, &Reply::Decline), json!({ "decision": "decline" }));
+    }
+
+    #[test]
+    fn a_permission_is_granted_as_asked_or_not_at_all() {
+        let asked = json!({ "network": { "enabled": true } });
+        let request = pending("item/permissions/requestApproval", json!({ "permissions": asked }));
+        assert_eq!(Hub::payload(&request, &Reply::Approve), json!({ "permissions": asked, "scope": "turn" }));
+        assert_eq!(Hub::payload(&request, &Reply::Decline), json!({ "permissions": {}, "scope": "turn" }));
+        let unnamed = pending("item/permissions/requestApproval", json!({}));
+        assert_eq!(Hub::payload(&unnamed, &Reply::Approve), json!({ "permissions": {}, "scope": "turn" }));
+    }
+
+    #[test]
+    fn a_question_is_answered_under_its_own_id() {
+        let question = pending("item/tool/requestUserInput", json!({ "questions": [{ "id": "q1" }, { "id": "q2" }] }));
+        assert_eq!(Hub::payload(&question, &Reply::Answer("yes".to_string())), json!({ "answers": { "q1": { "answers": ["yes"] } } }));
+        assert_eq!(Hub::payload(&question, &Reply::Decline), json!({ "answers": { "q1": { "answers": [] } } }));
+    }
+}

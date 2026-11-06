@@ -252,4 +252,86 @@ mod tests {
         assert_eq!(closed(None), Ended::Resume);
         assert_eq!(INTENTS, 4097);
     }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ragon-chat-gateway-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A state with a session to resume at `url`.
+    fn resuming_at(dir: &PathBuf, url: &str) {
+        let mut state = DiscordState::load(dir);
+        state.session_id = Some("session".to_string());
+        state.resume_url = Some(url.to_string());
+        state.save(dir).unwrap();
+    }
+
+    #[test]
+    fn every_fatal_close_names_its_code_and_is_not_the_identify_limit() {
+        for code in FATAL_CLOSES {
+            let Ended::Fatal(reason) = closed(Some(code)) else { panic!("{code} should stop the Gateway") };
+            assert!(reason.contains(&code.to_string()), "{reason}");
+            // `run` tells the two stops apart by this mark.
+            assert!(!reason.contains(IDENTIFY_LIMIT_MARK), "{reason}");
+        }
+    }
+
+    #[test]
+    fn a_session_that_cannot_be_resumed_identifies_again() {
+        for code in FRESH_CLOSES {
+            assert_eq!(closed(Some(code)), Ended::Identify);
+        }
+    }
+
+    #[test]
+    fn any_other_close_resumes() {
+        for code in [1000, 1001, 1006, 4000, 4001, 4002, 4003, 4005, 4008] {
+            assert_eq!(closed(Some(code)), Ended::Resume, "code {code}");
+        }
+    }
+
+    #[test]
+    fn jitter_stays_under_its_limit() {
+        assert_eq!(jitter_ms(0), 0);
+        assert_eq!(jitter_ms(1), 0);
+        for _ in 0..200 {
+            assert!(jitter_ms(1000) < 1000);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_resume_address_that_is_not_wss_stops_the_gateway() {
+        let dir = scratch("not-wss");
+        resuming_at(&dir, "http://gateway.invalid");
+        let (events, _incoming) = mpsc::unbounded_channel();
+        let ended = connect_once(&DiscordApi::new("http://127.0.0.1:1", "token"), &dir, &events, 100).await;
+        assert_eq!(ended, Ended::Fatal("Discord named a Gateway address that is not wss://".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_gateway_that_does_not_answer_a_resume_is_tried_again() {
+        let dir = scratch("no-answer");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        resuming_at(&dir, &format!("ws://127.0.0.1:{port}"));
+        let (events, _incoming) = mpsc::unbounded_channel();
+        let ended = connect_once(&DiscordApi::new("http://127.0.0.1:1", "token"), &dir, &events, 100).await;
+        assert_eq!(ended, Ended::Resume);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn with_the_token_deleted_the_gateway_does_not_connect_and_clears_its_status() {
+        let dir = scratch("off");
+        GatewayStatus::Reconnecting.save(&dir);
+        assert!(GatewayStatus::path(&dir).exists());
+        let (events, _incoming) = mpsc::unbounded_channel();
+        run(DiscordApi::new("http://127.0.0.1:1", "token"), dir.clone(), events, 100).await;
+        assert!(!GatewayStatus::path(&dir).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
