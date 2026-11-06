@@ -90,6 +90,27 @@ def test_the_hand_made_file_is_upgraded_and_keeps_its_secret(tmp_path):
     assert SearxngSettings.secret_key_of(text) == "zlxoPRWU58tMJ3372nAGMOYMWa0iq9YfQbLmY1Qr"
 
 
+def test_google_cse_is_off_by_default_and_a_switch_turns_it_on(tmp_path, monkeypatch):
+    yaml = pytest.importorskip("yaml")
+    monkeypatch.delenv("DREAMFERENCE_SEARXNG_GOOGLE_CSE", raising=False)
+    SearxngSettings.ensure(str(tmp_path / "off"))
+    off = yaml.safe_load(read(tmp_path / "off" / "settings.yml"))
+    assert {e["name"]: e for e in off["engines"]}["google cse"]["disabled"] is True
+    monkeypatch.setenv("DREAMFERENCE_SEARXNG_GOOGLE_CSE", "1")
+    assert SearxngSettings.ensure(str(tmp_path / "off")) == "written"
+    on = yaml.safe_load(read(tmp_path / "off" / "settings.yml"))
+    assert {e["name"]: e for e in on["engines"]}["google cse"]["disabled"] is False
+
+
+def test_a_version_3_file_is_rewritten_with_google_cse_off(tmp_path):
+    (tmp_path / "settings.yml").write_text(
+        '# ragon-admin searxng settings, version 3\nserver:\n  secret_key: "keepme"\n'
+    )
+    assert SearxngSettings.ensure(str(tmp_path)) == "written"
+    text = read(tmp_path / "settings.yml")
+    assert "keepme" in text and '"google cse"' in text
+
+
 def test_a_file_of_ones_own_is_left_alone(tmp_path):
     own = 'use_default_settings: true\nserver:\n  secret_key: "mine"\n'
     (tmp_path / "settings.yml").write_text(own)

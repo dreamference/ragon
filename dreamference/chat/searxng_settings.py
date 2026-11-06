@@ -24,8 +24,15 @@ answer well and are on), engines whose owner could not be established, and the t
 The file carries a version line. `ragon-admin searxng start` rewrites a file that has it (or the
 hand-made file's first line) when this module's version is newer, keeping the `secret_key`, and
 leaves any other file alone: deleting the first line keeps a file of one's own.
+
+Version 4 turns `google cse` off. From this machine's address it refused every request of a
+200-query survey, so it added no hit that the other engines did not give, and each search paid for
+a request that would be refused. It stays a switch, not a removal: `DREAMFERENCE_SEARXNG_GOOGLE_CSE=1`
+in the environment of `ragon-admin searxng start` renders it on again, for an address Google
+still answers.
 """
 
+import os
 import re
 import secrets
 from collections.abc import Callable
@@ -33,7 +40,7 @@ from pathlib import Path
 from typing import Final
 
 # Bumped whenever the rendered file changes, so an installed file is rewritten on the next start.
-SETTINGS_VERSION: Final[int] = 3
+SETTINGS_VERSION: Final[int] = 4
 
 # The first line of a file this module wrote.
 MANAGED_MARKER: Final[str] = "# ragon-admin searxng settings, version "
@@ -85,11 +92,15 @@ REMOVED_ENGINES: Final[tuple[str, ...]] = (
     "habrahabr",
 )
 
+# The environment variable that turns `google cse` back on.
+GOOGLE_CSE_ENV: Final[str] = "DREAMFERENCE_SEARXNG_GOOGLE_CSE"
+
 # Each engine this file changes, with what it sets. `disabled: False` turns on an engine SearXNG
 # ships off; `categories` keeps an engine out of `general` that SearXNG puts there; `weight` below
 # 1 lets a local or small engine add results without outranking the large ones.
 ENGINE_OVERRIDES: Final[dict[str, dict[str, object]]] = {
-    # General web search.
+    # General web search. Google through `google cse` is off (version 4); see GOOGLE_CSE_ENV.
+    "google cse": {"disabled": True},
     "duckduckgo web": {"disabled": False, "categories": ["general", "web"]},
     # Mwmbl does not know languages: its results for a Portuguese or Ukrainian query were English.
     "mwmbl": {"disabled": False, "weight": 0.6},
@@ -247,9 +258,10 @@ class SearxngSettings:
             str: The file's text.
         """
         removed = "\n".join(f'      - "{name}"' for name in REMOVED_ENGINES)
-        engines = "".join(
-            cls.engine_yaml(name, fields) for name, fields in ENGINE_OVERRIDES.items()
-        )
+        overrides = dict(ENGINE_OVERRIDES)
+        if os.environ.get(GOOGLE_CSE_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
+            overrides["google cse"] = {"disabled": False}
+        engines = "".join(cls.engine_yaml(name, fields) for name, fields in overrides.items())
         return SETTINGS_HEADER.format(
             version=SETTINGS_VERSION, secret_key=secret_key, removed=removed, engines=engines
         )
