@@ -60,10 +60,6 @@
   "dreamference/chat/gmail_search_service.py": {
    "C901": 1
   },
-  "dreamference/chat/image_search_mcp.py": {
-   "D205": 3,
-   "PLR2004": 8
-  },
   "dreamference/chat/image_search_sidecar.py": {
    "D205": 2,
    "PTH111": 2,
@@ -584,5 +580,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1021
+ "total": 1010
 }
