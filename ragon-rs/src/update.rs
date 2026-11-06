@@ -1090,4 +1090,187 @@ mod tests {
         assert_eq!(target_for("x86_64", "freebsd"), None);
         assert!(target().is_some());
     }
+
+    fn gz(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn install_scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ragon-update-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Runs `install_binaries` for a release that carries only the two required assets, serving
+    /// `served` (asset name to bytes) from memory: no network. Returns the result and how many
+    /// downloads were asked for.
+    fn install_from(
+        served: &HashMap<String, Vec<u8>>,
+        sums: &HashMap<String, String>,
+        dir: &Path,
+        present: &[&str],
+    ) -> (anyhow::Result<()>, usize) {
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let assets: HashMap<&str, &str> = present.iter().map(|name| (*name, "unused")).collect();
+        let download = |name: String| {
+            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let found = served.get(&name).cloned();
+            async move { found.ok_or_else(|| anyhow::anyhow!("no such asset {name}")) }
+        };
+        let result = futures::executor::block_on(install_binaries(
+            &assets,
+            &download,
+            sums,
+            "ragon-x.sha256sums",
+            "x",
+            "v0.9.9",
+            dir,
+            ("ragon-x.gz".to_string(), "ragon".to_string()),
+            "codex-code-mode-host-x.gz".to_string(),
+        ));
+        (result, asked.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    fn sums_of(entries: &[(&str, &[u8])]) -> HashMap<String, String> {
+        entries.iter().map(|(name, bytes)| (name.to_string(), hex_sha256(bytes))).collect()
+    }
+
+    #[test]
+    fn a_truncated_download_fails_its_checksum_and_installs_nothing() {
+        let dir = install_scratch("truncated");
+        let whole = gz(&b"ragon binary ".repeat(200));
+        let host = gz(b"host");
+        let sums = sums_of(&[("ragon-x.gz", &whole), ("codex-code-mode-host-x.gz", &host)]);
+        let served = HashMap::from([
+            ("ragon-x.gz".to_string(), whole[..whole.len() / 2].to_vec()),
+            ("codex-code-mode-host-x.gz".to_string(), host),
+        ]);
+        let (result, _) = install_from(&served, &sums, &dir, &["ragon-x.gz", "codex-code-mode-host-x.gz"]);
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(error.contains("does not match its checksum"), "{error}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_later_bad_asset_leaves_the_earlier_good_one_uninstalled() {
+        let dir = install_scratch("rollback");
+        std::fs::write(dir.join("ragon"), b"old ragon").unwrap();
+        let ragon = gz(b"new ragon");
+        let host = gz(b"new host");
+        let sums = sums_of(&[("ragon-x.gz", &ragon), ("codex-code-mode-host-x.gz", &host)]);
+        let served = HashMap::from([
+            ("ragon-x.gz".to_string(), ragon),
+            ("codex-code-mode-host-x.gz".to_string(), b"garbage".to_vec()),
+        ]);
+        let (result, asked) =
+            install_from(&served, &sums, &dir, &["ragon-x.gz", "codex-code-mode-host-x.gz"]);
+        assert!(result.is_err());
+        assert_eq!(asked, 2);
+        // Every download is checked before the first file is replaced.
+        assert_eq!(std::fs::read(dir.join("ragon")).unwrap(), b"old ragon");
+        assert!(!dir.join(installed_name(CODE_MODE_HOST)).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_archive_that_matches_its_checksum_but_is_not_gzip_is_refused() {
+        let dir = install_scratch("not-gzip");
+        let junk = b"this is not a gzip stream".to_vec();
+        let host = gz(b"host");
+        let sums = sums_of(&[("ragon-x.gz", &junk), ("codex-code-mode-host-x.gz", &host)]);
+        let served = HashMap::from([
+            ("ragon-x.gz".to_string(), junk),
+            ("codex-code-mode-host-x.gz".to_string(), host),
+        ]);
+        let (result, _) = install_from(&served, &sums, &dir, &["ragon-x.gz", "codex-code-mode-host-x.gz"]);
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_asset_without_a_listed_checksum_is_refused() {
+        let dir = install_scratch("no-checksum");
+        let ragon = gz(b"ragon");
+        let host = gz(b"host");
+        let sums = sums_of(&[("ragon-x.gz", &ragon)]);
+        let served = HashMap::from([
+            ("ragon-x.gz".to_string(), ragon),
+            ("codex-code-mode-host-x.gz".to_string(), host),
+        ]);
+        let (result, _) = install_from(&served, &sums, &dir, &["ragon-x.gz", "codex-code-mode-host-x.gz"]);
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(error.contains("has no checksum for codex-code-mode-host-x.gz"), "{error}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_release_missing_a_required_asset_downloads_nothing() {
+        let dir = install_scratch("missing-asset");
+        let (result, asked) =
+            install_from(&HashMap::new(), &HashMap::new(), &dir, &["ragon-x.gz"]);
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(error.contains("has no codex-code-mode-host-x.gz"), "{error}");
+        assert_eq!(asked, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn good_archives_are_installed_executable_with_no_staging_file_left() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = install_scratch("good");
+        let ragon = gz(b"new ragon");
+        let host = gz(b"new host");
+        let sums = sums_of(&[("ragon-x.gz", &ragon), ("codex-code-mode-host-x.gz", &host)]);
+        let served = HashMap::from([
+            ("ragon-x.gz".to_string(), ragon),
+            ("codex-code-mode-host-x.gz".to_string(), host),
+        ]);
+        let (result, asked) =
+            install_from(&served, &sums, &dir, &["ragon-x.gz", "codex-code-mode-host-x.gz"]);
+        result.unwrap();
+        assert_eq!(asked, 2);
+        assert_eq!(std::fs::read(dir.join("ragon")).unwrap(), b"new ragon");
+        assert_eq!(std::fs::read(dir.join(CODE_MODE_HOST)).unwrap(), b"new host");
+        let mode = std::fs::metadata(dir.join("ragon")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+        assert!(!dir.join(".ragon.update").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_release_without_sums_or_without_a_signature_is_refused() {
+        assert!(require_signature(true, true).is_ok());
+        let no_sums = format!("{:#}", require_signature(false, true).unwrap_err());
+        assert!(no_sums.contains(release_signature::SUMS_ASSET), "{no_sums}");
+        let no_signature = format!("{:#}", require_signature(true, false).unwrap_err());
+        assert!(no_signature.contains(release_signature::SIGNATURE_ASSET), "{no_signature}");
+        let neither = format!("{:#}", require_signature(false, false).unwrap_err());
+        assert!(neither.contains(release_signature::SIGNATURE_ASSET), "{neither}");
+    }
+
+    #[test]
+    fn a_signed_sums_file_that_does_not_list_the_target_sums_is_refused() {
+        let key = SigningKey::from_bytes(&[3; 32]);
+        let trusted = [key.verifying_key().to_bytes()];
+        let (per_target, all, signature) = signed_release(&key);
+        let error = check_signed_sums("ragon-y.sha256sums", &per_target, &all, &signature, None, &trusted)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("has no checksum for ragon-y.sha256sums"));
+    }
+
+    #[test]
+    fn checksum_lines_are_read_leniently() {
+        let sums = parse_sums("ABCD  *ragon-x.gz\nlonely\n\n  ef01 other.gz extra\n");
+        assert_eq!(sums.get("ragon-x.gz").map(String::as_str), Some("abcd"));
+        assert_eq!(sums.get("other.gz").map(String::as_str), Some("ef01"));
+        assert_eq!(sums.len(), 2);
+    }
 }

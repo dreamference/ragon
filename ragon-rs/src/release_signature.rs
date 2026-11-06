@@ -439,4 +439,96 @@ XKTfKNbJyPr82bhzjbJbMb1Z1x3m5bzTQN
         assert!(signing_required("v0.9.2"));
         assert!(signing_required("not-a-version"));
     }
+
+    fn armored(bytes: &[u8]) -> String {
+        format!(
+            "-----BEGIN SSH SIGNATURE-----\n{}\n-----END SSH SIGNATURE-----\n",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    }
+
+    #[test]
+    fn a_key_line_of_another_type_or_without_a_blob_is_refused() {
+        let rsa = parse_public_key("ssh-rsa AAAAB3NzaC1yc2E comment").unwrap_err();
+        assert!(format!("{rsa:#}").contains("not ssh-rsa"));
+        let lonely = parse_public_key("ssh-ed25519").unwrap_err();
+        assert!(format!("{lonely:#}").contains("not an OpenSSH public key line"));
+        let not_base64 = parse_public_key("ssh-ed25519 !!!not-base64!!! comment").unwrap_err();
+        assert!(format!("{not_base64:#}").contains("not valid base64"));
+    }
+
+    #[test]
+    fn a_key_file_skips_comments_and_blank_lines_and_may_hold_several_keys() {
+        let first = SigningKey::from_bytes(&[1; 32]);
+        let second = SigningKey::from_bytes(&[2; 32]);
+        let text = format!("# the keys\n\n{}  \n{}", key_line(&first), key_line(&second));
+        let keys = parse_keys(&text).unwrap();
+        assert_eq!(keys, vec![first.verifying_key().to_bytes(), second.verifying_key().to_bytes()]);
+    }
+
+    #[test]
+    fn a_key_file_with_no_key_or_one_bad_line_is_refused() {
+        let empty = parse_keys("# only a comment\n\n").unwrap_err();
+        assert!(format!("{empty:#}").contains("no release signing key"));
+        let key = SigningKey::from_bytes(&[1; 32]);
+        assert!(parse_keys(&format!("{}garbage\n", key_line(&key))).is_err());
+    }
+
+    #[test]
+    fn a_truncated_signature_is_refused() {
+        let key = SigningKey::from_bytes(&[1; 32]);
+        let trusted = [key.verifying_key().to_bytes()];
+        let sums = b"0123  ragon-x.gz\n";
+        let signature = sign(sums, &key, RELEASE_NAMESPACE);
+        let body: Vec<&str> = signature.lines().filter(|line| !line.starts_with("-----")).collect();
+        let bytes = base64::engine::general_purpose::STANDARD.decode(body.concat()).unwrap();
+        for keep in [0, 5, 6, 10, bytes.len() / 2, bytes.len() - 1] {
+            let cut = armored(&bytes[..keep]);
+            assert!(verify_release(sums, &cut, None, &trusted).is_err(), "kept {keep} bytes");
+        }
+        // The whole of it still verifies.
+        assert!(verify_release(sums, &armored(&bytes), None, &trusted).is_ok());
+    }
+
+    #[test]
+    fn a_signature_with_a_wrong_preamble_or_version_is_refused() {
+        let trusted = [SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes()];
+        let bad_magic = armored(b"NOTSIG\x00\x00\x00\x01");
+        let error = verify_release(b"x", &bad_magic, None, &trusted).unwrap_err();
+        assert!(format!("{error:#}").contains("bad preamble"));
+        let mut future = MAGIC.to_vec();
+        future.extend_from_slice(&2u32.to_be_bytes());
+        let error = verify_release(b"x", &armored(&future), None, &trusted).unwrap_err();
+        assert!(format!("{error:#}").contains("unsupported SSH signature version"));
+    }
+
+    #[test]
+    fn a_body_that_is_not_base64_is_refused() {
+        let trusted = [SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes()];
+        let text = "-----BEGIN SSH SIGNATURE-----\n!!!\n-----END SSH SIGNATURE-----\n";
+        let error = verify_release(b"x", text, None, &trusted).unwrap_err();
+        assert!(format!("{error:#}").contains("not valid base64"));
+    }
+
+    #[test]
+    fn a_transition_file_that_holds_no_key_is_refused() {
+        let old = SigningKey::from_bytes(&[1; 32]);
+        let new = SigningKey::from_bytes(&[2; 32]);
+        let trusted = [old.verifying_key().to_bytes()];
+        let sums = b"0123  ragon-x.gz\n";
+        let signature = sign(sums, &new, RELEASE_NAMESPACE);
+        let empty = "# nothing here\n";
+        let endorsement = sign(empty.as_bytes(), &old, KEY_NAMESPACE);
+        let error = verify_release(sums, &signature, Some((empty, &endorsement)), &trusted).unwrap_err();
+        assert!(format!("{error:#}").contains("no release signing key"));
+    }
+
+    #[test]
+    fn nothing_is_trusted_when_the_trusted_list_is_empty() {
+        let key = SigningKey::from_bytes(&[1; 32]);
+        let sums = b"0123  ragon-x.gz\n";
+        let signature = sign(sums, &key, RELEASE_NAMESPACE);
+        let error = verify_release(sums, &signature, None, &[]).unwrap_err();
+        assert!(format!("{error:#}").contains("does not trust"));
+    }
 }

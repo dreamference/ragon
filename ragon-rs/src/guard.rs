@@ -1215,4 +1215,103 @@ mod tests {
             assert_eq!(hook.event_label(), label);
         }
     }
+
+    #[test]
+    fn hook_input_that_is_not_json_is_ignored_and_missing_fields_default() {
+        assert!(Input::parse("not json").is_none());
+        assert!(Input::parse("").is_none());
+        // A hook event with no session or no working folder cannot be kept state for.
+        assert!(Input::parse("{}").is_none());
+        assert!(Input::parse(r#"{"session_id": "s"}"#).is_none());
+        assert!(Input::parse(r#"{"cwd": "/tmp"}"#).is_none());
+        let bare = Input::parse(r#"{"session_id": "s", "cwd": "/tmp"}"#).unwrap();
+        assert_eq!(bare.event, "");
+        assert!(bare.transcript.is_none());
+        assert!(!bare.stop_hook_active);
+        assert_eq!(bare.last_message, "");
+        let empty_path = Input::parse(
+            r#"{"session_id": "s", "cwd": "/tmp", "transcript_path": "", "stop_hook_active": true}"#,
+        )
+        .unwrap();
+        assert!(empty_path.transcript.is_none());
+        assert!(empty_path.stop_hook_active);
+    }
+
+    #[test]
+    fn an_unknown_event_or_no_guard_lets_everything_through() {
+        let (repo, home) = repository("unknown-event");
+        let event = json!({
+            "session_id": "s-1", "cwd": repo, "hook_event_name": "SessionStart",
+            "transcript_path": home.join("sessions/2015/10/20/rollout-s-1.jsonl"),
+        });
+        assert!(handle(&names("tests"), &event.to_string(), SystemTime::now()).is_none());
+        assert!(handle(&[], &event.to_string(), SystemTime::now()).is_none());
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn a_session_id_cannot_write_outside_the_state_folder() {
+        let (repo, home) = repository("session-name");
+        let event = json!({
+            "session_id": "../../escape", "turn_id": "t-1", "cwd": repo, "hook_event_name": "Stop",
+            "transcript_path": home.join("sessions/2015/10/20/rollout-x.jsonl"),
+            "stop_hook_active": false, "last_assistant_message": "done",
+        });
+        let _ = handle(&names("tests"), &event.to_string(), SystemTime::now());
+        assert!(!home.join("escape.json").exists());
+        assert!(!home.parent().unwrap().join("escape.json").exists());
+        let written: Vec<_> = std::fs::read_dir(home.join(STATE_DIR)).unwrap().flatten().collect();
+        assert!(!written.is_empty());
+        for entry in written {
+            let name = entry.file_name().to_string_lossy().to_string();
+            assert!(!name.contains('/') && !name.contains(".."), "{name}");
+        }
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap());
+    }
+
+    #[test]
+    fn a_switch_set_to_anything_but_yes_is_off_and_an_empty_one_defers_to_the_file() {
+        let mut settings = toml::Table::new();
+        settings.insert("guard".to_string(), toml::Value::Boolean(true));
+        assert!(!switch_on(Some("maybe"), &settings, "guard"));
+        assert!(!switch_on(Some("0"), &settings, "guard"));
+        assert!(switch_on(Some("YES"), &settings, "guard"));
+        assert!(switch_on(Some(""), &settings, "guard"));
+        assert!(switch_on(None, &settings, "guard"));
+        // A value that is not a boolean is ignored, whatever it says.
+        settings.insert("guard".to_string(), toml::Value::String("false".to_string()));
+        assert_eq!(switch_on(None, &settings, "guard"), DEFAULT);
+        assert_eq!(switch_on(None, &toml::Table::new(), "guard"), DEFAULT);
+    }
+
+    #[test]
+    fn dropping_one_of_two_identical_assertions_is_weakening() {
+        let before = "def test_a():\n    assert f()\n    assert f()\n";
+        let after = "def test_a():\n    assert f()\n";
+        assert_eq!(compare(before, after), vec!["- assert f()"]);
+        assert!(compare(after, before).is_empty());
+    }
+
+    #[test]
+    fn test_and_code_paths_are_told_apart_by_name_and_extension() {
+        for test in ["src/lib_test.rs", "web/app.spec.tsx", "src/UserTest.java", "pkg/conftest.py"] {
+            assert!(is_test_path(test), "{test}");
+            assert!(!is_code_path(test), "{test}");
+        }
+        assert!(is_code_path("src/Main.RS"));
+        assert!(!is_code_path("README.md"));
+        assert!(!is_code_path("Makefile"));
+    }
+
+    #[test]
+    fn long_lists_and_texts_are_cut_and_say_so() {
+        let paths: Vec<String> = (0..MAX_LISTED + 4).map(|n| format!("t{n}.py")).collect();
+        let shown = list(&paths);
+        assert!(shown.ends_with("4 more"), "{shown}");
+        assert_eq!(shown.matches('`').count(), MAX_LISTED * 2);
+        assert!(!list(&paths[..MAX_LISTED]).contains("more"));
+        assert_eq!(clip("short", 10), "short");
+        // The limit counts characters, not bytes, so a multi-byte text is never split mid-character.
+        assert_eq!(clip("ééééé", 3), "ééé…");
+    }
 }
