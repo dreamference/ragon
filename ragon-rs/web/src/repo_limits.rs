@@ -572,4 +572,41 @@ mod tests {
         assert_eq!(budget.add("signal:c1", "resumed-thread", 9_700_000, now + 5), 200_000);
         assert_eq!(budget.used("signal:c1", now + 5), 200_000);
     }
+
+    #[test]
+    fn a_finished_command_no_longer_trips_the_command_bound() {
+        let limits = RepoLimits { tool_calls: None, answer_ms: None, command_ms: Some(10_000), ..RepoLimits::default() };
+        let mut watch = RepoWatch::new(0, limits);
+        watch.on_command_started_at("c1", 1_000);
+        watch.on_command_finished("c1");
+        assert_eq!(watch.check(500_000), None);
+    }
+
+    #[test]
+    fn a_running_command_over_its_bound_steers() {
+        let limits = RepoLimits { tool_calls: None, answer_ms: None, command_ms: Some(10_000), ..RepoLimits::default() };
+        let mut watch = RepoWatch::new(0, limits);
+        watch.on_command_started_at("c1", 1_000);
+        assert_eq!(watch.check(10_999), None);
+        assert!(matches!(watch.check(11_000), Some(RepoVerdict::Steer(_))));
+    }
+
+    #[test]
+    fn no_limits_means_the_watch_never_acts() {
+        let limits = RepoLimits { tool_calls: None, answer_ms: None, command_ms: None, ..RepoLimits::default() };
+        let mut watch = RepoWatch::new(0, limits);
+        for _ in 0..500 {
+            watch.on_tool_started();
+        }
+        assert_eq!(watch.check(u64::MAX / 2), None);
+    }
+
+    #[test]
+    fn conversation_items_are_not_tool_calls() {
+        for kind in ["userMessage", "agentMessage", "reasoning", "plan", "contextCompaction"] {
+            assert!(!is_tool(kind), "{kind}");
+        }
+        assert!(is_tool("commandExecution"));
+        assert!(is_tool("mcpToolCall"));
+    }
 }

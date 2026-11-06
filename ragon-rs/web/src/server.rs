@@ -1535,4 +1535,90 @@ mod tests {
         let _ = server_task.await;
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    fn plain_server(tag: &str, public: &[&str]) -> Arc<Server> {
+        let dir = std::env::temp_dir().join(format!("ragon-web-server-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state_dir = dir.join("codex").join("web");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        Server::new(Config {
+            codex_home: dir.join("codex"),
+            state_dir,
+            port: 9,
+            lan_names: Vec::new(),
+            public_names: public.iter().map(|s| s.to_string()).collect(),
+            socket: dir.join("app.sock"),
+            launch: Launch { ragon: PathBuf::from("/bin/true"), env: Vec::new(), log: dir.join("app-server.log") },
+            images_dir: dir.join("images"),
+            speech_addr: "127.0.0.1:9".to_string(),
+            user_config: None,
+            forge_url: None,
+            phone_admin: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn public_host_matches_names_ignoring_case_and_space() {
+        let server = plain_server("public-host", &[" Front.Example "]);
+        assert!(server.public_host(Some("front.example")));
+        assert!(server.public_host(Some("FRONT.EXAMPLE ")));
+        assert!(!server.public_host(Some("other.example")));
+        assert!(!server.public_host(None));
+    }
+
+    #[test]
+    fn through_proxy_sees_forwarding_headers_and_public_host() {
+        let server = plain_server("through-proxy", &["front.example"]);
+        assert!(!server.through_proxy(&HeaderMap::new()));
+        let mut forwarded = HeaderMap::new();
+        forwarded.insert("x-forwarded-for", HeaderValue::from_static("10.0.0.1"));
+        assert!(server.through_proxy(&forwarded));
+        let mut named = HeaderMap::new();
+        named.insert(header::HOST, HeaderValue::from_static("front.example"));
+        assert!(server.through_proxy(&named));
+    }
+
+    #[test]
+    fn upload_paths_number_the_name_before_the_extension() {
+        let folder = Path::new("/tmp/x");
+        let got: Vec<PathBuf> = upload_paths(folder, "a.png").take(3).collect();
+        assert_eq!(got, vec![folder.join("a.png"), folder.join("a-1.png"), folder.join("a-2.png")]);
+    }
+
+    #[test]
+    fn upload_paths_treat_a_leading_dot_or_no_dot_as_no_extension() {
+        let folder = Path::new("/tmp/x");
+        let got: Vec<PathBuf> = upload_paths(folder, "notes").take(2).collect();
+        assert_eq!(got, vec![folder.join("notes"), folder.join("notes-1")]);
+        let got: Vec<PathBuf> = upload_paths(folder, ".env").take(2).collect();
+        assert_eq!(got, vec![folder.join(".env"), folder.join(".env-1")]);
+    }
+
+    #[test]
+    fn secured_adds_headers_but_keeps_a_documents_own_policy() {
+        let plain = secured(text(StatusCode::OK, "x"));
+        assert_eq!(plain.headers()[header::X_FRAME_OPTIONS], "DENY");
+        assert_eq!(plain.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        let mut custom = text(StatusCode::OK, "x");
+        custom.headers_mut().insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
+        assert_eq!(secured(custom).headers()[header::X_FRAME_OPTIONS], "SAMEORIGIN");
+    }
+
+    #[test]
+    fn new_tab_ids_increase_and_unauthenticated_requests_are_refused() {
+        let server = plain_server("tabs", &[]);
+        let a = server.new_tab_id();
+        let b = server.new_tab_id();
+        assert!(b > a);
+        assert!(!server.authenticated("/api/x", &HeaderMap::new()));
+    }
+
+    #[test]
+    fn response_helpers_set_status_and_content_type() {
+        let r = json_response(StatusCode::CREATED, serde_json::json!({ "a": 1 }));
+        assert_eq!(r.status(), StatusCode::CREATED);
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "application/json");
+        assert!(html(StatusCode::OK, "").headers()[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/html"));
+    }
 }

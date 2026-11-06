@@ -414,4 +414,50 @@ diff --git a/forbidden-dir/note.txt b/forbidden-dir/note.txt
             assert!(!f.file.contains("forbidden-dir"), "matched path leaked in finding: {f:?}");
         }
     }
+
+    #[test]
+    fn hunk_ranges_default_the_count_to_one() {
+        assert_eq!(parse_hunk_range("-3,0"), Some((3, 0)));
+        assert_eq!(parse_hunk_range("+7"), Some((7, 1)));
+        assert_eq!(parse_hunk_range("7"), None);
+        assert_eq!(parse_hunk_range("+x,1"), None);
+    }
+
+    #[test]
+    fn hunk_header_needs_old_and_new_ranges() {
+        assert_eq!(parse_hunk_header(" -1,2 +3,4 @@ fn x"), Some((2, 3, 4)));
+        assert_eq!(parse_hunk_header(" +1 -2 @@"), None);
+        assert_eq!(parse_hunk_header(" -1 @@"), None);
+    }
+
+    #[test]
+    fn paths_scan_reports_each_entry_once() {
+        let patterns = denylist_patterns("forbidden\nsecret\n");
+        let mut findings = Vec::new();
+        let paths = vec!["a/forbidden/x.txt".to_string(), "forbidden.md".to_string(), "ok.txt".to_string()];
+        scan_paths(&patterns, &paths, &mut findings);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].entry, 1);
+        assert_eq!(findings[0].line, 0);
+    }
+
+    #[test]
+    fn matching_entries_is_empty_when_nothing_matches() {
+        let patterns = denylist_patterns("alpha\n");
+        assert!(matching_entries(&patterns, "beta gamma").is_empty());
+        assert_eq!(matching_entries(&patterns, "an Alpha here"), vec![1]);
+    }
+
+    #[test]
+    fn a_missing_denylist_is_none_and_a_present_one_is_read() {
+        let home = std::env::temp_dir().join(format!("ragon-anon-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(load_denylist(&home).unwrap().is_none());
+        let file = home.join(DENYLIST_REL_PATH);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "word\n").unwrap();
+        assert_eq!(load_denylist(&home).unwrap().as_deref(), Some("word\n"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }

@@ -874,4 +874,61 @@ mod tests {
         // Once removed, a second response with the same ID is no longer in the set.
         assert!(!take_internal_id(&shared, &json!({ "id": issued, "result": {} })));
     }
+
+    #[test]
+    fn watch_message_passes_everything_when_not_watching() {
+        let m = json!({ "id": 1, "method": "turn/start", "params": {} });
+        assert_eq!(watch_message(false, m.clone()).unwrap(), m);
+    }
+
+    #[test]
+    fn watch_message_allows_initialized_notification_only_without_id() {
+        let note = json!({ "method": "initialized" });
+        assert_eq!(watch_message(true, note.clone()).unwrap(), note);
+        assert!(watch_message(true, json!({ "id": 2, "method": "initialized" })).is_err());
+    }
+
+    #[test]
+    fn watch_message_trims_thread_resume_to_the_thread_id() {
+        let m = json!({ "id": 3, "method": "thread/resume", "params": { "threadId": "t9", "cwd": "/x" } });
+        let out = watch_message(true, m).unwrap();
+        assert_eq!(out, json!({ "id": 3, "method": "thread/resume", "params": { "threadId": "t9" } }));
+    }
+
+    #[test]
+    fn watch_message_refuses_resume_without_thread_id_and_unknown_methods() {
+        assert!(watch_message(true, json!({ "id": 4, "method": "thread/resume", "params": {} })).is_err());
+        let err = watch_message(true, json!({ "id": 5, "method": "turn/start", "params": {} })).unwrap_err();
+        assert!(err.contains("watch threads only"));
+        assert!(watch_message(true, json!({ "params": {} })).is_err());
+    }
+
+    #[test]
+    fn send_interrupt_issues_an_internal_turn_interrupt() {
+        let shared = Shared::default();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        send_interrupt(&shared, &tx, "t1", "turn-7");
+        let UpstreamMessage::Text(text) = rx.try_recv().unwrap() else { panic!("expected text") };
+        let parsed: Value = serde_json::from_str(text.as_str()).unwrap();
+        assert_eq!(parsed["method"], "turn/interrupt");
+        assert_eq!(parsed["params"]["threadId"], "t1");
+        assert_eq!(parsed["params"]["turnId"], "turn-7");
+        assert!(take_internal_id(&shared, &json!({ "id": parsed["id"].clone(), "result": {} })));
+    }
+
+    #[test]
+    fn take_internal_id_ignores_requests_carrying_a_method() {
+        let shared = Shared::default();
+        let id = next_internal_id();
+        shared.internal_ids.lock().unwrap().insert(id);
+        assert!(!take_internal_id(&shared, &json!({ "id": id, "method": "x" })));
+        assert!(take_internal_id(&shared, &json!({ "id": id, "result": {} })));
+    }
+
+    #[test]
+    fn next_internal_id_is_strictly_increasing() {
+        let a = next_internal_id();
+        let b = next_internal_id();
+        assert!(b > a && a >= INTERNAL_REQUEST_ID_BASE);
+    }
 }
