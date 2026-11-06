@@ -6,9 +6,9 @@ embed them inline. One ``POST /search`` call runs the whole funnel -- SearXNG's 
 with a wide candidate pool, in-memory thumbnail fetches behind a hardened SSRF guard, a SigLIP
 pre-filter over the thumbnails, perceptual-hash collapse of visual near-duplicates, a vision
 re-rank by the served multimodal model with the full downloads already prefetching
-speculatively, and finally persistence of the winners into a local store that ``ragon web`` and the
-desktop app serve back at ``/images/{file_id}.jpg`` (specs/DREAMFERENCE_RAGON_ASK.md §6). Caching locally is the point: hotlinked
-images die of CORP blocks and link rot; cached ones render forever.
+speculatively, and finally persistence of the winners into a local store that ``ragon web`` and
+the desktop app serve back at ``/images/{file_id}.jpg`` (specs/DREAMFERENCE_RAGON_ASK.md §6).
+Caching locally is the point: hotlinked images die of CORP blocks and link rot; cached ones render forever.
 
 **Deviation from the spec, stated loudly:** the spec names FastAPI. This service is standard
 library plus Pillow instead, for the same reason the Gmail sidecar is stdlib-only -- it runs in
@@ -41,14 +41,15 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Iterable
+from concurrent.futures import Future, ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 try:  # Pillow is the one third-party need; every use degrades without it.
     from PIL import Image
 except ImportError:  # pragma: no cover - exercised only in a bare container
-    Image = None
+    Image = None  # type: ignore[assignment]
 
 SERVICE_PORT: Final[int] = 8768
 
@@ -57,6 +58,16 @@ CANDIDATE_POOL_SIZE: Final[int] = 30
 RANK_CANDIDATES: Final[int] = 8
 RESULT_COUNT: Final[int] = 4
 MAX_RESULT_COUNT: Final[int] = 10
+HTTP_OK: Final[int] = 200
+HTTP_REDIRECT_STATUSES: Final[tuple[int, ...]] = (301, 302, 303, 307, 308)
+HTTP_PORT: Final[int] = 80
+HTTPS_PORT: Final[int] = 443
+HTTPS_SCHEME: Final[str] = "https"
+FILE_ID_KEY: Final[str] = "file_id"
+THUMB_EDGE_PIXELS: Final[int] = 256
+HEALTH_PATH: Final[str] = "/health"
+SEARCH_PATH: Final[str] = "/search"
+ALLOWED_SCHEMES: Final[tuple[str, ...]] = ("http", HTTPS_SCHEME)
 PHASH_HAMMING_MAX: Final[int] = 8
 
 # Thumbnails are fetched in memory and deliberately small; full images are bounded too, because
@@ -96,8 +107,39 @@ _MAGIC: Final[tuple[tuple[bytes, str], ...]] = (
 )
 
 
-class FetchRejected(Exception):
+_RIFF: Final[bytes] = b"RIFF"
+_WEBP: Final[bytes] = b"WEBP"
+
+
+class FetchRejectedError(Exception):
     """A download refused by the hardened fetcher, with the reason in the message."""
+
+
+FetchRejected = FetchRejectedError
+
+
+class _Picture(Protocol):
+    """The slice of a PIL image the perceptual hash reads."""
+
+    def convert(self, mode: str, /) -> "_Picture":
+        """Converts to a pixel mode."""
+        ...
+
+    def resize(self, size: tuple[int, int], /) -> "_Picture":
+        """Scales to a size."""
+        ...
+
+    def getdata(self) -> Iterable[int]:
+        """Yields the pixel values."""
+        ...
+
+
+class _Readable(Protocol):
+    """The one method of a response body the capped reader needs."""
+
+    def read(self, size: int, /) -> bytes:
+        """Reads up to ``size`` bytes."""
+        ...
 
 
 def sniff_image_type(payload: bytes) -> str | None:
@@ -112,7 +154,7 @@ def sniff_image_type(payload: bytes) -> str | None:
     for magic, mime in _MAGIC:
         if payload.startswith(magic):
             return mime
-    if payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
+    if payload[:4] == _RIFF and payload[8:12] == _WEBP:
         return "image/webp"
     return None
 
@@ -131,14 +173,14 @@ class HardenedFetcher:
         cls,
         host: str,
         allow_hosts: frozenset = frozenset(),
-        resolver: Any = socket.getaddrinfo,
+        resolver: Callable[..., list] = socket.getaddrinfo,
     ) -> str:
         """Resolves a hostname and rejects it unless every address is publicly routable.
 
         Args:
             host (str): Hostname or address literal from the URL.
             allow_hosts (frozenset): Hostnames exempt from the private-address check.
-            resolver (Any): DNS resolution function, injectable for tests.
+            resolver (Callable): DNS resolution function, injectable for tests.
 
         Returns:
             str: The single pinned IP address to connect to.
@@ -147,21 +189,21 @@ class HardenedFetcher:
             try:
                 infos = resolver(host, None)
             except OSError as exc:
-                raise FetchRejected(f"DNS failure for {host}: {exc}") from exc
+                raise FetchRejectedError(f"DNS failure for {host}: {exc}") from exc
             return infos[0][4][0]
         try:
             infos = resolver(host, None)
         except OSError as exc:
-            raise FetchRejected(f"DNS failure for {host}: {exc}") from exc
+            raise FetchRejectedError(f"DNS failure for {host}: {exc}") from exc
         if not infos:
-            raise FetchRejected(f"{host} resolved to nothing")
-        pinned = None
+            raise FetchRejectedError(f"{host} resolved to nothing")
+        pinned: str | None = None
         for info in infos:
             address = info[4][0]
             try:
                 parsed = ipaddress.ip_address(address)
             except ValueError as exc:
-                raise FetchRejected(f"{host} resolved to non-address {address!r}") from exc
+                raise FetchRejectedError(f"{host} resolved to non-address {address!r}") from exc
             # `not is_global` catches what the named ranges miss: RFC 6598's 100.64/10, which
             # Tailscale numbers tailnets from, is neither private nor global.
             if (
@@ -173,9 +215,9 @@ class HardenedFetcher:
                 or parsed.is_unspecified
                 or not parsed.is_global
             ):
-                raise FetchRejected(f"{host} resolves to non-public address {address}")
+                raise FetchRejectedError(f"{host} resolves to non-public address {address}")
             pinned = pinned or address
-        return pinned
+        return pinned or ""
 
     @classmethod
     def fetch(
@@ -184,8 +226,8 @@ class HardenedFetcher:
         max_bytes: int,
         timeout: float,
         allow_hosts: frozenset = frozenset(),
-        resolver: Any = socket.getaddrinfo,
-        opener: Any = None,
+        resolver: Callable[..., list] = socket.getaddrinfo,
+        opener: Callable[[str, str, float], Any] | None = None,
     ) -> bytes:
         """Downloads a URL under the full set of guards.
 
@@ -194,8 +236,8 @@ class HardenedFetcher:
             max_bytes (int): Hard cap on the body size.
             timeout (float): Per-request timeout in seconds.
             allow_hosts (frozenset): Hostnames exempt from the private-address check.
-            resolver (Any): DNS resolution function, injectable for tests.
-            opener (Any): Callable ``(url, pinned_ip, timeout) -> response`` for tests; the
+            resolver (Callable): DNS resolution function, injectable for tests.
+            opener (Optional[Callable]): Callable ``(url, pinned_ip, timeout) -> response`` for tests; the
                 default opens a real pinned-IP connection.
 
         Returns:
@@ -204,30 +246,30 @@ class HardenedFetcher:
         current = url
         for _ in range(REDIRECT_CAP + 1):
             parsed = urllib.parse.urlparse(current)
-            if parsed.scheme not in ("http", "https"):
-                raise FetchRejected(f"scheme {parsed.scheme!r} refused")
+            if parsed.scheme not in ALLOWED_SCHEMES:
+                raise FetchRejectedError(f"scheme {parsed.scheme!r} refused")
             host = parsed.hostname
             if not host:
-                raise FetchRejected("URL carries no host")
+                raise FetchRejectedError("URL carries no host")
             pinned = cls.assert_public(host, allow_hosts=allow_hosts, resolver=resolver)
             response = (opener or cls._open)(current, pinned, timeout)
-            status = getattr(response, "status", 200)
-            if status in (301, 302, 303, 307, 308):
+            status = getattr(response, "status", HTTP_OK)
+            if status in HTTP_REDIRECT_STATUSES:
                 location = response.headers.get("Location")
                 response.close()
                 if not location:
-                    raise FetchRejected("redirect without Location")
+                    raise FetchRejectedError("redirect without Location")
                 current = urllib.parse.urljoin(current, location)
                 continue
-            if status != 200:
+            if status != HTTP_OK:
                 response.close()
-                raise FetchRejected(f"HTTP {status}")
+                raise FetchRejectedError(f"HTTP {status}")
             body = cls._read_capped(response, max_bytes)
             response.close()
             if sniff_image_type(body) is None:
-                raise FetchRejected("payload is not a known image format")
+                raise FetchRejectedError("payload is not a known image format")
             return body
-        raise FetchRejected("redirect cap exceeded")
+        raise FetchRejectedError("redirect cap exceeded")
 
     @classmethod
     def _open(cls, url: str, pinned_ip: str, timeout: float):
@@ -244,12 +286,13 @@ class HardenedFetcher:
         import http.client
 
         parsed = urllib.parse.urlparse(url)
-        host = parsed.hostname
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        host = parsed.hostname or ""
+        port = parsed.port or (HTTPS_PORT if parsed.scheme == HTTPS_SCHEME else HTTP_PORT)
         path = parsed.path or "/"
         if parsed.query:
             path += "?" + parsed.query
-        if parsed.scheme == "https":
+        conn: http.client.HTTPConnection
+        if parsed.scheme == HTTPS_SCHEME:
             raw = socket.create_connection((pinned_ip, port), timeout=timeout)
             context = ssl.create_default_context()
             sock = context.wrap_socket(raw, server_hostname=host)
@@ -265,11 +308,11 @@ class HardenedFetcher:
         return conn.getresponse()
 
     @classmethod
-    def _read_capped(cls, response: Any, max_bytes: int) -> bytes:
+    def _read_capped(cls, response: _Readable, max_bytes: int) -> bytes:
         """Streams a response body up to a hard size cap.
 
         Args:
-            response (Any): An object with a file-like ``read``.
+            response (_Readable): An object with a file-like ``read``.
             max_bytes (int): The cap; a body that exceeds it is refused, not truncated.
 
         Returns:
@@ -285,13 +328,13 @@ class HardenedFetcher:
             remaining -= len(chunk)
         body = b"".join(chunks)
         if len(body) > max_bytes:
-            raise FetchRejected(f"body exceeds {max_bytes} bytes")
+            raise FetchRejectedError(f"body exceeds {max_bytes} bytes")
         if not body:
-            raise FetchRejected("empty body")
+            raise FetchRejectedError("empty body")
         return body
 
 
-def phash64(image: Any) -> int:
+def phash64(image: _Picture) -> int:
     """Computes a 64-bit perceptual hash of an image.
 
     The classic pHash recipe: 32x32 grayscale, 2D DCT-II, the top-left 8x8 of coefficients
@@ -299,7 +342,7 @@ def phash64(image: Any) -> int:
     needs no numpy or imagehash -- 32x32 is small enough that plain loops are instant.
 
     Args:
-        image (Any): A PIL image.
+        image (_Picture): A PIL image.
 
     Returns:
         int: The 64-bit hash.
@@ -356,10 +399,12 @@ class ImageStore:
             data_dir (str): Directory for ``images/`` and ``db.sqlite``.
         """
         self.data_dir = data_dir
-        self.images_dir = os.path.join(data_dir, "images")
+        self.images_dir = str(pathlib.Path(data_dir) / "images")
         pathlib.Path(self.images_dir).mkdir(exist_ok=True, parents=True)
         self._lock = threading.Lock()
-        self._db = sqlite3.connect(os.path.join(data_dir, "db.sqlite"), check_same_thread=False)
+        self._db = sqlite3.connect(
+            str(pathlib.Path(data_dir) / "db.sqlite"), check_same_thread=False
+        )
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS images ("
             "file_id TEXT PRIMARY KEY, source_url TEXT UNIQUE, phash INTEGER,"
@@ -376,7 +421,7 @@ class ImageStore:
         Returns:
             str: Absolute path of the JPEG.
         """
-        return os.path.join(self.images_dir, f"{file_id}.jpg")
+        return str(pathlib.Path(self.images_dir) / f"{file_id}.jpg")
 
     def lookup_source(self, source_url: str) -> dict[str, Any] | None:
         """Finds a previously cached image by its source URL.
@@ -436,13 +481,13 @@ class ImageStore:
                 out = io.BytesIO()
                 decoded.save(out, format="JPEG", quality=90)
                 payload = out.getvalue()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - any decode failure keeps the original bytes
                 pass
         # The new file replaces the old in one step, so a reader is never served half an image.
         target = pathlib.Path(self.path(file_id))
         temporary = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
-            with open(temporary, "wb") as fh:
+            with open(temporary, "wb") as fh:  # noqa: PTH123 - the half-written-file test wraps open
                 fh.write(payload)
             temporary.replace(target)
         finally:
@@ -519,8 +564,10 @@ class SearxngClient:
     """Queries SearXNG on the sidecar network for image results."""
 
     def __init__(self, base_url: str):
-        """Args:
-        base_url (str): SearXNG base URL, e.g. ``http://dreamference-searxng:8080``.
+        """Stores the configuration.
+
+        Args:
+            base_url (str): SearXNG base URL, e.g. ``http://dreamference-searxng:8080``.
         """
         self.base_url = base_url.rstrip("/")
         self.host = urllib.parse.urlparse(self.base_url).hostname or ""
@@ -560,9 +607,11 @@ class SiglipClient:
     """Scores thumbnails against the query through the Infinity embeddings sidecar."""
 
     def __init__(self, base_url: str, model: str = ""):
-        """Args:
-        base_url (str): The Infinity server, e.g. ``http://dreamference-siglip:9100``.
-        model (str): Model id to name in requests; Infinity defaults to its only model.
+        """Stores the configuration.
+
+        Args:
+            base_url (str): The Infinity server, e.g. ``http://dreamference-siglip:9100``.
+            model (str): Model id to name in requests; Infinity defaults to its only model.
         """
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -616,9 +665,11 @@ class VisionRanker:
     """Re-ranks the shortlist with the served multimodal model."""
 
     def __init__(self, base_url: str, model: str):
-        """Args:
-        base_url (str): OpenAI-compatible base URL including ``/v1``.
-        model (str): Served model id.
+        """Stores the configuration.
+
+        Args:
+            base_url (str): OpenAI-compatible base URL including ``/v1``.
+            model (str): Served model id.
         """
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -676,7 +727,7 @@ class VisionRanker:
             text = data["choices"][0]["message"]["content"]
             match = re.search(r"\[[\d,\s]*\]", text)
             order = json.loads(match.group(0)) if match else []
-        except Exception:
+        except Exception:  # noqa: BLE001 - any ranker fault falls back to the funnel order
             return fallback
         if match is None:
             return fallback
@@ -701,14 +752,16 @@ class ImageSearchService:
         searxng: SearxngClient,
         siglip: SiglipClient | None,
         ranker: VisionRanker | None,
-        fetcher: Any = HardenedFetcher,
+        fetcher: type[HardenedFetcher] = HardenedFetcher,
     ):
-        """Args:
-        store (ImageStore): Persistence for winners.
-        searxng (SearxngClient): Candidate source.
-        siglip (Optional[SiglipClient]): Pre-filter; skipped when None or failing.
-        ranker (Optional[VisionRanker]): Vision re-rank; skipped when None or failing.
-        fetcher (Any): The hardened downloader; injectable for tests.
+        """Stores the configuration.
+
+        Args:
+            store (ImageStore): Persistence for winners.
+            searxng (SearxngClient): Candidate source.
+            siglip (Optional[SiglipClient]): Pre-filter; skipped when None or failing.
+            ranker (Optional[VisionRanker]): Vision re-rank; skipped when None or failing.
+            fetcher (type): The hardened downloader; injectable for tests.
         """
         self.store = store
         self.searxng = searxng
@@ -797,18 +850,34 @@ class ImageSearchService:
         for query in queries:
             try:
                 per_query.append(self.searxng.search_images(query))
-            except Exception:
+            except Exception:  # noqa: BLE001 - one failed query must not sink the others
                 per_query.append([])
-        merged, seen = [], set()
-        for rank in range(max((len(r) for r in per_query), default=0)):
-            for results in per_query:
-                if rank < len(results):
-                    url = results[rank]["image_url"]
-                    if url not in seen:
-                        seen.add(url)
-                        merged.append(results[rank])
-                if len(merged) >= CANDIDATE_POOL_SIZE:
-                    return merged
+        return self._round_robin(per_query)
+
+    @staticmethod
+    def _round_robin(per_query: list[list[dict[str, str]]]) -> list[dict[str, str]]:
+        """Interleaves result lists by rank and drops repeated image URLs.
+
+        Args:
+            per_query (List[List[Dict[str, str]]]): One result list per query.
+
+        Returns:
+            List[Dict[str, str]]: At most ``CANDIDATE_POOL_SIZE`` candidates.
+        """
+        interleaved = (
+            results[rank]
+            for rank in range(max((len(r) for r in per_query), default=0))
+            for results in per_query
+            if rank < len(results)
+        )
+        merged: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for candidate in interleaved:
+            if candidate["image_url"] not in seen:
+                seen.add(candidate["image_url"])
+                merged.append(candidate)
+            if len(merged) >= CANDIDATE_POOL_SIZE:
+                break
         return merged
 
     def _run_funnel(
@@ -838,7 +907,7 @@ class ImageSearchService:
         futures = {
             id(c): self._pool.submit(self._fetch_full, c["image_url"])
             for c, _ in kept
-            if "file_id" not in c
+            if FILE_ID_KEY not in c
         }
         order = list(range(len(kept)))
         # Even a single candidate goes to the vision pass: it filters as well as orders, and
@@ -848,9 +917,32 @@ class ImageSearchService:
         # the verdict is no better for the extra pixels. 256px matches what the cached-thumb
         # path already feeds the ranking.
         if self.ranker is not None and kept:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(Exception):  # a failed vision pass keeps the funnel order
                 order = self.ranker.rank(query, [self._rank_thumb(t) for _, t in kept])
+        winners, chosen = self._persist_winners(order, kept, futures, need)
+        for key, future in futures.items():
+            if key not in chosen:
+                future.cancel()
+        return winners
 
+    def _persist_winners(
+        self,
+        order: list[int],
+        kept: list[tuple[dict[str, str], bytes]],
+        futures: dict[int, Future],
+        need: int,
+    ) -> tuple[list[dict[str, str]], set[int]]:
+        """Takes candidates in verdict order until enough are stored.
+
+        Args:
+            order (List[int]): Indices into ``kept``, best first.
+            kept (List[Tuple[Dict[str, str], bytes]]): Candidates with thumbnails.
+            futures (Dict[int, Future]): Prefetched full downloads keyed by candidate identity.
+            need (int): How many winners to return.
+
+        Returns:
+            Tuple[List[Dict[str, str]], Set[int]]: The winners and the identities consumed.
+        """
         winners: list[dict[str, str]] = []
         chosen = set()
         for index in order:
@@ -858,24 +950,56 @@ class ImageSearchService:
                 break
             cand, thumb = kept[index]
             chosen.add(id(cand))
-            if "file_id" in cand:
-                winners.append({"file_id": cand["file_id"], "title": cand["title"]})
+            if FILE_ID_KEY in cand:
+                winners.append({FILE_ID_KEY: cand[FILE_ID_KEY], "title": cand["title"]})
                 continue
             payload = futures[id(cand)].result()
             if payload is None:
                 continue
-            phash = None
-            if Image is not None:
-                try:
-                    phash = phash64(Image.open(io.BytesIO(thumb)))
-                except Exception:
-                    phash = None
-            file_id = self.store.persist(cand["image_url"], payload, cand["title"], phash)
-            winners.append({"file_id": file_id, "title": cand["title"]})
-        for key, future in futures.items():
-            if key not in chosen:
-                future.cancel()
-        return winners
+            file_id = self.store.persist(
+                cand["image_url"], payload, cand["title"], self._thumb_hash(thumb)
+            )
+            winners.append({FILE_ID_KEY: file_id, "title": cand["title"]})
+        return winners, chosen
+
+    @staticmethod
+    def _thumb_hash(thumb: bytes) -> int | None:
+        """Hashes a thumbnail, or reports that it cannot be hashed.
+
+        Args:
+            thumb (bytes): The fetched thumbnail.
+
+        Returns:
+            Optional[int]: The perceptual hash, or None without Pillow or on a decode failure.
+        """
+        if Image is None:
+            return None
+        try:
+            return phash64(Image.open(io.BytesIO(thumb)))
+        except Exception:  # noqa: BLE001 - an undecodable thumbnail just has no hash
+            return None
+
+    @staticmethod
+    def _shrink(payload: bytes, quality: int) -> bytes:
+        """Re-encodes an image as a small JPEG, or returns it unchanged.
+
+        Args:
+            payload (bytes): The image body.
+            quality (int): JPEG quality of the re-encode.
+
+        Returns:
+            bytes: A thumbnail-sized JPEG when Pillow can produce one, the original otherwise.
+        """
+        if Image is None:
+            return payload
+        try:
+            small = Image.open(io.BytesIO(payload)).convert("RGB")
+            small.thumbnail((THUMB_EDGE_PIXELS, THUMB_EDGE_PIXELS))
+            out = io.BytesIO()
+            small.save(out, format="JPEG", quality=quality)
+            return out.getvalue()
+        except Exception:  # noqa: BLE001 - any decode failure keeps the original bytes
+            return payload
 
     def _fetch_thumbnails(
         self, candidates: list[dict[str, str]]
@@ -891,22 +1015,12 @@ class ImageSearchService:
         allow = frozenset({self.searxng.host}) if self.searxng.host else frozenset()
 
         def grab(cand: dict[str, str]) -> bytes | None:
-            if "file_id" in cand:
+            if FILE_ID_KEY in cand:
                 try:
-                    with open(self.store.path(cand["file_id"]), "rb") as fh:
-                        payload = fh.read()
+                    payload = pathlib.Path(self.store.path(cand[FILE_ID_KEY])).read_bytes()
                 except OSError:
                     return None
-                if Image is not None:
-                    try:
-                        small = Image.open(io.BytesIO(payload)).convert("RGB")
-                        small.thumbnail((256, 256))
-                        out = io.BytesIO()
-                        small.save(out, format="JPEG", quality=85)
-                        return out.getvalue()
-                    except Exception:
-                        return payload
-                return payload
+                return self._shrink(payload, 85)
             try:
                 return self.fetcher.fetch(
                     cand["thumb_url"],
@@ -914,7 +1028,7 @@ class ImageSearchService:
                     THUMB_TIMEOUT_SECONDS,
                     allow_hosts=allow,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - any refusal or failure just drops the candidate
                 return None
 
         fetched = list(self._pool.map(grab, candidates))
@@ -930,16 +1044,7 @@ class ImageSearchService:
         Returns:
             bytes: A 256px JPEG when Pillow can produce one, the original bytes otherwise.
         """
-        if Image is None:
-            return payload
-        try:
-            small = Image.open(io.BytesIO(payload)).convert("RGB")
-            small.thumbnail((256, 256))
-            out = io.BytesIO()
-            small.save(out, format="JPEG", quality=80)
-            return out.getvalue()
-        except Exception:
-            return payload
+        return ImageSearchService._shrink(payload, 80)
 
     def _fetch_full(self, url: str) -> bytes | None:
         """Fetches a full-size image with no SSRF exemptions at all.
@@ -952,7 +1057,7 @@ class ImageSearchService:
         """
         try:
             return self.fetcher.fetch(url, FULL_MAX_BYTES, FULL_TIMEOUT_SECONDS)
-        except Exception:
+        except Exception:  # noqa: BLE001 - any refusal or failure means no bytes
             return None
 
     def _prefilter(
@@ -972,7 +1077,7 @@ class ImageSearchService:
             return thumbs[:keep]
         try:
             scores = self.siglip.score(query, [t for _, t in thumbs])
-        except Exception:
+        except Exception:  # noqa: BLE001 - a failing SigLIP only loses the pre-filter
             return thumbs[:keep]
         ranked = sorted(zip(scores, range(len(thumbs)), strict=False), key=lambda p: -p[0])
         return [thumbs[i] for _, i in ranked[:keep]]
@@ -996,7 +1101,7 @@ class ImageSearchService:
         for cand, thumb in thumbs:
             try:
                 candidate_hash = phash64(Image.open(io.BytesIO(thumb)))
-            except Exception:
+            except Exception:  # noqa: BLE001 - an undecodable thumbnail is kept, unhashed
                 kept.append((cand, thumb))
                 hashes.append(-1)
                 continue
@@ -1026,6 +1131,134 @@ def build_service() -> ImageSearchService:
     )
 
 
+class _Handler(BaseHTTPRequestHandler):
+    """The sidecar's request handler; ``serve`` binds the service and the secret to a subclass."""
+
+    service: ImageSearchService
+    expected: str
+
+    def _reply(self, status: int, body: dict[str, Any]) -> None:
+        """Sends a JSON answer.
+
+        Args:
+            status (int): HTTP status code.
+            body (Dict[str, Any]): The JSON document.
+        """
+        encoded = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _reply_meta(self, file_id: str) -> None:
+        """Answers the metadata of one cached image.
+
+        Args:
+            file_id (str): The stored image's identifier.
+        """
+        row = self.service.store.lookup_id(file_id)
+        if not row:
+            self._reply(404, {"error": "unknown image"})
+            return
+        host = urllib.parse.urlparse(row["source_url"]).hostname or ""
+        host = host.removeprefix("www.")
+        self._reply(
+            200,
+            {"source_url": row["source_url"], "title": row["title"] or "", "host": host},
+        )
+
+    def _reply_image(self, file_id: str) -> None:
+        """Sends one cached JPEG.
+
+        Args:
+            file_id (str): The stored image's identifier.
+        """
+        try:
+            payload = pathlib.Path(self.service.store.path(file_id)).read_bytes()
+        except OSError:
+            self._reply(404, {"error": "unknown image"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "public, max-age=604800, immutable")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self) -> None:
+        """Serves ``/health``, an image's metadata and an image."""
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == HEALTH_PATH:
+            self._reply(200, {"status": "ok"})
+            return
+        meta = re.fullmatch(r"/images/([0-9a-f]{16})\.json", parsed.path)
+        if meta:
+            self._reply_meta(meta.group(1))
+            return
+        match = re.fullmatch(r"/images/([0-9a-f]{16})\.jpg", parsed.path)
+        if match:
+            self._reply_image(match.group(1))
+            return
+        self._reply(404, {"error": "not found"})
+
+    def _read_queries(self) -> tuple[list[str], int] | None:
+        """Reads and validates a search request body.
+
+        Returns:
+            Optional[Tuple[List[str], int]]: The queries and the count, or None after the
+                400 answer has been sent.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            length = -1
+        # A negative or huge length used to block the read until the client hung up, and one
+        # that is not a number dropped the connection with no answer.
+        if not 0 <= length <= MAX_REQUEST_BYTES:
+            self._reply(400, {"error": "bad Content-Length"})
+            return None
+        body = json.loads(self.rfile.read(length).decode() or "{}")
+        queries = body.get("queries") or []
+        if isinstance(queries, str):
+            queries = [queries]
+        queries = [q for q in queries if isinstance(q, str) and q.strip()][:5]
+        if not queries:
+            self._reply(400, {"error": "queries required"})
+            return None
+        try:
+            count = int(body.get("count") or RESULT_COUNT)
+        except (TypeError, ValueError):
+            count = RESULT_COUNT
+        return queries, count
+
+    def do_POST(self) -> None:
+        """Serves ``POST /search`` behind the shared-secret header."""
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != SEARCH_PATH:
+            self._reply(404, {"error": "not found"})
+            return
+        # No secret configured refuses every search rather than checking none.
+        given = self.headers.get(AUTH_HEADER, "")
+        if not self.expected or not hmac.compare_digest(given.encode(), self.expected.encode()):
+            self._reply(403, {"error": "bad token"})
+            return
+        try:
+            request = self._read_queries()
+            if request is not None:
+                self._reply(200, self.service.search(request[0], count=request[1]))
+        except Exception as exc:  # noqa: BLE001 - a tool call must answer, not hang the assistant
+            self._reply(500, {"error": str(exc)[:200]})
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        """Silences the default per-request access log.
+
+        Args:
+            fmt (str): Format string (unused).
+            *args (object): Format arguments (unused).
+        """
+
+
 def serve(port: int = SERVICE_PORT, secret: str | None = None) -> None:
     """Runs the HTTP service until killed.
 
@@ -1041,96 +1274,16 @@ def serve(port: int = SERVICE_PORT, secret: str | None = None) -> None:
     def gc_loop() -> None:
         while True:
             time.sleep(GC_INTERVAL_SECONDS)
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(Exception):  # a failed sweep is retried next hour
                 service.store.collect_garbage()
 
     threading.Thread(target=gc_loop, daemon=True).start()
 
-    class Handler(BaseHTTPRequestHandler):
-        def _reply(self, status: int, body: dict[str, Any]) -> None:
-            encoded = json.dumps(body).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
+    class Handler(_Handler):
+        pass
 
-        def do_GET(self) -> None:
-            parsed = urllib.parse.urlparse(self.path)
-            if parsed.path == "/health":
-                self._reply(200, {"status": "ok"})
-                return
-            meta = re.fullmatch(r"/images/([0-9a-f]{16})\.json", parsed.path)
-            if meta:
-                row = service.store.lookup_id(meta.group(1))
-                if not row:
-                    self._reply(404, {"error": "unknown image"})
-                    return
-                host = urllib.parse.urlparse(row["source_url"]).hostname or ""
-                if host.startswith("www."):
-                    host = host[4:]
-                self._reply(
-                    200,
-                    {"source_url": row["source_url"], "title": row["title"] or "", "host": host},
-                )
-                return
-            match = re.fullmatch(r"/images/([0-9a-f]{16})\.jpg", parsed.path)
-            if match:
-                path = service.store.path(match.group(1))
-                try:
-                    with open(path, "rb") as fh:
-                        payload = fh.read()
-                except OSError:
-                    self._reply(404, {"error": "unknown image"})
-                    return
-                self.send_response(200)
-                self.send_header("Content-Type", "image/jpeg")
-                self.send_header("Content-Length", str(len(payload)))
-                self.send_header("Cache-Control", "public, max-age=604800, immutable")
-                self.end_headers()
-                self.wfile.write(payload)
-                return
-            self._reply(404, {"error": "not found"})
-
-        def do_POST(self) -> None:
-            parsed = urllib.parse.urlparse(self.path)
-            if parsed.path != "/search":
-                self._reply(404, {"error": "not found"})
-                return
-            # No secret configured refuses every search rather than checking none.
-            given = self.headers.get(AUTH_HEADER, "")
-            if not expected or not hmac.compare_digest(given.encode(), expected.encode()):
-                self._reply(403, {"error": "bad token"})
-                return
-            try:
-                length = int(self.headers.get("Content-Length", 0))
-            except ValueError:
-                length = -1
-            # A negative or huge length used to block the read until the client hung up, and one
-            # that is not a number dropped the connection with no answer.
-            if not 0 <= length <= MAX_REQUEST_BYTES:
-                self._reply(400, {"error": "bad Content-Length"})
-                return
-            try:
-                body = json.loads(self.rfile.read(length).decode() or "{}")
-                queries = body.get("queries") or []
-                if isinstance(queries, str):
-                    queries = [queries]
-                queries = [q for q in queries if isinstance(q, str) and q.strip()][:5]
-                if not queries:
-                    self._reply(400, {"error": "queries required"})
-                    return
-                try:
-                    count = int(body.get("count") or RESULT_COUNT)
-                except (TypeError, ValueError):
-                    count = RESULT_COUNT
-                self._reply(200, service.search(queries, count=count))
-            except Exception as exc:  # a tool call must answer, not hang the assistant
-                self._reply(500, {"error": str(exc)[:200]})
-
-        def log_message(self, fmt: str, *args: Any) -> None:
-            pass
-
+    Handler.service = service
+    Handler.expected = expected
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 

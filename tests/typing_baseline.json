@@ -8,12 +8,6 @@
    "assignment": 1,
    "var-annotated": 1
   },
-  "dreamference/chat/image_search_service.py": {
-   "arg-type": 1,
-   "assignment": 2,
-   "dict-item": 1,
-   "return-value": 1
-  },
   "dreamference/config/dreamference_config.py": {
    "assignment": 1
   },
@@ -68,5 +62,5 @@
   }
  },
  "mypy": "2.4.0",
- "total": 41
+ "total": 36
 }

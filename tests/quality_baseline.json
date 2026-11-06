@@ -82,19 +82,6 @@
    "D205": 3,
    "PLR2004": 8
   },
-  "dreamference/chat/image_search_service.py": {
-   "ANN401": 7,
-   "BLE001": 11,
-   "C901": 2,
-   "D205": 4,
-   "E501": 1,
-   "N818": 1,
-   "PLR1702": 1,
-   "PLR2004": 10,
-   "PTH118": 3,
-   "PTH123": 3,
-   "S110": 1
-  },
   "dreamference/chat/image_search_sidecar.py": {
    "D205": 2,
    "PTH111": 2,
@@ -718,5 +705,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1550
+ "total": 1506
 }
