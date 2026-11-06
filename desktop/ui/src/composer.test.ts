@@ -2,11 +2,16 @@
 // shipped: `@` files, `$` skills, `/` commands, what Enter does, the follow-up (steer or queue, and
 // a queued one started by the server), ↑ restore, Shift+drag images by path, Enter and Esc on an
 // approval, Esc Esc to edit the previous message, fork, and the model and effort picker. No window.
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+
+import launcher from "../../../ragon-rs/src/adapter.rs?raw";
+import { ModelPicker } from "./ComposerView";
 
 import {
   PromptHistory, reviewTarget, activeTrigger, collaborationMode, applyCompletion, composeInput, effortChoices, effortFor, enterSends, keyAnswer,
-  lastUserTurn, matchCommands, matchSkills, mentionPath, parseShell, parseSlash, rememberModel, slashSkills, userTexts,
+  lastUserTurn, matchCommands, matchSkills, mentionPath, modelEntries, parseShell, parseSlash, rememberModel, slashSkills, THIRD_PARTY_ADAPTER_WARNING, userTexts,
 } from "./composer";
 import { DEFAULT_PREFS, cleanAppearance, sanitize } from "./prefs";
 import { ScriptedServer } from "./scripted-server";
@@ -195,6 +200,58 @@ describe("editing, forking and the picker", () => {
     const copy = await forkThread(server.client, "t", "qwen3.8-27b");
     expect(copy.id).toBe("t-copy");
     expect(server.sent[0]).toEqual({ method: "thread/fork", params: { threadId: "t", model: "qwen3.8-27b" } });
+  });
+
+  describe("the picker with adapters (ADAPTERS 11.2)", () => {
+    const listed = (id: string, displayName: string, description = ""): Model => ({ ...model, id, model: id, displayName, description });
+    const catalog = [
+      listed("qwen3.8-27b", "Qwen3.8 27B"),
+      listed("qwen3.8-27b+rust", "Qwen3.8 27B · Rust", "Writes Rust."),
+      listed("qwen3.8-27b+acme", "Qwen3.8 27B · Acme · Lab (third-party)", "A publisher's."),
+    ];
+    const picker = (models: Model[], recentModels: string[] = [], state: "open" | "recent" = "open") => renderToStaticMarkup(createElement(ModelPicker, {
+      models, model: models[0]?.id ?? null, effort: null, recentModels, picker: state, setPicker: () => undefined, onPick: () => undefined,
+    }));
+
+    it("tells an adapter from a base by an id on a listed base, and takes its own name out of the display name", () => {
+      expect(modelEntries(catalog).map(({ label, adapter, thirdParty }) => ({ label, adapter, thirdParty }))).toEqual([
+        { label: "Qwen3.8 27B", adapter: false, thirdParty: false },
+        { label: "Rust", adapter: true, thirdParty: false },
+        { label: "Acme · Lab", adapter: true, thirdParty: true },
+      ]);
+      // No base of that name is listed, so it is a model like any other, whatever it calls itself.
+      expect(modelEntries([listed("other+x", "X (third-party)")])[0]).toMatchObject({ label: "X (third-party)", adapter: false, thirdParty: false });
+      expect(modelEntries([listed("b", "B"), listed("b+x", "")])[1]).toMatchObject({ label: "x", adapter: true });
+    });
+
+    it("shows Base and Adapters, each adapter's description, and a badge and the warning only on a third-party one", () => {
+      const html = picker(catalog);
+      expect(html.indexOf("<h3>Base</h3>")).toBeLessThan(html.indexOf("<h3>Adapters</h3>"));
+      expect(html.indexOf("<h3>Adapters</h3>")).toBeLessThan(html.indexOf("Rust"));
+      expect(html).toContain("Writes Rust.");
+      expect(html.match(/class="picker-badge"/g)).toHaveLength(1);
+      const row = html.slice(html.lastIndexOf("<button", html.indexOf("picker-badge")), html.indexOf("picker-badge"));
+      expect(row).toContain("title=\"Third-party adapter: not signed by Dreamference;");
+      expect(html.match(/title="Third-party adapter/g)).toHaveLength(1);
+      expect(html).not.toContain(">Acme · Lab (third-party)");
+    });
+
+    it("a list with no adapter keeps the one Model group, and a recent third-party adapter keeps its mark and warning", () => {
+      const plain = picker(catalog.slice(0, 1));
+      expect(plain).toContain("<h3>Model</h3>");
+      expect(plain).not.toContain("<h3>Base</h3>");
+      expect(plain).not.toContain("<h3>Adapters</h3>");
+      const recent = picker(catalog, ["qwen3.8-27b+acme"], "recent");
+      const row = recent.slice(recent.indexOf("<h3>Recent</h3>"), recent.indexOf("<h3>Base</h3>"));
+      expect(row).toContain("Qwen3.8 27B · Acme · Lab (third-party)");
+      expect(row).toContain("title=\"Third-party adapter");
+    });
+
+    it("says what /adapter says, and reads the mark the launcher writes", () => {
+      expect(launcher).toContain(`"${THIRD_PARTY_ADAPTER_WARNING}"`);
+      expect(launcher).toContain('" (third-party)"');
+      expect(launcher).toContain('"{} · {}{flag}"');
+    });
   });
 
   it("the picker offers the efforts the served model's catalog entry allows, and remembers recent models", () => {

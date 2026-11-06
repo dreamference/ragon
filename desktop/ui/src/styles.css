@@ -461,6 +461,8 @@ button.steer { border-radius: var(--radius-pill); padding: 5px 14px; }
 .picker > button { display: flex; flex-direction: column; align-items: flex-start; text-align: left; border: none; background: none; padding: 6px 8px; border-radius: var(--radius-sm); }
 .picker > button[aria-checked="true"] { background: var(--selected); }
 .picker-detail { color: var(--muted); font-size: 12px; }
+.picker-name { display: inline-flex; align-items: center; gap: 6px; }
+.picker-badge { padding: 0 6px; border: 1px solid var(--danger); border-radius: var(--radius-pill); color: var(--danger); font-size: 11px; line-height: 16px; }
 .efforts { display: flex; gap: 4px; flex-wrap: wrap; padding: 2px 6px 4px; }
 .efforts button { border-radius: var(--radius-pill); padding: 3px 10px; font-size: 12.5px; }
 .efforts button.selected { border-color: var(--accent); background: var(--accent-soft); }

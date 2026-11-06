@@ -278,6 +278,37 @@ export function effortChoices(model: Model | null): { efforts: string[]; preferr
   return { efforts: model.supportedReasoningEfforts.map((option) => option.reasoningEffort), preferred: model.defaultReasoningEffort };
 }
 
+/** What the picker says about a third-party adapter: the line `/adapter` prints (ragon-rs/src/adapter.rs). */
+export const THIRD_PARTY_ADAPTER_WARNING = "Third-party adapter: not signed by Dreamference; what it answers is its publisher's, not Ragon's.";
+
+/** How the launcher marks an adapter not signed by Dreamference: `model/list` has no trust field, only the display name. */
+const THIRD_PARTY_SUFFIX = " (third-party)";
+
+/** A row of the model picker: `label` is an adapter's own name, without the base's name or the third-party mark. */
+export interface ModelEntry {
+  model: Model;
+  label: string;
+  adapter: boolean;
+  thirdParty: boolean;
+}
+
+/**
+ * The picker's rows from `model/list`, in its order (ADAPTERS §11.2). An adapter's id is
+ * `<base>+<name>` for a base the list also holds, and its display name "<base label> · <name>".
+ */
+export function modelEntries(models: Model[]): ModelEntry[] {
+  const ids = new Set(models.map((model) => model.id));
+  return models.map((model) => {
+    const plus = model.id.indexOf("+");
+    if (plus <= 0 || !ids.has(model.id.slice(0, plus))) return { model, label: model.displayName || model.id, adapter: false, thirdParty: false };
+    const thirdParty = model.displayName.endsWith(THIRD_PARTY_SUFFIX);
+    const unmarked = thirdParty ? model.displayName.slice(0, -THIRD_PARTY_SUFFIX.length) : model.displayName;
+    const dot = unmarked.indexOf(" · ");
+    const name = (dot < 0 ? unmarked : unmarked.slice(dot + 3)).trim();
+    return { model, label: name || model.id.slice(plus + 1), adapter: true, thirdParty };
+  });
+}
+
 /** The effort sent with a turn: the chosen one if this model allows it, else none (the model's default). */
 export function effortFor(model: Model | null, chosen: string | null): string | null {
   if (!chosen || !model) return null;

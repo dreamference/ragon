@@ -8,8 +8,8 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
 
 import {
-  activeTrigger, applyCompletion, effortChoices, enterSends, type EnterBehaviour, matchCommands, matchSkills, mentionPath, slashSkills,
-  type CommandContext, type PromptHistory, type SlashCommand, type Trigger,
+  activeTrigger, applyCompletion, effortChoices, enterSends, type EnterBehaviour, matchCommands, matchSkills, mentionPath, modelEntries, slashSkills,
+  THIRD_PARTY_ADAPTER_WARNING, type CommandContext, type ModelEntry, type PromptHistory, type SlashCommand, type Trigger,
 } from "./composer";
 import { Icon } from "./icons";
 import { acceptsPrediction } from "./suggestions";
@@ -361,14 +361,27 @@ function caretAtEnd(element: HTMLTextAreaElement | null): boolean {
   return element.selectionStart === element.selectionEnd && !element.value.slice(element.selectionEnd).includes("\n");
 }
 
-/** The model chip and its menu: the served models and the efforts the chosen one allows (Ctrl+Shift+M; Alt+M for recent ones). */
-function ModelPicker(props: ComposerProps) {
+/**
+ * The model chip and its menu: the served base, the adapters on it (ADAPTERS §11.2) and the efforts
+ * the chosen one allows (Ctrl+Shift+M; Alt+M for recent ones). The chip and the recent rows keep the
+ * full display name, whose "(third-party)" marks an adapter there too.
+ */
+export function ModelPicker(props: Pick<ComposerProps, "models" | "model" | "effort" | "recentModels" | "picker" | "setPicker" | "onPick">) {
   const current = props.models.find((model) => model.id === props.model || model.model === props.model) ?? props.models[0] ?? null;
   const { efforts, preferred } = effortChoices(current);
   const label = `${current?.displayName || props.model || "model"}${props.effort ? ` · ${props.effort}` : ""}`;
+  const entries = modelEntries(props.models);
+  const adapters = entries.filter((entry) => entry.adapter);
   const recent = props.recentModels
-    .map((id) => props.models.find((model) => model.id === id))
-    .filter((model): model is Model => Boolean(model));
+    .map((id) => entries.find((entry) => entry.model.id === id))
+    .filter((entry): entry is ModelEntry => Boolean(entry));
+  const row = (entry: ModelEntry) => (
+    <button key={entry.model.id} role="menuitemradio" aria-checked={entry.model.id === current?.id} autoFocus={props.picker === "open" && entry.model.id === current?.id}
+      title={entry.thirdParty ? THIRD_PARTY_ADAPTER_WARNING : undefined} onClick={() => props.onPick(entry.model.id, props.effort)}>
+      <span className="picker-name">{entry.label}{entry.thirdParty ? <span className="picker-badge">third-party</span> : null}</span>
+      {entry.model.description ? <span className="picker-detail">{entry.model.description}</span> : null}
+    </button>
+  );
   return (
     <span className="picker-anchor">
       <button className="chip model-chip" title={`Model and effort (${shortcutLabel("modelPicker")})`} aria-haspopup="menu" aria-expanded={props.picker !== "closed"}
@@ -380,21 +393,17 @@ function ModelPicker(props: ComposerProps) {
           {props.picker === "recent" && recent.length > 0 ? (
             <>
               <h3>Recent</h3>
-              {recent.map((model) => (
-                <button key={`recent-${model.id}`} role="menuitemradio" aria-checked={model.id === current?.id} autoFocus={model.id === recent[0].id}
-                  onClick={() => props.onPick(model.id, props.effort)}>{model.displayName || model.id}</button>
+              {recent.map(({ model, thirdParty }) => (
+                <button key={`recent-${model.id}`} role="menuitemradio" aria-checked={model.id === current?.id} autoFocus={model.id === recent[0].model.id}
+                  title={thirdParty ? THIRD_PARTY_ADAPTER_WARNING : undefined} onClick={() => props.onPick(model.id, props.effort)}>{model.displayName || model.id}</button>
               ))}
             </>
           ) : null}
-          <h3>Model</h3>
+          <h3>{adapters.length > 0 ? "Base" : "Model"}</h3>
           {props.models.length === 0 ? <p className="empty small">The model server lists no models.</p> : null}
-          {props.models.map((model) => (
-            <button key={model.id} role="menuitemradio" aria-checked={model.id === current?.id} autoFocus={props.picker === "open" && model.id === current?.id}
-              onClick={() => props.onPick(model.id, props.effort)}>
-              <span>{model.displayName || model.id}</span>
-              {model.description ? <span className="picker-detail">{model.description}</span> : null}
-            </button>
-          ))}
+          {entries.filter((entry) => !entry.adapter).map(row)}
+          {adapters.length > 0 ? <h3>Adapters</h3> : null}
+          {adapters.map(row)}
           {efforts.length > 0 ? (
             <>
               <h3>Reasoning effort</h3>
