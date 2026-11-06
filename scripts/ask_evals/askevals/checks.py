@@ -13,7 +13,9 @@ A scenario's `expect` names its checks, for the last turn unless a check says `t
   "language": "uk",                "no_loop": true,           "max_answer_tokens": 400,
   "max_searches": 2,               "min_answer_chars": 600,
   "any_of": [{"honesty": "asked"}, {"mention": [["Ode"], ["Encore"]]}],
-  "per_turn": {"1": {"language": "fr"}}
+  "per_turn": {"1": {"language": "fr"}},
+  "citations": {"min": 1, "supports": {"http://a.example.test/x": ["word", "other"]},
+                "forbid": ["http://blocked.example.test/y"]}
 }
 ```
 """
@@ -22,7 +24,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Final, Optional
+from typing import Final
 
 from askevals import metrics
 from askevals.rollout import Turn
@@ -97,6 +99,88 @@ def fetches_per_url(web_log: list[dict]) -> dict[str, int]:
 
 def _mentions(text: str, word: str) -> bool:
     return re.search(r"(?<!\w)" + re.escape(word.lower()), text.lower()) is not None
+
+
+CITED_URL: Final[re.Pattern] = re.compile(r"https?://[^\s)>\]\"'`]+")
+SOURCE_LINE: Final[re.Pattern] = re.compile(r"^\s*\[(\d+)\]\s*(.*)$")
+MARKER: Final[re.Pattern] = re.compile(r"\[(\d+)\]")
+
+
+def fetched_urls(web_log: list[dict]) -> set[str]:
+    """The pages the session actually fetched (a page the stand-in knew), slash-normalised."""
+    return {
+        e["url"].rstrip("/")
+        for e in web_log
+        if e.get("server") == "proxy" and e.get("method") == "GET" and e.get("known")
+    }
+
+
+def citations(answer: str) -> list[tuple[str, str]]:
+    """Each citation in `answer` as (url, the claim it follows).
+
+    A citation is a source line `[n] Title - URL`; its claim is the text carrying the marker
+    `[n]` (the sentence or line before it). A bare URL in the prose, with no source line, is
+    a citation whose claim is the sentence around it.
+    """
+    lines = answer.splitlines()
+    sources: dict[str, str] = {}
+    prose: list[str] = []
+    for line in lines:
+        m = SOURCE_LINE.match(line)
+        url = CITED_URL.search(line)
+        if m and url:
+            sources[m.group(1)] = url.group(0).rstrip(".,;")
+        else:
+            prose.append(line)
+    found: list[tuple[str, str]] = []
+    text = "\n".join(prose)
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        for number in MARKER.findall(sentence):
+            if number in sources:
+                found.append((sources[number], MARKER.sub("", sentence).strip()))
+        if not MARKER.search(sentence):
+            for url in CITED_URL.findall(sentence):
+                found.append((url.rstrip(".,;"), sentence.replace(url, "").strip()))
+    cited = {u for u, _ in found}
+    found += [(u, "") for u in sources.values() if u not in cited]
+    return found
+
+
+def citation_report(answer: str, web_log: list[dict], spec: dict) -> dict:
+    """Counts and failures for one answer: cited, fetched in the session, and supporting.
+
+    A citation is fetched when its URL is in the proxy's log as a page the stand-in served; it
+    supports its claim when the claim mentions one of `spec["supports"][url]`'s words.
+    """
+    fetched = fetched_urls(web_log)
+    cites = citations(answer)
+    failures: list[str] = []
+    n_fetched = n_supported = 0
+    for url, claim in cites:
+        key = url.rstrip("/")
+        if key in fetched:
+            n_fetched += 1
+        else:
+            failures.append(f"cites {url}, which the session did not fetch")
+            continue
+        words = spec.get("supports", {}).get(url) or spec.get("supports", {}).get(key)
+        if words and claim and any(_mentions(claim, w) for w in words):
+            n_supported += 1
+        elif words:
+            failures.append(f"citation {url} does not support its claim")
+        else:
+            n_supported += 1
+    for url in spec.get("forbid", []):
+        if any(u.rstrip("/") == url.rstrip("/") for u, _ in cites):
+            failures.append(f"cites {url}, which it must not")
+    if len(cites) < spec.get("min", 0):
+        failures.append(f"{len(cites)} citations, under {spec['min']}")
+    return {
+        "cited": len(cites),
+        "fetched": n_fetched,
+        "supported": n_supported,
+        "failures": failures,
+    }
 
 
 def check_turn(turn: Turn, expect: dict, failures: list[str], label: str) -> None:
@@ -187,6 +271,10 @@ def score(scenario: dict, turns: list[Turn], records: list[dict], web_log: list[
         worst = max(per_url.values(), default=0)
         if worst > expect["max_fetches_per_url"]:
             failures.append(f"fetched one URL {worst} times")
+    report = {"cited": 0, "fetched": 0, "supported": 0}
+    if "citations" in expect and turns:
+        report = citation_report(last.answer, web_log, expect["citations"])
+        failures.extend(report.pop("failures"))
     if turns:
         check_turn(last, expect, failures, "")
     for index, extra in expect.get("per_turn", {}).items():
@@ -205,6 +293,9 @@ def score(scenario: dict, turns: list[Turn], records: list[dict], web_log: list[
         "language": metrics.language(last.answer),
         "engine_scrapes": len(scrapes),
         "searches": searches,
+        "cited": report["cited"],
+        "cited_fetched": report["fetched"],
+        "cited_supported": report["supported"],
         "longest_sleep_s": sleep,
         "max_fetches_per_url": max(per_url.values(), default=0),
         "max_30gram_repeats": max((r["max_30gram_repeats"] for r in loops), default=0),

@@ -1,0 +1,67 @@
+{
+  "id": "s18-cite-only-what-was-read",
+  "family": "S18",
+  "failure": [
+    3,
+    8
+  ],
+  "turns": [
+    {
+      "text": "When does the first Orrin Quay ferry leave, and who runs it? Cite your sources."
+    }
+  ],
+  "expect": {
+    "max_tool_calls": 8,
+    "no_engine_scrape": true,
+    "mention": [
+      [
+        "06:40",
+        "6:40"
+      ]
+    ],
+    "citations": {
+      "min": 1,
+      "supports": {
+        "http://ferry.example.test/times": [
+          "06:40",
+          "6:40",
+          "first"
+        ]
+      },
+      "forbid": [
+        "http://harbour.example.test/pier"
+      ]
+    }
+  },
+  "web": {
+    "search": {
+      "results": [
+        {
+          "title": "Orrin Quay ferry times",
+          "url": "http://ferry.example.test/times",
+          "content": "First ferry 06:40 weekdays."
+        },
+        {
+          "title": "Orrin Quay ferry company",
+          "url": "http://harbour.example.test/pier",
+          "content": "Operator information."
+        }
+      ]
+    },
+    "pages": {
+      "http://ferry.example.test/times": {
+        "status": 200,
+        "body": "<html><body>The first Orrin Quay ferry leaves at 06:40 on weekdays.</body></html>"
+      },
+      "http://harbour.example.test/pier": {
+        "fault": "captcha"
+      }
+    },
+    "other": {
+      "fault": "captcha"
+    },
+    "connect": {
+      "fault": "forbidden"
+    }
+  }
+}

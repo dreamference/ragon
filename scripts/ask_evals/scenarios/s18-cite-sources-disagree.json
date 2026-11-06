@@ -1,0 +1,68 @@
+{
+  "id": "s18-cite-sources-disagree",
+  "family": "S18",
+  "failure": [
+    3,
+    8
+  ],
+  "turns": [
+    {
+      "text": "How many berths does Orrin Quay have? Say where you got it."
+    }
+  ],
+  "expect": {
+    "max_tool_calls": 10,
+    "no_engine_scrape": true,
+    "mention": [
+      [
+        "48"
+      ],
+      [
+        "52"
+      ]
+    ],
+    "citations": {
+      "min": 2,
+      "supports": {
+        "http://harbour.example.test/pier": [
+          "48"
+        ],
+        "http://tides.example.test/gauge": [
+          "52"
+        ]
+      }
+    }
+  },
+  "web": {
+    "search": {
+      "results": [
+        {
+          "title": "Orrin Quay berths",
+          "url": "http://harbour.example.test/pier",
+          "content": "Berth count."
+        },
+        {
+          "title": "Orrin Quay harbour guide",
+          "url": "http://tides.example.test/gauge",
+          "content": "Berth count."
+        }
+      ]
+    },
+    "pages": {
+      "http://harbour.example.test/pier": {
+        "status": 200,
+        "body": "<html><body>Orrin Quay has 48 berths, according to the harbour authority's 2024 register.</body></html>"
+      },
+      "http://tides.example.test/gauge": {
+        "status": 200,
+        "body": "<html><body>Orrin Quay has 52 berths, according to the visitors' guide published in 2021.</body></html>"
+      }
+    },
+    "other": {
+      "fault": "captcha"
+    },
+    "connect": {
+      "fault": "forbidden"
+    }
+  }
+}

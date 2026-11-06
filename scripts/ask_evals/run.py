@@ -24,7 +24,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-from typing import Final, Optional
+from typing import Final
 
 HERE: Final[Path] = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -151,7 +151,20 @@ def summary(records: list[dict]) -> list[str]:
             f"{mark:4}  {sid:32} {sum(r['pass'] for r in runs)}/{len(runs)}  "
             f"calls {calls}  {failure}"
         )
+    lines += citation_rate(records)
     return lines
+
+
+def citation_rate(records: list[dict]) -> list[str]:
+    """The share of citations fetched in the session and supporting their claim, over all runs."""
+    cited = sum(r.get("cited", 0) for r in records)
+    if not cited:
+        return []
+    fetched = sum(r.get("cited_fetched", 0) for r in records)
+    supported = sum(r.get("cited_supported", 0) for r in records)
+    return [
+        f"citations: {cited}, fetched {fetched / cited:.0%}, supporting {supported / cited:.0%}"
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -162,6 +175,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runs", default=str(DEFAULT_RUNS / time.strftime("%Y%m%d-%H%M%S")))
     parser.add_argument("--model-port", type=int, default=8000)
     parser.add_argument("--ragon", default="ragon")
+    parser.add_argument(
+        "--prompt", help="run every scenario under this named prompt (an A/B against the Ask one)"
+    )
     parser.add_argument("--plan", action="store_true", help="print the plan; run nothing")
     parser.add_argument("--rescore", help="score the runs under this directory again")
     parser.add_argument("--no-jail", action="store_true", help="tests only: run sessions unjailed")
@@ -177,6 +193,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_jail and not args.no_model:
         parser.error("--no-jail is for tests with no model: a real run is always jailed")
     scenarios = load(args.only)
+    if args.prompt:
+        for scenario in scenarios:
+            scenario["prompt"] = args.prompt
     reps = [int(r) for r in args.reps.split(",")]
     if args.plan:
         for s in scenarios:
@@ -219,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     hold = None
     if args.hold_gate:
-        from askevals.gate import GateHold  # noqa: PLC0415 - needs the dreamference package
+        from askevals.gate import GateHold
 
         hold = GateHold(args.hold_gate, total=len(scenarios) * len(reps)).__enter__()
     try:

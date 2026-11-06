@@ -1,0 +1,72 @@
+{
+  "id": "s18-cite-two-claims",
+  "family": "S18",
+  "failure": [
+    3,
+    8
+  ],
+  "turns": [
+    {
+      "text": "Look up the Orrin Quay pier: who built it and how long is it? Give your sources."
+    }
+  ],
+  "expect": {
+    "max_tool_calls": 8,
+    "no_engine_scrape": true,
+    "mention": [
+      [
+        "Dunmere"
+      ],
+      [
+        "212"
+      ]
+    ],
+    "citations": {
+      "min": 2,
+      "supports": {
+        "http://harbour.example.test/pier": [
+          "Dunmere",
+          "1894",
+          "built"
+        ],
+        "http://tides.example.test/gauge": [
+          "212",
+          "metres",
+          "long"
+        ]
+      }
+    }
+  },
+  "web": {
+    "search": {
+      "results": [
+        {
+          "title": "Orrin Quay pier",
+          "url": "http://harbour.example.test/pier",
+          "content": "Orrin Quay pier history."
+        },
+        {
+          "title": "Orrin Quay tide gauge",
+          "url": "http://tides.example.test/gauge",
+          "content": "Gauge data for Orrin Quay."
+        }
+      ]
+    },
+    "pages": {
+      "http://harbour.example.test/pier": {
+        "status": 200,
+        "body": "<html><body>The Orrin Quay pier was built by the Dunmere Ironworks in 1894.</body></html>"
+      },
+      "http://tides.example.test/gauge": {
+        "status": 200,
+        "body": "<html><body>The Orrin Quay pier is 212 metres long, measured at the tide gauge.</body></html>"
+      }
+    },
+    "other": {
+      "fault": "captcha"
+    },
+    "connect": {
+      "fault": "forbidden"
+    }
+  }
+}

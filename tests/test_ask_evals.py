@@ -55,6 +55,7 @@ KNOWN_EXPECT = {
     "max_searches",
     "min_answer_chars",
     "any_of",
+    "citations",
 }
 FAULTS = {None, "captcha", "rate_limited", "forbidden", "reset", "stall", "empty", "one_down"}
 
@@ -835,3 +836,65 @@ def test_a_stopped_run_opens_the_gate_and_removes_its_socket(tmp_path, monkeypat
     )
     assert result.returncode == 143, result.stderr
     assert (tmp_path / "cleared").exists()
+
+
+# The citation check (backlog item 25).
+
+_PAGE_A = "http://harbour.example.test/pier"
+_PAGE_B = "http://tides.example.test/gauge"
+
+
+def _log(*urls):
+    return [{"server": "proxy", "method": "GET", "url": u, "known": True} for u in urls]
+
+
+def _cite_checks():
+    return checks
+
+
+def test_a_fetched_supporting_citation_counts_as_good():
+    checks = _cite_checks()
+    answer = (
+        "The pier was built by Dunmere Ironworks [1]. It is 212 metres long [2].\n\n"
+        f"[1] Pier history — {_PAGE_A}\n[2] Gauge — {_PAGE_B}"
+    )
+    spec = {"min": 2, "supports": {_PAGE_A: ["Dunmere"], _PAGE_B: ["212"]}}
+    report = checks.citation_report(answer, _log(_PAGE_A, _PAGE_B), spec)
+    assert report == {"cited": 2, "fetched": 2, "supported": 2, "failures": []}
+
+
+def test_a_citation_not_fetched_or_not_supporting_is_a_failure():
+    checks = _cite_checks()
+    answer = f"It was built by Dunmere [1]. It is long [2].\n[1] A — {_PAGE_A}\n[2] B — {_PAGE_B}"
+    spec = {"supports": {_PAGE_A: ["Dunmere"], _PAGE_B: ["212"]}, "forbid": [_PAGE_B]}
+    report = checks.citation_report(answer, _log(_PAGE_A), spec)
+    assert report["fetched"] == 1 and report["supported"] == 1
+    assert any("did not fetch" in f for f in report["failures"])
+    assert any("must not" in f for f in report["failures"])
+    again = checks.citation_report(answer, _log(_PAGE_A, _PAGE_B), {"supports": spec["supports"]})
+    assert any("does not support" in f for f in again["failures"])
+
+
+def test_an_answer_without_citations_fails_a_minimum_and_a_bare_url_is_one():
+    checks = _cite_checks()
+    assert checks.citation_report("No idea.", [], {"min": 1})["failures"] == [
+        "0 citations, under 1"
+    ]
+    bare = checks.citation_report(f"Dunmere built it, see {_PAGE_A}.", _log(_PAGE_A), {"min": 1})
+    assert bare["cited"] == 1 and bare["failures"] == []
+
+
+def test_the_summary_reports_the_citation_rate():
+    records = [
+        {
+            "scenario": "s18-cite-two-claims",
+            "pass": True,
+            "cited": 2,
+            "cited_fetched": 2,
+            "cited_supported": 1,
+            "last_turn_tool_calls": 3,
+            "failures": [],
+        },
+    ]
+    assert RUNNER.citation_rate(records) == ["citations: 2, fetched 100%, supporting 50%"]
+    assert RUNNER.citation_rate([{"cited": 0}]) == []

@@ -1,0 +1,67 @@
+{
+  "id": "s18-cite-page-blocked",
+  "family": "S18",
+  "failure": [
+    3,
+    8
+  ],
+  "turns": [
+    {
+      "text": "What does the Orrin Quay lifeboat station's own page say about its launch time? Cite it."
+    }
+  ],
+  "expect": {
+    "max_tool_calls": 8,
+    "no_engine_scrape": true,
+    "mention": [
+      [
+        "eight",
+        "8"
+      ]
+    ],
+    "citations": {
+      "min": 1,
+      "supports": {
+        "http://ferry.example.test/times": [
+          "eight",
+          "8 minutes",
+          "launch"
+        ]
+      },
+      "forbid": [
+        "http://harbour.example.test/pier"
+      ]
+    }
+  },
+  "web": {
+    "search": {
+      "results": [
+        {
+          "title": "Orrin Quay lifeboat",
+          "url": "http://harbour.example.test/pier",
+          "content": "Lifeboat station."
+        },
+        {
+          "title": "Orrin Quay lifeboat times",
+          "url": "http://ferry.example.test/times",
+          "content": "Launch time."
+        }
+      ]
+    },
+    "pages": {
+      "http://harbour.example.test/pier": {
+        "fault": "captcha"
+      },
+      "http://ferry.example.test/times": {
+        "status": 200,
+        "body": "<html><body>The Orrin Quay lifeboat launches within eight minutes of an alarm.</body></html>"
+      }
+    },
+    "other": {
+      "fault": "captcha"
+    },
+    "connect": {
+      "fault": "forbidden"
+    }
+  }
+}
