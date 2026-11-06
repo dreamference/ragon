@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Joins a MacBook to the Ragon overlay. Usage: curl -fsSL https://ragon.dreamference.ai/join | bash -s mac-laptop
+# It holds no secret: the login happens in your browser. Run as the administrator; sudo asks once.
+set -euo pipefail
+NAME="${1:-mac-laptop}"
+SITE="https://ragon.dreamference.ai"
+MGMT="https://remote.dreamference.ai:443"
+[ "$(uname -s)" = Darwin ] || { echo "This script is for macOS."; exit 1; }
+say() { printf '\n==> %s\n' "$*"; }
+sudo -v
+
+say "Command-line tools"
+if ! xcode-select -p >/dev/null 2>&1; then
+  xcode-select --install >/dev/null 2>&1 || true
+  echo "Accept the installer dialog; waiting for it to finish."
+  until xcode-select -p >/dev/null 2>&1; do sleep 5; done
+fi
+
+say "NetBird client"
+if ! command -v netbird >/dev/null 2>&1 && [ ! -x /opt/homebrew/bin/netbird ] && [ ! -x /usr/local/bin/netbird ]; then
+  curl -fsSL https://pkgs.netbird.io/install.sh | sh
+fi
+for d in /opt/homebrew/bin /usr/local/bin; do [ -d "$d" ] && PATH="$d:$PATH"; done
+command -v netbird >/dev/null || { echo "NetBird did not install."; exit 1; }
+
+say "Joining the overlay as $NAME (a browser window opens for the login)"
+sudo netbird service install 2>/dev/null || true
+sudo netbird service start 2>/dev/null || true
+sleep 3
+sudo netbird down >/dev/null 2>&1 || true
+sudo netbird up --management-url "$MGMT" --hostname "$NAME"
+
+say "Remote Login and the coordinator's key"
+sudo systemsetup -setremotelogin on
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+key="$(curl -fsSL "$SITE/coord.pub")"
+case "$key" in ssh-ed25519\ *) ;; *) echo "Unexpected key file."; exit 1 ;; esac
+grep -qsxF "$key" ~/.ssh/authorized_keys || printf '%s\n' "$key" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+
+say "Never sleep, restart after a power cut"
+sudo pmset -a sleep 0 disksleep 0 autorestart 1
+
+say "Name"
+sudo scutil --set HostName "$NAME"
+sudo scutil --set LocalHostName "$NAME"
+sudo scutil --set ComputerName "$NAME"
+
+echo; netbird status 2>/dev/null | grep -E 'Management|Signal|NetBird IP|FQDN' || true
+echo "Done: $NAME is on the overlay. Tell the coordinator."
