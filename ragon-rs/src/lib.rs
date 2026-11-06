@@ -187,6 +187,12 @@ anything dated. For a quick lookup (a version number, an error message, a URL) u
 returns numbered sources and an extract of each page, so cite them as [1], [2]. Use `ragon-fetch`
 when you already know the URL, or to read one source in full.
 
+Cite what you read. Every page `ragon-fetch` returns starts with a `Source:` line and `--read`
+lists its numbered sources; when an answer rests on the web, end it with the URLs of the pages you
+actually read (the `Source:` lines, or the `Sources:` list). Cite only pages you fetched or read
+in this session, never a URL taken from memory or from a search snippet alone, and say so when you
+could only see a snippet.
+
 Do not say you cannot browse the web. You can, through these commands, unless a later message says web access is off for this session.
 
 To read the web, prefer these to `curl` or `wget`: they return readable text rather than raw HTML.
@@ -1656,6 +1662,13 @@ pub fn with_local_model_args(args: Vec<OsString>, model_id: &str) -> Vec<OsStrin
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_web_instructions_ask_for_citations_of_what_was_read() {
+        let text = super::WEB_ACCESS_INSTRUCTIONS;
+        assert!(text.contains("Cite what you read"));
+        assert!(text.contains("`Source:` line"));
+    }
+
     use super::*;
 
     fn strings(args: &[&str]) -> Vec<String> {

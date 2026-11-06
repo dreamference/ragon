@@ -89,6 +89,7 @@ def test_fetch_reduces_html_to_its_title_and_readable_text(online):
     assert "steal" not in outcome["text"] and "p {}" not in outcome["text"]
     assert outcome["text"].endswith("One two\n\nThree")
     assert outcome["final_url"] == "https://example.org/final" and outcome["truncated"] is False
+    assert outcome["source"] == outcome["final_url"]
 
 
 def test_fetch_hands_back_text_that_is_not_markup_as_it_is(online):
