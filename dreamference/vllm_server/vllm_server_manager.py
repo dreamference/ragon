@@ -943,7 +943,7 @@ class VLLMServerManager:
                 if tpath:
                     t_uri = str(tpath)
                     if is_docker_launch:
-                        dgx_cache_host = os.path.expanduser("~/.cache/dreamference")
+                        dgx_cache_host = str(Path("~/.cache/dreamference").expanduser())
                         if t_uri.startswith(dgx_cache_host):
                             t_uri = t_uri.replace(dgx_cache_host, "/root/.cache/dreamference", 1)
                     load_format = "tensorizer"
@@ -1032,9 +1032,9 @@ class VLLMServerManager:
         """
         from dreamference.hardware.model_downloader import ModelDownloader
 
-        dgx_cache = os.path.expanduser("~/.cache/dreamference")
-        os.makedirs(dgx_cache, exist_ok=True)
-        os.makedirs(VLLM_CACHE_HOME, exist_ok=True)
+        dgx_cache = str(Path("~/.cache/dreamference").expanduser())
+        Path(dgx_cache).mkdir(parents=True, exist_ok=True)
+        Path(VLLM_CACHE_HOME).mkdir(parents=True, exist_ok=True)
 
         # Leave the host some CPU so the desktop keeps scheduling during model load.
         total_cpus = os.cpu_count() or 1
@@ -1300,7 +1300,7 @@ class VLLMServerManager:
             Optional[List[str]]: The process's argv, or None if no such process is running.
         """
         try:
-            entries = os.listdir("/proc")
+            entries = [entry.name for entry in Path("/proc").iterdir()]
         except OSError:
             return None
 
@@ -1314,7 +1314,7 @@ class VLLMServerManager:
                 # Process exited between listdir and open, or belongs to another user.
                 continue
             argv = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
-            if argv and os.path.basename(argv[0]) == name:
+            if argv and Path(argv[0]).name == name:
                 return argv
         return None
 
@@ -1424,9 +1424,7 @@ class VLLMServerManager:
             total_kb = 0
             for line in lines:
                 fields = line.split()
-                if len(fields) >= SWAPS_MIN_FIELDS and not os.path.basename(fields[0]).startswith(
-                    "zram"
-                ):
+                if len(fields) >= SWAPS_MIN_FIELDS and not Path(fields[0]).name.startswith("zram"):
                     total_kb += int(fields[2])
             return total_kb / (1024**2)
         except (OSError, ValueError):
