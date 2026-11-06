@@ -70,7 +70,7 @@ ruff and mypy (pinned in setup.py's `dev` extra: `.venv/bin/pip install -e .[dev
 
 ## Where things live
 
-Thirteen packages under `dreamference/` (twelve subsystems and `cli/`), each with an `__init__.py` that is a re-export facade with an explicit `__all__`:
+Fourteen packages under `dreamference/` (thirteen subsystems and `cli/`), each with an `__init__.py` that is a re-export facade with an explicit `__all__`:
 
 | Package | Role |
 | --- | --- |
@@ -96,7 +96,7 @@ Outside the package:
 | `codex/` | Submodule: the `dreamference/codex` fork, pinned to `CODEX_RELEASE_TAG` (`rust-v0.158.0`); never modified |
 | `codex-patches/` | The numbered hooks applied to an export of `codex/` |
 | `codex-tests/` | Skips, snapshot overlays and test-only patches for `ragon-admin codex test` |
-| `ragon-rs/` | The launcher crate compiled into `ragon`, plus leaf crates (`airgapped/`, `node-locator/`, `skills/`, `masking/`, `apps/`, `web/`, and the messenger bridges `chat/` and `signal/`) and `prompts/` |
+| `ragon-rs/` | The launcher crate compiled into `ragon`, plus leaf crates (`airgapped/`, `node-locator/`, `skills/`, `masking/`, `apps/`, `web/`, `delegate/`, `loop-guard/`, `monitor/`, `safegit/`, `sync/`, `tools/`, and the messenger bridges `chat/` and `signal/`), `prompts/` and `vectors/` (shared test vectors) |
 | `ragon-web-rs/` | `ragon-search` and `ragon-fetch` (own lockfile, own target directory) |
 | `ragon-code-rs/` | `ragon-code`, the code index |
 | `ragon-docs-rs/` | `ragon-docs`, the local file index |
@@ -190,3 +190,4 @@ Use `rg -n "^class Foo"` for a definition and `ast-grep` for call sites by shape
 - [sync.md](docs/dev/sync.md): `ragon sync`
 - [searching.md](docs/dev/searching.md): `ast-grep` and `rg` on this tree
 - [cli.md](docs/dev/cli.md): every `ragon-admin` subcommand, the sidecars behind `ragon web` and the app
+- Other notes, all in `docs/dev/`: [ci-runners](docs/dev/ci-runners.md), [claude-plugin](docs/dev/claude-plugin.md), [flash-next-feasibility](docs/dev/flash-next-feasibility.md), [flash-next-smoke-boot](docs/dev/flash-next-smoke-boot.md), [macos-signing](docs/dev/macos-signing.md), [release-on-green](docs/dev/release-on-green.md), [sglang-probe](docs/dev/sglang-probe.md)
