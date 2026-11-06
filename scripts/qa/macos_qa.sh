@@ -33,7 +33,9 @@ NEW_HOME="$WORK/home-new"
 APPS="$WORK/Applications"
 
 real_ragon="$HOME/.local/bin/ragon"
-real_before="$("$real_ragon" --version 2>&1 | tail -1)"
+# A Mac with no ragon of its own says `absent`, both times: the shell's "no such file" names its line.
+real_version() { if [[ -x "$real_ragon" ]]; then "$real_ragon" --version 2>&1 | tail -1; else echo absent; fi; }
+real_before="$(real_version)"
 real_app_before="$(stat -f '%m' "$HOME/Applications/Ragon.app" /Applications/Ragon.app 2>/dev/null | tr '\n' ' ')"
 
 rm -rf "$WORK"
@@ -202,9 +204,14 @@ if [[ ! -x "$app/Contents/MacOS/Ragon" ]]; then
     result "desktop app: first window (hidden audit session)" skip "no installed app" "$(since "$t")"
 elif [[ -n "$free_pct" && "$free_pct" -lt 15 ]]; then
     result "desktop app: first window (hidden audit session)" skip "the Mac is short of memory (${free_pct}% free); not launching an app beside the owner's work" "$(since "$t")"
+elif [[ "$(stat -f%Su /dev/console 2>/dev/null)" != "$(id -un)" ]]; then
+    # At the login window, or with another account at the console, there is no window-server session
+    # for this user: even a bare Electron app never reaches `ready`, so the app says nothing about itself.
+    result "desktop app: first window (hidden audit session)" skip "this user is not logged in at the Mac's console: without that session Electron never reaches ready" "$(since "$t")"
 else
     scratch="$WORK/app-state"
-    mkdir -p "$scratch"
+    # The home must exist: `ragon app-server` ends at once on a CODEX_HOME that does not.
+    mkdir -p "$scratch" "$NEW_HOME/.ragon-app"
     HOME="$NEW_HOME" CODEX_HOME="$NEW_HOME/.ragon-app" RAGON_APP_AUDIT=8 ELECTRON_ENABLE_LOGGING=1 \
         DREAMFERENCE_VLLM_HOST="http://${LAN:-127.0.0.1}:$MODEL_PORT" \
         "$app/Contents/MacOS/Ragon" --use-mock-keychain --user-data-dir="$scratch/user-data" \
@@ -221,7 +228,7 @@ else
         sleep 2
         kill -9 "$app_pid" 2>/dev/null
         tail -20 "$scratch/out.log"
-        result "desktop app: first window (hidden audit session)" fail "the app did not quit after its audit session (90 s)" "$(since "$t")"
+        result "desktop app: first window (hidden audit session)" fail "the app did not quit after its audit session (90 s); bundled ragon started: $ragon_seen" "$(since "$t")"
     else
         wait "$app_pid"
         code=$?
@@ -254,7 +261,7 @@ else
     result "uninstall" skip "no fresh install" "$(since "$t")"
 fi
 t=$(started)
-real_after="$("$real_ragon" --version 2>&1 | tail -1)"
+real_after="$(real_version)"
 real_app_after="$(stat -f '%m' "$HOME/Applications/Ragon.app" /Applications/Ragon.app 2>/dev/null | tr '\n' ' ')"
 if [[ "$real_before" == "$real_after" && "$real_app_before" == "$real_app_after" ]]; then
     result "the Mac's own install is untouched" pass "$real_after" "$(since "$t")"
