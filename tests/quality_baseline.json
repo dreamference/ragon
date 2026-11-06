@@ -18,9 +18,6 @@
    "SIM115": 1,
    "T201": 26
   },
-  "dreamference/audit/egress_verdict.py": {
-   "D205": 1
-  },
   "dreamference/audit/preview_page.py": {
    "D105": 2,
    "D107": 1,
@@ -612,5 +609,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1074
+ "total": 1073
 }

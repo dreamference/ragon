@@ -22,7 +22,9 @@ class EgressVerdict:
 
     @property
     def exit_code(self) -> int:
-        """Returns:
-        int: 0 on a pass, 1 on an unexpected destination, 2 when the trace itself failed.
+        """0 on a pass, 1 on an unexpected destination, 2 when the trace itself failed.
+
+        Returns:
+            int: the exit code.
         """
         return {PASS: 0, FAIL: 1}.get(self.status, 2)
