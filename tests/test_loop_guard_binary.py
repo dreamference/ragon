@@ -67,6 +67,7 @@ class StandIn(BaseHTTPRequestHandler):
     """A model server that loops, cuts or answers, as `script` says for each request in turn."""
 
     script: ClassVar[list[str]] = []
+    owner: ClassVar[str] = "sglang"
     bodies: ClassVar[list[dict]] = []
     hung_up: ClassVar[list[int]] = []
 
@@ -78,7 +79,7 @@ class StandIn(BaseHTTPRequestHandler):
             {
                 "object": "list",
                 "data": [
-                    {"id": MODEL, "object": "model", "owned_by": "sglang", "max_model_len": 65536}
+                    {"id": MODEL, "object": "model", "owned_by": self.owner, "max_model_len": 65536}
                 ],
             }
         ).encode()
@@ -300,3 +301,45 @@ def test_with_nothing_switched_on_exec_sends_no_loop_guard_metadata(server, tmp_
     metadata = StandIn.bodies[0].get("client_metadata") or {}
     assert not [key for key in metadata if key.startswith("ragon_")]
     assert "max_output_tokens" not in StandIn.bodies[0]
+
+
+# The hint alone: with the guard and the cap off, what a run leaves the launcher with by default.
+UNTOUCHED = {"DREAMFERENCE_RAGON_LOOP_GUARD": "", "DREAMFERENCE_RAGON_OUTPUT_BUDGET": ""}
+reads_the_workload = pytest.mark.skipif(
+    not SweBenchRunner.ragon_reads(RAGON, "DREAMFERENCE_RAGON_WORKLOAD"),
+    reason=f"{RAGON} names no workload",
+)
+
+
+@reads_the_workload
+@pytest.mark.parametrize("workload", ["night", "swe-bench"])
+def test_the_engine_gets_the_workload_an_unattended_exec_names(
+    server, tmp_path, monkeypatch, workload
+):
+    monkeypatch.setattr(StandIn, "owner", "ragon-engine")
+    StandIn.script = ["answer"]
+    result, last = run_ragon(
+        server, tmp_path, {**UNTOUCHED, "DREAMFERENCE_RAGON_WORKLOAD": workload}
+    )
+    assert result.returncode == 0, result.stderr[-3000:]
+    assert last.strip() == "pong"
+    assert StandIn.bodies[0]["client_metadata"]["ragon_workload"] == workload
+    assert "max_output_tokens" not in StandIn.bodies[0]
+
+
+@reads_the_workload
+def test_a_plain_exec_names_no_workload_to_the_engine(server, tmp_path, monkeypatch):
+    monkeypatch.setattr(StandIn, "owner", "ragon-engine")
+    StandIn.script = ["answer"]
+    result, _ = run_ragon(server, tmp_path, UNTOUCHED)
+    assert result.returncode == 0, result.stderr[-3000:]
+    assert "ragon_workload" not in (StandIn.bodies[0].get("client_metadata") or {})
+
+
+@reads_the_workload
+def test_no_server_but_the_engine_gets_the_workload(server, tmp_path):
+    StandIn.script = ["answer"]
+    result, _ = run_ragon(server, tmp_path, {**UNTOUCHED, "DREAMFERENCE_RAGON_WORKLOAD": "night"})
+    assert result.returncode == 0, result.stderr[-3000:]
+    metadata = StandIn.bodies[0].get("client_metadata") or {}
+    assert not [key for key in metadata if key.startswith("ragon_")]

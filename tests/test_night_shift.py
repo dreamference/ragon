@@ -54,6 +54,7 @@ FAKE_RAGON = textwrap.dedent("""\
     with open(os.environ["FAKE_RAGON_CALLS"] + ".env", "a") as log:
         log.write(json.dumps({{name: os.environ.get(name) for name in
                                ("DREAMFERENCE_RAGON_PROMPT", "DREAMFERENCE_RAGON_REFINE",
+                                "DREAMFERENCE_RAGON_WORKLOAD",
                                 "DREAMFERENCE_RAGON_ADAPTER", "NO_PROXY", "no_proxy")}}) + "\\n")
     cwd = args[args.index("-C") + 1]
     out = args[args.index("-o") + 1]
@@ -732,6 +733,7 @@ def test_refine_studies_a_new_task_first_and_puts_the_worktree_back(setup, monke
         json.loads(line) for line in Path(str(setup["calls"]) + ".env").read_text().splitlines()
     ]
     assert seen and all(entry["DREAMFERENCE_RAGON_REFINE"] == "off" for entry in seen)
+    assert all(entry["DREAMFERENCE_RAGON_WORKLOAD"] == "night" for entry in seen)
     text = NightShiftReport.render(datetime.now().astimezone(), [record], [])
     assert "- Refine: studied first for" in text and "which was put back" in text
 
@@ -2865,6 +2867,7 @@ def test_a_task_from_another_machine_runs_in_the_job_sandbox_with_its_own_home(s
         and variables["DREAMFERENCE_VLLM_HOST"] == "http://127.0.0.1:8000"
     )
     assert variables["DREAMFERENCE_RAGON_ADAPTER"] == ""  # the base (adapters §10.4)
+    assert variables["DREAMFERENCE_RAGON_WORKLOAD"] == "night"
     assert variables["NO_PROXY"] == variables["no_proxy"] == "localhost,127.0.0.1,::1"
     assert run.last_message_path.parent == home
 

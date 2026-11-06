@@ -2470,6 +2470,8 @@ def test_the_launchers_own_refine_mode_is_off_in_the_container_in_both_arms(benc
     assert run(bench, name="refined", instances=["acme__widget-1"], refine=True) == 0
     runs = [call for call in bench["docker"].calls if call[0] == "run"]
     assert len(runs) == 2 and all("DREAMFERENCE_RAGON_REFINE=off" in call for call in runs)
+    # Every session names its workload, so the drafter of a run is never left to inference.
+    assert all("DREAMFERENCE_RAGON_WORKLOAD=swe-bench" in call for call in runs)
 
 
 def test_a_built_in_prompt_needs_no_file_and_two_prompts_are_told_apart(bench, monkeypatch):
