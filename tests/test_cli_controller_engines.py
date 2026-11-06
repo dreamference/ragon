@@ -272,3 +272,75 @@ def test_served_key(monkeypatch):
 
     monkeypatch.setattr(requests, "get", boom)
     assert C._served_key("http://h", "alias") == "alias"
+
+
+def _session(content=None, status=200, raises=False, **msg):
+    session = MagicMock()
+    if raises:
+        session.post.side_effect = ConnectionError
+        return session
+    message = {"content": content, **msg}
+    session.post.return_value = MagicMock(
+        status_code=status, json=lambda: {"choices": [{"message": message}]}
+    )
+    return session
+
+
+def test_text_probes_hit_and_miss():
+    args = ("http://h", "m", {})
+    rich = "<think> <|im_start|> <tool_call>, <answer> " + ctl._ARG_ANTARTIFACT
+    assert C._inspect_probe_reasoning(_session(rich), *args) is True
+    assert C._inspect_probe_reasoning(_session("", reasoning="x"), *args) is True
+    assert C._inspect_probe_chatml(_session(rich), *args) is True
+    assert C._inspect_probe_artifact(_session(rich), *args) is True
+    assert "<answer>" in C._inspect_probe_tags(_session(rich), *args)
+    for probe in (
+        C._inspect_probe_reasoning,
+        C._inspect_probe_chatml,
+        C._inspect_probe_artifact,
+    ):
+        assert probe(_session("nothing"), *args) is False
+        assert probe(_session(rich, status=500), *args) is False
+        assert probe(_session(raises=True), *args) is False
+    assert C._inspect_probe_tags(_session("none"), *args) == "None detected"
+    assert C._inspect_probe_tags(_session(raises=True), *args) == "None detected"
+
+
+def test_tools_probe():
+    args = ("http://h", "m", {})
+    assert C._inspect_probe_tools(_session("", tool_calls=[{}]), *args) is True
+    assert C._inspect_probe_tools(_session(""), *args) is False
+    assert C._inspect_probe_tools(_session("", status=500), *args) is False
+    assert C._inspect_probe_tools(_session(raises=True), *args) is False
+
+
+def test_moe_probe(monkeypatch):
+    import requests
+
+    def get(cfg, status=200):
+        return lambda *a, **k: MagicMock(status_code=status, json=lambda: cfg)
+
+    monkeypatch.setattr(requests, "get", get({"num_experts": 8}))
+    assert C._inspect_probe_moe("a/b") == "Yes"
+    monkeypatch.setattr(requests, "get", get({"model_type": "dense"}))
+    assert C._inspect_probe_moe("a/b") == "No"
+    monkeypatch.setattr(requests, "get", get({}, 404))
+    assert C._inspect_probe_moe("org/Mixtral-8x7B") == "Yes (heuristic)"
+    assert C._inspect_probe_moe("org/plain") == "Unknown"
+
+    def boom(*a, **k):
+        raise requests.ConnectionError
+
+    monkeypatch.setattr(requests, "get", boom)
+    assert C._inspect_probe_moe("org/plain") == "Unknown"
+
+
+def test_kv_cache_probe():
+    text = 'vllm:kv_cache_usage_perc{engine="0"} 0.25\n'
+    s = MagicMock()
+    s.get.return_value = MagicMock(status_code=200, text=text)
+    assert C._inspect_probe_kv_cache(s, "http://h") == "25.0%"
+    s.get.return_value = MagicMock(status_code=200, text="")
+    assert C._inspect_probe_kv_cache(s, "http://h") == "Unknown"
+    s.get.side_effect = ConnectionError
+    assert C._inspect_probe_kv_cache(s, "http://h") == "Unknown"
