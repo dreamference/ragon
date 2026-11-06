@@ -518,9 +518,6 @@
    "PTH123": 1,
    "T201": 1
   },
-  "dreamference/vllm_server/wifi_power_save.py": {
-   "PLR2004": 5
-  },
   "dreamference/web_canvas.py": {
    "A002": 1,
    "D100": 1,
@@ -576,5 +573,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1004
+ "total": 999
 }

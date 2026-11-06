@@ -35,6 +35,16 @@ DISABLED: Final[tuple] = ("disable", "2")
 DISABLE_VALUE: Final[str] = "2"
 # How long one nmcli or iw reading may take.
 READ_SECONDS: Final[int] = 10
+# nmcli's terse `device status` row: `DEVICE:TYPE:STATE`. The device and the state hold no colon,
+# so three fields is the minimum a connected Wi-Fi line can have, and `wifi` is the type's own
+# spelling, not a prefix of it.
+STATUS_FIELDS: Final[int] = 3
+WIFI_TYPE: Final[str] = "wifi"
+# `is_fix_command` compares against whole argvs, not prefixes: the fix commands have exactly six
+# parts, and `nmcli`/`iw` are the programs' own names, not prefixes of options.
+FIX_COMMAND_PARTS: Final[int] = 6
+NMCLI: Final[str] = "nmcli"
+IW: Final[str] = "iw"
 
 
 class WifiPowerSave:
@@ -90,7 +100,11 @@ class WifiPowerSave:
         for line in listing.splitlines():
             # Device names, types and states hold no colon, so the terse fields split cleanly.
             fields = line.split(":")
-            if len(fields) < 3 or fields[1] != "wifi" or not fields[2].startswith("connected"):
+            if (
+                len(fields) < STATUS_FIELDS
+                or fields[1] != WIFI_TYPE
+                or not fields[2].startswith("connected")
+            ):
                 continue
             device = fields[0]
             # `-e no`: terse output would hand back a name with `:` or `\` escaped, and the
@@ -196,14 +210,14 @@ class WifiPowerSave:
             `iw dev <interface> set power_save off`, with a name that cannot pass for an option.
         """
         parts = [str(part) for part in argv]
-        if len(parts) != 6:
+        if len(parts) != FIX_COMMAND_PARTS:
             return False
-        if parts[0] == "nmcli":
+        if parts[0] == NMCLI:
             name, shape = parts[3], parts[:3] + parts[4:]
-            expected = ["nmcli", "connection", "modify", "802-11-wireless.powersave", DISABLE_VALUE]
-        elif parts[0] == "iw":
+            expected = [NMCLI, "connection", "modify", "802-11-wireless.powersave", DISABLE_VALUE]
+        elif parts[0] == IW:
             name, shape = parts[2], parts[:2] + parts[3:]
-            expected = ["iw", "dev", "set", "power_save", "off"]
+            expected = [IW, "dev", "set", "power_save", "off"]
         else:
             return False
         return shape == expected and bool(name) and not name.startswith("-")
