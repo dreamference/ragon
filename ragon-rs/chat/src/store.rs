@@ -91,6 +91,9 @@ pub struct MatrixConfig {
     /// Where the bridge reaches the homeserver: the loopback proxy, `http://127.0.0.1:6167`.
     pub homeserver: String,
     pub server_name: String,
+    /// The only certificate authority trusted for an `https://` homeserver (PEM path); empty: the
+    /// system's roots.
+    pub ca_file: String,
     /// The bot's account, `@ragon:<server name>`.
     pub user_id: String,
     pub access_token: String,
@@ -109,6 +112,7 @@ impl MatrixConfig {
         let config = MatrixConfig {
             homeserver: field("homeserver"),
             server_name: field("server_name"),
+            ca_file: field("ca_file"),
             user_id: field("user_id"),
             access_token: field("access_token"),
             allowed: value

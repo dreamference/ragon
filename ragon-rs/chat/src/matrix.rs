@@ -9,6 +9,7 @@
 //! reply (the hub reads the replies).
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -106,13 +107,48 @@ pub struct MatrixApi {
 }
 
 impl MatrixApi {
+    /// A client for the loopback proxy or a test stand-in: the same rules as [`MatrixApi::trusted`]
+    /// with no pinned certificate authority. Panics if the address is refused.
     pub fn new(homeserver: &str, token: &str) -> MatrixApi {
-        MatrixApi {
-            base: homeserver.trim_end_matches('/').to_string(),
-            token: token.to_string(),
-            http: reqwest::Client::new(),
-            txn: Arc::default(),
+        Self::trusted(homeserver, token, None).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// A client that trusts only what it should:
+    ///
+    /// - `http://` only to this machine (`127.0.0.1`, `localhost`, `[::1]`); any other host must be
+    ///   `https://`, so the bot's token never crosses a network in the clear;
+    /// - with `ca_file` (the node's own CA, PEM), that CA is the only root: the system roots are
+    ///   switched off, so a certificate from any other authority is refused;
+    /// - a redirect is never followed, so the token cannot be sent where the homeserver did not
+    ///   name; the proxy answers directly.
+    pub fn trusted(homeserver: &str, token: &str, ca_file: Option<&Path>) -> Result<MatrixApi, MatrixError> {
+        let refuse = |why: String| MatrixError { errcode: "M_UNTRUSTED".to_string(), error: why };
+        let base = homeserver.trim_end_matches('/').to_string();
+        let (scheme, rest) = base.split_once("://").ok_or_else(|| refuse("the homeserver address has no http:// or https://".to_string()))?;
+        let authority = rest.split('/').next().unwrap_or_default();
+        let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+        let host = match host.strip_prefix('[') {
+            Some(inner) => inner.split(']').next().unwrap_or_default(),
+            None => host.split(':').next().unwrap_or_default(),
+        };
+        let local = authority.find('@').is_none() && matches!(host, "127.0.0.1" | "localhost" | "::1");
+        match scheme {
+            "https" => {}
+            "http" if local => {}
+            "http" => return Err(refuse(format!("{host} is not this machine: the bridge reaches a homeserver elsewhere only over https"))),
+            other => return Err(refuse(format!("the homeserver scheme {other}:// is not http or https"))),
         }
+        let mut client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        if let Some(path) = ca_file {
+            let pem = std::fs::read(path).map_err(|err| refuse(format!("the homeserver's CA file cannot be read: {err}")))?;
+            if !String::from_utf8_lossy(&pem).contains("-----BEGIN CERTIFICATE-----") {
+                return Err(refuse("the homeserver's CA file is not a PEM certificate".to_string()));
+            }
+            let cert = reqwest::Certificate::from_pem(&pem).map_err(|_| refuse("the homeserver's CA file is not a PEM certificate".to_string()))?;
+            client = client.tls_built_in_root_certs(false).add_root_certificate(cert);
+        }
+        let http = client.build().map_err(|err| refuse(err.without_url().to_string()))?;
+        Ok(MatrixApi { base, token: token.to_string(), http, txn: Arc::default() })
     }
 
     /// One request; `M_LIMIT_EXCEEDED` is waited out and retried, up to three times.
@@ -518,7 +554,8 @@ pub async fn start(
     hub: mpsc::UnboundedSender<Inbound>,
     outbound: mpsc::UnboundedReceiver<Outbound>,
 ) -> Result<(), MatrixError> {
-    let api = MatrixApi::new(&config.homeserver, &config.access_token);
+    let ca = (!config.ca_file.is_empty()).then(|| Path::new(&config.ca_file));
+    let api = MatrixApi::trusted(&config.homeserver, &config.access_token, ca)?;
     api.request(reqwest::Method::GET, "/_matrix/client/v3/account/whoami", None, Duration::from_secs(30)).await?;
     let posted: Posted = Arc::default();
     let renderer = Renderer { api: api.clone(), user_id: config.user_id.clone(), posted: posted.clone(), typing: Mutex::default() };
@@ -537,6 +574,29 @@ pub fn pair_for_tests(api: MatrixApi, dir: PathBuf, user_id: &str, hub: mpsc::Un
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_http_is_for_this_machine_only() {
+        for ok in ["http://127.0.0.1:6167", "http://localhost:6167/", "http://[::1]:6167", "https://node.example:8448"] {
+            assert!(MatrixApi::trusted(ok, "t", None).is_ok(), "{ok}");
+        }
+        for bad in ["http://node.example:8448", "http://10.0.0.2:6167", "http://127.0.0.1.evil.example", "http://127.0.0.1@evil.example", "ftp://x", "node.example"] {
+            assert_eq!(MatrixApi::trusted(bad, "t", None).err().map(|e| e.errcode), Some("M_UNTRUSTED".to_string()), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_pinned_ca_must_be_a_readable_pem() {
+        let dir = std::env::temp_dir().join(format!("ragon-matrix-ca-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let junk = dir.join("junk.pem");
+        std::fs::write(&junk, "not a certificate").unwrap();
+        for path in [junk, dir.join("missing.pem")] {
+            let err = MatrixApi::trusted("https://node.example:8448", "t", Some(&path)).err().unwrap();
+            assert_eq!(err.errcode, "M_UNTRUSTED");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn path_segments_are_encoded() {
