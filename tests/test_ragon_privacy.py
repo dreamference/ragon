@@ -14,7 +14,7 @@ import pytest
 
 from dreamference.runner.codex_branded_builder import CODEX_SUBMODULE_DIR, CodexBrandedBuilder
 
-SUBMODULE_PRESENT = pathlib.Path(os.path.join(CODEX_SUBMODULE_DIR, "codex-rs")).is_dir()
+SUBMODULE_PRESENT = pathlib.Path(CODEX_SUBMODULE_DIR, "codex-rs").is_dir()
 
 
 @pytest.mark.skipif(not SUBMODULE_PRESENT, reason="codex submodule not checked out")
@@ -45,7 +45,7 @@ def test_the_python_side_reads_the_same_home(monkeypatch):
     from dreamference.runner.codex_installer import CodexInstaller
 
     monkeypatch.delenv("CODEX_HOME", raising=False)
-    assert CodexInstaller.home_dir() == os.path.expanduser("~/.ragon")
+    assert CodexInstaller.home_dir() == str(pathlib.Path("~/.ragon").expanduser())
     monkeypatch.setenv("CODEX_HOME", "/elsewhere")
     assert CodexInstaller.home_dir() == "/elsewhere"
 
@@ -102,11 +102,7 @@ def test_pets_are_hidden_because_their_art_comes_from_openai(tmp_path):
     visible = slash[slash.index("fn is_visible(self)") :]
     assert "SlashCommand::Pets => false," in visible[: visible.index("_ => true")]
     launcher = (
-        pathlib.Path(
-            os.path.join(os.path.dirname(__file__), os.pardir, "ragon-rs", "src", "lib.rs")
-        )
-        .open()
-        .read()
+        pathlib.Path(__file__).parent.joinpath(os.pardir, "ragon-rs", "src", "lib.rs").open().read()
     )
     assert 'tui.remove("pet");' in launcher
     assert 'doc["check_for_update_on_startup"] = value(false);' in launcher

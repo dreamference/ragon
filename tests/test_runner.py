@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import pytest
 
@@ -21,7 +22,7 @@ def _no_served_models(monkeypatch):
 
 
 def test_cline_runner_clinerules_creation(tmp_path):
-    orig_cwd = os.getcwd()
+    orig_cwd = str(Path.cwd())
     try:
         os.chdir(tmp_path)
         config = DreamferenceConfig(agent_runner="cline", model="qwen3.8-27b-nvfp4-dflash2")

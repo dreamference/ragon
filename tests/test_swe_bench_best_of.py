@@ -2,18 +2,18 @@
 
 import importlib.util
 import json
-import os
 import sys
+from pathlib import Path
 
 import pytest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 @pytest.fixture
 def best_of():
     spec = importlib.util.spec_from_file_location(
-        "swe_bench_best_of", os.path.join(ROOT, "scripts", "swe_bench_best_of.py")
+        "swe_bench_best_of", str(Path(ROOT, "scripts", "swe_bench_best_of.py"))
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module

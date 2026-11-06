@@ -1,6 +1,7 @@
-"""Named system prompts (specs/DREAMFERENCE_RAGON_PROMPT.md): the Python side of the choice, the
-shipped `high-swe` text, and where Night Shift passes it. The launcher's own behaviour is tested in
-Rust (ragon-rs/src/prompt.rs).
+"""Named system prompts (specs/DREAMFERENCE_RAGON_PROMPT.md).
+
+the Python side of the choice, the shipped `high-swe` text, and where Night Shift passes it. The launcher's
+own behaviour is tested in Rust (ragon-rs/src/prompt.rs).
 """
 
 import re

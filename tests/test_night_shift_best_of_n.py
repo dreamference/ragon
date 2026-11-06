@@ -891,6 +891,7 @@ def test_server_judge_asks_the_server_without_a_proxy_and_survives_a_refusal(mon
             self.reply(
                 {"choices": [{"message": {"content": "Thinking.\nRATING_A: 8\nRATING_B: 2"}}]}
             )
+            return None
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()

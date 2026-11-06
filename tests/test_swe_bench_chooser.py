@@ -3,15 +3,15 @@
 import dataclasses
 import importlib.util
 import json
-import os
 import random
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = str(Path(__file__).resolve().parent.parent)
 IDS = ["acme__a-1", "acme__a-2", "acme__a-3", "acme__a-4", "acme__a-5"]
 MODEL = "ragon/fake"
 
@@ -19,7 +19,7 @@ MODEL = "ragon/fake"
 @pytest.fixture
 def chooser():
     spec = importlib.util.spec_from_file_location(
-        "swe_bench_chooser_test", os.path.join(ROOT, "scripts", "swe_bench_chooser_test.py")
+        "swe_bench_chooser_test", str(Path(ROOT, "scripts", "swe_bench_chooser_test.py"))
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module  # its dataclasses look their module up while they are built

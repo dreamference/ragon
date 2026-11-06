@@ -13,8 +13,8 @@ import subprocess
 
 import pytest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPT = os.path.join(ROOT, "scripts", "swe_bench_ab.sh")
+ROOT = str(pathlib.Path(__file__).resolve().parent.parent)
+SCRIPT = str(pathlib.Path(ROOT, "scripts", "swe_bench_ab.sh"))
 
 
 def night(tmp_path, arms, ragon=None, **extra):

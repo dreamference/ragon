@@ -16,6 +16,7 @@ import textwrap
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -923,7 +924,7 @@ def test_the_airgapped_level_resolves_as_the_launcher_does(tmp_path, monkeypatch
         return NightShiftTaskRun.airgapped_level(worktree, session, home)
 
     assert level() == "off"
-    user = Path(os.path.expanduser("~/.config/dreamference/config.toml"))
+    user = Path("~/.config/dreamference/config.toml").expanduser()
     user.parent.mkdir(parents=True, exist_ok=True)
     user.write_text('ragon_airgapped = "off"\n')
     assert level() == "off"
@@ -1372,7 +1373,7 @@ def test_a_ragon_replaced_by_a_rebuild_still_counts(tmp_path):
         (busy / str(server.pid)).write_text('{"threads": ["t1"]}')
         installed.unlink()
         shutil.copy("/bin/bash", installed)
-        assert os.readlink(f"/proc/{server.pid}/exe") == f"{installed} (deleted)"
+        assert str(Path(f"/proc/{server.pid}/exe").readlink()) == f"{installed} (deleted)"
         assert NightShiftHost.executable_of(str(server.pid)) == str(installed)
         assert NightShiftHost.busy_app_server_pids(str(installed), str(tmp_path / "home")) == [
             server.pid
@@ -1420,9 +1421,9 @@ class FakeHost(NightShiftHost):
     model = ("m", 262144)
     safe = True
     available = 40 * 1024**3
-    heavy = []
-    sessions = []
-    samples = []
+    heavy: ClassVar[list] = []
+    sessions: ClassVar[list] = []
+    samples: ClassVar[list] = []
 
     @classmethod
     def served_model(cls, host, timeout=3.0):
@@ -1811,7 +1812,7 @@ class FakeIndex(NightShiftIndex):
 
     binary = "/opt/ragon-code"
     outcome = "3 ok"
-    calls = []
+    calls: ClassVar[list] = []
 
     @classmethod
     def executable(cls):
@@ -2601,8 +2602,9 @@ def test_a_wait_after_a_start_is_noted_again(fake_host, monkeypatch):
 
 @pytest.fixture
 def two_nodes(setup, fake_host, monkeypatch):
-    """This machine as both sender and node: the pairing reaches `serve-job` in this process, and
-    git reaches the node's job repository by its path.
+    """This machine as both sender and node.
+
+    the pairing reaches `serve-job` in this process, and git reaches the node's job repository by its path.
     """
     import contextlib
     import io
@@ -2851,7 +2853,7 @@ def test_a_task_from_another_machine_runs_in_the_job_sandbox_with_its_own_home(s
         str(run.worktree),
         str(home),
     ]
-    assert os.path.expanduser("~") in [
+    assert str(Path("~").expanduser()) in [
         argv[i + 1] for i, word in enumerate(argv) if word == "--tmpfs"
     ]
     variables = {argv[i + 1]: argv[i + 2] for i, word in enumerate(argv) if word == "--setenv"}

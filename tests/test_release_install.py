@@ -1,5 +1,6 @@
-"""Installing Ragon from a release, with no checkout (install.sh, `ragon-admin host`, and the
-builder on a machine that has no source).
+"""Installing Ragon from a release, with no checkout.
+
+Covers install.sh, `ragon-admin host`, and the builder on a machine that has no source.
 
 `install.sh` runs for real against a stand-in for GitHub's release API on loopback, into the
 test's own HOME. Nothing here runs sudo, docker, cargo or pip.
@@ -40,8 +41,9 @@ RATE_LIMIT_BODY = b'{"message":"API rate limit exceeded for 203.0.113.7.","docum
 
 
 class FakeRelease:
-    """Serves one release the way api.github.com prints it: pretty JSON, an asset's `url` before
-    its `name`, and the uploader's own `url` between them.
+    """Serves one release the way api.github.com prints it.
+
+    pretty JSON, an asset's `url` before its `name`, and the uploader's own `url` between them.
     """
 
     def __init__(self, assets, tag="v9.9.9", need_token=None, indent=2, rate_limited=False):
@@ -74,6 +76,7 @@ class FakeRelease:
                     index = int(self.path.rsplit("/", 1)[1])
                     return self._send(200, list(release.assets.values())[index])
                 self._send(404, b'{"message": "Not Found"}')
+                return None
 
             def _send(self, code, body):
                 self.send_response(code)
@@ -176,8 +179,10 @@ def binaries(
     signed=True,
     target=TARGET,
 ):
-    """Release assets for `names`: gzipped scripts that print their own name, the per-target sums
-    file and, unless `signed` is false, SHA256SUMS signed by the test's release key.
+    """Release assets for `names`.
+
+    gzipped scripts that print their own name, the per-target sums file and, unless `signed` is false,
+    SHA256SUMS signed by the test's release key.
     """
     assets, sums = {}, []
     for name in names:
@@ -326,8 +331,10 @@ def run_install(
     env_extra=None,
     terminal_input=None,
 ):
-    """Runs install.sh with a `uname`, an `nvidia-smi` and a PCI bus that report the machine the
-    test wants, whatever runs the tests (on a GB10 the real bus has the GB10's GPU on it), the
+    """Runs install.sh against a stand-in machine.
+
+    It gets a `uname`, an `nvidia-smi` and a PCI bus that report the machine the test wants,
+    whatever runs the tests (on a GB10 the real bus has the GB10's GPU on it), the
     stand-in root tools above, and no controlling terminal (its own session), unless
     `terminal_input` is given: then standard input is a pseudo-terminal that is fed that text.
     """
@@ -426,7 +433,7 @@ def test_the_client_is_installed_from_the_release_checked_and_linked(tmp_path, r
     ]
     for name in ("ragon", "ragon-search", "ragon-fetch"):
         link = tmp_path / ".local/bin" / name
-        assert link.is_symlink() and os.readlink(link) == str(bin_dir / name)
+        assert link.is_symlink() and str(link.readlink()) == str(bin_dir / name)
         assert (
             subprocess.run([str(link)], capture_output=True, text=True).stdout
             == f"{name} from the release\n"

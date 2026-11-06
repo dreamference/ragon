@@ -408,7 +408,7 @@ def test_enable_installs_through_sudo_once_and_rewrites_without_it_afterwards(
     def privileged(cls, command, purpose, yes=False):
         asked.append(command)
         if command[0] == "install":
-            NodeServiceFile.service_path.write_text(Path(command[-2]).open().read())
+            NodeServiceFile.service_path.write_text(Path(command[-2]).read_text())
         else:
             NodeServiceFile.service_path.unlink()
         return True
@@ -1895,7 +1895,7 @@ def test_the_sandbox_writes_only_the_worktree_hides_the_home_folder_and_the_gpu(
     assert binds == [str(tree)]
     assert argv[argv.index("--ro-bind") + 1 : argv.index("--ro-bind") + 3] == ["/", "/"]
     hidden = [argv[i + 1] for i, word in enumerate(argv) if word == "--tmpfs"]
-    assert os.path.expanduser("~") in hidden and "/run" in hidden and "/tmp" in hidden
+    assert str(Path("~").expanduser()) in hidden and "/run" in hidden and "/tmp" in hidden
     # bubblewrap hides a bind made under a later tmpfs: every tmpfs comes first.
     assert max(i for i, word in enumerate(argv) if word == "--tmpfs") < argv.index("--bind")
     # The environment is built from nothing, and CUDA sees no device.
@@ -2113,7 +2113,7 @@ def test_the_working_node_decides_whether_it_can_take_the_job(job_node, monkeypa
     monkeypatch.setattr(
         NightShiftHost, "mem_available_bytes", classmethod(lambda cls: 10 * 1024**3)
     )
-    with pytest.raises(ValueError, match="10.0 GiB of memory available"):
+    with pytest.raises(ValueError, match=r"10\.0 GiB of memory available"):
         NodeJob.submit(job_request(commit=job_node["commit"]), "/x")
     monkeypatch.setattr(
         NightShiftHost, "mem_available_bytes", classmethod(lambda cls: 64 * 1024**3)

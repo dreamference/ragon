@@ -1,5 +1,6 @@
-"""Night Shift's per-task KV budget and compaction limit (specs/DREAMFERENCE_RAGON_COMPACTION.md
-§4.1, specs/DREAMFERENCE_RAGON_NIGHT_SHIFT.md §11).
+"""Night Shift's per-task KV budget and compaction limit.
+
+Specs: DREAMFERENCE_RAGON_COMPACTION.md §4.1 and DREAMFERENCE_RAGON_NIGHT_SHIFT.md §11.
 
 A night run divides 90% of the KV pool between as many tasks as can each get `task_context`, and
 holds each task to its share by passing it to every `ragon exec` as the compaction limit, so the

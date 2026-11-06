@@ -1,6 +1,7 @@
-"""Skills from other agents (specs/DREAMFERENCE_RAGON_SKILLS.md): what the Python side and the docs
-have to agree on with the launcher. The behaviour itself is tested in Rust (`ragon-rs/skills/`,
-`ragon-rs/src/skills.rs`); nothing here reads a real skills folder.
+"""Skills from other agents (specs/DREAMFERENCE_RAGON_SKILLS.md).
+
+what the Python side and the docs have to agree on with the launcher. The behaviour itself is tested in Rust
+(`ragon-rs/skills/`, `ragon-rs/src/skills.rs`); nothing here reads a real skills folder.
 """
 
 import re

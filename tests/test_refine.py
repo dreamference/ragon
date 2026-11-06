@@ -1,6 +1,8 @@
-"""Refine mode (specs/DREAMFERENCE_RAGON_REFINE.md): the setting's tiers on the Python side, the one
-text the product and the benchmark share, and the benchmark's prompts pinned to the ones it was
-measured with. The launcher's half is tested in Rust (ragon-rs/src/refine.rs).
+"""Refine mode (specs/DREAMFERENCE_RAGON_REFINE.md).
+
+the setting's tiers on the Python side, the one text the product and the benchmark share, and the benchmark's
+prompts pinned to the ones it was measured with. The launcher's half is tested in Rust (ragon-
+rs/src/refine.rs).
 """
 
 import hashlib

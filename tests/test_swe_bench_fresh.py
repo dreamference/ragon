@@ -1,17 +1,17 @@
 """`scripts/swe_bench_fresh.py draw`: a later fresh list leaves out the earlier ones (FAILURES §9.4)."""
 
 import importlib.util
-import os
+from pathlib import Path
 
 import pytest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 @pytest.fixture
 def fresh(monkeypatch, tmp_path):
     spec = importlib.util.spec_from_file_location(
-        "swe_bench_fresh", os.path.join(ROOT, "scripts", "swe_bench_fresh.py")
+        "swe_bench_fresh", str(Path(ROOT, "scripts", "swe_bench_fresh.py"))
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

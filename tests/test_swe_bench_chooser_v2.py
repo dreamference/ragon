@@ -1,7 +1,10 @@
-"""`scripts/swe_bench_chooser_v2.py`: the hybrid chooser, with docker replaced by scratch git
-repositories on the host and the model by a fake server on loopback.
+"""`scripts/swe_bench_chooser_v2.py`.
+
+the hybrid chooser, with docker replaced by scratch git repositories on the host and the model by a fake
+server on loopback.
 """
 
+import functools
 import importlib.util
 import json
 import os
@@ -11,17 +14,23 @@ import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
 from dreamference.swe_bench.swe_bench_docker import SweBenchDocker
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = str(Path(__file__).resolve().parent.parent)
 MODEL = "ragon/fake"
 IDS = ["acme__calc-1", "acme__calc-2", "acme__calc-3", "acme__calc-4"]
 SECRETS = ("SECRET-GOLD", "SECRET-TEST-PATCH", "SECRET-HINT", "SECRET-F2P", "SECRET-P2P")
 
 CALC = "def add(a, b):\n    return a - b\n"
+
+
+def _docker_done(args, code=0, out="", err=""):
+    """A finished stand-in `docker` call."""
+    return subprocess.CompletedProcess(["docker", *args], code, out, err)
 
 
 def diff(new_line, marker=""):
@@ -59,7 +68,7 @@ WRITER = {
 def v2():
     names = ("swe_bench_chooser_v2", "swe_bench_chooser_test")
     spec = importlib.util.spec_from_file_location(
-        names[0], os.path.join(ROOT, "scripts", "swe_bench_chooser_v2.py")
+        names[0], str(Path(ROOT, "scripts", "swe_bench_chooser_v2.py"))
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[names[0]] = module
@@ -98,10 +107,14 @@ def server():
                 return self.reply({"choices": [{"message": {"content": WRITER[issue]}}]})
             a = text.split("<solution_A>")[1].split("</solution_A>")[0]
             b = text.split("<solution_B>")[1].split("</solution_B>")[0]
-            rate = lambda patch: 9 if "GOOD" in patch else 3
+
+            def rate(patch):
+                return 9 if "GOOD" in patch else 3
+
             self.reply(
                 {"choices": [{"message": {"content": f"RATING_A: {rate(a)}\nRATING_B: {rate(b)}"}}]}
             )
+            return None
 
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -111,17 +124,18 @@ def server():
 
 @pytest.fixture
 def docker(tmp_path, monkeypatch):
-    """`SweBenchDocker.run` against scratch repositories: `run` copies a template repository (the
-    image), `exec -i … bash -s` runs the script on the host against that copy, `rm` deletes it.
-    Images start absent, so every task pulls its image and must remove it.
+    """`SweBenchDocker.run` against scratch repositories.
+
+    `run` copies a template repository (the image), `exec -i … bash -s` runs the script on the host against
+    that copy, `rm` deletes it. Images start absent, so every task pulls its image and must remove it.
     """
     template = tmp_path / "image" / "testbed"
     template.mkdir(parents=True)
     (template / "calc.py").write_text(CALC)
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
-    subprocess.run(git + ["init", "-q"], cwd=template, check=True)
-    subprocess.run(git + ["add", "-A"], cwd=template, check=True)
-    subprocess.run(git + ["commit", "-qm", "base"], cwd=template, check=True)
+    subprocess.run([*git, "init", "-q"], cwd=template, check=True)
+    subprocess.run([*git, "add", "-A"], cwd=template, check=True)
+    subprocess.run([*git, "commit", "-qm", "base"], cwd=template, check=True)
     state = {
         "calls": [],
         "present": set(),
@@ -130,13 +144,13 @@ def docker(tmp_path, monkeypatch):
         "scripts": [],
         "exec_hook": None,
     }
-    python_dir = os.path.dirname(sys.executable)
+    python_dir = str(Path(sys.executable).parent)
 
     def run(args, timeout=None, input_text=None):
         state["calls"].append(list(args))
-        done = lambda code=0, out="", err="": subprocess.CompletedProcess(
-            ["docker", *args], code, out, err
-        )
+
+        done = functools.partial(_docker_done, args)
+
         verb = args[0]
         if verb == "image" and args[1] == "inspect":
             return done(0, "[] sha256:x") if args[2] in state["present"] else done(1)
@@ -225,11 +239,12 @@ def verdict(resolved, p2p_failed=0, applied=True):
 
 @pytest.fixture
 def disk(tmp_path):
-    """calc-1: GOOD (r1, r3; resolved) against WRONG (r2): the reproduction tests decide.
-    calc-2: GOOD (r1, resolved) and ALSO_GOOD (r2, not resolved here, to tell them apart) behave
-            alike; r3's WRONG breaks a PASS_TO_PASS test: the filter, the groups tie, the judge.
-    calc-3: r2's patch breaks a PASS_TO_PASS test, r1's resolves, r3's does not apply: the filter.
-    calc-4: every test the writer gives passes or does not compile: the judge, without tests.
+    """calc-1: GOOD (r1, r3; resolved) against WRONG (r2).
+
+    the reproduction tests decide. calc-2: GOOD (r1, resolved) and ALSO_GOOD (r2, not resolved here, to tell
+    them apart) behave alike; r3's WRONG breaks a PASS_TO_PASS test: the filter, the groups tie, the judge.
+    calc-3: r2's patch breaks a PASS_TO_PASS test, r1's resolves, r3's does not apply: the filter. calc-4:
+    every test the writer gives passes or does not compile: the judge, without tests.
     """
     runs = tmp_path / "runs"
     write_run(
@@ -368,9 +383,10 @@ def test_the_four_stages_in_containers_scored_beside_v1_and_resumed(
     }
     # calc-2: the filter drops WRONG; GOOD and ALSO_GOOD pass alike, so the judge: one pair, three calls.
     pair = per_task["acme__calc-2"]["pairs"][0]
-    assert [(c["a"], c["b"]) for c in pair["calls"]][0] == [
-        (c["a"], c["b"]) for c in pair["calls"]
-    ][2]
+    assert (
+        next((c["a"], c["b"]) for c in pair["calls"])
+        == [(c["a"], c["b"]) for c in pair["calls"]][2]
+    )
     assert pair["calls"][0]["a"] == pair["calls"][1]["b"] and pair["winner"] == v2.v1.digest(GOOD)
     judge_calls = [p for p in server["seen"] if "<solution_A>" in p["messages"][1]["content"]]
     assert len(judge_calls) == 12  # calc-2: one pair; calc-4: three survivors, three pairs
@@ -462,7 +478,9 @@ def candidate(v2, cid, runs=1, broken=False):
 
 
 def test_the_stages_in_order(v2):
-    never = lambda a, b, q: pytest.fail("the judge was called")
+    def never(a, b, q):
+        return pytest.fail("the judge was called")
+
     a, b, c = candidate(v2, "a"), candidate(v2, "b"), candidate(v2, "c")
     # Most reproduction tests passed decides.
     choice = v2.decide(

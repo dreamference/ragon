@@ -1,11 +1,11 @@
-"""The Windows desktop app's release path: `windows.yml` builds an NSIS installer per
-architecture, the release workflow publishes whatever its artifacts hold and names the installers in
-its notes, and install.ps1 installs it silently beside the command-line client (the owner's
-decision: the one-line installers are the supported way to install), recording it so
-that `ragon update` updates it too. No release ever carried the earlier zip.
+"""The Windows desktop app's release path.
 
-The workflow files and the NSIS script are read as text: nothing here runs makensis unless one is
-named in `RAGON_TEST_MAKENSIS` (with `NSISDIR` for a bundle such as electron-builder's).
+`windows.yml` builds an NSIS installer per architecture, the release workflow publishes whatever its artifacts
+hold and names the installers in its notes, and install.ps1 installs it silently beside the command-line
+client (the owner's decision: the one-line installers are the supported way to install), recording it so that
+`ragon update` updates it too. No release ever carried the earlier zip. The workflow files and the NSIS script
+are read as text: nothing here runs makensis unless one is named in `RAGON_TEST_MAKENSIS` (with `NSISDIR` for
+a bundle such as electron-builder's).
 """
 
 import json

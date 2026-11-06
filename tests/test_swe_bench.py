@@ -16,6 +16,7 @@ import sys
 import time
 import types
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -801,9 +802,9 @@ class FakeDocker:
 
     @classmethod
     def gated_agent(cls, box, mode, say):
-        """`gated`: tries to edit at once, is held, reads, edits, tries to stop, is held, runs the
-        example, stops. `gated_ignores`: edits again without reading and stops again without
-        running anything.
+        """`gated`: tries to edit at once, is held, reads, edits, tries to stop, is held, runs the example, stops.
+
+        `gated_ignores`: edits again without reading and stops again without running anything.
         """
         repo = box["repo"]
         patch = "*** Begin Patch\n*** Update File: widget.py\n@@\n-    return 1\n+    return 2  # FIX\n*** End Patch"
@@ -1403,7 +1404,8 @@ def test_the_collected_patch_applies_to_a_fresh_checkout(tmp_path):
 def test_a_resumed_run_skips_finished_instances_and_appends(bench):
     run(bench, instances=["acme__widget-1"])
     store = SweBenchRunStore("r1")
-    store.write_manifest  # the manifest is fixed: a resumed run reads it and ignores new selections
+    # the manifest is fixed: a resumed run reads it and ignores new selections
+    assert hasattr(store, "write_manifest")
     manifest = store.manifest()
     manifest["instances"].append("acme__widget-2")
     manifest["images"]["acme__widget-2"] = {"image": f"{REPOSITORY}:acme-widget-2", "digest": "d"}
@@ -2326,7 +2328,7 @@ def test_the_runtime_names_every_library_ragon_is_linked_against(monkeypatch):
     loader, libraries = SweBenchRuntime.host_libraries("/x/ragon")
     assert "/lib/aarch64-linux-gnu/liblzma.so.5" in libraries and len(libraries) == 4
     ldd += "\tlibssl.so.3 => /lib/aarch64-linux-gnu/libssl.so.3 (0x5)\n"
-    with pytest.raises(ValueError, match="libssl.so.3"):
+    with pytest.raises(ValueError, match=r"libssl\.so\.3"):
         SweBenchRuntime.host_libraries("/x/ragon")
 
 
@@ -3516,7 +3518,7 @@ def gated(bench, monkeypatch):
 class OthersBusy(QuietMachine):
     """A session is open and another request is running: only the gate's priority lets a start through."""
 
-    admitted = []
+    admitted: ClassVar[list] = []
 
     @classmethod
     def admit(cls, vllm_host, ragon_bin, idle_minutes, end):

@@ -1,6 +1,8 @@
-"""Wi-Fi power saving (dreamference/vllm_server/wifi_power_save.py): it loses the multicast mDNS a
-client finds its node by, so `host check` reports it, `host setup` turns it off and `node enable`
-warns. Every nmcli and iw reading here is a stub (conftest stubs them for every other test too).
+"""Wi-Fi power saving (dreamference/vllm_server/wifi_power_save.py).
+
+it loses the multicast mDNS a client finds its node by, so `host check` reports it, `host setup` turns it off
+and `node enable` warns. Every nmcli and iw reading here is a stub (conftest stubs them for every other test
+too).
 """
 
 import subprocess

@@ -1,5 +1,6 @@
-"""Every `ragon` TUI slash command, driven through a real terminal against the running model server,
-and the command-line subcommands Ragon changes.
+"""Every `ragon` TUI slash command, driven through a real terminal, and the subcommands Ragon changes.
+
+The terminal runs against the running model server.
 
 The slash-command tests are live. They skip unless the model server answers at the configured vLLM
 URL and `ragon` has been built (`ragon-admin codex build`), so the ordinary suite stays offline.
@@ -68,9 +69,10 @@ PING = "Reply with exactly one word: pong"
 
 
 def _gate_closed() -> bool:
-    """Whether the model gate in front of the server is refusing requests (a benchmark owns the
-    model: SWE_BENCH spec §18). The gate still answers `/v1/models`, so without this check the live
-    tests start and then wait, five minutes per command, for turns the gate refuses.
+    """Whether the model gate in front of the server is refusing requests (a benchmark owns the model.
+
+    SWE_BENCH spec §18). The gate still answers `/v1/models`, so without this check the live tests start and
+    then wait, five minutes per command, for turns the gate refuses.
     """
     try:
         response = requests.get(f"{VLLM_HOST}/ragon-gate", timeout=3)
@@ -306,9 +308,7 @@ def patched_slash_commands() -> dict[str, str]:
                 in_enum_file = line.endswith("tui/src/slash_command.rs")
             variant = re.match(r"\+    ([A-Z]\w*),$", line)
             if in_enum_file and variant:
-                added[re.sub(r"(?<!^)(?=[A-Z])", "-", variant.group(1)).lower()] = os.path.basename(
-                    patch
-                )
+                added[re.sub(r"(?<!^)(?=[A-Z])", "-", variant.group(1)).lower()] = Path(patch).name
     return added
 
 
@@ -355,7 +355,7 @@ class Session:
 
     def wait_ready(self) -> None:
         # The launcher may first wait for the server, and a cold compile of the prompt takes time.
-        ready = self.wait_for(lambda text: ">_ Ragon" in text and "›" in text, timeout=120)
+        ready = self.wait_for(lambda text: ">_ Ragon" in text and "\u203a" in text, timeout=120)
         assert ready, f"ragon never reached its composer:\n{self.text()}"
         assert "Sign in with ChatGPT" not in self.text()
         # Which commands are offered depends on feature flags that load just after the composer
@@ -537,7 +537,9 @@ def test_a_fresh_home_opens_on_the_composer(tmp_path: Path, workspace: Path):
     session = Session(workspace, home, [])
     try:
         reached = session.wait_for(
-            lambda text: ("›" in text and ">_ Ragon" in text) or "Sign in with ChatGPT" in text,
+            lambda text: (
+                ("\u203a" in text and ">_ Ragon" in text) or "Sign in with ChatGPT" in text
+            ),
             120,
         )
         assert reached, f"ragon showed neither its composer nor a sign-in screen:\n{session.text()}"
@@ -548,7 +550,9 @@ def test_a_fresh_home_opens_on_the_composer(tmp_path: Path, workspace: Path):
         assert "Sign in with ChatGPT" not in screen, (
             f"a fresh CODEX_HOME lands on the ChatGPT sign-in screen:\n{screen}"
         )
-        assert ">_ Ragon" in screen and "›" in screen, f"ragon is not on its composer:\n{screen}"
+        assert ">_ Ragon" in screen and "\u203a" in screen, (
+            f"ragon is not on its composer:\n{screen}"
+        )
     finally:
         session.close()
 

@@ -294,7 +294,7 @@ def test_config_defaults_do_not_outrank_the_model_recipe(vllm_recipes):
 
 def test_flash_attn_is_never_paired_with_fp8_kv_cache():
     # vLLM refuses this combination outright, so a recipe that asks for both cannot start:
-    #   "Selected backend FLASH_ATTN is not valid ... Reason: ['kv_cache_dtype not supported']"
+    # vLLM's refusal reads: backend FLASH_ATTN is not valid, kv_cache_dtype not supported
     from dreamference.hardware import MODEL_MATRIX
 
     for alias, spec in MODEL_MATRIX.items():
@@ -645,7 +645,6 @@ def test_vllm_build_launch_command_tensorizer(monkeypatch, tmp_path):
 
 
 def test_vllm_build_launch_command_tensorizer_docker(monkeypatch, tmp_path):
-    import os
 
     from dreamference.hardware.model_downloader import ModelDownloader
 
@@ -655,7 +654,7 @@ def test_vllm_build_launch_command_tensorizer_docker(monkeypatch, tmp_path):
     monkeypatch.setattr(mgr, "is_vllm_installed", lambda: False)
     monkeypatch.setattr(mgr, "is_docker_available", lambda: True)
 
-    tpath = os.path.expanduser("~/.cache/dreamference/tensorizer/test/model.tensors")
+    tpath = str(Path("~/.cache/dreamference/tensorizer/test/model.tensors").expanduser())
     monkeypatch.setattr(ModelDownloader, "is_model_tensorized", lambda key: True)
     monkeypatch.setattr(ModelDownloader, "get_tensorized_path", lambda key: tpath)
 

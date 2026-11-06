@@ -6,18 +6,17 @@ every newline as a line break.
 """
 
 import importlib.util
-import os
 from pathlib import Path
 
 import pytest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 @pytest.fixture(scope="module")
 def notes():
     spec = importlib.util.spec_from_file_location(
-        "release_notes", os.path.join(ROOT, "scripts", "release_notes.py")
+        "release_notes", str(Path(ROOT, "scripts", "release_notes.py"))
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
