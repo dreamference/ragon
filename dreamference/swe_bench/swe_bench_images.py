@@ -1,5 +1,4 @@
-"""Instance images for this machine's architecture, and the list of instances that are known to
-grade correctly in them (specs/DREAMFERENCE_RAGON_SWE_BENCH.md §5.3, §12).
+"""Instance images, and which of them grade correctly here (specs/DREAMFERENCE_RAGON_SWE_BENCH.md §5.3, §12).
 
 On arm64 Verified's images come from the community repository `greynewell/swe-bench-arm64`, whose
 tags are the instance ids with `__` written `-`. A dataset nobody publishes arm64 images for
@@ -32,8 +31,9 @@ class SweBenchImages:
 
     @classmethod
     def _fetch_tags(cls) -> list[str]:
-        """Lists every tag of the community repository through the registry's own API (Docker
-        Hub's web API stops anonymous paging at 1,000 tags; the repository has 1,721).
+        """Lists every tag of the community repository through the registry's own API.
+
+        (Docker Hub's web API stops anonymous paging at 1,000 tags; the repository has 1,721.)
         """
         repo = swe_bench_settings.COMMUNITY_IMAGE_REPO
         with urllib.request.urlopen(
@@ -53,8 +53,10 @@ class SweBenchImages:
 
     @classmethod
     def tags_path(cls) -> Path:
-        """Returns:
-        Path: The cached tag list.
+        """Returns the cached tag list.
+
+        Returns:
+            Path: The cached tag list.
         """
         return swe_bench_settings.CACHE_DIR / "community-tags.json"
 
@@ -151,23 +153,29 @@ class SweBenchImages:
 
     @classmethod
     def validated_path(cls) -> Path:
-        """Returns:
-        Path: `validated-<arch>.json` in the cache.
+        """Returns the path of the validated list.
+
+        Returns:
+            Path: `validated-<arch>.json` in the cache.
         """
         architecture = swe_bench_settings.SweBenchSettings.architecture()
         return swe_bench_settings.CACHE_DIR / f"validated-{architecture}.json"
 
     @classmethod
     def validated(cls) -> dict[str, dict[str, Any]]:
-        """Returns:
-        Dict[str, Dict[str, Any]]: Validated instance id to `{image, digest, source, at}`.
+        """Returns the validated instances.
+
+        Returns:
+            Dict[str, Dict[str, Any]]: Validated instance id to `{image, digest, source, at}`.
         """
         return cls._read_validated().get("instances", {})
 
     @classmethod
     def rejected(cls) -> dict[str, str]:
-        """Returns:
-        Dict[str, str]: Instances that failed validation here, with the reason.
+        """Returns the instances that failed validation here.
+
+        Returns:
+            Dict[str, str]: Instances that failed validation here, with the reason.
         """
         return cls._read_validated().get("rejected", {})
 
@@ -214,8 +222,10 @@ class SweBenchImages:
 
     @classmethod
     def local_images(cls) -> list[dict[str, str]]:
-        """Returns:
-        List[Dict[str, str]]: The benchmark's images present locally, as `{image, size}`.
+        """Returns the benchmark's images present locally.
+
+        Returns:
+            List[Dict[str, str]]: The benchmark's images present locally, as `{image, size}`.
         """
         result = SweBenchDocker.run(
             [

@@ -404,7 +404,6 @@
    "PLR2004": 2
   },
   "dreamference/swe_bench/swe_bench_images.py": {
-   "D205": 7,
    "T201": 1
   },
   "dreamference/swe_bench/swe_bench_instance_run.py": {
@@ -613,5 +612,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1081
+ "total": 1074
 }
