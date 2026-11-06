@@ -33,6 +33,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Final
 
@@ -55,6 +56,25 @@ GateGuard = gate_guard.ModelGateGuard
 
 # Answered by the gate itself, never forwarded: what the gate is doing, as JSON.
 PROBE_PATH: Final[str] = "/ragon-gate"
+
+# Methods, framings and status values the code compares against.
+METHOD_GET: Final[str] = "GET"
+METHOD_HEAD: Final[str] = "HEAD"
+STATE_CLOSED: Final[str] = "closed"
+KEY_PAUSED_UNTIL: Final[str] = "paused_until"
+FRAMING_CHUNKED: Final[str] = "chunked"
+FRAMING_LENGTH: Final[str] = "length"
+CHUNKED_TOKEN: Final[bytes] = b"chunked"
+EXPECT_CONTINUE: Final[bytes] = b"100-continue"
+CRLF: Final[bytes] = b"\r\n"
+URL_SCHEME_SEP: Final[str] = "://"
+SECONDS_PER_MINUTE: Final[int] = 60
+SHORT_ETA_MAX_HOURS: Final[int] = 3
+SHORT_ETA_MIN_MINUTES: Final[int] = 5
+REQUEST_LINE_PARTS: Final[int] = 3
+HTTP_CONTINUE: Final[int] = 100
+HTTP_SWITCHING_PROTOCOLS: Final[int] = 101
+HTTP_OK_FLOOR: Final[int] = 200
 
 RUN_FILE: Final[str] = "run.json"
 PAUSE_FILE: Final[str] = "pause.json"
@@ -158,12 +178,12 @@ class ModelGateService:
         if not isinstance(seconds, (int, float)) or seconds < 0:
             return None
         minutes = max(1, int(round(seconds / 60)))
-        if minutes < 60:
+        if minutes < SECONDS_PER_MINUTE:
             return f"about {minutes} min left"
-        hours, rest = divmod(minutes, 60)
-        if hours < 3 and rest >= 5:
+        hours, rest = divmod(minutes, SECONDS_PER_MINUTE)
+        if hours < SHORT_ETA_MAX_HOURS and rest >= SHORT_ETA_MIN_MINUTES:
             return f"about {hours} h {rest} min left"
-        return f"about {int(round(minutes / 60))} h left"
+        return f"about {int(round(minutes / SECONDS_PER_MINUTE))} h left"
 
     @classmethod
     def message(cls, run: dict[str, Any]) -> str:
@@ -234,7 +254,7 @@ class ModelGateService:
         )
         result["networks"] = [str(network) for network in networks]
         result["message"] = cls.message(run)
-        result["state"] = "paused" if "paused_until" in result else "closed"
+        result["state"] = "paused" if KEY_PAUSED_UNTIL in result else STATE_CLOSED
         return result
 
     @classmethod
@@ -276,9 +296,9 @@ class ModelGateService:
             bool: True unless a run holds the gate and the request is neither the run's nor a
             read-only probe.
         """
-        if state.get("state") != "closed":
+        if state.get("state") != STATE_CLOSED:
             return True
-        if method in ("GET", "HEAD") and (
+        if method in (METHOD_GET, METHOD_HEAD) and (
             path in READ_ONLY_PATHS or path.startswith("/v1/models/")
         ):
             return True
@@ -318,14 +338,14 @@ class ModelGateService:
         """
         lines = head.split(b"\r\n")
         parts = lines[0].split(b" ")
-        if len(parts) != 3 or not parts[2].startswith(b"HTTP/1."):
+        if len(parts) != REQUEST_LINE_PARTS or not parts[2].startswith(b"HTTP/1."):
             return None
         method = parts[0].decode("latin-1")
         target = parts[1].decode("latin-1")
         # Absolute form only: a `://` in an origin-form target's query
         # (`/health_generate?u=http://x/v1/models`) must not make it a read-only path.
-        if not target.startswith("/") and "://" in target:
-            target = "/" + target.split("://", 1)[1].partition("/")[2]
+        if not target.startswith("/") and URL_SCHEME_SEP in target:
+            target = "/" + target.split(URL_SCHEME_SEP, 1)[1].partition("/")[2]
         path = target.split("?", 1)[0] or "/"
         headers = []
         for line in lines[1:]:
@@ -381,13 +401,24 @@ class ModelGateService:
             Tuple[str, int]: `("chunked", 0)`, `("length", n)` or `("none", 0)`.
         """
         values = dict(headers)
-        if b"chunked" in values.get(b"transfer-encoding", b"").lower():
-            return "chunked", 0
+        if CHUNKED_TOKEN in values.get(b"transfer-encoding", b"").lower():
+            return FRAMING_CHUNKED, 0
         try:
             length = int(values.get(b"content-length", b"0") or 0)
         except ValueError:
             length = 0
-        return ("length", length) if length > 0 else ("none", 0)
+        return (FRAMING_LENGTH, length) if length > 0 else ("none", 0)
+
+    @classmethod
+    async def copy_trailers(
+        cls, reader: asyncio.StreamReader, send: Callable[[bytes], Awaitable[None]]
+    ) -> None:
+        """Moves a chunked body's trailers, up to and including the empty line."""
+        while True:
+            trailer = await reader.readuntil(CRLF)
+            await send(trailer)
+            if trailer == CRLF:
+                return
 
     @classmethod
     async def copy_body(
@@ -415,24 +446,21 @@ class ModelGateService:
                 sink.write(data)
                 await sink.drain()
 
-        if kind == "length":
+        if kind == FRAMING_LENGTH:
             while remaining > 0 and (limit is None or moved < limit):
                 data = await reader.read(min(BUFFER, remaining))
                 if not data:
                     return
                 remaining -= len(data)
                 await send(data)
-        elif kind == "chunked":
+        elif kind == FRAMING_CHUNKED:
             while limit is None or moved < limit:
                 line = await reader.readuntil(b"\r\n")
                 await send(line)
                 size = int(line.split(b";", 1)[0].strip() or b"0", 16)
                 if size == 0:
-                    while True:  # trailers, then the empty line
-                        trailer = await reader.readuntil(b"\r\n")
-                        await send(trailer)
-                        if trailer == b"\r\n":
-                            return
+                    await cls.copy_trailers(reader, send)
+                    return
                 await send(await reader.readexactly(size + 2))
 
     @classmethod
@@ -507,7 +535,7 @@ class ModelGateService:
             head = await source.readuntil(b"\r\n\r\n")
             parts = head.split(b"\r\n", 1)[0].split(b" ", 2)
             code = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-            if 100 <= code < 200 and code != 101:
+            if HTTP_CONTINUE <= code < HTTP_OK_FLOOR and code != HTTP_SWITCHING_PROTOCOLS:
                 sink.write(head)
                 await sink.drain()
                 continue
@@ -525,6 +553,71 @@ class ModelGateService:
         while await reader.read(BUFFER):
             pass
 
+    async def respond_bad_request(self, writer: asyncio.StreamWriter) -> None:
+        """Answers a head that is not HTTP/1.x."""
+        await self.respond(
+            writer,
+            400,
+            "Bad Request",
+            {
+                "error": {
+                    "message": "Not an HTTP/1.x request.",
+                    "type": "invalid_request_error",
+                    "code": None,
+                    "param": None,
+                }
+            },
+        )
+
+    async def respond_bad_gateway(self, writer: asyncio.StreamWriter, method: str) -> None:
+        """Answers a request the engine could not be reached for."""
+        await self.respond(
+            writer,
+            502,
+            "Bad Gateway",
+            {
+                "error": {
+                    "message": "The model server is not answering behind its gate; it may still be loading.",
+                    "type": "service_unavailable",
+                    "code": "engine_unavailable",
+                    "param": None,
+                }
+            },
+            head_only=method == METHOD_HEAD,
+        )
+
+    async def refuse(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        state: dict[str, Any],
+        framing: tuple[str, int],
+        expects_continue: bool,
+        request: tuple[str, str, str],
+    ) -> None:
+        """Refuses a request while a run holds the gate (503, the body drained first)."""
+        method, path, peer_address = request
+        self.log(f"refused {method} {path} from {peer_address} ({state.get('run')})")
+        if not expects_continue:
+            with contextlib.suppress(
+                TimeoutError,
+                asyncio.IncompleteReadError,
+                asyncio.LimitOverrunError,
+                ValueError,
+                ConnectionError,
+            ):
+                await asyncio.wait_for(
+                    self.copy_body(reader, framing, None, DRAIN_LIMIT), DRAIN_TIMEOUT_S
+                )
+        await self.respond(
+            writer,
+            503,
+            "Service Unavailable",
+            self.refusal(state),
+            [("Retry-After", RETRY_AFTER), ("X-Ragon-Gate", "closed")],
+            head_only=method == METHOD_HEAD,
+        )
+
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """Serves one connection: one request, decided, then refused or streamed through."""
         upstream_writer: asyncio.StreamWriter | None = None
@@ -538,47 +631,18 @@ class ModelGateService:
                 return
             request = self.parse_head(head)
             if request is None:
-                await self.respond(
-                    writer,
-                    400,
-                    "Bad Request",
-                    {
-                        "error": {
-                            "message": "Not an HTTP/1.x request.",
-                            "type": "invalid_request_error",
-                            "code": None,
-                            "param": None,
-                        }
-                    },
-                )
+                await self.respond_bad_request(writer)
                 return
             method, path, headers = request
             state = self.state(self.state_dir)
-            if path == PROBE_PATH and method in ("GET", "HEAD"):
-                await self.respond(writer, 200, "OK", state, head_only=method == "HEAD")
+            if path == PROBE_PATH and method in (METHOD_GET, METHOD_HEAD):
+                await self.respond(writer, 200, "OK", state, head_only=method == METHOD_HEAD)
                 return
             framing = self.framing(headers)
-            expects_continue = b"100-continue" in dict(headers).get(b"expect", b"").lower()
+            expects_continue = EXPECT_CONTINUE in dict(headers).get(b"expect", b"").lower()
             if not self.allows(state, peer_address, method, path):
-                self.log(f"refused {method} {path} from {peer_address} ({state.get('run')})")
-                if not expects_continue:
-                    with contextlib.suppress(
-                        TimeoutError,
-                        asyncio.IncompleteReadError,
-                        asyncio.LimitOverrunError,
-                        ValueError,
-                        ConnectionError,
-                    ):
-                        await asyncio.wait_for(
-                            self.copy_body(reader, framing, None, DRAIN_LIMIT), DRAIN_TIMEOUT_S
-                        )
-                await self.respond(
-                    writer,
-                    503,
-                    "Service Unavailable",
-                    self.refusal(state),
-                    [("Retry-After", RETRY_AFTER), ("X-Ragon-Gate", "closed")],
-                    head_only=method == "HEAD",
+                await self.refuse(
+                    reader, writer, state, framing, expects_continue, (method, path, peer_address)
                 )
                 return
             forward = await self.adapter_request(reader, writer, (method, path, head), framing)
@@ -589,20 +653,7 @@ class ModelGateService:
                     asyncio.open_connection(*self.upstream), UPSTREAM_CONNECT_TIMEOUT_S
                 )
             except (TimeoutError, OSError):
-                await self.respond(
-                    writer,
-                    502,
-                    "Bad Gateway",
-                    {
-                        "error": {
-                            "message": "The model server is not answering behind its gate; it may still be loading.",
-                            "type": "service_unavailable",
-                            "code": "engine_unavailable",
-                            "param": None,
-                        }
-                    },
-                    head_only=method == "HEAD",
-                )
+                await self.respond_bad_gateway(writer, method)
                 return
             assert upstream_writer is not None
             upstream_writer.write(forward[0] + (forward[1] or b""))
@@ -629,16 +680,23 @@ class ModelGateService:
         ):
             pass
         finally:
-            for task in tasks:
-                task.cancel()
-            for task in tasks:
-                with contextlib.suppress(BaseException):
-                    await task
-            for end in (upstream_writer, writer):
-                if end is None:
-                    continue
-                with contextlib.suppress(OSError, RuntimeError):
-                    end.close()
+            await self.close_connection(tasks, (upstream_writer, writer))
+
+    @staticmethod
+    async def close_connection(
+        tasks: list[asyncio.Task], ends: tuple[asyncio.StreamWriter | None, ...]
+    ) -> None:
+        """Cancels the copy tasks and closes both ends of a connection."""
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(BaseException):
+                await task
+        for end in ends:
+            if end is None:
+                continue
+            with contextlib.suppress(OSError, RuntimeError):
+                end.close()
 
     async def adapter_request(
         self,

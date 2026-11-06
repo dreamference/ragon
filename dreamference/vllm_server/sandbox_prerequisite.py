@@ -54,6 +54,13 @@ QUIET_COMMANDS: Final[tuple[tuple[str, str | None], ...]] = (
 # What cannot work without the sandbox, refused while it is missing and the user has turned it
 # off (and, with nobody at a terminal to ask, while it is missing at all): a night task is a
 # sandboxed `ragon exec`, and its tests run under `ragon sandbox`.
+# The answers `_ask` returns, and the menu numbers and sysctl value they come from.
+CHOICE_FIX: Final[str] = "fix"
+CHOICE_OFF: Final[str] = "off"
+ANSWER_FIX: Final[str] = "1"
+ANSWER_OFF: Final[str] = "2"
+SYSCTL_RESTRICTED: Final[str] = "1"
+
 NEEDS_SANDBOX: Final[tuple[tuple[str, str], ...]] = (("night", "enable"), ("night", "run"))
 
 
@@ -85,24 +92,34 @@ class SandboxPrerequisite:
                 cls._forget_saying_how_to_restore_night(file=sys.stderr)
             return True
         needed = (command, subcommand) in NEEDS_SANDBOX
+        if cls.turned_off() or not cls._interactive():
+            return cls._without_a_terminal(command, subcommand, needed)
+        return cls._after_asking(command, subcommand, needed)
+
+    @classmethod
+    def _without_a_terminal(cls, command: str, subcommand: str | None, needed: bool) -> bool:
+        """Decides for a command when the answer is already "off" or nobody can be asked."""
         if cls.turned_off():
             if needed:
                 cls._refuse(command, subcommand, "you turned off what needs it")
             return not needed
-        if not cls._interactive():
-            print(
-                "⚠️  bubblewrap cannot create a sandbox from an ordinary login on this machine "
-                "(AppArmor); `ragon-admin host setup` fixes it.",
-                file=sys.stderr,
-            )
-            if needed:
-                cls._refuse(command, subcommand, "nobody is at a terminal to fix it")
-            return not needed
+        print(
+            "⚠️  bubblewrap cannot create a sandbox from an ordinary login on this machine "
+            "(AppArmor); `ragon-admin host setup` fixes it.",
+            file=sys.stderr,
+        )
+        if needed:
+            cls._refuse(command, subcommand, "nobody is at a terminal to fix it")
+        return not needed
+
+    @classmethod
+    def _after_asking(cls, command: str, subcommand: str | None, needed: bool) -> bool:
+        """Asks the user and acts on the answer."""
         choice = cls._ask()
-        if choice == "fix":
+        if choice == CHOICE_FIX:
             if cls.fix():
                 return True
-        elif choice == "off":
+        elif choice == CHOICE_OFF:
             cls.turn_off()
         if needed:
             cls._refuse(command, subcommand, "it is still missing")
@@ -312,7 +329,7 @@ class SandboxPrerequisite:
             bool: True if the user chose to do without the sandbox.
         """
         try:
-            return json.loads(cls.decision_path().read_text()).get("sandbox") == "off"
+            return json.loads(cls.decision_path().read_text()).get("sandbox") == CHOICE_OFF
         except (OSError, ValueError, AttributeError):
             return False
 
@@ -337,10 +354,10 @@ class SandboxPrerequisite:
                 answer = "3"
             if answer in ("", "3"):
                 return "later"
-            if answer == "1":
-                return "fix"
-            if answer == "2":
-                return "off"
+            if answer == ANSWER_FIX:
+                return CHOICE_FIX
+            if answer == ANSWER_OFF:
+                return CHOICE_OFF
 
     @classmethod
     def _refuse(cls, command: str, subcommand: str | None, reason: str) -> None:
@@ -371,7 +388,7 @@ class SandboxPrerequisite:
     def _userns_restricted(cls) -> bool | None:
         try:
             with open(USERNS_SYSCTL) as handle:
-                return handle.read().strip() == "1"
+                return handle.read().strip() == SYSCTL_RESTRICTED
         except OSError:
             return None
 

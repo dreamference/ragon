@@ -664,16 +664,12 @@
   },
   "dreamference/vllm_server/diagnostics.py": {
    "BLE001": 4,
-   "C901": 1,
    "D100": 1,
    "D102": 1,
    "D107": 1,
-   "PLR0912": 1,
-   "PLR0915": 1,
-   "PLR1702": 4,
-   "PLR2004": 6,
+   "PLR1702": 3,
    "PTH123": 2,
-   "S110": 4
+   "S110": 3
   },
   "dreamference/vllm_server/diffusion_openai_service.py": {
    "ANN401": 8,
@@ -707,10 +703,6 @@
   },
   "dreamference/vllm_server/model_gate_service.py": {
    "ANN401": 1,
-   "C901": 2,
-   "PLR0912": 1,
-   "PLR1702": 2,
-   "PLR2004": 18,
    "PTH118": 2,
    "RUF046": 2,
    "T201": 1
@@ -730,9 +722,6 @@
    "T201": 1
   },
   "dreamference/vllm_server/sandbox_prerequisite.py": {
-   "C901": 1,
-   "PLR0911": 1,
-   "PLR2004": 6,
    "PTH111": 2,
    "PTH123": 1,
    "T201": 10
@@ -1022,5 +1011,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 2444
+ "total": 2402
 }
