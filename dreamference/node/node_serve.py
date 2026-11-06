@@ -40,9 +40,31 @@ REFUSAL: Final[str] = (
 
 # A size or an offset in a request: ASCII digits that int() takes (str.isdigit also passes "²").
 COUNT: Final[re.Pattern] = re.compile(r"[0-9]{1,19}")
+GIT_RECEIVE: Final[str] = "git-receive-pack"
 # The two git services a job's push and fetch ask for, and the only path shape they may name.
-GIT_SERVICES: Final[tuple] = ("git-receive-pack", "git-upload-pack")
+GIT_SERVICES: Final[tuple] = (GIT_RECEIVE, "git-upload-pack")
 GIT_PATH: Final[re.Pattern] = re.compile(r"/?jobs/([A-Za-z0-9][A-Za-z0-9._-]{0,80})\.git")
+
+# The operations that take no argument, and the `ragon-admin` command line each one runs.
+ADMIN_COMMANDS: Final[dict] = {
+    "status": ["status"],
+    "stop": ["server", "stop"],
+    "start": ["server", "start"],
+}
+INFO_OPERATION: Final[str] = "info"
+SET_MODEL_OPERATION: Final[str] = "set-model"
+UNPAIR_OPERATION: Final[str] = "unpair"
+MODEL_RECEIVE_OPERATION: Final[str] = "model-receive"
+MODEL_RECEIVE_ARGUMENTS: Final[int] = 2  # <key> <size>
+JOB_SUBMIT: Final[str] = "job-submit"
+JOB_LIST: Final[str] = "job-list"
+JOB_FETCHED: Final[str] = "job-fetched"
+JOB_OUT: Final[str] = "job-out"
+JOB_LOGS: Final[str] = "job-logs"
+JOB_CANCEL: Final[str] = "job-cancel"
+LOG_ARGUMENTS: Final[int] = 2  # <job> [<offset>]
+AIRGAPPED_ON: Final[str] = "on"
+PARENT_SEGMENT: Final[str] = ".."
 
 
 class NodeServe:
@@ -50,16 +72,20 @@ class NodeServe:
 
     @classmethod
     def authorized_keys(cls) -> Path:
-        """Returns:
-        Path: `~/.ssh/authorized_keys`.
+        """Locates the authorized keys file.
+
+        Returns:
+            Path: `~/.ssh/authorized_keys`.
         """
         return Path("~/.ssh/authorized_keys").expanduser()
 
     @classmethod
     def admin_executable(cls) -> str:
-        """Returns:
-        str: The absolute path of this node's `ragon-admin`. sshd runs the forced command
-        with a minimal PATH, so the line names the program by path.
+        """Locates this node's `ragon-admin`.
+
+        Returns:
+            str: The absolute path of this node's `ragon-admin`. sshd runs the forced command
+            with a minimal PATH, so the line names the program by path.
         """
         linked = Path("~/.local/bin/ragon-admin").expanduser()
         if linked.exists():
@@ -155,22 +181,57 @@ class NodeServe:
             words = []
         operation = words[0] if words else ""
         arguments = words[1:]
-        if operation == "info" and not arguments:
+        code = cls.node_operation(operation, arguments, key_tag)
+        if code is None:
+            code = cls.routed_operation(operation, arguments)
+        if code is None:
+            print(REFUSAL, file=sys.stderr)
+            return 2
+        return code
+
+    @classmethod
+    def node_operation(
+        cls, operation: str, arguments: list[str], key_tag: str | None
+    ) -> int | None:
+        """Carries out an operation on this node itself: info, the server, a model, unpairing.
+
+        Args:
+            operation: The operation's name.
+            arguments: Its arguments.
+            key_tag: The connecting key's tag.
+
+        Returns:
+            int | None: The exit code, or None when this is not one of these operations.
+        """
+        if operation in ADMIN_COMMANDS and not arguments:
+            return cls.run_admin(ADMIN_COMMANDS[operation])
+        if operation == INFO_OPERATION and not arguments:
             print(json.dumps(cls.info()))
             return 0
-        if operation == "status" and not arguments:
-            return cls.run_admin(["status"])
-        if operation == "stop" and not arguments:
-            return cls.run_admin(["server", "stop"])
-        if operation == "start" and not arguments:
-            return cls.run_admin(["server", "start"])
-        if operation == "set-model" and len(arguments) == 1:
+        if operation == SET_MODEL_OPERATION and len(arguments) == 1:
             return cls.set_model(arguments[0])
-        if operation == "unpair" and not arguments:
+        if operation == UNPAIR_OPERATION and not arguments:
             removed = cls.unauthorize(key_tag or "")
             print("unpaired" if removed else "no such key")
             return 0 if removed else 1
-        if operation == "model-receive" and len(arguments) == 2 and COUNT.fullmatch(arguments[1]):
+        return None
+
+    @classmethod
+    def routed_operation(cls, operation: str, arguments: list[str]) -> int | None:
+        """Routes git, job and subsystem operations.
+
+        Args:
+            operation: The operation's name.
+            arguments: Its arguments.
+
+        Returns:
+            int | None: The exit code, or None when this is not one of these operations.
+        """
+        if (
+            operation == MODEL_RECEIVE_OPERATION
+            and len(arguments) == MODEL_RECEIVE_ARGUMENTS
+            and COUNT.fullmatch(arguments[1])
+        ):
             from dreamference.node.node_model_sync import NodeModelSync
 
             return NodeModelSync.receive(arguments[0], int(arguments[1]))
@@ -184,8 +245,7 @@ class NodeServe:
             return cls.job_operation(operation, arguments)
         if operation.startswith(("night-", "forge-", "power-")):
             return cls.subsystem_operation(operation, arguments)
-        print(REFUSAL, file=sys.stderr)
-        return 2
+        return None
 
     @classmethod
     def subsystem_operation(cls, operation: str, arguments: list[str]) -> int:
@@ -227,7 +287,7 @@ class NodeServe:
         from dreamference.node.node_job import NodeJob
 
         match = GIT_PATH.fullmatch(path)
-        if not match or ".." in path:
+        if not match or PARENT_SEGMENT in path:
             print(
                 "ragon-admin node serve-job: only a job repository (jobs/<name>.git) can be pushed to or fetched from.",
                 file=sys.stderr,
@@ -235,7 +295,7 @@ class NodeServe:
             return 2
         repo = NodeJob.repo_path(match.group(1))
         if not repo.is_dir():
-            if service != "git-receive-pack":
+            if service != GIT_RECEIVE:
                 print("ragon-admin node serve-job: no such job repository.", file=sys.stderr)
                 return 2
             repo.parent.mkdir(parents=True, exist_ok=True)
@@ -264,75 +324,112 @@ class NodeServe:
         Returns:
             int: The job's exit code for submit and logs; 2 for a refused request.
         """
-        import base64
-
-        from dreamference.node.node_job import JOB_ID, NodeJob
-
-        if operation == "job-submit" and len(arguments) == 1:
-            try:
-                request = json.loads(base64.urlsafe_b64decode(arguments[0].encode()))
-                record = NodeJob.submit(request, cls.admin_executable())
-            except (ValueError, TypeError, RecursionError) as error:
-                print(f"❌ The node refused the job: {error}", file=sys.stderr)
-                return 2
-            print(
-                f"🚀 Job {record['id']} started on {socket.gethostname()} "
-                f"(memory {record['memory']}, time {record['time']}, network "
-                f"{'off' if record['airgapped'] == 'on' else 'on'}).",
-                flush=True,
-            )
-            return NodeJob.follow(record["id"])
-        if operation == "job-list" and not arguments:
-            NodeJob.prune()
-            for record in NodeJob.records():
-                settled = NodeJob.reconcile(record["id"]) or record
-                listed = {
-                    key: settled.get(key)
-                    for key in (
-                        "id",
-                        "status",
-                        "command",
-                        "branch",
-                        "submitted",
-                        "finished",
-                        "exit_code",
-                        "note",
-                        "fetched",
-                        "out_files",
-                    )
-                }
-                listed["prune_after"] = NodeJob.prune_after(settled)
-                print(json.dumps(listed))
-            return 0
-        if (
-            operation in ("job-fetched", "job-out")
-            and len(arguments) == 1
-            and JOB_ID.fullmatch(arguments[0])
-            and NodeJob.read(arguments[0]) is not None
-        ):
-            if operation == "job-fetched":
-                return 0 if NodeJob.mark_fetched(arguments[0]) else 1
-            return NodeJob.send_out(arguments[0])
-        if (
-            operation in ("job-logs", "job-cancel")
-            and arguments
-            and JOB_ID.fullmatch(arguments[0])
-            and NodeJob.read(arguments[0]) is not None
-        ):
-            if operation == "job-cancel" and len(arguments) == 1:
-                cancelled = NodeJob.cancel(arguments[0])
-                print("cancelled" if cancelled else "the job is not running")
-                return 0 if cancelled else 1
-            if (
-                operation == "job-logs"
-                and len(arguments) <= 2
-                and all(COUNT.fullmatch(a) for a in arguments[1:])
-            ):
-                return NodeJob.follow(
-                    arguments[0], offset=int(arguments[1]) if len(arguments) == 2 else 0
-                )
+        if operation == JOB_SUBMIT and len(arguments) == 1:
+            return cls.job_submit(arguments[0])
+        if operation == JOB_LIST and not arguments:
+            return cls.job_list()
+        code = cls.job_by_id(operation, arguments)
+        if code is not None:
+            return code
         print(REFUSAL, file=sys.stderr)
         return 2
+
+    @classmethod
+    def job_submit(cls, encoded: str) -> int:
+        """Starts a job from a request and shows its output.
+
+        Args:
+            encoded: The request, JSON in URL-safe base64.
+
+        Returns:
+            int: The job's exit code; 2 when the node refuses it.
+        """
+        import base64
+
+        from dreamference.node.node_job import NodeJob
+
+        try:
+            request = json.loads(base64.urlsafe_b64decode(encoded.encode()))
+            record = NodeJob.submit(request, cls.admin_executable())
+        except (ValueError, TypeError, RecursionError) as error:
+            print(f"❌ The node refused the job: {error}", file=sys.stderr)
+            return 2
+        print(
+            f"🚀 Job {record['id']} started on {socket.gethostname()} "
+            f"(memory {record['memory']}, time {record['time']}, network "
+            f"{'off' if record['airgapped'] == AIRGAPPED_ON else 'on'}).",
+            flush=True,
+        )
+        return NodeJob.follow(record["id"])
+
+    @classmethod
+    def job_list(cls) -> int:
+        """Prints one JSON line for each job.
+
+        Returns:
+            int: 0.
+        """
+        from dreamference.node.node_job import NodeJob
+
+        NodeJob.prune()
+        for record in NodeJob.records():
+            settled = NodeJob.reconcile(record["id"]) or record
+            listed = {
+                key: settled.get(key)
+                for key in (
+                    "id",
+                    "status",
+                    "command",
+                    "branch",
+                    "submitted",
+                    "finished",
+                    "exit_code",
+                    "note",
+                    "fetched",
+                    "out_files",
+                )
+            }
+            listed["prune_after"] = NodeJob.prune_after(settled)
+            print(json.dumps(listed))
+        return 0
+
+    @classmethod
+    def job_by_id(cls, operation: str, arguments: list[str]) -> int | None:
+        """Carries out a request that names an existing job: fetched, out, cancel, logs.
+
+        Args:
+            operation: The operation's name.
+            arguments: Its arguments, the first being the job's id.
+
+        Returns:
+            int | None: The exit code, or None when the request is refused.
+        """
+        from dreamference.node.node_job import JOB_ID, NodeJob
+
+        if (
+            not arguments
+            or not JOB_ID.fullmatch(arguments[0])
+            or NodeJob.read(arguments[0]) is None
+        ):
+            return None
+        job_id = arguments[0]
+        if operation == JOB_FETCHED and len(arguments) == 1:
+            return 0 if NodeJob.mark_fetched(job_id) else 1
+        if operation == JOB_OUT and len(arguments) == 1:
+            return NodeJob.send_out(job_id)
+        if operation == JOB_CANCEL and len(arguments) == 1:
+            cancelled = NodeJob.cancel(job_id)
+            print("cancelled" if cancelled else "the job is not running")
+            return 0 if cancelled else 1
+        if (
+            operation == JOB_LOGS
+            and len(arguments) <= LOG_ARGUMENTS
+            and all(COUNT.fullmatch(a) for a in arguments[1:])
+        ):
+            return NodeJob.follow(
+                job_id, offset=int(arguments[1]) if len(arguments) == LOG_ARGUMENTS else 0
+            )
+        return None
 
     @classmethod
     def set_model(cls, model_key: str) -> int:
@@ -371,17 +468,21 @@ class NodeServe:
 
     @classmethod
     def info(cls) -> dict:
-        """Returns:
-        dict: This node's id, name, user, version, whether lingering is on (a job or a
-        model load started over SSH stops with the connection when it is off), its model
-        server's port, its free and total memory in bytes, and what holds its runner lock
-        (a night or benchmark run), if anything.
+        """Describes this node.
+
+        Returns:
+            dict: This node's id, name, user, version, whether lingering is on (a job or a
+            model load started over SSH stops with the connection when it is off), its model
+            server's port, its free and total memory in bytes, and what holds its runner lock
+            (a night or benchmark run), if anything.
         """
         from dreamference import __version__
         from dreamference.night_shift.night_shift_host import NightShiftHost
         from dreamference.night_shift.night_shift_queue import NightShiftQueue
         from dreamference.node.node_advertiser import NodeAdvertiser
 
+        available: int | None
+        total: int | None
         try:
             available = NightShiftHost.mem_available_bytes()
             total = NightShiftHost.mem_total_bytes()
@@ -401,8 +502,10 @@ class NodeServe:
 
     @classmethod
     def linger(cls) -> bool | None:
-        """Returns:
-        Optional[bool]: Whether systemd lingering is on for this user; None if unknown.
+        """Reads whether systemd lingering is on.
+
+        Returns:
+            bool | None: Whether systemd lingering is on for this user; None if unknown.
         """
         try:
             result = subprocess.run(

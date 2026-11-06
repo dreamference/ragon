@@ -441,10 +441,6 @@
    "T201": 1
   },
   "dreamference/node/node_serve.py": {
-   "C901": 1,
-   "D205": 4,
-   "PLR0911": 2,
-   "PLR2004": 18,
    "T201": 16
   },
   "dreamference/node/node_service_file.py": {
@@ -1041,5 +1037,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 2562
+ "total": 2537
 }

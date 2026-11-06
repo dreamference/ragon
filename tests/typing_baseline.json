@@ -56,9 +56,6 @@
   "dreamference/node/node_remote.py": {
    "assignment": 1
   },
-  "dreamference/node/node_serve.py": {
-   "assignment": 1
-  },
   "dreamference/runner/cline_runner.py": {
    "list-item": 1
   },
@@ -97,5 +94,5 @@
   }
  },
  "mypy": "2.4.0",
- "total": 60
+ "total": 59
 }
