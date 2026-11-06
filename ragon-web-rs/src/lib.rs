@@ -28,7 +28,7 @@ pub mod share_links;
 
 use std::time::Duration;
 
-use airgapped::Level;
+pub use airgapped::Level;
 
 /// Printed, with nothing sent, when the session's level is `on`.
 pub const AIRGAPPED_ON_MESSAGE: &str = "Web access is off in this session (/airgapped on). Only the user can change that, with /airgapped.";

@@ -20,8 +20,23 @@ pub trait SearchBackend {
     /// The name used in `[search] backends`.
     fn name(&self) -> &'static str;
 
+    /// Whether answering needs the network (a loopback instance on this machine counts: it is
+    /// the engine's own sockets that reach out). `/airgapped on` refuses every such backend.
+    fn uses_network(&self) -> bool {
+        true
+    }
+
     /// Runs the query and returns the engine's JSON answer.
     fn fetch(&self, query: &str, options: &SearchOptions) -> Result<Value, SearchError>;
+}
+
+/// The refusal for `backend` at `level`: every backend that uses the network is refused at
+/// `/airgapped on`, whatever the caller checked before, so a backend added later cannot forget.
+pub fn refused_at(level: crate::Level, backend: &dyn SearchBackend) -> Option<SearchError> {
+    (level == crate::Level::On && backend.uses_network()).then(|| SearchError {
+        error: crate::AIRGAPPED_ON_MESSAGE.to_string(),
+        hint: None,
+    })
 }
 
 /// A SearXNG instance, asked over its JSON API.
@@ -156,5 +171,12 @@ mod tests {
         for names in [vec![], vec!["nothing".to_string()]] {
             assert_eq!(choose(&names, "http://x", None).name(), SEARXNG);
         }
+    }
+
+    #[test]
+    fn a_network_backend_is_refused_at_airgapped_on_and_only_there() {
+        let backend = SearxngBackend::new("http://x", None);
+        assert!(refused_at(crate::Level::On, &backend).is_some());
+        assert!(refused_at(crate::Level::Off, &backend).is_none());
     }
 }

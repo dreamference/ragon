@@ -327,6 +327,9 @@ pub fn search_with(
         std::thread::sleep(cache.reserve(now));
     }
     let backend = crate::backend::chosen(base_url, node);
+    if let Some(refusal) = crate::backend::refused_at(level, backend.as_ref()) {
+        return Err(refusal);
+    }
     let payload = backend.fetch(query, options)?;
     let found = from_searxng(query, &payload, max_results, level)?;
     let worth_keeping = found.result_count > 0 || !found.answers.is_empty();
