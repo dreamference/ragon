@@ -25,9 +25,6 @@
   "dreamference/swe_bench/swe_bench_images.py": {
    "assignment": 1
   },
-  "dreamference/swe_bench/swe_bench_instance_run.py": {
-   "assignment": 1
-  },
   "dreamference/swe_bench/swe_bench_issue_gate.py": {
    "arg-type": 4
   },
@@ -36,5 +33,5 @@
   }
  },
  "mypy": "2.4.0",
- "total": 20
+ "total": 19
 }

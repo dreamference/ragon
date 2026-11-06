@@ -426,15 +426,12 @@
   "dreamference/swe_bench/swe_bench_instance_run.py": {
    "ANN401": 1,
    "BLE001": 1,
-   "C901": 3,
-   "D205": 6,
+   "C901": 1,
    "E501": 1,
    "PLR0911": 1,
-   "PLR0912": 2,
+   "PLR0912": 1,
    "PLR0913": 1,
-   "PLR0915": 1,
-   "PLR1702": 13,
-   "PLR2004": 17
+   "PLR0915": 1
   },
   "dreamference/swe_bench/swe_bench_issue_gate.py": {
    "ANN401": 1,
@@ -640,5 +637,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1178
+ "total": 1139
 }

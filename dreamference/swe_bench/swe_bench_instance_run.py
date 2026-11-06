@@ -1,5 +1,4 @@
-"""One SWE-bench instance, from container to prediction
-(specs/DREAMFERENCE_RAGON_SWE_BENCH.md §5.1, §12).
+"""One SWE-bench instance, from container to prediction (specs/DREAMFERENCE_RAGON_SWE_BENCH.md §5.1, §12).
 
 The agent runs inside the instance's own image, where the repository sits at `/testbed` with its
 pinned environment, in a container on an internal network that reaches the model server and
@@ -15,6 +14,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
@@ -195,6 +195,28 @@ REFINE_TIMEOUT_S: Final[int | None] = None
 
 # Kept in the instance's state; a longer description is cut there, never in the prompt.
 REFINED_STATE_LIMIT: Final[int] = 40000
+
+# How one `ragon exec` turn ended (`_exec`, `_fix_turn`, `_review`).
+OUTCOME_OK: Final[str] = "ok"
+OUTCOME_ERROR: Final[str] = "error"
+OUTCOME_TIMEOUT: Final[str] = "timeout"
+OUTCOME_RESTART: Final[str] = "restart"
+
+# The status of an instance the run stopped: it adds no prediction.
+STATUS_INTERRUPTED: Final[str] = "interrupted"
+
+# The nudge for a turn that announced work and changed nothing (`_nudge_kind`).
+NUDGE_STALL: Final[str] = "stall"
+
+# What `PREPARE_SCRIPT` prints when the prepared tree is the base commit's.
+BASE_TREE_EQUAL: Final[str] = "tree: equal"
+
+# A compaction in a rollout: the record's `type`, and the bytes a line must hold to be one.
+RECORD_COMPACTED: Final[str] = "compacted"
+COMPACTED_NEEDLE: Final[bytes] = json.dumps(RECORD_COMPACTED).encode()
+
+# A line of `git diff --numstat` has three fields: added, removed, path.
+NUMSTAT_FIELDS: Final[int] = 3
 
 # The image's default PATH puts conda's *base* environment first, which has none of the
 # repository's dependencies; `conda activate testbed` only happens in the grading script. Without
@@ -414,7 +436,9 @@ class SweBenchInstanceRun:
         turn_end_percent: int | None = None,
         strategy_hint: str = "",
     ) -> None:
-        """Args:
+        """Holds one instance's run: what it needs and what it has recorded so far.
+
+        Args:
         store: The run's files.
         row: The instance's dataset row.
         image: The instance image for this machine.
@@ -439,6 +463,8 @@ class SweBenchInstanceRun:
         hooks: Hook sets (`HOOK_SETS`) registered in the instance's `CODEX_HOME`: `issue-v1`
             holds the first edit until what the issue names has been read, and the first
             stop until the issue's example has been run (spec §20).
+        restart_after_compactions: `--restart-after-compactions`: the fix session's compaction
+            at which it restarts fresh (spec §21); 0 for off.
         apply_patch: The form `--apply-patch` asked for (`auto` when it did not; spec §22).
         exec_tool: The form `--exec-tool` asked for Code Mode's `exec` (`auto` when it did
             not; spec §23).
@@ -504,7 +530,9 @@ class SweBenchInstanceRun:
 
     @classmethod
     def container_name(cls, run: str, instance_id: str) -> str:
-        """Args:
+        """Names the agent's container.
+
+        Args:
             run: The run's name.
             instance_id: The instance.
 
@@ -543,7 +571,9 @@ class SweBenchInstanceRun:
 
     @classmethod
     def task_rules_text(cls, task_rules: list[str] | None) -> str:
-        """Args:
+        """Writes out the named task rules.
+
+        Args:
             task_rules: Names of `TASK_RULES`.
 
         Returns:
@@ -701,7 +731,7 @@ class SweBenchInstanceRun:
         if self.hooks:
             state["hooks"] = dict(state.get("hooks") or {}, **SweBenchHooks.outcome(self.scratch))
         if self.stop_event.is_set():
-            status = "interrupted"
+            status = STATUS_INTERRUPTED
         state["apply_patch"] = {"form": self.apply_patch, "calls": self.apply_patch_calls()}
         state["exec_tool"] = {"form": self.exec_tool, "calls": self.exec_calls()}
         state["compaction"] = self.compaction_record()
@@ -717,7 +747,7 @@ class SweBenchInstanceRun:
             last_message=self._last_message()[:LAST_MESSAGE_LIMIT],
             notes=self.notes,
         )
-        if status != "interrupted":
+        if status != STATUS_INTERRUPTED:
             self.store.append_prediction(self.instance_id, self.model_name, patch)
         self.store.write_state(self.instance_id, state)
         return status
@@ -729,7 +759,7 @@ class SweBenchInstanceRun:
             return "error", ""
         scrubbed = self._script(SCRUB_SCRIPT, timeout=900, root=True)
         prepared = self._script(PREPARE_SCRIPT, timeout=300)
-        state["base_tree_equal"] = "tree: equal" in prepared.stdout
+        state["base_tree_equal"] = BASE_TREE_EQUAL in prepared.stdout
         self.notes += [
             line
             for line in (scrubbed.stdout + prepared.stdout).splitlines()
@@ -754,7 +784,7 @@ class SweBenchInstanceRun:
                 self.notes.append(problem)
                 return "error", ""
             if self.stop_event.is_set():
-                return "interrupted", ""
+                return STATUS_INTERRUPTED, ""
             prompt = self.compose_fix_prompt(
                 self.problem_statement,
                 refined,
@@ -776,14 +806,14 @@ class SweBenchInstanceRun:
             self.compaction_baseline = self.compactions_recorded()
             self.restart_armed = True
         outcome = self._fix_turn(state, prompt, prompt, resume=False)
-        while outcome == "ok" and self.nudges_used < self.settings.nudges:
+        while outcome == OUTCOME_OK and self.nudges_used < self.settings.nudges:
             kind = self._nudge_kind()
             if kind is None:
                 break
             self.nudges_used += 1
             self.nudge_kinds.append(kind)
             outcome = self._fix_turn(
-                state, NUDGE if kind == "stall" else COMPLETION_NUDGE, prompt, resume=True
+                state, NUDGE if kind == NUDGE_STALL else COMPLETION_NUDGE, prompt, resume=True
             )
         self.restart_armed = False
         state["exec"] = outcome
@@ -791,11 +821,11 @@ class SweBenchInstanceRun:
             state["refine"]["fix_s"] = int(time.time() - fix_started)
         review_timed_out = False
         if self.review_turn and not self.stop_event.is_set():
-            review_timed_out = self._review(state, outcome) == "timeout"
+            review_timed_out = self._review(state, outcome) == OUTCOME_TIMEOUT
 
         if self.stop_event.is_set():
-            return "interrupted", ""
-        if outcome == "timeout" or review_timed_out:
+            return STATUS_INTERRUPTED, ""
+        if outcome == OUTCOME_TIMEOUT or review_timed_out:
             # The container was stopped to end the agent; its filesystem is still there.
             SweBenchDocker.run(["start", self.container], timeout=120)
         collected = self._script(COLLECT_SCRIPT, timeout=600)
@@ -803,12 +833,12 @@ class SweBenchInstanceRun:
         state["binary_files"] = self._read("binary-files").split("\n")[:-1]
         if collected.returncode != 0:
             self.notes.append(f"collecting the patch failed: {collected.stderr.strip()[-300:]}")
-        if outcome == "timeout":
+        if outcome == OUTCOME_TIMEOUT:
             # A partial patch is still submitted; the status says the agent did not finish.
             return "timeout", patch
         if patch.strip():
             return "done", patch
-        if outcome == "error":
+        if outcome == OUTCOME_ERROR:
             return "error", ""
         return (
             "stalled" if NightShiftTaskRun.announces_work(self._last_message()) else "empty"
@@ -846,7 +876,7 @@ class SweBenchInstanceRun:
         state["refine"] = record
         if self.stop_event.is_set():
             return "", None
-        if outcome == "timeout":
+        if outcome == OUTCOME_TIMEOUT:
             # The container was stopped to end the step; the second step needs it running.
             SweBenchDocker.run(["start", self.container], timeout=120)
         refined = self._read(REFINED_FILE)
@@ -873,7 +903,7 @@ class SweBenchInstanceRun:
     ) -> str:
         """One turn of the fix session; a turn cut off for a restart becomes the fresh session's."""
         outcome = self._exec(turn_prompt, resume=resume)
-        return self._restart(state, task_prompt) if outcome == "restart" else outcome
+        return self._restart(state, task_prompt) if outcome == OUTCOME_RESTART else outcome
 
     def rollouts(self) -> list[str]:
         """Lists the session rollouts Codex left in the scratch.
@@ -884,6 +914,39 @@ class SweBenchInstanceRun:
         return SweBenchScratch.files(
             self.scratch, "codex-home/sessions", "rollout*.jsonl", recursive=True
         )
+
+    def _records(self, path: str, needle: bytes | None = None) -> Iterator[dict[str, Any]]:
+        """Reads one rollout's records.
+
+        Args:
+            path: The rollout, relative to the scratch.
+            needle: What a line must hold to be parsed at all; None parses every line.
+
+        Yields:
+            dict[str, Any]: Each record; a line still being written is skipped, and a rollout that
+            cannot be read ends there.
+        """
+        with contextlib.suppress(OSError), SweBenchScratch.open(self.scratch, path) as handle:
+            for line in handle:
+                record = self._record(line) if needle is None or needle in line else None
+                if record is not None:
+                    yield record
+
+    @classmethod
+    def _record(cls, line: bytes | str) -> dict[str, Any] | None:
+        """Parses one line of a JSON-lines file.
+
+        Args:
+            line: The line.
+
+        Returns:
+            Optional[dict[str, Any]]: The object it holds, or None when it holds no JSON object.
+        """
+        try:
+            record = json.loads(line)
+        except ValueError:
+            return None
+        return record if isinstance(record, dict) else None
 
     def compactions_recorded(self) -> int:
         """Counts the compactions in this instance's sessions.
@@ -896,29 +959,21 @@ class SweBenchInstanceRun:
         """
         count = 0
         for path in self.rollouts():
-            try:
-                with SweBenchScratch.open(self.scratch, path) as handle:
-                    for line in handle:
-                        if b'"compacted"' not in line:
-                            continue
-                        try:
-                            record = json.loads(line)
-                        except ValueError:
-                            continue
-                        if isinstance(record, dict) and record.get("type") == "compacted":
-                            count += 1
-            except OSError:
-                continue
+            for record in self._records(path, COMPACTED_NEEDLE):
+                if record.get("type") == RECORD_COMPACTED:
+                    count += 1
         return count
 
     def compaction_record(self) -> dict[str, Any]:
-        """What this instance's sessions spent on compaction, in every run so two arms compare
-        (compaction spec §13): the `compacted` records of its rollouts and the seconds they took,
-        each from the last rollout line more than `COMPACTION_GAP_S` before it (the compaction
-        request's prefill and the summary's decode, as the compaction survey §1
-        measured them), and what drop-first compaction did, from the log the launcher's leaf crate
-        keeps in the scratch `codex-home` (`DROP_LOG`): the drops that replaced a summary, the
-        attempts declined because a drop would not have been enough, and the outputs dropped.
+        """Reports what this instance's sessions spent on compaction.
+
+        In every run, so two arms compare (compaction spec §13): the `compacted` records of its
+        rollouts and the seconds they took, each from the last rollout line more than
+        `COMPACTION_GAP_S` before it (the compaction request's prefill and the summary's decode, as
+        the compaction survey §1 measured them), and what drop-first compaction did, from the log
+        the launcher's leaf crate keeps in the scratch `codex-home` (`DROP_LOG`): the drops that
+        replaced a summary, the attempts declined because a drop would not have been enough, and
+        the outputs dropped.
 
         Returns:
             Dict[str, Any]: `compactions`, `seconds`, `drops`, `declined`, `dropped_outputs`.
@@ -926,50 +981,14 @@ class SweBenchInstanceRun:
         compactions, seconds = 0, 0.0
         for path in self.rollouts():
             times: list[float] = []
-            try:
-                with SweBenchScratch.open(self.scratch, path) as handle:
-                    for line in handle:
-                        try:
-                            record = json.loads(line)
-                        except ValueError:
-                            continue
-                        if not isinstance(record, dict):
-                            continue
-                        try:
-                            at: float | None = datetime.fromisoformat(
-                                str(record.get("timestamp")).replace("Z", "+00:00")
-                            ).timestamp()
-                        except ValueError:
-                            at = None
-                        if record.get("type") == "compacted":
-                            compactions += 1
-                            before = next(
-                                (
-                                    t
-                                    for t in reversed(times)
-                                    if at is not None and t < at - COMPACTION_GAP_S
-                                ),
-                                None,
-                            )
-                            seconds += at - before if at is not None and before is not None else 0.0
-                        if at is not None:
-                            times.append(at)
-            except OSError:
-                continue
-        drops = declined = dropped = 0
-        lines = SweBenchScratch.read_text(self.scratch, f"codex-home/{DROP_LOG}").splitlines()
-        for line in lines:
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("accepted"):
-                drops += 1
-                dropped += int(entry.get("outputs") or 0)
-            else:
-                declined += 1
+            for record in self._records(path):
+                at = self._record_time(record)
+                if record.get("type") == RECORD_COMPACTED:
+                    compactions += 1
+                    seconds += self._compaction_seconds(at, times)
+                if at is not None:
+                    times.append(at)
+        drops, declined, dropped = self._drop_log_counts()
         return {
             "compactions": compactions,
             "seconds": round(seconds, 1),
@@ -977,6 +996,59 @@ class SweBenchInstanceRun:
             "declined": declined,
             "dropped_outputs": dropped,
         }
+
+    @classmethod
+    def _record_time(cls, record: dict[str, Any]) -> float | None:
+        """Reads when a rollout record was written.
+
+        Args:
+            record: The record.
+
+        Returns:
+            Optional[float]: Its `timestamp` in seconds, or None when it has no readable one.
+        """
+        try:
+            return datetime.fromisoformat(
+                str(record.get("timestamp")).replace("Z", "+00:00")
+            ).timestamp()
+        except ValueError:
+            return None
+
+    @classmethod
+    def _compaction_seconds(cls, at: float | None, times: list[float]) -> float:
+        """Measures one compaction from the last rollout line more than `COMPACTION_GAP_S` before it.
+
+        Args:
+            at: When its record was written, or None when that is unknown.
+            times: When the rollout's earlier lines were written, oldest first.
+
+        Returns:
+            float: The seconds it took; 0.0 when it cannot be told.
+        """
+        if at is None:
+            return 0.0
+        before = next((t for t in reversed(times) if t < at - COMPACTION_GAP_S), None)
+        return at - before if before is not None else 0.0
+
+    def _drop_log_counts(self) -> tuple[int, int, int]:
+        """Counts what drop-first compaction did, from `DROP_LOG` in the scratch `codex-home`.
+
+        Returns:
+            tuple[int, int, int]: The drops that replaced a summary, the attempts declined, and
+            the outputs dropped.
+        """
+        drops = declined = dropped = 0
+        lines = SweBenchScratch.read_text(self.scratch, f"codex-home/{DROP_LOG}").splitlines()
+        for line in lines:
+            entry = self._record(line)
+            if entry is None:
+                continue
+            if entry.get("accepted"):
+                drops += 1
+                dropped += int(entry.get("outputs") or 0)
+            else:
+                declined += 1
+        return drops, declined, dropped
 
     def loop_guard_record(self) -> dict[str, int]:
         """What the loop guard stopped in this instance's sessions.
@@ -1082,8 +1154,9 @@ class SweBenchInstanceRun:
         return self.tool_calls("exec")
 
     def tool_calls(self, name: str) -> int:
-        """Counts the `function_call` and `custom_tool_call` records named `name` in this
-        instance's rollouts.
+        """Counts this instance's calls of one tool.
+
+        The `function_call` and `custom_tool_call` records named `name` in its rollouts.
 
         Args:
             name: The tool's name.
@@ -1094,24 +1167,14 @@ class SweBenchInstanceRun:
         needle = json.dumps(name).encode()
         count = 0
         for path in self.rollouts():
-            try:
-                with SweBenchScratch.open(self.scratch, path) as handle:
-                    for line in handle:
-                        if needle not in line:
-                            continue
-                        try:
-                            record = json.loads(line)
-                        except ValueError:
-                            continue
-                        payload = record.get("payload") if isinstance(record, dict) else None
-                        if (
-                            isinstance(payload, dict)
-                            and payload.get("name") == name
-                            and payload.get("type") in ("function_call", "custom_tool_call")
-                        ):
-                            count += 1
-            except OSError:
-                continue
+            for record in self._records(path, needle):
+                payload = record.get("payload")
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("name") == name
+                    and payload.get("type") in ("function_call", "custom_tool_call")
+                ):
+                    count += 1
         return count
 
     def _restart_due(self) -> bool:
@@ -1147,7 +1210,7 @@ class SweBenchInstanceRun:
         }
         state["restart"] = record
         if self.stop_event.is_set():
-            return "restart"
+            return OUTCOME_RESTART
         # The container was stopped to end the session; the diff and the reset need it running.
         SweBenchDocker.run(["start", self.container], timeout=120)
         collected = self._script(COLLECT_SCRIPT, timeout=600)
@@ -1161,7 +1224,7 @@ class SweBenchInstanceRun:
                 f"resetting /testbed for the restart failed ({reset.returncode}): "
                 f"{(reset.stderr or reset.stdout).strip()[-300:]}"
             )
-            return "error"
+            return OUTCOME_ERROR
         self.session = None
         record["log_offset"] = self.log_path.stat().st_size if self.log_path.exists() else 0
         self.notes.append(
@@ -1188,10 +1251,9 @@ class SweBenchInstanceRun:
             Optional[str]: The review turn's outcome (`ok`, `error`, `timeout`), or None when it
             did not run.
         """
-        if outcome != "ok":
-            state["review"] = {
-                "skipped": f"the agent's turn ended in {'a timeout' if outcome == 'timeout' else 'an error'}"
-            }
+        if outcome != OUTCOME_OK:
+            ending = "a timeout" if outcome == OUTCOME_TIMEOUT else "an error"
+            state["review"] = {"skipped": f"the agent's turn ended in {ending}"}
             return None
         if time.time() >= self.deadline:
             state["review"] = {"skipped": "no time left"}
@@ -1223,7 +1285,7 @@ class SweBenchInstanceRun:
         record["tokens"] = {
             key: tokens[key] for key in ("input_tokens", "cached_input_tokens", "output_tokens")
         }
-        if review == "timeout" and not self.stop_event.is_set():
+        if review == OUTCOME_TIMEOUT and not self.stop_event.is_set():
             # The container was stopped to end the turn; the diff and the patch need it running.
             SweBenchDocker.run(["start", self.container], timeout=120)
             self.notes.append(
@@ -1239,7 +1301,7 @@ class SweBenchInstanceRun:
         diff = self._script(REVIEW_DIFF_SCRIPT, timeout=300)
         for line in diff.stdout.splitlines():
             parts = line.split("\t", 2)
-            if len(parts) != 3:
+            if len(parts) != NUMSTAT_FIELDS:
                 continue
             added += int(parts[0]) if parts[0].isdigit() else 0
             removed += int(parts[1]) if parts[1].isdigit() else 0
@@ -1413,33 +1475,61 @@ class SweBenchInstanceRun:
         self.in_model = True
         try:
             with Path(self.log_path).open("ab") as sink:
-                process = SweBenchDocker.popen(command, sink)
-                code: Any = None
-                while code is None:
-                    try:
-                        code = process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        if self._restart_due():
-                            code = "restart"
-                        elif time.time() >= self.deadline or self.stop_event.is_set():
-                            code = "timeout"
-                        if code is not None:
-                            SweBenchDocker.run(
-                                ["stop", "-t", str(STOP_GRACE_S), self.container],
-                                timeout=STOP_GRACE_S + 60,
-                            )
-                            try:
-                                process.wait(timeout=STOP_GRACE_S)
-                            except subprocess.TimeoutExpired:
-                                process.kill()
+                code = self._wait_turn(SweBenchDocker.popen(command, sink))
         finally:
             self.in_model = False
         session = NightShiftTaskRun.thread_id_in(self.log_path, offset)
         if session:
             self.session = session
-        if code in ("timeout", "restart"):
+        if isinstance(code, str):
             return code
-        return "ok" if code == 0 else "error"
+        return OUTCOME_OK if code == 0 else OUTCOME_ERROR
+
+    def _wait_turn(self, process: subprocess.Popen) -> int | str:
+        """Waits for one turn's process, ending it when the turn has to stop.
+
+        Args:
+            process: The running `ragon exec`.
+
+        Returns:
+            int | str: Its exit code, or the outcome (`restart`, `timeout`) it was ended with.
+        """
+        code: int | str | None = None
+        while code is None:
+            try:
+                code = process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                code = self._cut_off()
+                if code is not None:
+                    self._stop_turn(process)
+        return code
+
+    def _cut_off(self) -> str | None:
+        """Decides whether the running turn has to stop.
+
+        Returns:
+            Optional[str]: `restart`, `timeout`, or None to let it run.
+        """
+        if self._restart_due():
+            return OUTCOME_RESTART
+        if time.time() >= self.deadline or self.stop_event.is_set():
+            return OUTCOME_TIMEOUT
+        return None
+
+    def _stop_turn(self, process: subprocess.Popen) -> None:
+        """Stops the container to end a turn, and kills the client if it still does not exit.
+
+        Args:
+            process: The running `ragon exec`.
+        """
+        SweBenchDocker.run(
+            ["stop", "-t", str(STOP_GRACE_S), self.container],
+            timeout=STOP_GRACE_S + 60,
+        )
+        try:
+            process.wait(timeout=STOP_GRACE_S)
+        except subprocess.TimeoutExpired:
+            process.kill()
 
     def _nudge_kind(self) -> str | None:
         """Decides whether a turn that ended normally is resumed, and with which nudge.
@@ -1453,7 +1543,7 @@ class SweBenchInstanceRun:
         """
         message = self._last_message()
         if not self._changed():
-            return "stall" if NightShiftTaskRun.announces_work(message) else None
+            return NUDGE_STALL if NightShiftTaskRun.announces_work(message) else None
         return "completion" if self.stopped_mid_work(message) else None
 
     def _changed(self) -> bool:
