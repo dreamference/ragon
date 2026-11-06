@@ -5797,6 +5797,7 @@ mod tests {
             speech_addr: "127.0.0.1:9".to_string(),
             user_config: Some(user_config),
             forge_url,
+            phone_admin: None,
         };
         let srv = Server::new(cfg).unwrap();
         let probe = StubProbe::new(500 * GB, false);

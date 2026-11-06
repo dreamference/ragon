@@ -54,6 +54,7 @@ fn config(dir: &std::path::Path) -> Config {
         speech_addr: "127.0.0.1:9".to_string(),
         user_config: Some(dir.join("user/.config/dreamference/config.toml")),
         forge_url: None,
+        phone_admin: None,
         state_dir,
         port: 3100,
         lan_names: Vec::new(),

@@ -80,6 +80,7 @@ fn config(dir: &Path, port: u16, lan_names: Vec<String>) -> Config {
         // Never the real ~/.config/dreamference/config.toml: a scratch one, absent unless a test writes it.
         user_config: Some(dir.join("user/.config/dreamference/config.toml")),
         forge_url: None,
+        phone_admin: None,
         state_dir,
         port,
         lan_names,
@@ -146,6 +147,7 @@ const PROTECTED: &[(&str, &str)] = &[
     ("POST", "/api/telegram/pending-pairs/decline"),
     ("GET", "/devices"),
     ("POST", "/devices/pair"),
+    ("POST", "/devices/phone"),
     ("POST", "/devices/revoke"),
     ("POST", "/devices/scope"),
     ("GET", "/api/sync/status"),
@@ -421,6 +423,65 @@ async fn a_loopback_server_issues_no_pairing_code_from_the_devices_page() {
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("loopback only") && !page.contains("class=\"code\""));
     assert!(!server.config.state_dir.join("pairing").exists() || std::fs::read_dir(server.config.state_dir.join("pairing")).unwrap().next().is_none());
+}
+
+/// A stand-in `ragon-admin`: `remote code --bundle-file PATH` writes a bundle there; with the marker
+/// file `fail` beside it, it exits 1 instead.
+fn fake_admin(dir: &Path) -> PathBuf {
+    let path = dir.join("ragon-admin");
+    std::fs::write(
+        &path,
+        "#!/bin/sh\n[ \"$1 $2 $3\" = \"remote code --bundle-file\" ] || exit 2\n[ -e \"$(dirname \"$0\")/fail\" ] && exit 1\n\
+printf '{\"management_url\":\"https://ragon-ab12.example:443\",\"setup_key\":\"KEY-1234\",\"overlay_name\":\"ragon-ab12.example\",\"ca\":\"-----BEGIN CERTIFICATE-----\\\\nQUJD\\\\n-----END CERTIFICATE-----\\\\n\"}' > \"$4\"\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn the_devices_page_shows_the_phones_qr_code_and_the_matrix_steps_only_to_this_machine() {
+    let scratch = scratch("phone");
+    let mut cfg = config(&scratch.dir, 3100, Vec::new());
+    cfg.phone_admin = Some(fake_admin(&scratch.dir));
+    let server = Server::new(cfg).unwrap();
+    let owner = sign_in(&server).await;
+    let get = |cookie: &str| request("GET", "/devices").header(header::COOKIE, cookie).body(Body::empty()).unwrap();
+
+    // Offered with the steps, but no key until asked for.
+    let (_, _, page) = call(&server, get(&owner)).await;
+    assert!(page.contains("action=\"/devices/phone\"") && page.contains("Element X") && !page.contains("KEY-1234"));
+
+    // Asked for: the QR code, the values, the CA and the overlay name in the Matrix step; no file is left.
+    let (status, _, page) = call(&server, devices_post("/devices/phone", &owner, "")).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page.contains("<svg") && page.contains("KEY-1234") && page.contains("https://ragon-ab12.example:443"));
+    assert!(page.contains("BEGIN CERTIFICATE") && page.contains("<code>ragon-ab12.example</code>"));
+    let leftovers = std::fs::read_dir(&server.config.state_dir).unwrap().filter_map(Result::ok).any(|e| e.file_name().to_string_lossy().starts_with("phone-bundle"));
+    assert!(!leftovers, "the bundle file is removed");
+
+    // A failing ragon-admin says so and shows no key.
+    std::fs::write(scratch.dir.join("fail"), "").unwrap();
+    let (status, _, page) = call(&server, devices_post("/devices/phone", &owner, "")).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(page.contains("could not mint") && !page.contains("KEY-1234"));
+
+    // A paired device, and a request without a session, get nothing.
+    let (_, _, page) = call(&server, devices_post("/devices/phone", "ragon_web=nope", "")).await;
+    assert!(!page.contains("KEY-1234") && !page.contains("<svg"));
+}
+
+#[tokio::test]
+async fn a_node_without_remote_access_shows_no_phone_section() {
+    let scratch = scratch("phone-off");
+    let server = Server::new(config(&scratch.dir, 3100, Vec::new())).unwrap();
+    let owner = sign_in(&server).await;
+    let (_, _, page) = call(&server, request("GET", "/devices").header(header::COOKIE, &owner).body(Body::empty()).unwrap()).await;
+    assert!(!page.contains("/devices/phone"));
+    let (status, _, page) = call(&server, devices_post("/devices/phone", &owner, "")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!page.contains("<svg"));
 }
 
 /// An attachment the disk took only part of is an error, not a saved file: run in a child process
@@ -937,6 +998,7 @@ const ROUTES_THAT_CHANGE: &[(&str, &str, &str)] = &[
     ("ANY", "/forge/{*path}", "/forge/user/logout"),
     ("POST", "/pair", "/pair"),
     ("POST", "/devices/pair", "/devices/pair"),
+    ("POST", "/devices/phone", "/devices/phone"),
     ("POST", "/devices/revoke", "/devices/revoke"),
     ("POST", "/devices/scope", "/devices/scope"),
     ("POST", "/api/sync/pair", "/api/sync/pair"),

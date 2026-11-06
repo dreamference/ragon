@@ -518,6 +518,7 @@ mod tests {
             speech_addr: "127.0.0.1:9".to_string(),
             user_config: Some(user_config.clone()),
             forge_url: None,
+            phone_admin: None,
         })
         .unwrap();
 

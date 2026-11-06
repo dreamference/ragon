@@ -21,6 +21,7 @@ ul { list-style: none; padding: 0; margin: 0 0 1.5rem; }
 li { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-bottom: 1px solid var(--field); }
 li span { flex: 1; min-width: 0; }
 li small { display: block; color: var(--muted); }
+pre { white-space: pre-wrap; word-break: break-all; font-size: 0.75rem; }
 li form button { width: auto; padding: 0.4rem 0.8rem; background: var(--field); color: var(--fg); }
 details { margin: 0 0 1.5rem; }
 details .qr { width: min(220px, 100%); }
@@ -99,6 +100,96 @@ fn pairing_section(pairing: &Pairing) -> String {
 
 /// The page for this machine's own session.
 pub fn owner_page(devices: &[Device], lan_names: &[String], pairing: Option<&Pairing>, notice: Option<&str>, now: u64) -> String {
+    owner_page_with_phone(devices, lan_names, pairing, notice, now, &Phone::Hidden)
+}
+
+/// What the "Phone on the overlay" section shows (REMOTE_ACCESS §4.2).
+pub enum Phone<'a> {
+    /// This node is not a remote-access peer: the section is not shown.
+    Hidden,
+    /// Remote access is set up: the steps and a button that mints a one-use setup key.
+    Offer,
+    /// A key was minted: the QR code and the values it carries.
+    Bundle(&'a PhoneBundle),
+    /// The key could not be minted; the reason, for the owner.
+    Failed(&'a str),
+}
+
+/// What `ragon-admin remote code --bundle-file` wrote, the parts a phone needs.
+pub struct PhoneBundle {
+    pub management_url: String,
+    pub setup_key: String,
+    pub overlay_name: String,
+    /// The node CA (PEM) when the control plane uses it; None when its certificate is public.
+    pub ca: Option<String>,
+}
+
+impl PhoneBundle {
+    /// Reads the bundle's JSON; None when a value the page needs is missing.
+    pub fn parse(text: &str) -> Option<PhoneBundle> {
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        let field = |name: &str| value.get(name).and_then(|v| v.as_str()).map(str::to_string).filter(|v| !v.is_empty());
+        Some(PhoneBundle {
+            management_url: field("management_url")?,
+            setup_key: field("setup_key")?,
+            overlay_name: field("overlay_name")?,
+            ca: field("ca"),
+        })
+    }
+
+    /// The text the QR code carries: the management URL and the setup key, one per line.
+    fn qr_text(&self) -> String {
+        format!("{}\n{}", self.management_url, self.setup_key)
+    }
+}
+
+fn phone_section(phone: &Phone) -> String {
+    let steps = |overlay: &str| {
+        format!(
+            "<ol>\n<li>Install NetBird's mobile app and Element X.</li>\n\
+<li>In NetBird choose <em>Self-hosted</em> and enter the management URL and the setup key shown here.</li>\n\
+<li>Once NetBird shows Connected, run <code>ragon-admin matrix start</code> on this machine if Matrix is not running yet.</li>\n\
+<li>In Element X choose <em>Change account provider</em> and enter <code>{}</code>, then create the account.</li>\n</ol>\n",
+            escape(overlay)
+        )
+    };
+    let section = |inner: &str| format!("<section><h2>Phone on the overlay</h2>\n{inner}</section>\n");
+    match phone {
+        Phone::Hidden => String::new(),
+        Phone::Offer => section(&format!(
+            "<p>Enrols a phone in this node's overlay and shows the Matrix steps, with no terminal. The setup key works once, for ten minutes.</p>\n{}\
+<form method=\"post\" action=\"/devices/phone\"><button type=\"submit\">Show the phone's QR code</button></form>",
+            steps("the node's overlay name")
+        )),
+        Phone::Failed(reason) => section(&format!("<p class=\"error\">{}</p>", escape(reason))),
+        Phone::Bundle(bundle) => {
+            let qr = qr::svg(&bundle.qr_text()).unwrap_or_default();
+            let ca = match &bundle.ca {
+                Some(ca) => format!(
+                    "<details><summary>The node's certificate authority</summary><p>Install it on the phone first (iOS: as a profile, then Certificate Trust Settings).</p><pre>{}</pre></details>\n",
+                    escape(ca)
+                ),
+                None => "<p>No certificate to install: the control plane's certificate is public.</p>\n".to_string(),
+            };
+            section(&format!(
+                "<div class=\"qr\">{qr}</div>\n<p class=\"link\">Management URL: <code>{}</code><br>Setup key: <code>{}</code></p>\n{ca}{}",
+                escape(&bundle.management_url),
+                escape(&bundle.setup_key),
+                steps(&bundle.overlay_name)
+            ))
+        }
+    }
+}
+
+/// The page for this machine's own session, with the phone section.
+pub fn owner_page_with_phone(
+    devices: &[Device],
+    lan_names: &[String],
+    pairing: Option<&Pairing>,
+    notice: Option<&str>,
+    now: u64,
+    phone: &Phone,
+) -> String {
     let mut body = String::from("<h1>Devices</h1>\n<p><a href=\"/\">Back to Ragon</a></p>\n");
     if let Some(notice) = notice {
         body.push_str(&format!("<p class=\"error\">{}</p>\n", escape(notice)));
@@ -118,6 +209,7 @@ paired devices only; then come back here.</p></section>\n",
 <form method=\"post\" action=\"/devices/pair\"><button type=\"submit\">Show a pairing code</button></form></section>\n",
         );
     }
+    body.push_str(&phone_section(phone));
     body.push_str("<section><h2>Paired devices</h2>\n");
     if devices.is_empty() {
         body.push_str("<p>None yet.</p>");
@@ -204,6 +296,20 @@ mod tests {
         assert!(page.contains("This code is for 192.168.50.105."));
         assert!(page.contains("100.101.102.103 (Tailscale)"));
         assert_eq!(page.matches("<svg").count(), 3);
+    }
+
+    #[test]
+    fn the_phone_section_needs_every_value_and_escapes_them() {
+        assert!(PhoneBundle::parse("{\"management_url\":\"https://x\"}").is_none());
+        let bundle = PhoneBundle::parse(
+            "{\"management_url\":\"https://x\",\"setup_key\":\"<k>\",\"overlay_name\":\"ragon-a.b\"}",
+        )
+        .unwrap();
+        assert!(bundle.ca.is_none());
+        let html = phone_section(&Phone::Bundle(&bundle));
+        assert!(html.contains("<svg") && html.contains("&lt;k&gt;") && !html.contains("<k>"));
+        assert!(html.contains("public") && html.contains("<code>ragon-a.b</code>"));
+        assert!(phone_section(&Phone::Hidden).is_empty());
     }
 
     #[test]

@@ -91,6 +91,9 @@ pub struct Config {
     pub user_config: Option<PathBuf>,
     /// The node's Forgejo base URL (`http://127.0.0.1:3200` when `None`), overridden by tests.
     pub forge_url: Option<String>,
+    /// The `ragon-admin` that mints a phone's enrolment bundle for the Devices page (`remote code
+    /// --bundle-file`); None unless this node is a remote-access peer.
+    pub phone_admin: Option<PathBuf>,
 }
 
 pub struct Server {
@@ -411,6 +414,7 @@ pub fn router(server: Arc<Server>) -> Router {
         .route("/pair.css", get(pair_css))
         .route("/devices", get(devices_page))
         .route("/devices/pair", post(devices_pair))
+        .route("/devices/phone", post(devices_phone))
         .route("/devices/revoke", post(devices_revoke))
         .route("/devices/scope", post(devices_scope))
         .merge(crate::sync_hub::routes())
@@ -1079,7 +1083,61 @@ async fn devices_page(State(server): State<Arc<Server>>, headers: HeaderMap) -> 
         return html(StatusCode::FORBIDDEN, &devices::device_page());
     }
     let state = &server.config.state_dir;
-    html(StatusCode::OK, &devices::owner_page(&auth::load_devices(state), &server.config.lan_names, None, None, now_secs()))
+    let phone = if server.config.phone_admin.is_some() { devices::Phone::Offer } else { devices::Phone::Hidden };
+    html(
+        StatusCode::OK,
+        &devices::owner_page_with_phone(&auth::load_devices(state), &server.config.lan_names, None, None, now_secs(), &phone),
+    )
+}
+
+/// How long `ragon-admin remote code --bundle-file` may take to mint a key.
+const PHONE_BUNDLE_SECONDS: u64 = 60;
+
+/// Mints a one-use setup key for a phone through `ragon-admin remote code --bundle-file` and shows
+/// it as a QR code (REMOTE_ACCESS §4.2). The bundle file is private to this user, read once and
+/// removed; the key never reaches a log or a URL, and the page answers directly, not by redirect.
+async fn devices_phone(State(server): State<Arc<Server>>, headers: HeaderMap) -> Response {
+    if !server.owner_session(&headers) {
+        return html(StatusCode::FORBIDDEN, &devices::device_page());
+    }
+    let state = &server.config.state_dir;
+    let Some(admin) = server.config.phone_admin.clone() else {
+        return html(StatusCode::OK, &devices::owner_page(&auth::load_devices(state), &server.config.lan_names, None, None, now_secs()));
+    };
+    let file = state.join(format!("phone-bundle-{}-{}.json", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
+    let _ = std::fs::create_dir_all(state);
+    let outcome = mint_phone_bundle(&admin, &file).await;
+    let _ = std::fs::remove_file(&file);
+    let (status, phone) = match &outcome {
+        Ok(bundle) => (StatusCode::OK, devices::Phone::Bundle(bundle)),
+        Err(reason) => (StatusCode::BAD_GATEWAY, devices::Phone::Failed(reason)),
+    };
+    html(
+        status,
+        &devices::owner_page_with_phone(&auth::load_devices(state), &server.config.lan_names, None, None, now_secs(), &phone),
+    )
+}
+
+async fn mint_phone_bundle(admin: &Path, file: &Path) -> Result<devices::PhoneBundle, String> {
+    let mut command = tokio::process::Command::new(admin);
+    command
+        .args(["remote", "code", "--bundle-file"])
+        .arg(file)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let run = tokio::time::timeout(Duration::from_secs(PHONE_BUNDLE_SECONDS), command.status()).await;
+    match run {
+        Err(_) => return Err("Minting the setup key took too long; run ragon-admin remote status on this machine.".to_string()),
+        Ok(Err(err)) => return Err(format!("Could not run ragon-admin: {err}")),
+        Ok(Ok(status)) if !status.success() => {
+            return Err("ragon-admin could not mint a setup key; run ragon-admin remote status on this machine.".to_string());
+        }
+        Ok(Ok(_)) => {}
+    }
+    let text = std::fs::read_to_string(file).map_err(|err| format!("The setup key's file could not be read: {err}"))?;
+    devices::PhoneBundle::parse(&text).ok_or_else(|| "ragon-admin wrote a bundle the page does not understand.".to_string())
 }
 
 /// A new pairing code, shown with its QR codes. Answered with the page itself (not a redirect),
@@ -1353,6 +1411,7 @@ mod tests {
             speech_addr: "127.0.0.1:9".to_string(),
             user_config: None,
             forge_url: None,
+            phone_admin: None,
         })
         .unwrap();
         let with = |cookie: String| {
@@ -1412,6 +1471,7 @@ mod tests {
             speech_addr: "127.0.0.1:9".to_string(),
             user_config: None,
             forge_url: None,
+            phone_admin: None,
         })
         .unwrap();
 

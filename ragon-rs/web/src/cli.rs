@@ -435,6 +435,7 @@ async fn serve_command(args: &[String], environment: &Environment) -> i32 {
         speech_addr: crate::sidecars::SPEECH_ADDR.to_string(),
         user_config: ragon_airgapped::user_config_file(),
         forge_url: None,
+        phone_admin: overlay_name(&environment.home).map(|_| environment.home.join(".local/bin/ragon-admin")),
     };
     let server = match Server::new(config.clone()) {
         Ok(server) => server,
