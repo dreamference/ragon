@@ -101,16 +101,10 @@
    "RET504": 1
   },
   "dreamference/cli/dreamference_cli_controller.py": {
-   "C414": 1,
    "C901": 6,
-   "D205": 4,
-   "E722": 1,
-   "F841": 1,
    "PLR0912": 3,
    "PLR0915": 5,
-   "PLR1702": 12,
-   "PTH109": 1,
-   "PTH118": 1
+   "PLR1702": 12
   },
   "dreamference/cli/model_deep_inspector.py": {
    "B905": 1,
@@ -630,5 +624,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1108
+ "total": 1099
 }

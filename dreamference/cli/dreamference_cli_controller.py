@@ -692,8 +692,9 @@ class DreamferenceCLIController:
     def _run_tool_call_canary(
         cls, vllm_mgr, requested_model: str | None, engine: str | None = None
     ) -> bool | None:
-        """Checks that the served model returns a well-formed tool call through `ragon`'s own API path,
-        a streamed `/v1/responses` request (ToolCallCanary). A failure is a warning naming the parser
+        """Check that the served model returns a well-formed tool call through `ragon`'s own API path.
+
+        The request is a streamed `/v1/responses` one (ToolCallCanary). A failure is a warning naming the parser
         or template likely at fault; it does not stop the start, since the server is up and the chat
         UI needs no tools (specs/DREAMFERENCE_MODELS.md §2.1).
 
@@ -1322,8 +1323,10 @@ class DreamferenceCLIController:
 
     @classmethod
     def handle_gate_pause(cls, vllm_host: str, duration: str | None) -> int:
-        """`ragon-admin night pause [--for DURATION]` and `night resume`: while paused, the model gate
-        lets every request through although a SWE-bench run holds it; the run then waits for
+        """Handle `ragon-admin night pause [--for DURATION]` and `night resume`.
+
+        While paused, the model gate lets every request through although a SWE-bench run holds it;
+        the run then waits for
         other requests before starting an instance, as it did before the gate, and records the
         interval for its report (specs/DREAMFERENCE_RAGON_SWE_BENCH.md §18).
 
@@ -1366,8 +1369,9 @@ class DreamferenceCLIController:
 
     @classmethod
     def _refuse_during_night_run(cls, what: str) -> None:
-        """Stops `ragon-admin <what>` while a Night Shift run or a SWE-bench run holds the runner
-        lock: a build, an index run or a model load beside its sessions is what put the model
+        """Stop `ragon-admin <what>` while a Night Shift or SWE-bench run holds the runner lock.
+
+        A build, an index run or a model load beside its sessions is what put the model
         server at risk before (specs/DREAMFERENCE_RAGON_NIGHT_SHIFT.md §6.2).
 
         Args:
@@ -1386,9 +1390,10 @@ class DreamferenceCLIController:
 
     @classmethod
     def handle_status(cls) -> None:
-        """Executes `ragon-admin status` command, displaying hardware metrics, vLLM health,
-        Codex/Cline/Continue/OpenHands config,
-        and context engine index telemetry in formatted Rich panels.
+        """Execute `ragon-admin status`, showing hardware, server health, agent config and index telemetry.
+
+        Codex/Cline/Continue/OpenHands config and context engine index telemetry are shown
+        in formatted Rich panels.
         """
         from rich.panel import Panel
         from rich.table import Table
@@ -3261,7 +3266,7 @@ class DreamferenceCLIController:
                 import re
 
                 tags = re.findall(r"<\|?[a-zA-Z0-9_]+\|?>", content)
-                unique_tags = sorted(list(set(tags)))
+                unique_tags = sorted(set(tags))
                 supported_tags = unique_tags
         except _PROBE_ERRORS:
             pass
@@ -4006,7 +4011,6 @@ class DreamferenceCLIController:
         num_scheduler_steps = getattr(args, "num_scheduler_steps", None)
         attention_backend = getattr(args, "attention_backend", None)
         kv_cache_dtype = getattr(args, "kv_cache_dtype", None)
-        max_num_batched_tokens = getattr(args, "max_num_batched_tokens", None)
         guided_decoding_backend = getattr(args, "guided_decoding_backend", None)
         tensorize_opt = getattr(args, "tensorize", None)
 
@@ -4162,7 +4166,7 @@ class DreamferenceCLIController:
             import sqlite3
 
             cls.display_header()
-            db = os.path.join(CodexInstaller.home_dir(), "logs_2.sqlite")
+            db = str(pathlib.Path(CodexInstaller.home_dir()) / "logs_2.sqlite")
             if not pathlib.Path(db).exists():
                 print(
                     f"❌ No ragon log database at {db}. Run a session with `RUST_LOG=codex_mcp=trace ragon` first."
@@ -4607,11 +4611,13 @@ class DreamferenceCLIController:
                     )
                 except KeyboardInterrupt:
                     print("\n⏹️  Shutting down server...")
+                    import subprocess
+
                     if vllm_mgr.process:
                         vllm_mgr.process.terminate()
                         try:
                             vllm_mgr.process.wait(timeout=5)
-                        except:
+                        except subprocess.TimeoutExpired:
                             vllm_mgr.process.kill()
                 finally:
                     monitor.stop()
@@ -5039,7 +5045,7 @@ class DreamferenceCLIController:
         elif args.command == _ARG_INDEX:
             cls._refuse_during_night_run("index")
             cls.display_header()
-            target_dir = args.dir or os.getcwd()
+            target_dir = args.dir or str(pathlib.Path.cwd())
             from dreamference.context_engine import ContextEngine
 
             ctx_engine = ContextEngine(workspace_root=target_dir)
