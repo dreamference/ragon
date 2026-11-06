@@ -177,11 +177,12 @@ jobs:
       - name: Seatbelt takes the network away
         if: runner.os == 'macOS'
         run: |
-          command -v curl
-          curl --version | head -1
+          command -v /usr/bin/curl
+          /usr/bin/curl --version | head -1
+          # Apple's curl on both targets (the Intel image puts Homebrew's first on PATH, which would hide the arm64 failure).
           # curl's exit code: 0 reached and verified; 6, 7, 28 no connection; 35, 60, 77 a TLS
           # failure, so the connection was made.
-          fetch=(curl -sS -m 20 -o /dev/null -w '%{http_code}\n')
+          fetch=(/usr/bin/curl -sS -m 20 -o /dev/null -w '%{http_code}\n')
           sandbox() {
             "$RAGON_BIN/ragon" sandbox -c 'sandbox_mode="workspace-write"' \
               -c "sandbox_workspace_write.network_access=$1" -- "${fetch[@]}" "$2"
