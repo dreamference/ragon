@@ -35,9 +35,9 @@ from dreamference.runner.codex_branded_builder import INSTALL_DIR
 
 # The pinned tools and the npm lockfile: package data, shipped in the wheel (setup.py).
 PINS_DIR: Final[str] = str(Path(__file__).resolve().parent / "code_index_pins")
-PINS_FILE: Final[str] = os.path.join(PINS_DIR, "code-index.sha256")
+PINS_FILE: Final[str] = str(Path(PINS_DIR) / "code-index.sha256")
 INDEXERS_SOURCE_DIR: Final[str] = PINS_DIR
-INDEXERS_DIR: Final[str] = os.path.join(INSTALL_DIR, "indexers")
+INDEXERS_DIR: Final[str] = str(Path(INSTALL_DIR) / "indexers")
 DOWNLOAD_TIMEOUT_S: Final[int] = 300
 # The toolchain each indexer runs on: a link of this name under the indexers directory.
 TOOLCHAIN_OF: Final[dict[str, str]] = {
@@ -97,7 +97,7 @@ class CodeIndexSetup:
         Returns:
             str: The directory.
         """
-        return os.path.join(INSTALL_DIR, "bin")
+        return str(Path(INSTALL_DIR) / "bin")
 
     @classmethod
     def _download(cls, url: str) -> bytes:
@@ -114,7 +114,7 @@ class CodeIndexSetup:
 
     @classmethod
     def _stamp(cls, tool: PinnedTool) -> str:
-        return os.path.join(cls.bin_dir(), f".{tool.name}.sha256")
+        return str(Path(cls.bin_dir()) / f".{tool.name}.sha256")
 
     @classmethod
     def is_installed(cls, tool: PinnedTool) -> bool:
@@ -127,11 +127,9 @@ class CodeIndexSetup:
             bool: True when the binary exists and its stamp names the pinned archive.
         """
         if tool.name == "scip-dotnet":
-            installed = Path(
-                os.path.join(INDEXERS_DIR, DOTNET_TOOL_DIR, "scip-dotnet.dll")
-            ).is_file()
+            installed = (Path(INDEXERS_DIR) / DOTNET_TOOL_DIR / "scip-dotnet.dll").is_file()
         else:
-            installed = os.access(os.path.join(cls.bin_dir(), tool.name), os.X_OK)
+            installed = os.access(Path(cls.bin_dir()) / tool.name, os.X_OK)
         if not installed or not Path(cls._stamp(tool)).is_file():
             return False
         with Path(cls._stamp(tool)).open() as handle:
@@ -176,24 +174,25 @@ class CodeIndexSetup:
                         (
                             m
                             for m in tar.getmembers()
-                            if m.isfile() and os.path.basename(m.name) == tool.member
+                            if m.isfile() and Path(m.name).name == tool.member
                         ),
                         None,
                     )
-                    if member is None:
+                    stream = tar.extractfile(member) if member is not None else None
+                    if stream is None:
                         print(f"❌ {tool.name}: the archive has no {tool.member}")
                         return False
-                    content = tar.extractfile(member).read()
+                    content = stream.read()
             except tarfile.TarError as error:
                 print(f"❌ {tool.name}: unreadable archive: {error}")
                 return False
         Path(cls.bin_dir()).mkdir(exist_ok=True, parents=True)
-        staging = os.path.join(cls.bin_dir(), f".{tool.name}.new")
+        staging = str(Path(cls.bin_dir()) / f".{tool.name}.new")
         with Path(staging).open("wb") as handle:
             handle.write(content)
         Path(staging).chmod(0o755)
         # Renamed over the old binary, so an index run in flight keeps the one it started with.
-        Path(staging).replace(os.path.join(cls.bin_dir(), tool.name))
+        Path(staging).replace(Path(cls.bin_dir()) / tool.name)
         with Path(cls._stamp(tool)).open("w") as handle:
             handle.write(f"{tool.sha256}\n")
         print(f"✅ Installed {tool.name} {tool.version}")
@@ -201,9 +200,11 @@ class CodeIndexSetup:
 
     @classmethod
     def _install_dotnet_tool(cls, tool: PinnedTool, archive: bytes) -> bool:
-        """Installs scip-dotnet from its verified NuGet package: the framework-dependent build for the
-        newest .NET the recorded SDK runs, unpacked under the indexers directory. No `dotnet tool
-        install`, which would fetch the package again from the network.
+        """Installs scip-dotnet from its verified NuGet package.
+
+        It is the framework-dependent build for the newest .NET the recorded SDK runs, unpacked
+        under the indexers directory. No `dotnet tool install`, which would fetch the package
+        again from the network.
 
         Args:
             tool (PinnedTool): The scip-dotnet pin.
@@ -212,7 +213,7 @@ class CodeIndexSetup:
         Returns:
             bool: True if installed.
         """
-        major = cls.dotnet_major(os.path.join(INDEXERS_DIR, "dotnet", "dotnet"))
+        major = cls.dotnet_major(str(Path(INDEXERS_DIR) / "dotnet" / "dotnet"))
         try:
             with zipfile.ZipFile(io.BytesIO(archive)) as package:
                 frameworks = sorted(
@@ -229,18 +230,18 @@ class CodeIndexSetup:
                     )
                     return False
                 prefix = f"tools/net{usable[-1]}.0/any/"
-                staging = os.path.join(INDEXERS_DIR, f".{DOTNET_TOOL_DIR}.new")
+                staging = str(Path(INDEXERS_DIR) / f".{DOTNET_TOOL_DIR}.new")
                 shutil.rmtree(staging, ignore_errors=True)
                 for name in package.namelist():
                     if name.startswith(prefix) and not name.endswith("/"):
-                        target = os.path.join(staging, name[len(prefix) :])
-                        Path(os.path.dirname(target)).mkdir(exist_ok=True, parents=True)
+                        target = Path(staging) / name[len(prefix) :]
+                        target.parent.mkdir(exist_ok=True, parents=True)
                         with Path(target).open("wb") as handle:
                             handle.write(package.read(name))
         except zipfile.BadZipFile as error:
             print(f"❌ scip-dotnet: unreadable package: {error}")
             return False
-        final = os.path.join(INDEXERS_DIR, DOTNET_TOOL_DIR)
+        final = str(Path(INDEXERS_DIR) / DOTNET_TOOL_DIR)
         shutil.rmtree(final, ignore_errors=True)
         Path(staging).replace(final)
         Path(cls.bin_dir()).mkdir(exist_ok=True, parents=True)
@@ -285,8 +286,9 @@ class CodeIndexSetup:
 
     @classmethod
     def find_toolchains(cls) -> dict[str, str]:
-        """Finds the toolchains the language indexers need, once, at setup: Go (its GOROOT), a JDK
-        17 or newer (its JAVA_HOME, which must have `javac`: a runtime alone cannot build), and a
+        """Finds the toolchains the language indexers need, once, at setup.
+
+        Go (its GOROOT), a JDK 17 or newer (its JAVA_HOME, which must have `javac`: a runtime alone cannot build), and a
         .NET SDK 8 or newer (the directory holding `dotnet`). Maven and Gradle are recorded
         beside the JDK when they are installed (their homes, which hold `bin/mvn`, `bin/gradle`).
 
@@ -298,12 +300,12 @@ class CodeIndexSetup:
         go = shutil.which("go")
         if go:
             goroot = (cls._version_of([go, "env", "GOROOT"]) or "").strip()
-            if goroot and Path(os.path.join(goroot, "bin", "go")).is_file():
+            if goroot and (Path(goroot) / "bin" / "go").is_file():
                 found["go"] = os.path.realpath(goroot)
         java_home = os.environ.get("JAVA_HOME")
-        javac = os.path.join(java_home, "bin", "javac") if java_home else shutil.which("javac")
+        javac = str(Path(java_home) / "bin" / "javac") if java_home else shutil.which("javac")
         if javac and Path(javac).is_file():
-            home = os.path.dirname(os.path.dirname(os.path.realpath(javac)))
+            home = str(Path(os.path.realpath(javac)).parent.parent)
             match = re.search(r"javac (\d+)", cls._version_of([javac, "-version"]) or "")
             if match and int(match.group(1)) >= MIN_JAVA:
                 found["java"] = home
@@ -311,27 +313,28 @@ class CodeIndexSetup:
             path = shutil.which(executable)
             if path:
                 # `/usr/bin/mvn` is a chain of links to the real `<home>/bin/mvn`.
-                tool_home = os.path.dirname(os.path.dirname(os.path.realpath(path)))
-                if Path(os.path.join(tool_home, "bin", executable)).is_file():
+                tool_home = str(Path(os.path.realpath(path)).parent.parent)
+                if (Path(tool_home) / "bin" / executable).is_file():
                     found[name] = tool_home
         dotnet = shutil.which("dotnet")
         if dotnet:
             major = cls.dotnet_major(dotnet)
             if major is not None and major >= MIN_DOTNET:
-                found["dotnet"] = os.path.dirname(os.path.realpath(dotnet))
+                found["dotnet"] = str(Path(os.path.realpath(dotnet)).parent)
         return found
 
     @classmethod
     def record_toolchains(cls, found: dict[str, str]) -> None:
-        """Records each toolchain as a link under the indexers directory, the way `node` is, and
-        removes the link of one no longer found, so `ragon-code` never runs a stale path.
+        """Records each toolchain as a link under the indexers directory, the way `node` is.
+
+        The link of one no longer found is removed, so `ragon-code` never runs a stale path.
 
         Args:
             found (Dict[str, str]): From `find_toolchains`.
         """
         Path(INDEXERS_DIR).mkdir(exist_ok=True, parents=True)
         for name in sorted(set(TOOLCHAIN_OF.values()) | set(BUILD_TOOLS)):
-            link = os.path.join(INDEXERS_DIR, name)
+            link = str(Path(INDEXERS_DIR) / name)
             if name in found:
                 staging = f"{link}.new"
                 if os.path.lexists(staging):
@@ -354,9 +357,10 @@ class CodeIndexSetup:
 
     @classmethod
     def install_npm_indexers(cls) -> bool:
-        """Installs scip-python and scip-typescript from the committed lockfile, with `npm ci --ignore-scripts` (the
-        lockfile's integrity hashes are checked; no package script runs), and records which
-        `node` runs it, so the index never looks Node.js up on PATH.
+        """Installs scip-python and scip-typescript from the committed lockfile.
+
+        It runs `npm ci --ignore-scripts` (the lockfile's integrity hashes are checked; no package
+        script runs), and records which `node` runs it, so the index never looks Node.js up on PATH.
 
         Returns:
             bool: True if both are installed afterwards; False without Node.js, which keeps Python,
@@ -371,7 +375,7 @@ class CodeIndexSetup:
             return False
         Path(INDEXERS_DIR).mkdir(exist_ok=True, parents=True)
         for name in ("package.json", "package-lock.json"):
-            shutil.copy2(os.path.join(INDEXERS_SOURCE_DIR, name), os.path.join(INDEXERS_DIR, name))
+            shutil.copy2(Path(INDEXERS_SOURCE_DIR) / name, Path(INDEXERS_DIR) / name)
         print("⬇️  scip-python and scip-typescript (npm ci, pinned by package-lock.json)")
         result = subprocess.run(
             [npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
@@ -381,7 +385,7 @@ class CodeIndexSetup:
         if result.returncode != 0:
             print("❌ npm ci failed; see its output above")
             return False
-        link = os.path.join(INDEXERS_DIR, "node")
+        link = str(Path(INDEXERS_DIR) / "node")
         staging = f"{link}.new"
         if os.path.lexists(staging):
             Path(staging).unlink()

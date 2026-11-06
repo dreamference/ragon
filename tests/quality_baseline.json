@@ -156,15 +156,11 @@
    "D205": 3
   },
   "dreamference/cli/code_index_setup.py": {
-   "D205": 4,
    "E501": 2,
    "PLR0911": 1,
    "PLR1702": 2,
    "PLR2004": 3,
    "PQ001": 1,
-   "PTH118": 19,
-   "PTH119": 1,
-   "PTH120": 6,
    "RET504": 1
   },
   "dreamference/cli/dreamference_cli_controller.py": {
@@ -979,5 +975,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 2304
+ "total": 2274
 }
