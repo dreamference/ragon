@@ -28,6 +28,8 @@ SGLang v0.5.21 has a per-request thinking budget (`max_thinking_tokens`, enforce
 
 Codex builds the request body and offers no way to change it. What its extension API lets the launcher add is `client_metadata`, so the launcher names the cap there (`ragon_max_output_tokens`, with `ragon_surface` and, for the arm, `ragon_sampling`), and the model gate, which reads each `/v1/responses` body sent whole and under 64 MB (anything else streams through untouched, as before), sets `max_output_tokens` (and the arm's sampling fields) **only where the body has none**. A body with no `ragon_*` key is passed on byte for byte. The gate's probe answers `loop_guard: 1` when it has these rules.
 
+**The workload hint.** On a server whose `/v1/models` says `owned_by: ragon-engine`, and only there, `client_metadata` also carries `ragon_workload`, the kind of work the request is, so the engine can pick the drafter that serves it fastest. Work and the TUI send `work`, Ask `ask`, phone threads `phone`, each from the surface above. `ragon exec` sends nothing of its own; `DREAMFERENCE_RAGON_WORKLOAD` names one of the six values (`work`, `ask`, `phone`, `swe-bench`, `night`, `general`) and wins over the surface, so Night Shift sends `night` and SWE-bench `swe-bench`. An unknown value sends none. The key sits at the top level of `client_metadata`, where the extension API puts it. The hint attaches no interceptor, the gate does not act on it, and it changes no output.
+
 ## The detector
 
 Three checks on the text of each streamed reasoning item and each answer (`ragon-rs/loop-guard`), counted in *pieces*, the Qwen pre-tokenizer's splits, which count close to tokens without the vocabulary:
