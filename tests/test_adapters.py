@@ -980,7 +980,10 @@ def test_a_node_refuses_an_adapter_whose_file_changed_in_transit_and_cleans_up(
     from dreamference.node.node_adapter_sync import NodeAdapterSync
 
     folder = staged_repo(tmp_path, keys)
-    weights = next(p for p in (folder / "snapshots" / COMMIT).iterdir() if p.is_file())
+    # The weights by name: directory order differs between file systems, and a changed manifest or
+    # config is a different path.
+    monkeypatch.setattr(AdapterVerifier, "served_base", classmethod(lambda cls, h, m: None))
+    weights = folder / "snapshots" / COMMIT / "adapter_model.safetensors"
     weights.write_bytes(weights.read_bytes() + b"x")
     monkeypatch.setattr("sys.stdin", Stdin(adapter_tar(folder)))
     assert NodeAdapterSync.receive(["rust", ADAPTER_REPO, COMMIT, "100000"]) != 0
