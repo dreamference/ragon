@@ -11,7 +11,6 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::agent;
 use crate::airgapped::Level;
 use crate::node_locator::Node;
 
@@ -327,47 +326,8 @@ pub fn search_with(
     if let Some(cache) = &cache {
         std::thread::sleep(cache.reserve(now));
     }
-    let endpoint = format!("{}/search", base_url.trim_end_matches('/'));
-    let mut request = agent(None)
-        .get(&endpoint)
-        .query("q", query)
-        .query("format", "json")
-        .query("categories", options.searxng_category())
-        .query("language", &options.language);
-    if !time_range.is_empty() {
-        request = request.query("time_range", time_range);
-    }
-    let response = request.set("Accept", "application/json").call();
-    let body = match response {
-        Ok(response) => response.into_string(),
-        Err(ureq::Error::Status(status, response)) => {
-            return Err(SearchError {
-                error: format!(
-                    "SearXNG at {base_url} answered HTTP {status} {}",
-                    response.status_text()
-                ),
-                hint: if status == 403 {
-                    Some(JSON_FORMAT_HINT.to_string())
-                } else {
-                    Some(UNAVAILABLE_HINT.to_string())
-                },
-            });
-        }
-        Err(error) => {
-            return Err(SearchError {
-                error: format!("SearXNG at {base_url} is unreachable: {error}"),
-                hint: Some(start_hint(node)),
-            });
-        }
-    };
-    let payload = body
-        .ok()
-        .and_then(|body| serde_json::from_str::<Value>(&body).ok())
-        .filter(Value::is_object)
-        .ok_or_else(|| SearchError {
-            error: format!("SearXNG at {base_url} did not return JSON"),
-            hint: Some(JSON_FORMAT_HINT.to_string()),
-        })?;
+    let backend = crate::backend::chosen(base_url, node);
+    let payload = backend.fetch(query, options)?;
     let found = from_searxng(query, &payload, max_results, level)?;
     let worth_keeping = found.result_count > 0 || !found.answers.is_empty();
     if let Some(cache) = cache.as_ref().filter(|_| worth_keeping) {

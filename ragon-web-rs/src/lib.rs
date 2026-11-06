@@ -16,6 +16,7 @@
 //! says so at the function.
 
 pub use ragon_airgapped as airgapped;
+pub mod backend;
 pub mod cache;
 pub mod fetch;
 pub mod html_text;
