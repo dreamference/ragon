@@ -381,8 +381,8 @@ fn search_reports_every_failed_engine() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         stdout(&output),
-        "❌ SearXNG could not reach any search engine: brave: CAPTCHA; startpage: timeout\n\
-         💡 Web search is unavailable for now: the search engines are refusing this machine's queries, which usually passes within hours. Do not try to fix it or restart anything. If you know a page that answers the question, read it with ragon-fetch (for example: ragon-fetch \"https://en.wikipedia.org/wiki/Lisbon\"); otherwise tell the user that web search is unavailable at the moment.\n"
+        "❌ SearXNG could not reach any search engine: brave: CAPTCHA (asks for a human check); startpage: timeout (timed out)\n\
+         💡 Web search is unavailable for now: the search engines are refusing this machine's queries, which usually passes within hours. Do not try to fix it or restart anything. If you know a page that answers the question, read it with ragon-fetch (for example: ragon-fetch \"https://en.wikipedia.org/wiki/Lisbon\"); otherwise tell the user that web search is unavailable at the moment. An engine asking for a human check will not answer an agent; waiting does not help right away, so use a page you know. A timed-out engine may answer a shorter query a few minutes later; try once more, then stop.\n"
     );
 }
 

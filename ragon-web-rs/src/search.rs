@@ -34,6 +34,62 @@ pub const JSON_FORMAT_HINT: &str = "SearXNG's settings do not enable its JSON AP
 /// (`SEARCH_UNAVAILABLE_HINT` in `dreamference/mcp_server/web_tools.py`).
 pub const UNAVAILABLE_HINT: &str = "Web search is unavailable for now: the search engines are refusing this machine's queries, which usually passes within hours. Do not try to fix it or restart anything. If you know a page that answers the question, read it with ragon-fetch (for example: ragon-fetch \"https://en.wikipedia.org/wiki/Lisbon\"); otherwise tell the user that web search is unavailable at the moment.";
 
+/// Why one engine did not answer, as far as SearXNG's reason string tells.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cause {
+    RateLimited,
+    Captcha,
+    TimedOut,
+    Other,
+}
+
+impl Cause {
+    /// Classifies a SearXNG `unresponsive_engines` reason.
+    pub fn of(reason: &str) -> Cause {
+        let reason = reason.to_lowercase();
+        if reason.contains("captcha") {
+            Cause::Captcha
+        } else if reason.contains("too many requests")
+            || reason.contains("429")
+            || reason.contains("suspended")
+            || reason.contains("rate")
+        {
+            Cause::RateLimited
+        } else if reason.contains("timeout") || reason.contains("timed out") {
+            Cause::TimedOut
+        } else {
+            Cause::Other
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Cause::RateLimited => "rate-limited",
+            Cause::Captcha => "asks for a human check",
+            Cause::TimedOut => "timed out",
+            Cause::Other => "refused",
+        }
+    }
+
+    /// What to do next for this cause. There is no fallback to another service.
+    fn next_step(self) -> &'static str {
+        match self {
+            Cause::RateLimited => {
+                "Rate-limited engines come back on their own after a while; do not retry the same query in a loop."
+            }
+            Cause::Captcha => {
+                "An engine asking for a human check will not answer an agent; waiting does not help right away, so use a page you know."
+            }
+            Cause::TimedOut => {
+                "A timed-out engine may answer a shorter query a few minutes later; try once more, then stop."
+            }
+            Cause::Other => {
+                "The engine refused for a reason SearXNG did not classify; its wording is above."
+            }
+        }
+    }
+}
+
 /// The categories `--category` accepts, each a SearXNG category of the settings `ragon-admin
 /// searxng start` writes (`dreamference/chat/searxng_settings.py`), with what it searches. A
 /// general search asks the web engines and Wikipedia only, so that package names, papers and
@@ -495,23 +551,37 @@ pub fn from_searxng(
         // Every engine failed, which is not the same as the web having nothing to say. A SearXNG
         // container whose DNS had gone stale once answered every query with zero results, and the
         // agent concluded the topic had no coverage.
+        let mut causes: Vec<Cause> = Vec::new();
         let reasons: Vec<String> = failed
             .iter()
             .map(|engine| match engine.as_array().map(Vec::as_slice) {
-                Some([name, reason, ..]) => format!(
-                    "{}: {}",
-                    name.as_str().unwrap_or_default(),
-                    reason.as_str().unwrap_or_default()
-                ),
+                Some([name, reason, ..]) => {
+                    let reason = reason.as_str().unwrap_or_default();
+                    let cause = Cause::of(reason);
+                    if !causes.contains(&cause) {
+                        causes.push(cause);
+                    }
+                    format!(
+                        "{}: {} ({})",
+                        name.as_str().unwrap_or_default(),
+                        reason,
+                        cause.label()
+                    )
+                }
                 _ => engine.to_string(),
             })
             .collect();
+        let mut hint = UNAVAILABLE_HINT.to_string();
+        for cause in &causes {
+            hint.push(' ');
+            hint.push_str(cause.next_step());
+        }
         return Err(SearchError {
             error: format!(
                 "SearXNG could not reach any search engine: {}",
                 reasons.join("; ")
             ),
-            hint: Some(UNAVAILABLE_HINT.to_string()),
+            hint: Some(hint),
         });
     }
     Ok(SearchPayload {
@@ -614,9 +684,20 @@ mod tests {
         let error = from_searxng("q", &payload, 5, Level::Off).unwrap_err();
         assert_eq!(
             error.error,
-            "SearXNG could not reach any search engine: brave: Suspended: too many requests; duckduckgo: CAPTCHA"
+            "SearXNG could not reach any search engine: brave: Suspended: too many requests (rate-limited); duckduckgo: CAPTCHA (asks for a human check)"
         );
-        assert_eq!(error.hint.as_deref(), Some(UNAVAILABLE_HINT));
+        let hint = error.hint.unwrap();
+        assert!(hint.starts_with(UNAVAILABLE_HINT));
+        assert!(hint.contains("Rate-limited engines") && hint.contains("human check"));
+        assert!(!hint.contains("shorter query"));
+    }
+
+    #[test]
+    fn causes_are_told_apart() {
+        assert_eq!(Cause::of("HTTP error 429"), Cause::RateLimited);
+        assert_eq!(Cause::of("CAPTCHA"), Cause::Captcha);
+        assert_eq!(Cause::of("timeout"), Cause::TimedOut);
+        assert_eq!(Cause::of("server error"), Cause::Other);
     }
 
     fn remote() -> Node {
