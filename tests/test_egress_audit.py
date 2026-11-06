@@ -875,6 +875,36 @@ def test_the_chat_bridge_is_named_with_discord_set_up(monkeypatch, tmp_path):
     assert names == ["Telegram", "Discord"]
 
 
+def _dns_trace(*names):
+    trace = EgressTrace()
+    trace.dns_servers = {"10.0.0.1:53": 1}
+    trace.dns_names = dict.fromkeys(names, 1)
+    trace.processes = {"ragon": 1}
+    return trace
+
+
+def test_with_discord_on_exactly_its_hosts_pass_the_audit(monkeypatch, tmp_path):
+    from dreamference.audit.egress_audit import DISCORD_HOSTS
+
+    _chat_files(monkeypatch, tmp_path, {"discord.json": {"token": "d"}})
+    _fake_units(monkeypatch, {"ragon-chat.service"})
+    hosts = EgressAudit.discord_hosts()
+    assert hosts == DISCORD_HOSTS
+    assert EgressAudit.judge(_dns_trace(*hosts), {}, True, hosts).status == PASS
+    other = EgressAudit.judge(_dns_trace("discord.com", "example.org"), {}, True, hosts)
+    assert other.status == FAIL and "example.org" in other.problems[0]
+    line = EgressAudit.declared_exceptions()[0]
+    assert "Discord bridge enabled" in line and "gateway.discord.gg" in line
+
+
+def test_with_discord_off_a_connection_to_its_hosts_fails_the_audit(monkeypatch, tmp_path):
+    _chat_files(monkeypatch, tmp_path, {"discord.json": {"token": "d"}})
+    _fake_units(monkeypatch, set())
+    assert EgressAudit.discord_hosts() == ()
+    verdict = EgressAudit.judge(_dns_trace("discord.com"), {}, True, EgressAudit.discord_hosts())
+    assert verdict.status == FAIL and "discord.com" in verdict.problems[0]
+
+
 def test_the_matrix_homeserver_is_named_with_its_push_setting(monkeypatch, tmp_path):
     _chat_files(
         monkeypatch, tmp_path, {"matrix-admin.json": {"server_name": "n.ts.net", "push": False}}

@@ -106,6 +106,16 @@ SIGNAL_UNIT: Final[str] = "ragon-signal.service"
 SIGNAL_INSTANCE_PREFIX: Final[str] = "ragon-signal@"
 SIGNAL_INSTANCE_SUFFIX: Final[str] = ".service"
 
+# The hosts Discord's bridge may resolve while it is on (specs/DREAMFERENCE_RAGON_DISCORD.md §7):
+# the REST API, the Gateway, and the two attachment hosts. Nothing else is allowed, and with the
+# bridge off none of them is.
+DISCORD_HOSTS: Final[tuple[str, ...]] = (
+    "discord.com",
+    "gateway.discord.gg",
+    "cdn.discordapp.com",
+    "media.discordapp.net",
+)
+
 # Remote access (specs/DREAMFERENCE_RAGON_REMOTE_ACCESS.md §6): the node's tunnel to its box.
 REMOTE_TUNNEL_UNIT: Final[str] = "ragon-remote-tunnel.service"
 # The messenger bridge (specs/DREAMFERENCE_RAGON_CHAT.md): `ragon chat start`'s user unit, and the
@@ -153,7 +163,13 @@ class EgressAudit:
         }
 
     @classmethod
-    def judge(cls, trace: EgressTrace, allowed: dict[int, str], replied: bool) -> EgressVerdict:
+    def judge(
+        cls,
+        trace: EgressTrace,
+        allowed: dict[int, str],
+        replied: bool,
+        bridge_hosts: tuple[str, ...] = (),
+    ) -> EgressVerdict:
         """Decides the verdict (§3.2).
 
         A pass needs every IP destination on loopback and on the allowlist, no DNS query, and no git
@@ -164,6 +180,8 @@ class EgressAudit:
             allowed (Dict[int, str]): The allowed loopback ports.
             replied (bool): Whether the session produced a reply. Without one nothing was shown,
                 and that is not a pass.
+            bridge_hosts (Tuple[str, ...]): Host names a bridge that is on may resolve
+                (`discord_hosts()`); any other name still fails.
 
         Returns:
             EgressVerdict: The verdict and its reasons.
@@ -184,6 +202,8 @@ class EgressAudit:
                     f"connected to {target} ({count}x): a local port that is not on the allowlist"
                 )
         for name, count in sorted(trace.dns_names.items()):
+            if name.rstrip(".").lower() in bridge_hosts:
+                continue
             problems.append(f"asked a resolver for {name} ({count}x)")
         if trace.dns_servers and not trace.dns_names:
             servers = ", ".join(sorted(trace.dns_servers))
@@ -704,6 +724,22 @@ class EgressAudit:
         return sorted(names)
 
     @classmethod
+    def discord_hosts(cls) -> tuple[str, ...]:
+        """The host names the Discord bridge may resolve: `DISCORD_HOSTS` while it is on, else none.
+
+        Returns:
+            Tuple[str, ...]: The allowed names; empty when the chat unit is not enabled or no
+                Discord token is set up.
+        """
+        if (
+            shutil.which("systemctl") is not None
+            and cls._unit_enabled(CHAT_UNIT, user=True)
+            and cls._chat_file("discord.json").get("token")
+        ):
+            return DISCORD_HOSTS
+        return ()
+
+    @classmethod
     def declared_exceptions(cls) -> list[str]:
         """Name what the user turned on that reaches outside this machine by design.
 
@@ -751,7 +787,8 @@ class EgressAudit:
         if cls._unit_enabled(CHAT_UNIT, user=True) and cls._chat_file("discord.json").get("token"):
             lines.append(
                 f"Discord bridge enabled ({CHAT_UNIT}): `ragon chat serve` connects to "
-                "Discord's Gateway and API, outside this trace. "
+                "Discord's Gateway and API, outside this trace; its hosts are the only names an audit then allows "
+                f"({', '.join(DISCORD_HOSTS)}). "
                 "`ragon chat discord off` or `ragon chat stop` turns it off."
             )
         if cls._unit_enabled(MATRIX_PROXY_UNIT, user=True):
@@ -1009,7 +1046,7 @@ class EgressAudit:
             trace, replied, _ = cls.trace_session(
                 ragon_bin, vllm_host, prompt or DEFAULT_PROMPT, work_dir, session, app_bin
             )
-            verdict = cls.judge(trace, allowed, replied)
+            verdict = cls.judge(trace, allowed, replied, cls.discord_hosts())
             if page and verdict.status == PASS and not page.loaded():
                 verdict = EgressVerdict(
                     TRACE_FAILED,
