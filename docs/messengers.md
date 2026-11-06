@@ -320,3 +320,5 @@ is the same as from any browser: `ragon web pair`, or a code confirmed from Sign
 `ragon chat status` lists the paired accounts, `ragon chat discord users` and
 `ragon chat discord remove <id>` manage them, and `ragon chat discord off` deletes the token and the
 pairings and withdraws the bot's commands. Delete the application in the Developer Portal as well.
+
+While Discord is on, the node reaches Discord's servers outbound only (no inbound port, no webhook). Four names are looked up: `discord.com`, `gateway.discord.gg`, `cdn.discordapp.com` and `media.discordapp.net`; `ragon-admin audit egress` expects exactly those and no others. With `/airgapped on` the bridge pauses.
