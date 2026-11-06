@@ -2356,3 +2356,41 @@ def test_a_home_that_cannot_be_written_is_named_before_anything_is_downloaded(
     assert "cannot write" in result.stdout + result.stderr
     assert "mkdir:" not in result.stdout + result.stderr
     assert not [r for r in server.requests if "releases" in r]
+
+
+def test_signing_follows_the_reset_numbering_for_every_tag(tmp_path, release_server):
+    # The numbering restarted at 0.9.0: 0.9.x, a pre-release of it and 1.0.0 are all signed
+    # releases, and an unsigned one of any of them is refused.
+    for tag in ("v0.9.1", "v0.9.1-rc.1", "v1.0.0", "v1.9.0"):
+        result = run_install(
+            tmp_path, release_server(binaries(signed=False), tag=tag), "--role", "client"
+        )
+        assert result.returncode == 1, tag
+        assert f"the latest release ({tag}) is not signed" in result.stderr, tag
+        assert nothing_installed(tmp_path)
+
+
+def test_an_older_release_installs_over_a_newer_one_in_both_numberings(tmp_path, release_server):
+    # Updates and rollbacks do not compare with what is installed: the installer installs the
+    # release it is given (the latest, or --version), whatever is there now.
+    for first, second in (("v1.0.0", "v0.9.1"), ("v1.9.0", "v0.9.1"), ("v0.9.1", "v1.0.0")):
+        assert (
+            run_install(
+                tmp_path,
+                release_server(binaries(), tag=first),
+                "--role",
+                "client",
+                "--version",
+                first,
+            ).returncode
+            == 0
+        ), first
+        result = run_install(
+            tmp_path,
+            release_server(binaries(), tag=second),
+            "--role",
+            "client",
+            "--version",
+            second,
+        )
+        assert result.returncode == 0, (first, second, result.stdout + result.stderr)

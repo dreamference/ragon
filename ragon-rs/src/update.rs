@@ -100,6 +100,10 @@ pub fn decide(current: Option<&str>, latest: &str) -> Decision {
         return Decision::UpToDate;
     }
     match (semver::Version::parse(current), semver::Version::parse(latest)) {
+        // The numbering was reset to 0.x when the project moved to its own release repository,
+        // so a 1.x or later build against a 0.x release comes from the old numbering, not from
+        // the future: the release is authoritative and installs (a rollback works the same way).
+        (Ok(current), Ok(latest)) if latest.major == 0 && current.major >= 1 => Decision::Install,
         (Ok(current), Ok(latest)) if current > latest => Decision::NewerThanRelease,
         (Ok(current), Ok(latest)) if current == latest => Decision::UpToDate,
         _ => Decision::Install,
@@ -1031,6 +1035,12 @@ mod tests {
         assert_eq!(decide(Some("0.10.0"), "0.9.1"), Decision::NewerThanRelease);
         assert_eq!(decide(Some("0.9.1-rc.1"), "0.9.1"), Decision::Install);
         assert_eq!(decide(None, "0.9.1"), Decision::Install);
+        // An install from the old numbering is not "newer" than the reset releases.
+        assert_eq!(decide(Some("1.9.0"), "0.9.1"), Decision::Install);
+        assert_eq!(decide(Some("2.0.0"), "0.9.1"), Decision::Install);
+        // Once releases reach 1.x, a build ahead of the latest is still newer.
+        assert_eq!(decide(Some("1.1.0"), "1.0.0"), Decision::NewerThanRelease);
+        assert_eq!(decide(Some("0.9.0"), "1.0.0"), Decision::Install);
     }
 
     #[test]
