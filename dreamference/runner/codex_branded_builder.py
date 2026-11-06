@@ -38,9 +38,9 @@ import tomllib
 from pathlib import Path
 from typing import Final
 
-REPO_ROOT: Final[str] = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CODEX_SUBMODULE_DIR: Final[str] = os.path.join(REPO_ROOT, "codex")
-CODEX_PATCH_DIR: Final[str] = os.path.join(REPO_ROOT, "codex-patches")
+REPO_ROOT: Final[str] = str(Path(__file__).absolute().parents[2])
+CODEX_SUBMODULE_DIR: Final[str] = str(Path(REPO_ROOT, "codex"))
+CODEX_PATCH_DIR: Final[str] = str(Path(REPO_ROOT, "codex-patches"))
 
 # The exported workspace's lockfile: upstream's own pins plus those of the crates ragon-rs/ brings in,
 # which upstream's lock cannot hold. Without it every build resolved ragon-rs's third-party crates
@@ -53,16 +53,16 @@ CODEX_LOCKFILE_COMMIT: Final[str] = "064c6b8c737f5b41d171fdda80bd9ef10ad06eb3"
 
 # The launcher crate. It is Dreamference's own Rust, so it lives here as source rather than inside a
 # patch, and is copied into the exported tree where patch 0002's dependency line expects it.
-RAGON_CRATE_DIR: Final[str] = os.path.join(REPO_ROOT, "ragon-rs")
-RAGON_CRATE_DEST: Final[str] = os.path.join("codex-rs", "ragon")
+RAGON_CRATE_DIR: Final[str] = str(Path(REPO_ROOT, "ragon-rs"))
+RAGON_CRATE_DEST: Final[str] = str(Path("codex-rs", "ragon"))
 
 # The release the patches are written against. The submodule is pinned to this tag's commit; the
 # constant exists so a mismatch can be reported by name rather than as a hunk that fails to apply.
 CODEX_RELEASE_TAG: Final[str] = "rust-v0.158.0"
 
 # Cargo's target directory inside it holds several hundred compiled dependencies.
-BUILD_CACHE_DIR: Final[str] = os.path.expanduser("~/.cache/dreamference/ragon-codex")
-INSTALL_DIR: Final[str] = os.path.expanduser("~/.local/share/dreamference/ragon")
+BUILD_CACHE_DIR: Final[str] = str(Path("~/.cache/dreamference/ragon-codex").expanduser())
+INSTALL_DIR: Final[str] = str(Path("~/.local/share/dreamference/ragon").expanduser())
 
 # Cargo still builds the binary as `codex` -- renaming the [[bin]] and `default-run` would be two
 # more patch hunks for a name the builder can simply give the file when it installs it. Codex's
@@ -72,15 +72,15 @@ BRANDED_EXECUTABLE_NAME: Final[str] = "ragon"
 
 # Where the user types `ragon`. A symlink rather than a copy, because Codex finds
 # codex-code-mode-host next to its own executable, and it resolves that through the link.
-PATH_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon")
+PATH_LINK: Final[str] = str(Path("~/.local/bin/ragon").expanduser())
 
 # Where `ragon-admin` and the web commands become reachable from any shell -- including the one
 # `ragon` runs the model's commands in. The prompt tells the model to use `ragon-search`,
 # `ragon-fetch` and `ragon-admin gmail` for web and mail access, but the commands only existed
 # inside the repository's virtualenv, so every such call ended in "command not found" (exit 127).
-ADMIN_PATH_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon-admin")
-SEARCH_PATH_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon-search")
-FETCH_PATH_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon-fetch")
+ADMIN_PATH_LINK: Final[str] = str(Path("~/.local/bin/ragon-admin").expanduser())
+SEARCH_PATH_LINK: Final[str] = str(Path("~/.local/bin/ragon-search").expanduser())
+FETCH_PATH_LINK: Final[str] = str(Path("~/.local/bin/ragon-fetch").expanduser())
 
 # The delegation plugin starts `ragon-delegate mcp`, not `ragon delegate mcp`: the installed `ragon` can be
 # replaced by an older pinned build (the benchmark harness does) that has no `delegate` command.
@@ -90,29 +90,29 @@ DELEGATE_PATH_LINK: Final[str] = str(Path.home() / ".local" / "bin" / "ragon-del
 # than part of the launcher, so changing them never relinks Codex, and a static binary rather than
 # a console script, so they do not depend on this virtualenv. Built with its own lockfile into its
 # own target directory, installed beside `ragon`, and stamped separately from the Codex build.
-WEB_CRATE_DIR: Final[str] = os.path.join(REPO_ROOT, "ragon-web-rs")
-WEB_BUILD_CACHE_DIR: Final[str] = os.path.expanduser("~/.cache/dreamference/ragon-web")
+WEB_CRATE_DIR: Final[str] = str(Path(REPO_ROOT, "ragon-web-rs"))
+WEB_BUILD_CACHE_DIR: Final[str] = str(Path("~/.cache/dreamference/ragon-web").expanduser())
 WEB_BUILD_STAMP_NAME: Final[str] = "web-build-key"
 WEB_BIN_NAMES: Final[tuple] = ("ragon-search", "ragon-fetch")
 
 # The code index router, `ragon-code` (specs/DREAMFERENCE_RAGON_CODE_INDEX.md §4.2): a crate of
 # its own for the same reasons as the web commands, built the same way. The prompt tells the model
 # to run it, so it is linked onto PATH beside the others.
-CODE_CRATE_DIR: Final[str] = os.path.join(REPO_ROOT, "ragon-code-rs")
-CODE_BUILD_CACHE_DIR: Final[str] = os.path.expanduser("~/.cache/dreamference/ragon-code-build")
+CODE_CRATE_DIR: Final[str] = str(Path(REPO_ROOT, "ragon-code-rs"))
+CODE_BUILD_CACHE_DIR: Final[str] = str(Path("~/.cache/dreamference/ragon-code-build").expanduser())
 CODE_BUILD_STAMP_NAME: Final[str] = "code-build-key"
 CODE_BIN_NAMES: Final[tuple] = ("ragon-code",)
-CODE_PATH_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon-code")
+CODE_PATH_LINK: Final[str] = str(Path("~/.local/bin/ragon-code").expanduser())
 
 # The local file index, `ragon-docs` (specs/DREAMFERENCE_RAGON_LOCAL_INDEX.md §6): a crate of
 # its own built the same way. It loads PDFium, ONNX Runtime and its embedding model at run time;
 # `DocsIndexSetup` installs those beside it, pinned, since ragon-docs itself opens no socket. It
 # runs its indexing in systemd scopes inside bwrap, so it is built on Linux only.
-DOCS_CRATE_DIR: Final[str] = os.path.join(REPO_ROOT, "ragon-docs-rs")
-DOCS_BUILD_CACHE_DIR: Final[str] = os.path.expanduser("~/.cache/dreamference/ragon-docs-build")
+DOCS_CRATE_DIR: Final[str] = str(Path(REPO_ROOT, "ragon-docs-rs"))
+DOCS_BUILD_CACHE_DIR: Final[str] = str(Path("~/.cache/dreamference/ragon-docs-build").expanduser())
 DOCS_BUILD_STAMP_NAME: Final[str] = "docs-build-key"
 DOCS_BIN_NAMES: Final[tuple] = ("ragon-docs",)
-DOCS_PATH_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon-docs")
+DOCS_PATH_LINK: Final[str] = str(Path("~/.local/bin/ragon-docs").expanduser())
 
 # Windows (specs/DREAMFERENCE_RAGON_WINDOWS_ARM.md §16.1). Every executable carries `.exe`, and
 # there are no `~/.local/bin` links: install.ps1 puts the install directory itself on the user's
@@ -174,8 +174,8 @@ BUILD_STAMP_NAME: Final[str] = "build-key"
 # Vite build. Without it `/` serves a placeholder page, so every build of `ragon` builds the UI
 # first and refuses to go on without it. Its sources are part of the build key; its packages and
 # output are not.
-WEB_UI_DIR: Final[str] = os.path.join(REPO_ROOT, "desktop", "ui")
-WEB_UI_DIST: Final[str] = os.path.join(WEB_UI_DIR, "dist")
+WEB_UI_DIR: Final[str] = str(Path(REPO_ROOT, "desktop", "ui"))
+WEB_UI_DIST: Final[str] = str(Path(WEB_UI_DIR, "dist"))
 WEB_UI_IGNORED: Final[frozenset] = frozenset({"node_modules", "dist"})
 
 # Code Mode embeds V8. The `v8` crate's own build script downloads a prebuilt library from
@@ -203,7 +203,7 @@ class CodexBrandedBuilder:
         Returns:
             str: Absolute path to `ragon-codex`, whether or not it has been built yet.
         """
-        return os.path.join(INSTALL_DIR, "bin", BRANDED_EXECUTABLE_NAME + EXE_SUFFIX)
+        return str(Path(INSTALL_DIR, "bin", BRANDED_EXECUTABLE_NAME + EXE_SUFFIX))
 
     @classmethod
     def has_source(cls) -> bool:
@@ -231,7 +231,7 @@ class CodexBrandedBuilder:
         """
         return all(
             Path(path).is_file() and os.access(path, os.X_OK)
-            for path in (os.path.join(INSTALL_DIR, "bin", name + EXE_SUFFIX) for name in names)
+            for path in (str(Path(INSTALL_DIR, "bin", name + EXE_SUFFIX)) for name in names)
         )
 
     @classmethod
@@ -244,9 +244,9 @@ class CodexBrandedBuilder:
         if not Path(CODEX_PATCH_DIR).is_dir():
             return []
         return [
-            os.path.join(CODEX_PATCH_DIR, name)
-            for name in sorted(os.listdir(CODEX_PATCH_DIR))
-            if name.endswith(".patch")
+            str(patch)
+            for patch in sorted(Path(CODEX_PATCH_DIR).iterdir())
+            if patch.name.endswith(".patch")
         ]
 
     @classmethod
@@ -262,10 +262,7 @@ class CodexBrandedBuilder:
             text=True,
             check=False,
         )
-        if (
-            result.returncode != 0
-            or not Path(os.path.join(CODEX_SUBMODULE_DIR, "codex-rs")).is_dir()
-        ):
+        if result.returncode != 0 or not Path(CODEX_SUBMODULE_DIR, "codex-rs").is_dir():
             return None
         return result.stdout.strip()
 
@@ -287,7 +284,7 @@ class CodexBrandedBuilder:
         digest.update(repr(sorted(RELEASE_PROFILE_OVERRIDES.items())).encode())
         digest.update(f"version={cls.ragon_version()}".encode())
         for patch in cls.patches():
-            digest.update(os.path.basename(patch).encode())
+            digest.update(Path(patch).name.encode())
             with Path(patch).open("rb") as handle:
                 digest.update(handle.read())
         digest.update(Path(CODEX_LOCKFILE).read_bytes())
@@ -314,7 +311,7 @@ class CodexBrandedBuilder:
         found: list[str] = []
         for root, dirs, files in os.walk(WEB_UI_DIR):
             dirs[:] = sorted(d for d in dirs if d not in WEB_UI_IGNORED)
-            found.extend(os.path.join(root, name) for name in sorted(files))
+            found.extend(str(Path(root, name)) for name in sorted(files))
         return found
 
     @classmethod
@@ -327,7 +324,7 @@ class CodexBrandedBuilder:
             Optional[str]: The build's folder, for `RAGON_WEB_UI_DIST`; None, having said why, when
                 it could not be built.
         """
-        if not Path(os.path.join(WEB_UI_DIR, "package.json")).is_file():
+        if not Path(WEB_UI_DIR, "package.json").is_file():
             print(f"❌ The Ragon UI's project is missing ({WEB_UI_DIR}); `ragon web` embeds it.")
             return None
         npm = shutil.which("npm")
@@ -356,7 +353,7 @@ class CodexBrandedBuilder:
         if subprocess.call([npm, "run", "build"], cwd=WEB_UI_DIR, env=environment) != 0:
             print("❌ The Ragon UI did not build; see its output above.")
             return None
-        if not Path(os.path.join(WEB_UI_DIST, "index.html")).is_file():
+        if not Path(WEB_UI_DIST, "index.html").is_file():
             print(f"❌ The UI's build wrote no index.html to {WEB_UI_DIST}.")
             return None
         return WEB_UI_DIST
@@ -383,7 +380,7 @@ class CodexBrandedBuilder:
         found: list[str] = []
         for root, dirs, files in os.walk(crate_dir):
             dirs[:] = sorted(d for d in dirs if d != "target")
-            found.extend(os.path.join(root, name) for name in sorted(files))
+            found.extend(str(Path(root, name)) for name in sorted(files))
         return found
 
     @classmethod
@@ -396,16 +393,16 @@ class CodexBrandedBuilder:
         if not cls.has_source():
             return cls.binaries_installed((BRANDED_EXECUTABLE_NAME, CODE_MODE_HOST_NAME))
         key = cls.build_key()
-        stamp = os.path.join(INSTALL_DIR, BUILD_STAMP_NAME)
+        stamp = str(Path(INSTALL_DIR, BUILD_STAMP_NAME))
         if key is None or not Path(stamp).is_file():
             return False
         with Path(stamp).open() as handle:
             if handle.read().strip() != key:
                 return False
-        host = os.path.join(INSTALL_DIR, "bin", CODE_MODE_HOST_NAME + EXE_SUFFIX)
+        host = str(Path(INSTALL_DIR, "bin", CODE_MODE_HOST_NAME + EXE_SUFFIX))
         required = [cls.executable_path(), host]
         if BUILDS_SIGNAL:
-            required.append(os.path.join(INSTALL_DIR, "bin", SIGNAL_BIN_NAME))
+            required.append(str(Path(INSTALL_DIR, "bin", SIGNAL_BIN_NAME)))
         if BUILDS_DELEGATE:
             required.append(str(Path(INSTALL_DIR) / "bin" / DELEGATE_BIN_NAME))
         return all(Path(path).is_file() and os.access(path, os.X_OK) for path in required)
@@ -455,7 +452,7 @@ class CodexBrandedBuilder:
         # though its content changed -- and the stale launcher gets linked in.
         shutil.copytree(
             RAGON_CRATE_DIR,
-            os.path.join(source_dir, RAGON_CRATE_DEST),
+            str(Path(source_dir, RAGON_CRATE_DEST)),
             ignore=shutil.ignore_patterns("target"),
             copy_function=shutil.copy,
         )
@@ -464,14 +461,14 @@ class CodexBrandedBuilder:
         for patch in cls.patches():
             # Checked first so a patch that does not fit leaves nothing half-applied behind it.
             if cls.git_apply(source_dir, "--check", patch).returncode != 0:
-                print(f"❌ {os.path.basename(patch)} does not apply to codex {commit[:12]}.")
+                print(f"❌ {Path(patch).name} does not apply to codex {commit[:12]}.")
                 print(
                     f"💡 The patches are written against {CODEX_RELEASE_TAG}; refresh them after a submodule bump."
                 )
                 return False
             cls.git_apply(source_dir, patch).check_returncode()
         return cls.stamp_version(
-            os.path.join(source_dir, "codex-rs", "Cargo.toml"), cls.ragon_version()
+            str(Path(source_dir, "codex-rs", "Cargo.toml")), cls.ragon_version()
         )
 
     @classmethod
@@ -656,7 +653,7 @@ class CodexBrandedBuilder:
         """
         import re
 
-        with Path(os.path.join(source_dir, "codex-rs", "Cargo.toml")).open() as handle:
+        with Path(source_dir, "codex-rs", "Cargo.toml").open() as handle:
             pinned = re.search(r'^v8 = "=([\d.]+)"', handle.read(), re.M)
         if pinned is None:
             print("❌ Could not find the v8 version pinned in codex-rs/Cargo.toml.")
@@ -687,7 +684,7 @@ class CodexBrandedBuilder:
             print(f"❌ The submodule pins no prebuilt V8 {version} for {target}.")
             return None
 
-        v8_dir = os.path.join(BUILD_CACHE_DIR, "rusty_v8", version)
+        v8_dir = str(Path(BUILD_CACHE_DIR, "rusty_v8", version))
         Path(v8_dir).mkdir(exist_ok=True, parents=True)
         base_url = RUSTY_V8_RELEASE_URL.format(version=version)
 
@@ -699,7 +696,7 @@ class CodexBrandedBuilder:
             return digest.hexdigest()
 
         def fetch(name: str, expected: str) -> str | None:
-            path = os.path.join(v8_dir, name)
+            path = str(Path(v8_dir, name))
             if Path(path).is_file() and sha256(path) == expected:
                 return path
             print(f"📥 Fetching {name}...")
@@ -797,7 +794,7 @@ class CodexBrandedBuilder:
         # build wait, and the re-check after it lets that one finish at once if the first build
         # already produced what it needed.
         Path(BUILD_CACHE_DIR).mkdir(exist_ok=True, parents=True)
-        with Path(os.path.join(BUILD_CACHE_DIR, ".build.lock")).open("w") as lock:
+        with Path(BUILD_CACHE_DIR, ".build.lock").open("w") as lock:
             cls._lock_exclusive(lock)
             if not force and cls.is_current():
                 return True
@@ -847,7 +844,7 @@ class CodexBrandedBuilder:
             return False
 
         key = cls.build_key()
-        source_dir = os.path.join(BUILD_CACHE_DIR, "src")
+        source_dir = str(Path(BUILD_CACHE_DIR, "src"))
         if key is None or not cls.prepare_source(source_dir):
             return False
 
@@ -878,7 +875,7 @@ class CodexBrandedBuilder:
             "build",
             "--release",
             "--target-dir",
-            os.path.join(BUILD_CACHE_DIR, "target"),
+            str(Path(BUILD_CACHE_DIR, "target")),
             "-p",
             "codex-cli",
             "--bin",
@@ -909,20 +906,20 @@ class CodexBrandedBuilder:
         print(
             f"🔨 Building ragon (upstream {CODEX_RELEASE_TAG}, {len(cls.patches())} patches){cls._through(cached)}..."
         )
-        if subprocess.call(command, cwd=os.path.join(source_dir, "codex-rs"), env=environment) != 0:
+        if subprocess.call(command, cwd=str(Path(source_dir, "codex-rs")), env=environment) != 0:
             print("❌ The ragon build failed; see the cargo output above.")
             return False
 
-        release_dir = os.path.join(BUILD_CACHE_DIR, "target", "release")
-        bin_dir = os.path.join(INSTALL_DIR, "bin")
+        release_dir = str(Path(BUILD_CACHE_DIR, "target", "release"))
+        bin_dir = str(Path(INSTALL_DIR, "bin"))
         Path(bin_dir).mkdir(exist_ok=True, parents=True)
         for built, installed in installed_names:
             # Copied to a temporary name and renamed over the old one, so a running session keeps
             # its binary and a new one never sees a half-written file.
-            staging = os.path.join(bin_dir, f".{installed}.new")
-            shutil.copy2(os.path.join(release_dir, built + EXE_SUFFIX), staging)
-            Path(staging).replace(os.path.join(bin_dir, installed + EXE_SUFFIX))
-        with Path(os.path.join(INSTALL_DIR, BUILD_STAMP_NAME)).open("w") as handle:
+            staging = str(Path(bin_dir, f".{installed}.new"))
+            shutil.copy2(str(Path(release_dir, built + EXE_SUFFIX)), staging)
+            Path(staging).replace(str(Path(bin_dir, installed + EXE_SUFFIX)))
+        with Path(INSTALL_DIR, BUILD_STAMP_NAME).open("w") as handle:
             handle.write(f"{key}\n")
 
         cls.link_onto_path()
@@ -1086,7 +1083,7 @@ class CodexBrandedBuilder:
         """
         if not Path(crate_dir).is_dir():
             return cls.binaries_installed(bin_names)
-        stamp = os.path.join(INSTALL_DIR, stamp_name)
+        stamp = str(Path(INSTALL_DIR, stamp_name))
         if not Path(stamp).is_file():
             return False
         with Path(stamp).open() as handle:
@@ -1134,7 +1131,7 @@ class CodexBrandedBuilder:
             "--release",
             "--locked",
             "--target-dir",
-            os.path.join(cache_dir, "target"),
+            str(Path(cache_dir, "target")),
         ]
         for name in bin_names:
             command += ["--bin", name]
@@ -1143,9 +1140,9 @@ class CodexBrandedBuilder:
         key = cls.crate_key(crate_dir)
         print(f"🔨 Building {', '.join(bin_names)}{cls._through(cached)}...")
         if subprocess.call(command, cwd=crate_dir, env=environment) != 0:
-            print(f"❌ The {os.path.basename(crate_dir)} build failed; see the cargo output above.")
+            print(f"❌ The {Path(crate_dir).name} build failed; see the cargo output above.")
             return False
-        bin_dir = os.path.join(INSTALL_DIR, "bin")
+        bin_dir = str(Path(INSTALL_DIR, "bin"))
         Path(bin_dir).mkdir(exist_ok=True, parents=True)
         for name in bin_names:
             # Renamed over the old file, so a command running now keeps its binary. The staging
@@ -1153,15 +1150,13 @@ class CodexBrandedBuilder:
             fd, staging = tempfile.mkstemp(dir=bin_dir, prefix=f".{name}.", suffix=".new")
             os.close(fd)
             try:
-                shutil.copy2(
-                    os.path.join(cache_dir, "target", "release", name + EXE_SUFFIX), staging
-                )
-                Path(staging).replace(os.path.join(bin_dir, name + EXE_SUFFIX))
+                shutil.copy2(str(Path(cache_dir, "target", "release", name + EXE_SUFFIX)), staging)
+                Path(staging).replace(str(Path(bin_dir, name + EXE_SUFFIX)))
             except BaseException:
                 # A name of this install's own: left behind, it would stay there for good.
                 Path(staging).unlink(missing_ok=True)
                 raise
-        with Path(os.path.join(INSTALL_DIR, stamp_name)).open("w") as handle:
+        with Path(INSTALL_DIR, stamp_name).open("w") as handle:
             handle.write(f"{key}\n")
         cls.link_onto_path()
         print(f"✅ Installed {', '.join(bin_names)} in {bin_dir}")
@@ -1242,7 +1237,7 @@ class CodexBrandedBuilder:
         Returns:
             Optional[str]: Absolute path of the console script beside this interpreter, or None.
         """
-        candidate = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), name)
+        candidate = str(Path(sys.executable).absolute().parent / name)
         return candidate if Path(candidate).is_file() and os.access(candidate, os.X_OK) else None
 
     @classmethod
@@ -1269,7 +1264,7 @@ class CodexBrandedBuilder:
             ("ragon-docs", DOCS_PATH_LINK),
             (DELEGATE_BIN_NAME, DELEGATE_PATH_LINK),
         ):
-            binary = os.path.join(INSTALL_DIR, "bin", name)
+            binary = str(Path(INSTALL_DIR, "bin", name))
             if os.access(binary, os.X_OK):
                 cls._link(binary, link)
 
@@ -1284,7 +1279,7 @@ class CodexBrandedBuilder:
             target (str): What the link points at.
             link (str): Path of the link.
         """
-        Path(os.path.dirname(link)).mkdir(exist_ok=True, parents=True)
+        Path(link).parent.mkdir(exist_ok=True, parents=True)
         if os.path.lexists(link) and not Path(link).is_symlink():
             print(f"⚠️ {link} exists and is not a link; leaving it. Run {target} directly.")
             return
