@@ -7,3 +7,14 @@ pub fn run_cli(args: &[String]) -> i32 {
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "ragon".to_string());
     ragon_monitor::cli::run(args, &[exe, "monitor".to_string()])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wrapper_passes_the_exit_code_of_the_crate_through() {
+        assert_eq!(run_cli(&["--help".to_string()]), 0, "help succeeds");
+        assert_eq!(run_cli(&["help".to_string()]), 0);
+    }
+}

@@ -35,3 +35,16 @@ pub async fn run_cli(args: &[String]) -> i32 {
     let environment = ragon_web_server::Environment { codex_home, home, ragon, child_env: child_env() };
     ragon_web_server::run_cli(args, environment).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_app_server_child_is_pointed_at_the_configured_model_server() {
+        // One test owns the variable: the environment is shared by the whole test process.
+        unsafe { std::env::set_var("DREAMFERENCE_VLLM_HOST", "http://model.example:9000") };
+        assert_eq!(child_env(), vec![("DREAMFERENCE_VLLM_HOST".to_string(), "http://model.example:9000".to_string())]);
+        unsafe { std::env::remove_var("DREAMFERENCE_VLLM_HOST") };
+    }
+}
