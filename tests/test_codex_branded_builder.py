@@ -1921,3 +1921,22 @@ def test_the_export_names_its_extraction_filter_so_python_cannot_change_it(tmp_p
         warnings.simplefilter("error", DeprecationWarning)
         archive = _tar(("codex-rs/main.rs", None), ("codex-rs/LICENSE", "main.rs"))
         assert CodexBrandedBuilder.extract_archive(archive, str(tmp_path)) is True
+
+
+@pytest.mark.parametrize(
+    "target, sets_flag",
+    [("x86_64-pc-windows-msvc", True), ("aarch64-pc-windows-msvc", False)],
+)
+def test_a_windows_build_adds_the_sandbox_helpers_and_the_sqlite_flag_on_x86_64(
+    tmp_path, monkeypatch, target, sets_flag
+):
+    # The platform is mocked: nothing here touches the real machine.
+    calls, _ = _codex_build(tmp_path, monkeypatch)
+    monkeypatch.setattr(builder_module, "IS_WINDOWS", True)
+    monkeypatch.setattr(CodexBrandedBuilder, "host_target", classmethod(lambda cls: target))
+    assert CodexBrandedBuilder._build_locked() is True
+    ((command, env),) = calls
+    assert command[command.index(builder_module.WINDOWS_SANDBOX_PACKAGE) - 1] == "-p"
+    for helper in builder_module.WINDOWS_SANDBOX_HELPERS:
+        assert command[command.index(helper) - 1] == "--bin"
+    assert (env.get("LIBSQLITE3_FLAGS") == "SQLITE_DISABLE_INTRINSIC") is sets_flag
