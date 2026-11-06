@@ -7,11 +7,13 @@ builds for every engine -- the container name, the cgroup memory cap, the CPU li
 score, the mounts and the PSI watchdog -- so this class produces only what follows the image name.
 """
 
+import hashlib
+import json
 import os
 from typing import Any, Final
 
 from dreamference.hardware.model_matrix_registry import ENGINE_RAGON, ModelMatrixRegistry
-from dreamference.vllm_server.sglang_launch_builder import SGLangLaunchBuilder
+from dreamference.vllm_server.sglang_launch_builder import CONTAINER_HF_HUB_DIR, SGLangLaunchBuilder
 
 # The program in the image (docker/ragon-serve/Dockerfile), named after the image as SGLang's launch
 # names `python3 -m sglang.launch_server`.
@@ -22,6 +24,11 @@ RAGON_ENGINE_COMMIT_LABEL: Final[str] = "ai.dreamference.ragon-engine.commit"
 
 # ragon-serve's flag for captured CUDA graphs per speculative step.
 STEP_GRAPHS_FLAG: Final[str] = "--graphs"
+
+# The flags of several resident drafters (feature "multi-drafter"): `--drafter ID=DIR`, repeated, and the
+# routing table as a file. The file sits in the hub mount, named by the hash of its content.
+DRAFTER_FLAG: Final[str] = "--drafter"
+DRAFTER_ROUTES_FLAG: Final[str] = "--drafter-routes"
 
 # The engine feature (a recipe's `engine_features`) of the KV page pool, and ragon-serve's flag for it.
 KV_PAGES_FEATURE: Final[str] = "kv-pages"
@@ -133,7 +140,8 @@ class RagonServeLaunchBuilder:
         if max_model_len:
             args.extend(["--max-context", str(max_model_len)])
         speculative = recipe.get("speculative_config") or {}
-        if speculative.get("model"):
+        drafter_args = cls.drafter_args(recipe)
+        if speculative.get("model") and not drafter_args:
             args.extend(
                 [
                     "--draft",
@@ -142,11 +150,58 @@ class RagonServeLaunchBuilder:
                     ),
                 ]
             )
-            if speculative.get("num_speculative_tokens"):
-                args.extend(["--draft-block", str(speculative["num_speculative_tokens"])])
+        if speculative.get("model") and speculative.get("num_speculative_tokens"):
+            args.extend(["--draft-block", str(speculative["num_speculative_tokens"])])
+        args.extend(drafter_args)
         if KV_PAGES_FEATURE in (recipe.get("engine_features") or []):
             args.extend(cls._paged_engine_args(recipe))
         args.extend(str(a) for a in recipe.get("extra_args") or [])
+        return args
+
+    @classmethod
+    def drafter_routes_file(cls, recipe: dict[str, Any]) -> tuple[str, str] | None:
+        """The routing table as the file `--drafter-routes` reads.
+
+        Args:
+            recipe: The model's launch recipe.
+
+        Returns:
+            tuple[str, str] | None: The file's name (hash of its content) and its JSON text, or None
+            when the recipe holds no resident drafters.
+
+        Raises:
+            ValueError: A drafter pin or the routes are invalid (`ModelMatrixRegistry.drafters_of`).
+        """
+        if not ModelMatrixRegistry.drafters_of(recipe):
+            return None
+        text = json.dumps(recipe.get("drafter_routes") or {}, sort_keys=True, indent=2) + "\n"
+        return f"drafter-routes-{hashlib.sha256(text.encode()).hexdigest()[:16]}.json", text
+
+    @classmethod
+    def drafter_args(cls, recipe: dict[str, Any]) -> list[str]:
+        """The resident drafters' flags, from the recipe alone.
+
+        Args:
+            recipe: The model's launch recipe.
+
+        Returns:
+            list[str]: `--drafter ID=DIR` per drafter and `--drafter-routes FILE`; empty without the
+            "multi-drafter" feature or without drafters, so such a launch is unchanged.
+
+        Raises:
+            ValueError: A drafter pin or the routes are invalid.
+        """
+        drafters = ModelMatrixRegistry.drafters_of(recipe)
+        routes = cls.drafter_routes_file(recipe)
+        if not drafters or routes is None:
+            return []
+        args: list[str] = []
+        for drafter in drafters:
+            directory = SGLangLaunchBuilder.snapshot_path(
+                str(drafter["repo"]), drafter.get("revision")
+            )
+            args.extend([DRAFTER_FLAG, f"{drafter['id']}={directory}"])
+        args.extend([DRAFTER_ROUTES_FLAG, f"{CONTAINER_HF_HUB_DIR}/{routes[0]}"])
         return args
 
     @classmethod
