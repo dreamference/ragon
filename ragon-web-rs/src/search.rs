@@ -475,10 +475,13 @@ pub fn from_searxng(
                 .filter(|date| !date.is_empty())
                 .map(|date| date.chars().take(10).collect()),
         });
-    let results: Vec<SearchResult> = merge_duplicates(infoboxes.into_iter().take(1).chain(web))
-        .into_iter()
-        .take(limit)
-        .collect();
+    let results: Vec<SearchResult> = crate::rank::rank(
+        query,
+        merge_duplicates(infoboxes.into_iter().take(1).chain(web)),
+    )
+    .into_iter()
+    .take(limit)
+    .collect();
     let answers: Vec<Value> = payload["answers"].as_array().cloned().unwrap_or_default();
     let failed = payload["unresponsive_engines"]
         .as_array()

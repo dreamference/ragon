@@ -21,6 +21,7 @@ pub mod cache;
 pub mod fetch;
 pub mod html_text;
 pub mod node_locator;
+pub mod rank;
 pub mod read;
 pub mod search;
 pub mod share_links;
