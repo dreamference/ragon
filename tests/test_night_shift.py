@@ -1396,6 +1396,7 @@ def test_only_a_trailing_deleted_suffix_is_dropped(monkeypatch):
     }
 
     def readlink(path):
+        path = os.fspath(path)
         if path not in links:
             raise FileNotFoundError(path)
         return links[path]

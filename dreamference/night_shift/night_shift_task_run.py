@@ -90,6 +90,10 @@ NO_HOOKS: Final[tuple[str, str]] = ("-c", "core.hooksPath=/dev/null")
 TIMED_OUT: Final[str] = "timeout"
 DONE: Final[str] = "done"
 INTERRUPTED: Final[str] = "interrupted"
+ERRORED: Final[str] = "error"
+FAILED: Final[str] = "failed"
+WINDOW_CLOSED: Final[str] = "window"
+THREAD_STARTED: Final[str] = "thread.started"
 # The answers `commit_in_sandbox` asks `git rev-parse` for: common dir, hooks, worktree config, format.
 _PATHS_ASKED: Final[int] = 4
 _OBJECT_ID: Final[re.Pattern] = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -120,7 +124,9 @@ class NightShiftTaskRun:
         attempt: int | None = None,
         hint: str | None = None,
     ) -> None:
-        """Args:
+        """Set up the run of one task.
+
+        Args:
         night_dir: The queue directory.
         task: The task record as queued.
         settings: Night Shift settings.
@@ -216,8 +222,9 @@ class NightShiftTaskRun:
         return f"ragon-night-{self.task_id}"
 
     def run(self) -> str:
-        """Runs the task through every step of §5.3, rereading its record between steps so a
-        `/night drop` takes effect at the next one.
+        """Run the task through every step of §5.3.
+
+        Rereads its record between steps so a `/night drop` takes effect at the next one.
 
         Returns:
             str: The status written.
@@ -276,9 +283,9 @@ class NightShiftTaskRun:
                     prompt, refined, version=(self.refine_record or {}).get("version", "v1")
                 )
         outcome = self._exec(prompt, resume=bool(self.session))
-        if outcome == "interrupted":
+        if outcome == INTERRUPTED:
             return self._interrupted()
-        if outcome == "error" and not self._has_changes():
+        if outcome == ERRORED and not self._has_changes():
             return self._cleanup_and_finish(
                 "failed",
                 last_message=self._last_message() or "ragon exec exited with an error; see the log",
@@ -292,7 +299,7 @@ class NightShiftTaskRun:
             if self._cancelled():
                 return self._cleanup_and_finish("cancelled")
             self.nudges_used += 1
-            if self._exec(NUDGE, resume=True) == "interrupted":
+            if self._exec(NUDGE, resume=True) == INTERRUPTED:
                 return self._interrupted()
 
         if self._cancelled():
@@ -311,7 +318,7 @@ class NightShiftTaskRun:
             test_source = f"{test_source}; not run: {self.REFUSED_UNSEALED}"
         if self._cancelled():
             return self._cleanup_and_finish("cancelled")
-        if test_result and test_result.get("timed_out") == "window":
+        if test_result and test_result.get("timed_out") == WINDOW_CLOSED:
             return self._interrupted()
         return self._commit(test_command, test_source, test_result)
 
@@ -408,7 +415,7 @@ class NightShiftTaskRun:
         if session:
             record["study_session"] = session
         self.refine_record = record
-        if outcome == "interrupted":
+        if outcome == INTERRUPTED:
             return None
         try:
             refined = refined_path.read_text(errors="replace").strip()
@@ -472,7 +479,7 @@ class NightShiftTaskRun:
             self.session = session
             if self.attempt is None:
                 NightShiftQueue.transition(self.night_dir, self.task_id, "running", session=session)
-        if code == "timeout":
+        if code == TIMED_OUT:
             return "interrupted"
         return "ok" if code == 0 else "error"
 
@@ -514,7 +521,8 @@ class NightShiftTaskRun:
         sandboxed = self.USE_SANDBOX and self.settings.test_sandbox
         if level == SEALED and not self.settings.test_sandbox:
             return {"command": test_command, "refused": True}
-        command, extra_env = ["bash", "-c", test_command], {}
+        extra_env: dict[str, str] = {}
+        command = ["bash", "-c", test_command]
         if sandboxed:
             command, extra_env = self.sandboxed_test_command(
                 self.ragon_bin, test_command, level, self.session
@@ -540,7 +548,7 @@ class NightShiftTaskRun:
             )
         else:
             result["sandbox"] = "off ([night] test_sandbox = false)"
-        if code == "timeout":
+        if code == TIMED_OUT:
             window_over = time.time() >= self.deadline or self.stop_event.is_set()
             result["timed_out"] = "window" if window_over else "test_timeout"
             result["exit_code"] = None
@@ -822,7 +830,7 @@ class NightShiftTaskRun:
         self, status: str, note: str | None = None, result: dict[str, Any] | None = None
     ) -> str:
         result = dict(result or self._timing())
-        if status == "failed" and note:
+        if status == FAILED and note:
             result.setdefault("last_message", note)
         if self.attempt is not None:
             self.outcome = {"attempt": self.attempt, "status": status, "result": result}
@@ -875,8 +883,10 @@ class NightShiftTaskRun:
         append: bool = True,
         extra_env: dict[str, str] | None = None,
     ) -> Any:
-        """Runs `command` under the task's scope until it exits, the deadline passes, `timeout`
-        seconds pass or the runner asks it to stop; then SIGTERM, and SIGKILL 30 s later.
+        """Run `command` under the task's scope until it ends or must stop.
+
+        It ends when it exits, the deadline passes, `timeout` seconds pass or the runner asks
+        it to stop; then SIGTERM, and SIGKILL 30 s later.
 
         Args:
             command: The command line.
@@ -923,8 +933,9 @@ class NightShiftTaskRun:
         env[REFINE_ENV] = "off"
         if self.airgapped:
             env[AIRGAPPED_ENV] = self.airgapped
-        if getattr(self.settings, "prompt", None):
-            env[PROMPT_ENV] = self.settings.prompt
+        prompt = getattr(self.settings, "prompt", None)
+        if prompt:
+            env[PROMPT_ENV] = prompt
         env.update(extra_env or {})
         if self.remote:
             command = self.remote_sandbox(command, extra_env or {})
@@ -985,7 +996,7 @@ class NightShiftTaskRun:
         from dreamference.node.node_job import NodeJob
 
         self.home.mkdir(parents=True, exist_ok=True)
-        binaries = os.path.dirname(os.path.realpath(self.ragon_bin))
+        binaries = str(Path(os.path.realpath(self.ragon_bin)).parent)
         variables = {
             "PATH": f"{binaries}:/usr/local/bin:/usr/bin:/bin",
             "CODEX_HOME": str(self.home),
@@ -1163,7 +1174,7 @@ class NightShiftTaskRun:
                         event = json.loads(raw)
                     except ValueError:
                         continue
-                    if isinstance(event, dict) and event.get("type") == "thread.started":
+                    if isinstance(event, dict) and event.get("type") == THREAD_STARTED:
                         return event.get("thread_id")
         except OSError:
             return None

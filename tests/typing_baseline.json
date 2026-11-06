@@ -9,17 +9,10 @@
   "dreamference/night_shift/night_shift_chooser.py": {
    "var-annotated": 1
   },
-  "dreamference/night_shift/night_shift_remote.py": {
-   "union-attr": 2
-  },
   "dreamference/night_shift/night_shift_runner.py": {
    "arg-type": 2
   },
   "dreamference/night_shift/night_shift_scheduler.py": {
-   "var-annotated": 1
-  },
-  "dreamference/night_shift/night_shift_task_run.py": {
-   "assignment": 1,
    "var-annotated": 1
   },
   "dreamference/runner/codex_branded_builder.py": {
@@ -48,5 +41,5 @@
   }
  },
  "mypy": "2.4.0",
- "total": 29
+ "total": 25
 }

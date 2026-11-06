@@ -22,6 +22,11 @@ from dreamference.runner.codex_installer import CodexInstaller
 # Environment marker on every process a night run starts, so the run never mistakes its own
 # `ragon exec` sessions for someone working interactively.
 NIGHT_RUN_ENV: Final[str] = "RAGON_NIGHT_RUN"
+CACHE_CONFIG_METRIC: Final[str] = "vllm:cache_config_info"
+OPTIONS_END: Final[str] = "--"
+STDIN_ARG: Final[str] = "-"
+ADMIN_NAME: Final[str] = "ragon-admin"
+INDEX_ARG: Final[str] = "index"
 
 # `ragon` subcommands that are not an interactive session. Anything else (no subcommand, a
 # prompt, `resume`, `fork`, `agents`) is the TUI. Besides Codex's own, the launcher's (ragon-rs/src/lib.rs):
@@ -212,7 +217,7 @@ class NightShiftHost:
             except ValueError:
                 continue
             sums[name] = sums.get(name, 0.0) + value
-            if name == "vllm:cache_config_info" and labels:
+            if name == CACHE_CONFIG_METRIC and labels:
                 blocks = re.search(r'num_gpu_blocks="(\d+)"', labels)
                 size = re.search(r'block_size="(\d+)"', labels)
                 if blocks and size:
@@ -251,9 +256,10 @@ class NightShiftHost:
     def task_budget(
         cls, max_parallel: int, kv_pool: float, task_context: int, compact_at: int | None
     ) -> tuple[int, int | None]:
-        """How many night tasks run at once, and the context each may hold, such that together they
-        fit in the KV pool: `parallel × limit ≤ 90% of the pool`. The limit is enforced by passing
-        it to every `ragon exec` of a task as its compaction limit.
+        """Work out how many night tasks run at once and the context each may hold.
+
+        Together they fit in the KV pool: `parallel × limit ≤ 90% of the pool`. The limit is
+        enforced by passing it to every `ragon exec` of a task as its compaction limit.
 
         Args:
             max_parallel: The configured upper bound.
@@ -278,8 +284,9 @@ class NightShiftHost:
 
     @classmethod
     def host_safety_ok(cls) -> bool:
-        """Runs the model server's own pre-load host-safety checks (swap, sysctls, earlyoom), which
-        print what is wrong and exit when anything is.
+        """Run the model server's own pre-load host-safety checks (swap, sysctls, earlyoom).
+
+        They print what is wrong and exit when anything is.
 
         Returns:
             bool: True when every check passes.
@@ -294,7 +301,9 @@ class NightShiftHost:
 
     @classmethod
     def mem_available_bytes(cls) -> int:
-        """Returns:
+        """Read the available memory.
+
+        Returns:
         int: `MemAvailable` from `/proc/meminfo`, in bytes.
         """
         with Path("/proc/meminfo").open() as handle:
@@ -305,7 +314,9 @@ class NightShiftHost:
 
     @classmethod
     def mem_total_bytes(cls) -> int:
-        """Returns:
+        """Read the total memory.
+
+        Returns:
         int: `MemTotal` from `/proc/meminfo`, in bytes.
         """
         with Path("/proc/meminfo").open() as handle:
@@ -379,7 +390,7 @@ class NightShiftHost:
             except OSError:
                 continue
             args = [arg.decode("utf-8", "replace") for arg in argv if arg]
-            if not args or os.path.basename(args[0]) not in ("ragon", "codex"):
+            if not args or Path(args[0]).name not in ("ragon", "codex"):
                 continue
             if any(item.startswith(f"{NIGHT_RUN_ENV}=".encode()) for item in environ):
                 continue
@@ -439,7 +450,7 @@ class NightShiftHost:
         exe = cls.executable_of(str(pid))
         if exe == target:
             return True
-        if os.path.basename(exe) != os.path.basename(target):
+        if Path(exe).name != Path(target).name:
             return False
         try:
             args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
@@ -463,7 +474,7 @@ class NightShiftHost:
             str: The resolved path, without the suffix; empty when it cannot be read.
         """
         try:
-            exe = os.readlink(f"/proc/{pid}/exe")
+            exe = str(Path(f"/proc/{pid}/exe").readlink())
         except OSError:
             return ""
         return os.path.realpath(exe.removesuffix(DELETED_SUFFIX))
@@ -501,11 +512,11 @@ class NightShiftHost:
         """
         rest = iter(args)
         for arg in rest:
-            if arg == "--":
+            if arg == OPTIONS_END:
                 return None
             if arg in VALUE_OPTIONS:
                 next(rest, None)
-            elif not arg.startswith("-") or arg == "-":
+            elif not arg.startswith("-") or arg == STDIN_ARG:
                 return arg
         return None
 
@@ -523,7 +534,7 @@ class NightShiftHost:
             bool: False when the subcommand is a non-interactive one, or the line asks for help or
                 the version.
         """
-        options = args[: args.index("--")] if "--" in args else args
+        options = args[: args.index(OPTIONS_END)] if OPTIONS_END in args else args
         if any(arg in PRINT_AND_EXIT for arg in options):
             return False
         return cls.subcommand(args) not in NON_INTERACTIVE
@@ -538,7 +549,7 @@ class NightShiftHost:
             List[str]: One description per job found; empty when the machine is free.
         """
         found = []
-        lock_path = os.path.join(BUILD_CACHE_DIR, ".build.lock")
+        lock_path = str(Path(BUILD_CACHE_DIR) / ".build.lock")
         if Path(lock_path).exists():
             with Path(lock_path).open("a") as handle:
                 try:
@@ -557,8 +568,8 @@ class NightShiftHost:
                 ]
             except OSError:
                 continue
-            names = [os.path.basename(arg) for arg in args[:2]]
-            if "ragon-admin" in names and "index" in args[1:3]:
+            names = [Path(arg).name for arg in args[:2]]
+            if ADMIN_NAME in names and INDEX_ARG in args[1:3]:
                 found.append(f"ragon-admin index is running (pid {entry.name})")
         try:
             units = subprocess.run(

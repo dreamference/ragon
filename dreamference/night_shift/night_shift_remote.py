@@ -38,7 +38,13 @@ KEEP_AFTER_FETCH: Final[timedelta] = timedelta(days=1)
 KEEP_UNFETCHED: Final[timedelta] = timedelta(days=14)
 
 # Statuses on this machine of a task that another node holds.
-SENT_STATUSES: Final[tuple] = ("sent", "cancel-requested")
+CANCEL_REQUESTED: Final[str] = "cancel-requested"
+SENT_STATUSES: Final[tuple] = ("sent", CANCEL_REQUESTED)
+SSH_FAILED: Final[int] = 255
+OP_SUBMIT: Final[str] = "night-submit"
+OP_STATUS: Final[str] = "night-status"
+OP_CANCEL: Final[str] = "night-cancel"
+RUNNING: Final[str] = "running"
 
 
 class NightShiftRemote:
@@ -117,7 +123,7 @@ class NightShiftRemote:
             payload = base64.urlsafe_b64encode(json.dumps(request).encode()).decode()
             answer = NodePairing.run(record, f"night-submit {payload}")
             reply = cls.json_line(answer.stdout) or {}
-            if answer.returncode == 255:
+            if answer.returncode == SSH_FAILED:
                 notes.append(
                     f"{task['id']}: {record['name']} did not answer; the task stays queued for it."
                 )
@@ -188,8 +194,9 @@ class NightShiftRemote:
         notes: list[str],
         wait: bool,
     ) -> None:
-        """Asks each node about the tasks sent to it, forwards a `/night drop`, and brings back
-        every finished task's branch and result.
+        """Ask each node about the tasks sent to it and bring back what finished.
+
+        Forwards a `/night drop`, and fetches every finished task's branch and result.
 
         Args:
             night_dir: The queue directory.
@@ -217,7 +224,7 @@ class NightShiftRemote:
                         f"result cannot be fetched."
                     )
                     continue
-                if task.get("status") == "cancel-requested":
+                if task.get("status") == CANCEL_REQUESTED:
                     NodePairing.run(record, f"night-cancel {task_id}")
                 answer = NodePairing.run(record, f"night-status {task_id}")
                 status = cls.json_line(answer.stdout)
@@ -315,7 +322,7 @@ class NightShiftRemote:
         from dreamference.node.node_job import JOB_ID
         from dreamference.node.node_serve import REFUSAL
 
-        if operation == "night-submit" and len(arguments) == 1:
+        if operation == OP_SUBMIT and len(arguments) == 1:
             try:
                 request = json.loads(base64.urlsafe_b64decode(arguments[0].encode()))
                 reply = cls.accept(request)
@@ -333,7 +340,7 @@ class NightShiftRemote:
             if task is None or not task.get("remote"):
                 print(json.dumps({"error": "no such task from another node"}))
                 return 1
-            if operation == "night-status":
+            if operation == OP_STATUS:
                 print(
                     json.dumps(
                         {
@@ -344,7 +351,7 @@ class NightShiftRemote:
                     )
                 )
                 return 0
-            if operation == "night-cancel":
+            if operation == OP_CANCEL:
                 print(json.dumps({"status": cls.cancel(arguments[0])}))
                 return 0
             NightShiftQueue.update(
@@ -418,7 +425,8 @@ class NightShiftRemote:
         path = tasks_dir / f"{task_id}.json"
         if path.exists():
             return cls._held(night_dir, task_id, base, text, str(request.get("sender") or "")[:100])
-        author = request.get("author") if isinstance(request.get("author"), dict) else {}
+        raw_author = request.get("author")
+        author: dict = raw_author if isinstance(raw_author, dict) else {}
         now = NightShiftQueue.now()
         record = {
             "id": task_id,
@@ -465,8 +473,10 @@ class NightShiftRemote:
 
     @classmethod
     def start_runner(cls) -> str:
-        """Starts this node's night run now if its window is open and nothing holds its runner lock,
-        so a task handed over during the sender's night is worked the same night.
+        """Start this node's night run now if it may.
+
+        That is when its window is open and nothing holds its runner lock, so a task handed
+        over during the sender's night is worked the same night.
 
         Returns:
             str: What will happen to the task, for the sender's report.
@@ -515,7 +525,7 @@ class NightShiftRemote:
         def change(record: dict[str, Any]) -> str:
             if record.get("status") in ("queued", "interrupted"):
                 NightShiftQueue.set_status(record, "cancelled", "dropped by the sender")
-            elif record.get("status") == "running":
+            elif record.get("status") == RUNNING:
                 NightShiftQueue.set_status(record, "cancel-requested", "dropped by the sender")
             return record["status"]
 
