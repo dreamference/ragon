@@ -68,6 +68,19 @@ def test_a_hanging_extension_list_counts_as_not_installed(
     assert getattr(installer, listed)() is False
 
 
+@pytest.mark.parametrize("installer, extension, install, listed", EXTENSIONS, ids=IDS)
+def test_a_failed_extension_probe_warns_and_counts_as_not_installed(
+    monkeypatch, caplog, installer, extension, install, listed
+):
+    def broken(cmd, **k):
+        raise OSError("probe failed")
+
+    monkeypatch.setattr(shutil, "which", on_path("code"))
+    monkeypatch.setattr(subprocess, "run", broken)
+    assert getattr(installer, listed)() is False
+    assert "probe failed" in caplog.text
+
+
 @pytest.fixture
 def docker(monkeypatch):
     """A Docker CLI whose answers the test sets per subcommand; records every call."""

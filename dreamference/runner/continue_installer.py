@@ -4,8 +4,11 @@ This module provides the ContinueInstaller class which verifies VS Code / VSCodi
 and manages auto-installing the Continue extension (`Continue.continue`).
 """
 
+import logging
 import shutil
 import subprocess
+
+LOGGER = logging.getLogger(__name__)
 
 CONTINUE_EXTENSION_ID: str = "Continue.continue"
 
@@ -53,7 +56,8 @@ class ContinueInstaller:
             if res.returncode == 0:
                 installed = [line.strip().lower() for line in res.stdout.splitlines()]
                 return CONTINUE_EXTENSION_ID.lower() in installed
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as e:
+            LOGGER.warning("⚠️ Could not check the installed VS Code extensions for Continue: %s", e)
             return False
 
         return False

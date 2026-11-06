@@ -4,8 +4,11 @@ This module provides the ClineInstaller class which verifies VS Code / VSCodium 
 and manages auto-installing the Cline VS Code extension (`saoudrizwan.claude-dev`).
 """
 
+import logging
 import shutil
 import subprocess
+
+LOGGER = logging.getLogger(__name__)
 
 # Official VS Code Marketplace extension ID for Cline
 CLINE_EXTENSION_ID: str = "saoudrizwan.claude-dev"
@@ -54,7 +57,8 @@ class ClineInstaller:
             if res.returncode == 0:
                 installed = [line.strip().lower() for line in res.stdout.splitlines()]
                 return CLINE_EXTENSION_ID.lower() in installed
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as e:
+            LOGGER.warning("⚠️ Could not check the installed VS Code extensions for Cline: %s", e)
             return False
 
         return False
