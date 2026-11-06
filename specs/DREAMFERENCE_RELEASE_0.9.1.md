@@ -1,5 +1,7 @@
 # Ragon 0.9.1 — release notes
 
+Status: shipped 2026-11-06
+
 The description between the two rules is the GitHub release text; `scripts/release_notes.py` prints it.
 
 ---
