@@ -22,7 +22,11 @@ from typing import Any, Final
 SEVERITIES: Final = ("bridge", "model", "info", "known")
 
 # Check name -> why it fails today. Every messenger's check of that name is covered.
-KNOWN_FAILING: Final[dict[str, str]] = {}
+KNOWN_FAILING: Final[dict[str, str]] = {
+    "bridge device found": (
+        "Signal device not linked: owner re-links by scanning the QR (ragon signal setup); planned"
+    ),
+}
 STATUSES: Final = ("pass", "fail", "skip", "observed")
 
 

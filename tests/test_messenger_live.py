@@ -586,6 +586,23 @@ def test_the_nightly_units_run_the_checkout_at_six_utc():
     assert "OnCalendar=*:0/15" in units["ragon-messenger-live-after-merge.timer"]
 
 
+def test_the_unlinked_signal_device_is_a_known_failure():
+    run = report.Run(started=0)
+    row = run.add(
+        report.Result(
+            "signal",
+            "bridge device found",
+            "bridge",
+            "fail",
+            1.0,
+            0.5,
+            "no linked device named Ragon on the account",
+        )
+    )
+    assert row.severity == "known" and "ragon signal setup" in row.detail
+    assert run.exit_code() == 0 and not run.alerts() and run.known() == [row]
+
+
 def test_a_known_failure_is_reported_but_never_alerts(tmp_path, monkeypatch):
     monkeypatch.setitem(report.KNOWN_FAILING, "long answer streams", "known failing, model server")
     run = report.Run(started=0)
