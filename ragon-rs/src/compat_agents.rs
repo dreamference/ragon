@@ -337,4 +337,63 @@ mod tests {
         assert_eq!(key, project_key(Path::new("/srv/a/my repo")));
         assert_ne!(key, project_key(Path::new("/srv/b/my repo")));
     }
+
+    #[test]
+    fn a_file_without_frontmatter_is_refused() {
+        let err = parse("just text\n", Path::new("/a.md")).unwrap_err();
+        assert!(err.contains("no frontmatter"));
+    }
+
+    #[test]
+    fn frontmatter_that_is_not_yaml_is_refused() {
+        let err = parse("---\nname: [unclosed\n---\nbody\n", Path::new("/a.md")).unwrap_err();
+        assert!(err.contains("not valid YAML"));
+    }
+
+    #[test]
+    fn a_missing_name_or_description_is_refused() {
+        assert_eq!(parse("---\ndescription: d\n---\nb\n", Path::new("/a.md")).unwrap_err(), "no name");
+        assert_eq!(parse("---\nname: a\n---\nb\n", Path::new("/a.md")).unwrap_err(), "no description");
+        assert_eq!(parse("---\nname: '  '\ndescription: d\n---\nb\n", Path::new("/a.md")).unwrap_err(), "no name");
+    }
+
+    #[test]
+    fn a_name_claude_code_would_reject_is_refused() {
+        for bad in ["a:b", "-lead"] {
+            let text = format!("---\nname: {bad}\ndescription: d\n---\nb\n");
+            let err = parse(&text, Path::new("/a.md")).unwrap_err();
+            assert!(err.contains("not one Claude Code accepts"), "{bad}");
+        }
+        let long = format!("---\nname: {}\ndescription: d\n---\nb\n", "n".repeat(257));
+        assert!(parse(&long, Path::new("/a.md")).is_err());
+    }
+
+    #[test]
+    fn a_tool_list_is_read_from_a_string_or_a_sequence_and_drops_argument_patterns() {
+        let from_text: Yaml = serde_yaml::from_str("tools: 'Read, Bash(git log *), ,Grep'").unwrap();
+        assert_eq!(tool_list(from_text.get("tools")).unwrap(), ["Read", "Bash", "Grep"]);
+        let from_list: Yaml = serde_yaml::from_str("tools: [Read, Edit]").unwrap();
+        assert_eq!(tool_list(from_list.get("tools")).unwrap(), ["Read", "Edit"]);
+        let number: Yaml = serde_yaml::from_str("tools: 3").unwrap();
+        assert_eq!(tool_list(number.get("tools")), None);
+        assert_eq!(tool_list(None), None);
+    }
+
+    #[test]
+    fn the_project_key_is_stable_distinct_and_safe_as_a_folder_name() {
+        let a = project_key(Path::new("/work/my project"));
+        assert_eq!(a, project_key(Path::new("/work/my project")));
+        assert_ne!(a, project_key(Path::new("/other/my project")));
+        assert!(a.starts_with("my_project-"));
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn a_role_file_falls_back_to_the_description_for_an_empty_body() {
+        let agent = parse("---\nname: a\ndescription: Does things\n---\n\n", Path::new("/a.md")).unwrap();
+        let text = role_file(&agent);
+        let table: toml::Table = toml::from_str(&text).unwrap();
+        assert_eq!(table["developer_instructions"].as_str(), Some("Does things"));
+        assert!(table.get("sandbox_mode").is_none());
+    }
 }

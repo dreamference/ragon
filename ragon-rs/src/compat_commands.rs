@@ -369,4 +369,59 @@ mod tests {
         let missing: Vec<&String> = names.iter().filter(|name| !CODEX_COMMANDS.contains(&name.as_str())).collect();
         assert!(missing.is_empty(), "add to CODEX_COMMANDS: {missing:?}");
     }
+
+    #[test]
+    fn arguments_split_on_whitespace_and_keep_quoted_runs_whole() {
+        assert_eq!(split_arguments("  a   b\tc "), ["a", "b", "c"]);
+        assert_eq!(split_arguments("'one two' \"three four\""), ["one two", "three four"]);
+        assert_eq!(split_arguments("say \"it's\""), ["say", "it's"]);
+        assert!(split_arguments("   ").is_empty());
+    }
+
+    #[test]
+    fn an_empty_quoted_argument_is_still_an_argument() {
+        assert_eq!(split_arguments("a \"\" b"), ["a", "", "b"]);
+    }
+
+    #[test]
+    fn a_command_file_without_frontmatter_has_no_description_and_a_trimmed_body() {
+        assert_eq!(read_command("\n  Just the body.  \n"), (String::new(), "Just the body.".to_string()));
+    }
+
+    #[test]
+    fn frontmatter_with_broken_yaml_or_no_description_gives_an_empty_description() {
+        let (description, body) = read_command("---\nmodel: x\n---\nBody\n");
+        assert_eq!((description.as_str(), body.as_str()), ("", "Body"));
+        let (description, body) = read_command("---\ndescription: [unclosed\n---\nBody\n");
+        assert_eq!((description.as_str(), body.as_str()), ("", "Body"));
+    }
+
+    #[test]
+    fn a_prompt_that_is_not_a_slash_command_expands_to_nothing() {
+        let cwd = std::env::temp_dir();
+        assert_eq!(expand_prompt("fix the bug", &cwd), None);
+        assert_eq!(expand_prompt("", &cwd), None);
+        assert_eq!(expand_prompt("/", &cwd), None);
+    }
+
+    #[test]
+    fn folders_that_do_not_exist_hold_no_commands() {
+        let root = std::env::temp_dir().join(format!("ragon-compat-commands-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(discover(&root, Some(&root.join("home")), true).is_empty());
+        assert!(command_files(&root.join("nothing")).is_empty());
+    }
+
+    #[test]
+    fn only_markdown_files_make_commands() {
+        let root = std::env::temp_dir().join(format!("ragon-compat-commands-md-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("keep.md"), "x").unwrap();
+        std::fs::write(root.join("notes.txt"), "x").unwrap();
+        std::fs::write(root.join("sub/deep.md"), "x").unwrap();
+        let names: Vec<String> = command_files(&root).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["keep", "sub:deep"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

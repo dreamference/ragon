@@ -900,4 +900,54 @@ mod tests {
         .unwrap_or_default();
         assert_eq!(advertised_window(&machine.codex_home), Some(262_144));
     }
+
+    #[test]
+    fn a_garbled_or_incomplete_catalog_gives_no_window() {
+        let machine = scratch_machine("window-bad");
+        let file = machine.codex_home.join("model_catalog.json");
+        std::fs::write(&file, "{not json").unwrap_or_default();
+        assert_eq!(advertised_window(&machine.codex_home), None);
+        std::fs::write(&file, r#"{"models": []}"#).unwrap_or_default();
+        assert_eq!(advertised_window(&machine.codex_home), None);
+        std::fs::write(&file, r#"{"models": [{"max_context_window": "big"}]}"#).unwrap_or_default();
+        assert_eq!(advertised_window(&machine.codex_home), None);
+    }
+
+    #[test]
+    fn a_sealed_level_refuses_a_network_command_and_names_the_way_out() {
+        let refused = refuse_when_sealed(Level::On, "search").unwrap_err();
+        assert_eq!(refused.0, 1);
+        assert!(refused.1.contains("ragon skill search needs the network"));
+        assert!(refused.1.contains("ragon skill add <folder>"));
+        assert!(refuse_when_sealed(Level::Off, "search").is_ok());
+    }
+
+    #[tokio::test]
+    async fn commands_naming_a_skill_that_is_not_there_fail_with_code_1() {
+        let (github, _) = stand_in(|_| None);
+        let machine = scratch_machine("missing-skill");
+        for words in [&["enable", "ghost"][..], &["disable", "ghost"], &["remove", "ghost"], &["adopt", "ghost"], &["show", "ghost"]] {
+            let outcome = run(&machine, request(words), &github, Level::On).await;
+            assert!(outcome.is_err_and(|(code, _)| code == 1), "{words:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn adding_a_local_folder_that_does_not_exist_fails_even_when_sealed() {
+        let (github, log) = stand_in(|_| None);
+        let machine = scratch_machine("no-folder");
+        let outcome = run(&machine, request(&["add", "./nowhere", "--yes"]), &github, Level::On).await;
+        assert!(outcome.is_err_and(|(code, _)| code == 1));
+        assert!(log.lock().unwrap().is_empty(), "nothing is requested for a local folder");
+    }
+
+    #[tokio::test]
+    async fn the_help_request_prints_the_usage_and_changes_nothing() {
+        let (github, _) = stand_in(|_| None);
+        let machine = scratch_machine("help");
+        let lines = run(&machine, Request::Help, &github, Level::On).await.unwrap();
+        assert!(lines.iter().any(|line| line.contains("ragon skill")));
+        let outcome = run(&machine, Request::Usage("bad words".to_string()), &github, Level::On).await;
+        assert!(outcome.is_err_and(|(code, message)| code == 2 && message.starts_with("bad words\n")));
+    }
 }

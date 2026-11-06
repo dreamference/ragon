@@ -701,4 +701,72 @@ mod tests {
         write_approvals(&home, &[json!({"name": "s", "hash": definition_hash(&s)})]).unwrap();
         assert_eq!(approved(&home), [definition_hash(&s)]);
     }
+
+    #[test]
+    fn a_scope_is_parsed_from_its_name_and_nothing_else() {
+        for scope in [Scope::Local, Scope::Project, Scope::User] {
+            assert_eq!(Scope::parse(scope.name()), Some(scope));
+        }
+        assert_eq!(Scope::parse("Project"), None);
+        assert_eq!(Scope::parse(""), None);
+    }
+
+    #[test]
+    fn a_server_without_a_command_or_url_is_not_offered() {
+        let exe = Path::new("/bin/ragon");
+        let root = Path::new("/r");
+        assert!(setting(&server(json!({"type": "stdio"})), exe, root, false, true).unwrap_err().contains("no command"));
+        assert!(setting(&server(json!({"type": "http"})), exe, root, false, true).unwrap_err().contains("no url"));
+    }
+
+    #[test]
+    fn sse_and_unknown_transports_are_refused_with_a_reason() {
+        let exe = Path::new("/bin/ragon");
+        let root = Path::new("/r");
+        let sse = setting(&server(json!({"type": "sse", "url": "http://x/sse"})), exe, root, false, true).unwrap_err();
+        assert!(sse.contains("SSE"));
+        let odd = setting(&server(json!({"type": "carrier-pigeon"})), exe, root, false, true).unwrap_err();
+        assert!(odd.contains("carrier-pigeon"));
+    }
+
+    #[test]
+    fn a_stdio_server_needs_bwrap_at_airgapped_on() {
+        let err = setting(&server(json!({"command": "srv"})), Path::new("/bin/ragon"), Path::new("/r"), true, false).unwrap_err();
+        assert!(err.contains("bwrap"));
+    }
+
+    #[test]
+    fn a_header_that_mixes_text_and_a_variable_is_refused() {
+        let def = json!({"type": "http", "url": "http://localhost:1/mcp", "headers": {"X-Key": "pre-${SECRET}"}});
+        let err = setting(&server(def), Path::new("/bin/ragon"), Path::new("/r"), false, true).unwrap_err();
+        assert!(err.contains("X-Key"));
+    }
+
+    #[test]
+    fn an_http_server_is_not_offered_at_airgapped_on() {
+        let def = json!({"type": "http", "url": "http://localhost:1/mcp"});
+        assert!(setting(&server(def), Path::new("/bin/ragon"), Path::new("/r"), true, true).is_err());
+    }
+
+    #[test]
+    fn the_definition_hash_ignores_key_order_but_not_content() {
+        let a = server(json!({"command": "srv", "args": ["1"], "env": {"A": "1", "B": "2"}}));
+        let b = server(json!({"env": {"B": "2", "A": "1"}, "args": ["1"], "command": "srv"}));
+        let c = server(json!({"command": "srv", "args": ["2"], "env": {"A": "1", "B": "2"}}));
+        assert_eq!(definition_hash(&a), definition_hash(&b));
+        assert_ne!(definition_hash(&a), definition_hash(&c));
+        assert!(definition_hash(&a).starts_with("sha256:"));
+    }
+
+    #[test]
+    fn a_missing_or_garbled_approvals_file_approves_nothing() {
+        let f = Fixture::new("garbled");
+        let home = f.root.join("codex-home");
+        assert!(approved(&home).is_empty());
+        std::fs::create_dir_all(approvals_file(&home).parent().unwrap()).unwrap();
+        std::fs::write(approvals_file(&home), "{not json").unwrap();
+        assert!(approved(&home).is_empty());
+        std::fs::write(approvals_file(&home), "{\"approved\": 3}").unwrap();
+        assert!(approved(&home).is_empty());
+    }
 }
