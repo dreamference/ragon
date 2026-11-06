@@ -188,6 +188,7 @@ Use `rg -n "^class Foo"` for a definition and `ast-grep` for call sites by shape
 - [adapters.md](docs/dev/adapters.md): LoRA adapters: `ragon-admin adapter`, the signature, serving them
 - [messengers.md](docs/dev/messengers.md): `ragon signal`, `ragon chat` and `ragon-admin matrix`
 - [sync.md](docs/dev/sync.md): `ragon sync`
+- [search-backends.md](docs/dev/search-backends.md): the `ragon-search` backend seam and the URL router (provisional interface)
 - [searching.md](docs/dev/searching.md): `ast-grep` and `rg` on this tree
 - [cli.md](docs/dev/cli.md): every `ragon-admin` subcommand, the sidecars behind `ragon web` and the app
 - Other notes, all in `docs/dev/`: [ci-runners](docs/dev/ci-runners.md), [claude-plugin](docs/dev/claude-plugin.md), [flash-next-feasibility](docs/dev/flash-next-feasibility.md), [flash-next-smoke-boot](docs/dev/flash-next-smoke-boot.md), [macos-signing](docs/dev/macos-signing.md), [release-on-green](docs/dev/release-on-green.md), [sglang-probe](docs/dev/sglang-probe.md)
