@@ -31,7 +31,6 @@
   "dreamference/audit/strace_parser.py": {
    "C901": 1,
    "PLR0912": 1,
-   "PLR2004": 20,
    "PTH119": 1
   },
   "dreamference/audit/tui_session.py": {
@@ -209,11 +208,9 @@
    "PTH118": 1
   },
   "dreamference/mcp_server/mcp_server.py": {
-   "ANN401": 2,
    "BLE001": 1,
    "C901": 1,
-   "PLR0911": 1,
-   "PLR2004": 13
+   "PLR0911": 1
   },
   "dreamference/mcp_server/web_tools.py": {
    "PLR2004": 3
@@ -697,5 +694,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 1440
+ "total": 1405
 }

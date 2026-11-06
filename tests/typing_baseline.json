@@ -1,13 +1,7 @@
 {
  "counts": {
-  "dreamference/audit/strace_parser.py": {
-   "union-attr": 1
-  },
   "dreamference/config/dreamference_config.py": {
    "assignment": 1
-  },
-  "dreamference/mcp_server/mcp_server.py": {
-   "no-redef": 1
   },
   "dreamference/night_shift/night_shift_best_of_n.py": {
    "arg-type": 1
@@ -57,5 +51,5 @@
   }
  },
  "mypy": "2.4.0",
- "total": 32
+ "total": 30
 }
