@@ -729,8 +729,8 @@ mod tests {
 
     #[test]
     fn a_forbidden_trailer_is_found_case_insensitively_at_a_line_start() {
-        let trailers = vec!["Co-Authored-By:".to_string()];
-        let log = record("1234567abc", "Me <m@x>", "Signed-off-by: x\nco-authored-by: y");
+        let trailers = vec!["Reviewed-By:".to_string()];
+        let log = record("1234567abc", "Me <m@x>", "Signed-off-by: x\nreviewed-by: y");
         let mut seen = BTreeSet::new();
         let found = commit_problems(&log, "r", Some("Me <m@x>"), &trailers, &mut seen);
         assert_eq!(found.len(), 1);
