@@ -8,10 +8,15 @@ container, pull an image or reach the network.
 import json
 import subprocess
 import sys
+import time
 from typing import IO, Any, Final
 
 # The variable `image_path` reads from an image's configuration.
 PATH_VARIABLE: Final[str] = "PATH"
+
+
+PULL_ATTEMPTS: Final[int] = 3
+PULL_RETRY_SECONDS: Final[int] = 30
 
 
 class SweBenchDocker:
@@ -131,7 +136,17 @@ class SweBenchDocker:
         digest = cls.image_digest(image)
         pulled = False
         if not digest:
-            if cls.run(["pull", "-q", image], timeout=3600).returncode != 0:
+            for attempt in range(PULL_ATTEMPTS):
+                result = cls.run(["pull", "-q", image], timeout=3600)
+                if result.returncode == 0:
+                    break
+                sys.stdout.write(
+                    f"⚠️ pulling {image} failed (attempt {attempt + 1} of {PULL_ATTEMPTS}): "
+                    f"{(result.stderr or '').strip()[-200:]}\n"
+                )
+                if attempt + 1 < PULL_ATTEMPTS:
+                    time.sleep(PULL_RETRY_SECONDS)
+            else:
                 return None
             digest, pulled = cls.image_digest(image), True
         problem = SweBenchImagePins.problem(image, digest)

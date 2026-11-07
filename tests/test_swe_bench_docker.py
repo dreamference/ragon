@@ -89,9 +89,29 @@ def test_an_image_whose_digests_cannot_be_read_is_known_by_its_id(monkeypatch):
 
 
 def test_an_image_that_cannot_be_pulled_has_no_digest(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
     calls = docker(monkeypatch, [(["image", "inspect"], 1, ""), (["pull"], 1, "")])
     assert SweBenchDocker.ensure_image("img") is None
-    assert ["pull", "-q", "img"] in calls
+    assert calls.count(["pull", "-q", "img"]) == 3
+
+
+def test_a_pull_that_fails_once_is_tried_again(monkeypatch, capsys):
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    pulls = iter([1, 0])
+    inspected = iter(["", "[] sha256:abc\n"])
+
+    def run(args, timeout=None, input_text=None):
+        if args[0] == "pull":
+            return subprocess.CompletedProcess(args, next(pulls), "", "net down")
+        return subprocess.CompletedProcess(args, 0, next(inspected), "")
+
+    monkeypatch.setattr(SweBenchDocker, "run", classmethod(lambda cls, *a, **k: run(*a, **k)))
+    monkeypatch.setattr(
+        "dreamference.swe_bench.swe_bench_image_pins.SweBenchImagePins.problem",
+        classmethod(lambda cls, image, digest: None),
+    )
+    assert SweBenchDocker.ensure_image("img") == "sha256:abc"
+    assert "net down" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
