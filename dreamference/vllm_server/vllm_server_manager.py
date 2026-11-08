@@ -866,10 +866,6 @@ class VLLMServerManager:
             str(gpu_memory_utilization),
             "--trust-remote-code",
             "--async-scheduling",
-            "--enable-log-requests",
-            "--enable-log-outputs",
-            "--max-log-len",
-            "2048",
         ]
 
         if enable_prefix_caching:

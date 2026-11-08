@@ -377,9 +377,9 @@ class ModelDeepInspector:
         checkpoint's, which for this model is 0.6 with top_p 0.95, not the deterministic sampling
         the published throughput numbers were taken under.
 
-        The template claim is checked rather than asserted. `--enable-log-requests` puts the
-        rendered prompt in the log, so whether `enable_thinking=false` actually reached the model
-        is a matter of looking.
+        The template claim is checked rather than asserted. A request log would put the
+        rendered prompt in the log (the launch no longer enables one), so whether
+        `enable_thinking=false` actually reached the model is a matter of looking.
 
         Args:
             model_alias (str): Target model alias or repo ID.

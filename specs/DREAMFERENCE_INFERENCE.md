@@ -193,7 +193,6 @@ These are always emitted on vLLM:
 ```
 --host 0.0.0.0 --port <port> --max-model-len <n> --gpu-memory-utilization <f>
 --trust-remote-code --async-scheduling
---enable-log-requests --enable-log-outputs --max-log-len 2048
 --enable-auto-tool-choice            (unless disabled)
 ```
 
