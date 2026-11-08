@@ -1,3 +1,4 @@
+//! `ragon profile gemm` is in gemm.rs and `trace <file>` in trace.rs.
 //! `ragon profile compare <a> <b>` and `baseline [set|show]` are in compare.rs.
 //! `ragon profile run one-stream|four-streams|fanout-32 [--reps N] [--url URL] [--log FILE] [--model ID]
 //! [--node ID] [--out DIR] [--lock FILE] [--pid PID] [--no-gpu] [--json] [--yes]`.
@@ -14,6 +15,12 @@ pub fn run(args: &[String]) -> i32 {
         Some("compare" | "baseline")
     ) {
         return crate::compare::run(args);
+    }
+    if args.first().map(String::as_str) == Some("gemm") {
+        return crate::gemm::run(args);
+    }
+    if args.first().map(String::as_str) == Some("trace") {
+        return crate::trace::run(&args[1..]);
     }
     let mut it = args.iter().peekable();
     if it.next().map(String::as_str) != Some("run") {

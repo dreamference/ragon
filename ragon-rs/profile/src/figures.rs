@@ -124,3 +124,15 @@ pub fn aggregate_span(tokens_after_last_first: f64, last_first: f64, last: f64) 
 pub fn aggregate_wall(generated: f64, first_submit: f64, last_token: f64) -> Option<f64> {
     (last_token > first_submit).then(|| generated / (last_token - first_submit))
 }
+
+/// Speculation gain: decode per stream with the drafter on / with it off (§3), 2 decimals.
+pub fn speculation_gain(on_tok_s: f64, off_tok_s: f64) -> Option<f64> {
+    (on_tok_s > 0.0 && off_tok_s > 0.0).then(|| (on_tok_s / off_tok_s * 100.0).round() / 100.0)
+}
+
+/// Decode bandwidth use: bytes one verify step reads / the step period, as a share of the
+/// measured streaming peak (GB/s), in percent (§3).
+pub fn bandwidth_use_pct(step_bytes: f64, step_period_s: f64, peak_gb_s: f64) -> Option<f64> {
+    (step_bytes > 0.0 && step_period_s > 0.0 && peak_gb_s > 0.0)
+        .then(|| step_bytes / step_period_s / 1e9 / peak_gb_s * 100.0)
+}
