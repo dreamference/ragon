@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING, Any, Final
 
 from dreamference.cli.adapter_command import ADAPTER_COMMAND, AdapterCommand
+from dreamference.cli.monitor_command import MONITOR_COMMAND, MonitorCommand
 from dreamference.config import DreamferenceConfig, ProxyBypass
 from dreamference.config.dreamference_config import DEFAULT_DIFFUSION_MODEL, DEFAULT_MODEL
 from dreamference.config.ports import DEFAULT_MODEL_PORT
@@ -2760,6 +2761,9 @@ class DreamferenceCLIController:
         # Command: ragon-admin adapter (LoRA adapters on the served model; RAGON_ADAPTERS §3)
         adapter_parser = AdapterCommand.add_parser(subparsers)
 
+        # Command: ragon-admin monitor (the node's health; MONITORING §8.1)
+        monitor_parser = MonitorCommand.add_parser(subparsers)
+
         # Command: ragon-admin images (the image search sidecar and its MCP tool;
         # specs/DREAMFERENCE_RAGON_ASK.md §6)
         images_parser = subparsers.add_parser(
@@ -2986,6 +2990,7 @@ class DreamferenceCLIController:
             "google": (google_parser, "google_command"),
             "images": (images_parser, "images_command"),
             ADAPTER_COMMAND: (adapter_parser, "adapter_command"),
+            MONITOR_COMMAND: (monitor_parser, "monitor_command"),
             "voice": (voice_parser, "voice_command"),
             "matrix": (matrix_parser, "matrix_command"),
             "remote": (remote_parser, "remote_command"),
@@ -5076,6 +5081,9 @@ class DreamferenceCLIController:
 
         elif args.command == ADAPTER_COMMAND:
             sys.exit(AdapterCommand.run(args, config))
+
+        elif args.command == MONITOR_COMMAND:
+            sys.exit(MonitorCommand.run(args))
 
         elif args.command == _ARG_VOICE:
             sys.exit(cls._run_voice(args.voice_command))

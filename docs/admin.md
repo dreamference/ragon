@@ -971,6 +971,18 @@ Check installed adapters again: signature, files and the served base.
 |---|---|
 | `name` | One adapter (default: all) |
 
+### `ragon-admin monitor`
+
+Show the node's health (forwards to ragon-node-monitor).
+
+#### `ragon-admin monitor status`
+
+Show the node's state and its checks.
+
+| Option | Description |
+|---|---|
+| `--json` | Print the monitor's JSON as is. |
+
 ### `ragon-admin images`
 
 Manage image search (the image_search tool and /images/).
