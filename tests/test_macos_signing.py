@@ -297,8 +297,14 @@ def test_each_piece_of_the_app_gets_its_entitlements() -> None:
         f"const files = {json.dumps(list(cases))};"
         "console.log(JSON.stringify(files.map((f) => entitlementsFor(f, 'Ragon'))));"
     )
+    found = shutil.which("node")
+    if found is None:
+        pytest.skip("node is not installed")
+    # A `node` found through ~/.local/bin is a link; the conftest refuses to run anything of the
+    # install, so run the link's target.
+    node = os.path.realpath(found)
     result = subprocess.run(
-        ["node", "--input-type=module", "-e", script], capture_output=True, text=True, check=True
+        [node, "--input-type=module", "-e", script], capture_output=True, text=True, check=True
     )
     answers = json.loads(result.stdout)
     for (file, expected), answer in zip(cases.items(), answers, strict=True):
