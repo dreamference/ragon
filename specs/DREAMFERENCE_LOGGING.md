@@ -1,6 +1,6 @@
 # Ragon logging: one place, one line format, no content
 
-**Status:** Proposed; spec only, building later. The owner's questions are in §0.1.
+**Status:** Proposed; spec only, building later. Decided by the owner on 2026-11-08 (§0.1).
 
 **Names:** post-rename. These are:
 - `ragon`, the agent and launcher;
@@ -39,48 +39,22 @@ This document fixes where logs go, what a line looks like, what may never be wri
 
 ---
 
-## 0.1 Questions for the owner
+## 0.1 Decisions
 
-Each question has a recommended answer. "Yes" to a question accepts its recommendation.
+The owner approved every recommended answer on 2026-11-08. The text of the sections named here is normative.
 
-- **O1. Where logs live.** Use one directory, `~/.local/state/dreamference/logs/` (`$XDG_STATE_HOME`), for every process Ragon starts that does not run under systemd or Docker. Units log to the user journal and containers to Docker's bounded log (§3).
-  *Recommended: yes.* Reasons:
-  - XDG names "state" as the home for logs.
-  - The tree already keeps the fleet logs and the model gate there.
-  - `~/.ragon` is the agent's home, and its files belong to Codex and to sync.
-- **O2. The environment variable.** Use `RAGON_LOG`, read by every Python, Rust and C++ component, as the environment tier of a new config key `log_level`. There is no `DREAMFERENCE_LOG_LEVEL` alias, and `RUST_LOG` stays Codex's own (§4).
-  *Recommended: yes.*
-- **O3. The line format.** Use one key=value text line (§5), not JSON lines. JSON lines stay only for machine streams: the engine's step trace, perf records, and the existing event files.
-  *Recommended: yes.* Reasons:
-  - People read these lines in `journalctl`, `docker logs` and `tail`.
-  - `ragon logs --json` gives machines JSON.
-- **O4. Container log bounds.** Set them per container, with `--log-opt` from one helper that every `docker run` builder calls. Never edit `/etc/docker/daemon.json` for logging.
-  *Recommended: per container.* Reasons:
-  - The daemon file is root's and is shared with the user's other containers.
-  - Changing it needs a Docker restart, which would stop a resident model server.
-- **O5. The bundle command's name.** `ragon-admin diag`, also available as `ragon diag`, rather than `support bundle`.
-  *Recommended: `diag`.* There is no support desk, and the word should not promise one.
-- **O6. Who reads and bundles.** One Rust crate, `ragon-rs/logs`, exposed as `ragon logs` and `ragon diag` (both with `--json`). `ragon-admin logs` and `ragon-admin diag` forward to it.
-  *Recommended: yes.* Reasons:
-  - It follows the `airgapped` precedent.
-  - The Windows node's half is in Rust launcher subcommands (WINDOWS_NODE §4), so one reader serves both systems.
-- **O7. The Diagnostics page on paired devices.** A paired device may view the page behind its credential. It cannot change a level or download a bundle; a bundle is only made on the node, by its owner, with a command.
-  *Recommended: yes.*
-- **O8. Codex's `logs_2.sqlite`.** Keep upstream's TRACE filter and 10-day retention. Treat the database as an artefact (§7.6), so the bundle carries only a re-redacted lifecycle extract, never the raw file. Audit what its TRACE targets write before any patch (rollout P7).
-  *Recommended: yes.*
-- **O9. Network addresses.** At `info`, a non-loopback address is written as `[addr]`. At `debug` and `trace`, it is written as is, so the user can see it on their own machine. Every bundle replaces it with a pseudonym.
-  *Recommended: yes.*
-- **O10. vLLM's request logging.** Remove `--enable-log-requests --enable-log-outputs --max-log-len 2048` from the launch builder in P0. A developer who needs them passes them by hand.
-  *Recommended: remove.* No model uses vLLM today, but the path would write up to 2 KB of every prompt and completion into the container log.
-- **O11. Retention numbers.**
-  - Files: 10 MiB × 5 per component, compressed, for at most 14 days, with 256 MiB for the whole directory.
-  - Containers: 10 MiB × 3, and 20 MiB × 5 for the engine.
-  - Start records: the last 20 per component.
-  - Incident records: 30 days and at most 50 files.
-
-  *Recommended: yes.*
-- **O12. journald.** Ragon never changes journald's configuration, which is system-wide and root's. Its writers limit their own rate (§6.2).
-  *Recommended: yes.*
+- **O1.** One directory, `~/.local/state/dreamference/logs/` (`$XDG_STATE_HOME`), for every process Ragon starts outside systemd and Docker (§3.2); decided 2026-11-08.
+- **O2.** `RAGON_LOG` is the environment tier of the config key `log_level`, read by every Python, Rust and C++ component; no `DREAMFERENCE_LOG_LEVEL` alias, `RUST_LOG` stays Codex's (§4.3); decided 2026-11-08.
+- **O3.** One key=value text line, not JSON lines; JSON lines stay only for machine streams; `ragon logs --json` gives machines JSON (§5); decided 2026-11-08.
+- **O4.** Container log bounds are set per container with `--log-opt` from one helper; `/etc/docker/daemon.json` is never edited (§6.3); decided 2026-11-08.
+- **O5.** The bundle command is `ragon-admin diag`, also `ragon diag`; there is no `support bundle` (§9); decided 2026-11-08.
+- **O6.** One Rust crate, `ragon-rs/logs`, serves `ragon logs` and `ragon diag`; the `ragon-admin` forms forward to it (§8.1); decided 2026-11-08.
+- **O7.** A paired device may view the Diagnostics page only; levels and bundles are changed and made on the node by its owner (§10); decided 2026-11-08.
+- **O8.** Codex's `logs_2.sqlite` keeps upstream's TRACE filter and retention; it is an artefact, bundled only as a re-redacted lifecycle extract (§3.4, §7.6); decided 2026-11-08.
+- **O9.** A non-loopback address is `[addr]` at `info`, as is at `debug` and `trace`, and a pseudonym in every bundle (§5.3, §7.3); decided 2026-11-08.
+- **O10.** `--enable-log-requests --enable-log-outputs --max-log-len 2048` are removed from the vLLM launch builder in P0 (§13); decided 2026-11-08.
+- **O11.** Retention: files 10 MiB x 5 per component, compressed, at most 14 days, 256 MiB for the directory; containers 10 MiB x 3 (engine 20 MiB x 5); the last 20 start records per component; incident records 30 days, at most 50 files (§6); decided 2026-11-08.
+- **O12.** Ragon never changes journald's configuration; its writers limit their own rate (§6.2); decided 2026-11-08.
 
 ---
 
@@ -886,9 +860,3 @@ Every statement here is a test or a check someone can run.
 11. The Diagnostics page, from a paired device, shows components, the engine's start record and a log tail. It offers no control that changes a level or makes or downloads a bundle. Its route is read-only in `policy.json`.
 12. On Windows, `ragon logs list` and `ragon diag` work against `%LOCALAPPDATA%\Ragon\logs\` and `%ProgramData%\Ragon\logs\`, and the Event Log holds only the lifecycle lines of `RagonNode`.
 13. The redaction fixtures pass byte for byte in Python, Rust and C++.
-
----
-
-## 15. Decisions
-
-*(Left empty for the owner.)*
