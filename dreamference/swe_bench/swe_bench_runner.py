@@ -120,6 +120,10 @@ class SweBenchRunner:
     # A `ragon-code` or `ragon-docs` index run beside a session is a transient scope: a run waits
     # for it rather than refusing.
     INDEX_WAIT_S = 30 * 60
+    # A failed index build (ragon-code defers or fails while the model server is busy) is tried
+    # again this many times, this long after, before its instance is left out of the run.
+    INDEX_RETRIES = 2
+    INDEX_RETRY_WAIT_S = 45
     INDEX_POLL_S = 15
     gate_hold = SweBenchGateHold
     gate = ModelGate
@@ -1011,7 +1015,12 @@ class SweBenchRunner:
         settings: "swe_bench_settings.SweBenchSettings",
         cycling: bool,
     ) -> dict[str, dict[str, Any]] | None:
-        """Every pending instance's code index, built on the host; None (said) when one has none."""
+        """Every pending instance's code index, built on the host.
+
+        A build that fails (non-zero exit, or exit 0 with no database) is retried after
+        `INDEX_RETRY_WAIT_S`, `INDEX_RETRIES` times. An instance still without an index is
+        said once and left out of `indexes`; the run goes on without it. None (said) when the runtime itself is missing.
+        """
         indexes: dict[str, dict[str, Any]] = {}
         if manifest.get("code_index", CODE_INDEX_OFF) != CODE_INDEX_OFF and pending:
             # Every index is built before the first agent starts: an index run beside the
@@ -1036,18 +1045,16 @@ class SweBenchRunner:
             for instance_id in pending:
                 image = manifest["images"][instance_id]["image"]
                 pulled = cycling and SweBenchDocker.image_digest(image) is None
-                record = (
-                    SweBenchCodeIndex.ensure(rows[instance_id], image, arm)
-                    if SweBenchDocker.ensure_image(image)
-                    else None
-                )
+                record = cls._ensure_index(rows[instance_id], image, arm)
                 if pulled:
                     SweBenchImageCache.release([image], settings)
                 if record is None:
                     print(
-                        f"❌ {instance_id} has no index, and a run measures one arm: not started."
+                        f"❌ {instance_id} has no index after {cls.INDEX_RETRIES + 1} tries: "
+                        "excluded from this run.",
+                        flush=True,
                     )
-                    return None
+                    continue
                 indexes[instance_id] = dict(
                     SweBenchCodeIndex.container_arguments(rows[instance_id], record, arm),
                     record=record,
@@ -1070,6 +1077,37 @@ class SweBenchRunner:
                     flush=True,
                 )
         return indexes
+
+    @staticmethod
+    def _without_index(
+        pending: list[str], indexes: dict[str, dict[str, Any]], indexing: bool
+    ) -> tuple[list[str], str]:
+        """What is left to run once the instances without an index are left out, and a note."""
+        if not indexing:
+            return pending, ""
+        missing = [i for i in pending if i not in indexes]
+        note = f", {len(missing)} left out for want of an index ({', '.join(missing)})"
+        return [i for i in pending if i in indexes], note if missing else ""
+
+    @classmethod
+    def _ensure_index(cls, row: dict[str, Any], image: str, arm: str) -> dict[str, Any] | None:
+        """One instance's index record, the build tried again after a failure.
+
+        A failure is a non-zero exit, or exit 0 with no database (`ragon-code` defers or fails
+        while the model server is busy). It is tried `INDEX_RETRIES` more times, each after
+        `INDEX_RETRY_WAIT_S`; None when every try failed.
+        """
+        for attempt in range(cls.INDEX_RETRIES + 1):
+            if attempt:
+                cls.sleep(cls.INDEX_RETRY_WAIT_S)
+            record = (
+                SweBenchCodeIndex.ensure(row, image, arm)
+                if SweBenchDocker.ensure_image(image)
+                else None
+            )
+            if record is not None:
+                return record
+        return None
 
     @classmethod
     def _grade_group(
@@ -1137,10 +1175,14 @@ class SweBenchRunner:
         )
         if indexes is None:
             return 1
+        pending, left_out = cls._without_index(
+            pending, indexes, manifest.get("code_index", CODE_INDEX_OFF) != CODE_INDEX_OFF
+        )
         print(
             f"🏁 SWE-bench run {store.name}: {len(pending)} instance(s) to run, "
-            f"{len(finished)} done, {len(manifest.get('excluded', {}))} excluded; "
-            f"up to {parallel} at once on {served[0]}."
+            f"{len(finished)} done, {len(manifest.get('excluded', {}))} excluded"
+            + left_out
+            + f"; up to {parallel} at once on {served[0]}."
         )
         interrupted = False
         previous = signal.getsignal(signal.SIGTERM)

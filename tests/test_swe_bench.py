@@ -2047,7 +2047,11 @@ def test_an_index_is_cached_by_repository_and_commit_and_its_time_is_not_the_age
     assert state["index"]["seconds"] == 5000.0 and state["wall_s"] < 60
 
 
-def test_a_run_whose_index_cannot_be_built_does_not_start(bench, monkeypatch, capsys):
+def test_an_instance_whose_index_cannot_be_built_is_left_out_after_retries(
+    bench, monkeypatch, capsys
+):
+    sleeps = []
+    monkeypatch.setattr(SweBenchRunner, "sleep", staticmethod(sleeps.append))
     monkeypatch.setattr(
         SweBenchCodeIndex,
         "execute",
@@ -2057,8 +2061,11 @@ def test_a_run_whose_index_cannot_be_built_does_not_start(bench, monkeypatch, ca
             )
         ),
     )
-    assert run(bench, instances=["acme__widget-1"], code_index="universal") == 1
-    assert "a run measures one arm" in capsys.readouterr().out
+    assert run(bench, instances=["acme__widget-1"], code_index="universal") == 0
+    out = capsys.readouterr().out
+    assert "acme__widget-1 has no index after 3 tries" in out
+    assert "1 left out for want of an index (acme__widget-1)" in out
+    assert 45 in sleeps
     assert not any(call[0] == "run" for call in bench["docker"].calls)
     assert run(bench, name="x", instances=["acme__widget-1"], code_index="bogus") == 1
 
