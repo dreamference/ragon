@@ -204,6 +204,15 @@ export function App() {
   const [profiles, setProfiles] = useState<PermissionProfileSummary[]>([]);
   const [profile, setProfile] = useState(":workspace");
   const [airgap, setAirgap] = useState<bridge.Airgapped | null>(null);
+  /** The node monitor's state (MONITORING §5.1), read every 30 s; null until the first answer. */
+  const [monitor, setMonitor] = useState<bridge.MonitorChip | null>(null);
+  useEffect(() => {
+    let current = true;
+    const read = () => bridge.monitorStatus().then((chip) => current && setMonitor(chip)).catch(() => current && setMonitor(null));
+    read();
+    const timer = window.setInterval(read, 30_000);
+    return () => { current = false; window.clearInterval(timer); };
+  }, []);
   /** A web address clicked in an answer, waiting for the user's yes (LinkDialog.tsx). */
   const [linkAsked, setLinkAsked] = useState<{ url: string; thread: string | null; airgappedOn: boolean } | null>(null);
   /** An Ask question being continued in a project (DESKTOP §16 B33, ContinueDialog.tsx); busy while it is forked. */
@@ -3291,6 +3300,7 @@ export function App() {
           {view === "work" && prefs.pullRequests && bridge.prs.available() && composeRoot ? <button className={`icon bar-action${tabs.some((tab) => tab.kind === "prs") ? " active" : ""}`} title="Pull requests, through your GitHub CLI" aria-label="Pull requests" onClick={openPullRequests}><Icon name="gitPullRequest" size={16} /></button> : null}
           {view === "work" ? <button className={`icon bar-action${reviewOpen ? " active" : ""}`} title={`Review: the repository's changes (${shortcutLabel("reviewTab")})`} aria-label="Review" aria-pressed={reviewOpen} onClick={() => { if (reviewOpen && prefs.layout === "chat") updatePrefs({ layout: "split" }); else setReviewOpen(!reviewOpen); }}><Icon name="fileDiff" size={16} /></button> : null}
           {workingCount(state) > 1 ? <span className="chip optional" title="Threads and subagents working at once share the one model server">{workingCount(state)} working</span> : null}
+          {monitor && monitor.state !== "unknown" && monitor.state !== "off" ? <span className={`chip monitor-${monitor.state}`} title={monitor.lines.length ? monitor.lines.join("\n") : "Node monitor: everything is ok"}>node {monitor.state}</span> : null}
           {airgap ? <span className={`chip airgap-${airgap.level}`} title={airgap.source}>airgapped {airgap.level}</span> : null}
           {usage ? (
             <span className="chip optional" title={`${usage.used.toLocaleString()} of ${usage.window.toLocaleString()} tokens`}>

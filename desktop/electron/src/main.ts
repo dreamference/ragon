@@ -34,6 +34,7 @@ import { boardFile, readBoards } from "./board";
 import { Prefs } from "./prefs";
 import { AppServer } from "./server";
 import { insights, readPersonal, writePersonal } from "./insights";
+import { monitorChip } from "./monitor";
 import { addRepeating, addTask, dropRepeating, dropTask, listRepeating, nightStatus, readReport, readReports, readTasks, runNow, taskDetails } from "./night";
 import { applyTask, taskNote } from "./night";
 import { ARCHIVE, nightUnread, searchArchive } from "./nightinbox";
@@ -791,6 +792,8 @@ export async function main(options: MainOptions): Promise<void> {
         const home = codexHome();
         return home ? pruneRecall(home, message.keep) : 0;
       }
+      case "monitor/status":
+        return monitorChip(fetch);
       case "voice/transcribe":
         return transcribe(message, fetch, prefs.read().dictationWords);
       case "work/stop":

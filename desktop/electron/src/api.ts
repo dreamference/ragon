@@ -46,6 +46,8 @@ export type FromView =
   | { type: "recall/prune"; keep: string[] }
   /** The microphone's recording, for text (voice.ts); the bytes base64. */
   | { type: "voice/transcribe"; mime: string; data: string }
+  /** The node monitor's chip (monitor.ts): `ragon web`'s /api/monitor/status, read by the main process. */
+  | { type: "monitor/status" }
   | { type: "context-menu"; x: number; y: number; editable: boolean; selection: string }
   /** Window-side git (git.ts): the review pane, commit, push and the pull-request page. */
   | { type: "git/repos"; cwd: string }

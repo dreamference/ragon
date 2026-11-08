@@ -193,6 +193,10 @@ export const stopServer = () => send<void>({ type: "work/stop" });
 export const workTarget = () => send<WorkTarget>({ type: "work/target" });
 export const airgapped = (thread: string | null) => send<Airgapped>({ type: "work/airgapped", thread });
 /** `ragon airgapped default <level>`: the level new threads start at; resolves with what it printed. */
+/** The node monitor's chip: its state and the items that are not ok (MONITORING §5.1). */
+export interface MonitorChip { state: "ok" | "degraded" | "down" | "off" | "unknown"; lines: string[] }
+export const monitorStatus = () => send<MonitorChip>({ type: "monitor/status" });
+
 export const airgappedDefault = (level: "off" | "on") => send<string>({ type: "work/airgapped-default", level });
 export const contextMenu = (x: number, y: number, editable: boolean, selection: string) =>
   send<void>({ type: "context-menu", x, y, editable, selection });
