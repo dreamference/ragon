@@ -1,6 +1,6 @@
 # Ragon logging: one place, one line format, no content
 
-**Status:** Proposed; spec only, building later. Decided by the owner on 2026-11-08 (§0.1).
+**Status:** Proposed; spec only, building later. Decided by the owner on 2026-11-08 (§0.1); five questions from a review of current practice are open (§0.2).
 
 **Names:** post-rename. These are:
 - `ragon`, the agent and launcher;
@@ -56,6 +56,16 @@ The owner approved every recommended answer on 2026-11-08. The text of the secti
 - **O11.** Retention: files 10 MiB x 5 per component, compressed, at most 14 days, 256 MiB for the directory; containers 10 MiB x 3 (engine 20 MiB x 5); the last 20 start records per component; incident records 30 days, at most 50 files (§6); decided 2026-11-08.
 - **O12.** Ragon never changes journald's configuration; its writers limit their own rate (§6.2); decided 2026-11-08.
 
+## 0.2 Questions from the research
+
+A review of current logging practice after the decisions above raised five more. Each has a recommended answer. A section whose text depends on an answer names its number; the rest of each answer's text joins the sections it names once it is approved. None of them changes a decision in §0.1.
+
+- **O13. Should one id follow a request across processes?** Today nothing ties a launcher line to the gate's and the engine's lines for the same request, and §5.4 forbids the engine to use a value the client sent. *Recommended: yes.* The first Ragon process that sees a request makes a W3C Trace Context `traceparent` (version `00`, a random 16-byte trace id, an 8-byte span id) and passes it on in the `traceparent` header. A receiver accepts a header only if it matches the format exactly (lower-case hex, the right lengths, not all zeros) and otherwise makes its own. Lines carry `trace_id=` and `span_id=` (§5.3), the names OpenTelemetry gives these fields outside its own protocol. The id is random, carries nothing about the user, and needs no tracing library; no baggage header is read or sent. The engine's rule in §5.4 then reads: its own session id, or a `trace_id` that passed this check. Affects §5.3, §5.4, P2 and P3.
+- **O14. Should the incident ring keep `debug` lines when the level is `info`?** Today the ring holds only lines that were written, so an incident record repeats what is already in the log. *Recommended: yes.* At the default level the writer formats `debug` lines (never `trace`) under the `info` rules, including `[addr]`, keeps them only in the ring, and writes them only into an incident record. The ring's bounds stay 200 lines and 128 KiB, and formatting them costs the writer thread, not the caller. This is the flight-recorder pattern: the detail one did not log, kept for the moment something fails. Affects §6.4 and P1.
+- **O15. Should Ragon's processes write core dumps?** A core of the engine holds prompts, the KV cache and mapped weights, may be tens of GB on unified memory, and the system's crash handler keeps it, with the process's command line and environment, for days. *Recommended: no.* Ragon's units set `LimitCORE=0`, its containers get `--ulimit core=0`, the Windows node registers no local dump collection for `RagonNode`, and `diag` never reads a dump (§9). A developer turns dumps on by hand on their own machine. Incident records (§6.4) and the crash list in the bundle keep the time, component, signal and build. Affects §3.3, §6.3, §6.4, §9 and P1.
+- **O16. What does Ragon do on a system whose journal is not stored on disk?** There `journalctl --user` shows nothing and every journald line is gone at reboot, and O12 rules out changing journald. *Recommended: report and advise, never change.* `logs list`, `diag` and the doctor say `journal: volatile`, as a `WARN` with the one command the user may run to make it persistent (§3.1, §8.1). Ragon does not create `/var/log/journal` and does not fall back to a file sink for units. Affects §3.1, §8.1, §9 and P3.
+- **O17. What happens to a bundle once it reaches a developer?** A bundle is pseudonymised, but pseudonymised data stays personal for whoever could link it, and an error message is near free text. *Recommended:* a received bundle is kept only with the issue it was sent for, is never committed to a repository or pasted into a public tracker, and is deleted within 30 days of the issue closing. The release checklist's blocker template says so, and `diag`'s printout tells the user which issue to attach it to rather than where to post it. Affects §9 and the release checklist.
+
 ---
 
 ## 1. Scope and the binding rules
@@ -86,7 +96,8 @@ The owner approved every recommended answer on 2026-11-08. The text of the secti
    - Writers bound their buffers.
    - Rotation runs in the writer, never in a resident daemon.
    - `diag` streams into the archive and caps every source.
-   - Nothing here keeps a log in memory beyond a 200-line ring per process (§6.4).
+   - Nothing here keeps a log in memory beyond a 200-line, 128 KiB ring per process (§6.4) and a bounded queue of records not yet written (§5.4).
+   - A failed log write never fails the work: the line is dropped and counted (§6.1).
 7. **The engine is ragon-serve; SGLang is the fallback.** ragon-serve's own lines follow §5. SGLang's lines are third-party and are passed through the reader and the bundle's redactor unchanged in shape.
 
 ---
@@ -257,13 +268,15 @@ Each process has **one sink**. A writer chooses it at start-up:
 
 No process writes the same line to two sinks. A CLI command's output to the terminal is not log output (§5.6).
 
+**A volatile journal.** Per-user journal files exist only when journald stores to disk; on a system that keeps the journal in memory, `journalctl --user` shows nothing and every journald line is lost at reboot. Ragon does not change that (O12). `ragon logs list`, `diag` and the doctor report the journal's storage as `persistent` or `volatile`, and a volatile journal is a `WARN` with the one-line fix for the user to run (O16).
+
 ### 3.2 The directory (O1)
 
 ```
 ~/.local/state/dreamference/            ($XDG_STATE_HOME/dreamference; exists today: fleet/, model-gate/)
   logs/                                 mode 0700
     <component>.log                     the current file, mode 0600
-    <component>.1.log.gz … .4.log.gz    rotated (§6.1)
+    <component>.1.log, .2.log.gz … .4.log.gz   rotated (§6.1)
     starts/<component>/<UTC>.json       start records (§6.4)
     incidents/<UTC>-<component>.log     incident records (§6.4)
   diag/ragon-diag-<UTC>.tar.gz          bundles (§9), mode 0600
@@ -299,8 +312,10 @@ A **component** is `[a-z][a-z0-9-]*`. One table, `ragon-rs/vectors/logging/compo
 - A unit is named `ragon-<component>[-<part>]`, or `ragon-<component>@<instance>` for a template.
 - It sets `SyslogIdentifier=ragon-<component>`, so `journalctl -t ragon-forge` gathers every part of the forge.
 - It sets `EnvironmentFile=-%h/.config/dreamference/log.env` (§4.3).
+- It sets `LogExtraFields=RAGON_COMPONENT=<component>`, so every line of the unit carries an indexed field and `journalctl --user RAGON_COMPONENT=engine` finds it whatever the unit's part or instance.
+- It sets `LogRateLimitIntervalSec=30s` and `LogRateLimitBurst=3000` as a backstop under the writer's own limits (§6.2). These are unit settings, not journald's configuration (O12).
 
-All of today's units already follow the name rule. P1 adds the two settings, and a test holds them (§11.4).
+All of today's units already follow the name rule. P1 adds the settings, checks on the box that a user unit honours the last two, and a test holds them (§11.4).
 
 **The container rule:**
 - A container keeps its `dreamference-<name>` name.
@@ -400,9 +415,10 @@ quoted    := '"' ( [^"\\\n] | '\"' | '\\' | '\n' | '\t' )* '"'
 
 The rules:
 - A line is at most 4 KiB. A longer one is cut at the last whole field, and `truncated=1` is added.
-- A line holds no raw newline, carriage return or control character; inside quotes they are escaped.
+- A line holds no raw newline, carriage return or control character; inside quotes they are escaped. "Control character" means C0, DEL and C1 (U+0080–U+009F), plus the Unicode bidirectional controls (U+202A–U+202E, U+2066–U+2069), which can make a line read differently from what it holds. Each is written as `\u{XXXX}`. Bytes that are not valid UTF-8 are written as `\x{XX}`. Escaping is the writer's job, done on every value; a literal message is no protection against a value that carries a newline.
+- A value is quoted when it is empty or holds a space, a quote, `=`, a backslash or anything outside `bare`.
 - The message comes first because it is what a person scans. Fields come after, in the order the call site gives them.
-- **Under journald,** the writer prefixes the line with the syslog priority, `<3>` to `<7>`. journald strips the prefix, stores `PRIORITY=` and keeps the rest. The line keeps its own timestamp, which costs 25 bytes and buys one thing: `diag` can merge sources by the time the event happened, not by when it was received.
+- **Under journald,** the writer prefixes the line with the syslog priority: `ERROR` `<3>`, `WARN` `<4>`, `INFO` `<6>`, `DEBUG` and `TRACE` `<7>`. A library that maps levels itself is set to this table; some map `INFO` to `<5>`. journald strips the prefix, stores `PRIORITY=` and keeps the rest. The line keeps its own timestamp, which costs 25 bytes and buys one thing: `diag` can merge sources by the time the event happened, not by when it was received.
 - **Under Docker,** the line goes to stderr as is.
 - **In a file,** it is written as is, one `write` per line.
 
@@ -411,6 +427,21 @@ The rules:
 - **People read these lines first.** They read them in `journalctl`, `docker logs`, `tail` and an issue the user pastes by hand. `k=v` stays readable at 120 columns, while JSON's quoting and braces double a line.
 - **Machines still get structure.** The grammar is regular, so `ragon logs --json` parses every line into `{"ts","component","level","message","fields":{…}}`, and the Diagnostics page and MONITORING use that.
 - **JSON lines stay for data streams** (§5.5), whose readers are programs and whose records are tables, not sentences.
+
+**The OpenTelemetry mapping.** Ragon has no exporter and writes no OTLP. The line is still shaped so that a log tool which reads the OpenTelemetry logs data model can take it with a one-line mapping, and `ragon logs --json` writes these names beside its own:
+
+| Line | Data model |
+|---|---|
+| `ts` | `Timestamp` |
+| `LEVEL` | `SeverityText`; `SeverityNumber` is `ERROR` 17, `WARN` 13, `INFO` 9, `DEBUG` 5, `TRACE` 1 |
+| `message` | `EventName` and `Body` |
+| `component` | the resource's `service.name`, as `ragon-<component>` |
+| `version` on the start line | `service.version` |
+| `error`, `error_msg` | `exception.type`, `exception.message` |
+| `trace_id`, `span_id` (O13) | `TraceId`, `SpanId` |
+| every other field | `Attributes`, with its key |
+
+The prefix `ts component LEVEL message` is not plain logfmt, so a generic logfmt parser needs one pattern for the four leading tokens and reads the rest as key=value pairs. `line.re` is that pattern.
 
 ### 5.3 Fields have types
 
@@ -431,6 +462,15 @@ The writer API takes typed fields. The type decides how a value is written and r
 
 **There is no free-text field type.** A call site that wants to log a string from outside picks one of these types or does not log it.
 
+**Reserved keys.** These keys mean one thing in every component, and no call site uses them for anything else:
+- `session`, `req`, `job`, `run`: Ragon's own ids, of type `id`;
+- `trace_id`, `span_id`: the correlation ids of O13;
+- `count`: the number of lines a summary line stands for (§6.2, §6.4);
+- `truncated`: set by the writer (§5.1);
+- on the `start` line of every component: `version`, `git`, `pid` and `log_format=1`, the version of this grammar. A reader that meets a higher `log_format` says so instead of guessing.
+
+**Durations** (`ms`, `s`, `tok_s`) come from a monotonic clock. Only `ts` comes from the wall clock.
+
 ### 5.4 The engine's three outputs
 
 ragon-serve is C++ in the engine repository. Its changes land there, through the engine's publish queue.
@@ -446,6 +486,8 @@ ragon-serve is C++ in the engine repository. Its changes land there, through the
 3. **The step and perf stream.** `RAGON_STEP_TRACE` stays a JSON-lines file, because it is PROFILING's input (§12), with today's fields plus `ts` (UTC ISO) beside `t`. It is off unless set, and the product never sets it (§7.3).
 
 The node's starter (`server start`) reads the engine's start JSON from the container's stdout. It writes the start record, keeps the last 20 (§6.4), and is the only Python code that touches the engine's output.
+
+**The serving thread never formats, never writes and never waits for a log.** A call on a serving or GPU thread copies its level, message id and numbers into a bounded single-producer queue and returns. A writer thread formats, escapes and writes. When the queue is full the record is dropped and counted, and the next line the writer thread can write is `engine WARN log lines dropped count=N`. The same rule holds for every writer in §7.5: a log call costs a copy, never a lock on a file or a pipe, and a full queue drops rather than blocks. The queue holds at most 8 192 records and is not a log kept in memory: it holds records on their way to the sink, as rule 6 allows.
 
 ### 5.5 Streams that stay JSON lines
 
@@ -472,7 +514,7 @@ Each stream:
 ### 6.1 Files
 
 Each writer rotates its own file:
-- At **10 MiB**, `<component>.log` becomes `<component>.1.log`, which is compressed to `.1.log.gz` after the rename, and older files shift up.
+- At **10 MiB**, `<component>.log` becomes `<component>.1.log`, and older files shift up. `.1.log` stays plain until the next rotation, which compresses it to `.2.log.gz`: a process may still be finishing a write to it, and a file is never compressed while it can be written. Compression runs off the logging path, in the rotating process's writer thread or a child.
 - **Five** files are kept.
 - On every rotation the writer deletes its own component's files older than **14 days**.
 
@@ -481,22 +523,33 @@ The whole `logs/` directory has a budget of **256 MiB**. `ragon-admin logs prune
 No daemon watches the directory, because rotation in the writer costs nothing while idle. Rotation is atomic (`rename`) and safe against two processes of one component, such as two CLI runs:
 - each process opens the file with `O_APPEND`;
 - the rotating process takes an advisory lock on `<component>.lock`;
-- a process that loses the race reopens the file.
+- a process that loses the race reopens the file;
+- before each write, at most once a second, a process compares the device and inode of `<component>.log` with those of its open file, and reopens when they differ. A process that did not rotate therefore never keeps appending to a renamed file.
+
+**A failed write never fails the work.** When the disk is full, the directory is gone or a write fails for any reason, the writer drops the line, counts it, and tries again after a second. The first line it can write afterwards is `WARN log lines dropped count=N reason=<enum>`. A writer never raises into the code that called it, never retries in a loop and never falls back to a second sink.
+
+**Windows.** A file that is open cannot be renamed unless every handle on it allows it, so the Windows writer:
+- opens the log with read, write and delete sharing (`FILE_SHARE_DELETE`), and with a handle that child processes do not inherit;
+- rotates with a rename that replaces the target while other handles are open (`FILE_RENAME_POSIX_SEMANTICS`) where the system has it, and otherwise with `MoveFileEx` and up to three retries 50 ms apart;
+- when the rename still fails, keeps writing to the current file, and retries at the next line past the size, so a reader holding the file delays rotation and never loses a line.
+A Python writer on Windows uses the same rules through the Rust crate or its own code, never the standard library's rotating handler, which cannot rename a file another process holds.
 
 ### 6.2 journald
 
 **Ragon never edits `journald.conf`** (O12). The user journal's own limits apply. On a default system that is the smaller of 10% of the file system and 4 GiB, shared with everything else.
 
-journald holds its buffers in memory that the model server needs, so a writer limits its own rate:
-- at most **50 lines per second** per process at `info`, after which further lines are dropped;
-- one `WARN log lines dropped count=N` line follows once the second has passed.
+journald holds its buffers in memory that the model server needs, so a writer limits its own rate. One process-wide cap alone would let one noisy call site use the whole budget and drop the lines that matter, so the limit has three parts. All of them apply in every sink, not only under journald:
 
-At `debug` and `trace` the limit is 500 lines per second. journald's own `RateLimitBurst` stays as the backstop.
+1. **Per message.** The key is the level and the literal message. In each second, the first **10** lines with one key are written and the rest are counted, so one call site never takes more than a fifth of the process's budget. When the second ends, the writer adds one line for each key that lost lines: `WARN log lines suppressed site="<message>" count=N`.
+2. **Per process.** At most **50 lines per second** at `info` and **500** at `debug` and `trace`, after which further lines are dropped. One `WARN log lines dropped count=N` line follows once the second has passed.
+3. **What always passes.** The first `ERROR` of each key in each second passes both limits. A request's closing line (`request done`, `request refused`) is one line per unit of work, the line one most needs afterwards, so it is not sampled per message. It has its own budget of **200 per second**. Above it, the writer replaces the per-request lines with one `INFO requests summary count=… errors=… p50_ms=… p95_ms=…` line every 10 seconds.
+
+The unit's `LogRateLimitIntervalSec=` and `LogRateLimitBurst=` (§3.3) and journald's own limit stay as the backstop.
 
 ### 6.3 Containers (O4)
 
 One helper, `ContainerLogOptions.args(component)`, returns:
-- `--log-driver json-file --log-opt max-size=10m --log-opt max-file=3`;
+- `--log-driver json-file --log-opt max-size=10m --log-opt max-file=3 --log-opt compress=true`, so rotated container logs are compressed as files are (O11's sizes are unchanged);
 - `--label ragon.component=<component>`;
 - `-e RAGON_LOG=…` from `log.env`.
 
@@ -514,7 +567,11 @@ A test holds it (§11.4). `daemon.json` is never changed for logging.
 A release blocker is investigated after the fact, often days later, so three things are kept beyond the rotating logs:
 
 1. **Start records.** For each component, keep the last **20** start JSON files: the version stamps, the engine's plan and flags, the effective `RAGON_LOG`, and the exit status and reason of the previous run. A component appends that exit status and reason to its own last record on a clean stop, or its starter does on the next start. The engine writes one, and so do the gate and every unit Ragon starts.
-2. **Incident records.** When a component logs `ERROR`, its writer dumps the last **200** lines it emitted from a ring in memory, about 100 KB at most, into `incidents/<UTC>-<component>.log`. The same happens when a supervisor sees a crash: the PSI watchdog's kill, a unit's failure, or the engine's container exiting non-zero. In that case the supervisor also adds the last 500 lines of the container's log, re-redacted. Records are kept for **30 days**, at most 50 files.
+2. **Incident records.** When a component logs `ERROR`, its writer dumps the last **200** lines it emitted from a ring in memory, at most **128 KiB**, into `incidents/<UTC>-<component>.log`. The same happens when a supervisor sees a crash: the PSI watchdog's kill, a unit's failure, or the engine's container exiting non-zero. In that case the supervisor also adds the last 500 lines of the container's log, re-redacted. Records are kept for **30 days**, at most 50 files. The rules:
+   - **One per minute.** A component writes at most one incident record a minute. Further `ERROR`s in that minute are appended to it as lines, and the record ends with `count=N`, so an error storm costs one file, not fifty.
+   - **A fatal signal.** The C++ writer keeps the ring already formatted and installs a handler for `SIGSEGV`, `SIGBUS`, `SIGFPE`, `SIGILL` and `SIGABRT` that writes it with `write(2)` to an incident file opened at start-up, then re-raises the signal. The Python writer points the standard library's fault handler at that file. The Rust writer does the same from its panic hook.
+   - **What the ring holds** at the default level is decided by O14.
+   - **No core dumps.** An incident record is lines, never memory. A core dump of the engine holds prompts and the KV cache, so it is never written by Ragon, never read by `diag` and never bundled (O15).
 3. **The journal window**, as journald keeps it.
 
 `ragon-admin diag` (§9) packs these with the last N hours of every component. The release checklist's blocker template asks for one bundle from the machine that showed the bug.
@@ -546,6 +603,8 @@ This section is the heart of the document. Every rule here holds **at every leve
 | Absolute home paths | `~/…` |
 | Paths inside the user's projects and document collections, and the project's own location | `project=<pseudonym>`; at `debug`, a path relative to the project root, never the root itself |
 | Shell commands the agent or a job ran | `cmd=<program name>` at `debug`, its exit code and duration; never its arguments or output |
+| Command lines of processes Ragon starts, including its own containers' | flag names; a value only when it is a number, an enum or a Ragon path, never under a secret-like flag (§7.4) |
+| Hardware serial numbers, GPU UUIDs, MAC addresses, the machine id | nothing; the node id identifies the machine |
 | Environment variables' values (except `RAGON_*` tuning numbers and `RAGON_LOG`) | their names |
 
 ### 7.2 What is logged
@@ -590,16 +649,20 @@ Redaction happens **once, at the writer, before a line exists**, in all three la
    - it is stable on one machine, so lines can be correlated;
    - it cannot be reversed by whoever receives a bundle;
    - the salt never leaves the machine.
+
+   A keyed pseudonym protects only a value with many possible forms. A value from a small set (a port, a yes/no, a short number, a name from a short list) is not pseudonymised: it is an `enum` or a `count`, or it is not logged.
 3. **`redact()` runs on every `error` message and every quoted value.** It replaces, in order:
    - private-key blocks (`-----BEGIN … -----END …`) with `[key]`;
    - bearer and basic credentials (`Authorization: …`, `Bearer …`) with `[secret]`;
-   - known token shapes with `[secret]`: GitHub `gh[pousr]_…` and `github_pat_…`, Slack `xox[abposr]-…`, `sk-…`, JWTs `eyJ….….…`, AWS `AKIA…`, Telegram `<digits>:<35 chars>`;
+   - known token shapes with `[secret]`: GitHub `gh[pousr]_…` and `github_pat_…`, Slack `xox[abposr]-…`, `sk-…` (with its `sk-ant-` and `sk-proj-` forms), JWTs `eyJ….….…`, AWS `AKIA…` and `ASIA…`, Google `AIza…`, GitLab `glpat-…`, package-registry tokens `npm_…` and `pypi-…`, model-hub tokens `hf_…`, Telegram `<digits>:<35 chars>`;
    - `key=value` and `"key": "value"` pairs whose key is secret-like (rule 4) with `[secret]`;
+   - command-line flags whose name is secret-like (rule 4), `--api-key=v` and `--api-key v`, with the value as `[secret]`;
    - URL user info, query and fragment, which are dropped;
    - e-mail addresses with `[email]`;
    - the machine's own home directory, any `/home/<x>`, `/Users/<x>` or `C:\Users\<x>`, with `~`;
    - the machine's own host name, its FQDN and its user name with `[host]` and `[user]`. These are read once at start-up, so no list in the repository names anyone;
    - IPv4 and IPv6 addresses other than loopback with `[addr]`, at `info`.
+   The token shapes are data, not code: one file, `ragon-rs/vectors/logging/secrets.txt`, holds each shape as a name, a keyword that must appear, a pattern and, for generic shapes, a minimum entropy, in the form secret scanners use. All three languages read it, and adding a shape is a one-line change with a fixture.
 4. **Secret-like field names are refused.** A field whose key, split on `_`, ends in `token`, `key`, `secret`, `password`, `passwd`, `cookie`, `credential` or `auth`, or equals one of them, is written as `[secret]`. So `api_key`, `web_token` and `auth` become `[secret]`, while `prompt_tokens` and `key_count` stay, because the rule matches whole segments at the end. The fixtures pin this down (§11.1).
 
 Redaction counts are kept per process. A bundle reports them, and an incident record notes them.
@@ -609,10 +672,10 @@ Redaction counts are kept per process. A bundle reports them, and an incident re
 | Language | Writer | Lives in |
 |---|---|---|
 | Python | a `logging.Formatter`, a `Filter` that drops untyped `extra=` values, and `setup_logging(component)` called once per entry point; `ragon_log.info("request done", count(prompt_tokens=…), …)` for typed fields | `dreamference/config/` (a new `log_writer.py` and `log_redactor.py`, one class each) |
-| Rust | `ragon-rs/log`, `std` only, with an optional `tracing` layer so a crate that adopts `tracing` later writes the same lines | `ragon-rs/log/` |
+| Rust | `ragon-rs/log`, `std` only, with an optional `tracing` layer so a crate that adopts `tracing` later writes the same lines; the layer maps levels by §5.1's priority table, never a library's default | `ragon-rs/log/` |
 | C++ (engine) | `log.hpp`, header-only, no `glog` | `ragon-engine/src/serve/log.hpp` |
 
-All three are tested against `ragon-rs/vectors/logging/` (§11.1). The engine repository keeps a copy of the vectors, and a test here compares it with this repository's copy when the submodule is checked out.
+All three follow §5.4's rule: a call copies into a bounded queue, a writer thread formats, a full queue drops and counts. All three are tested against `ragon-rs/vectors/logging/` (§11.1). The engine repository keeps a copy of the vectors, and a test here compares it with this repository's copy when the submodule is checked out.
 
 ### 7.6 Logs and artefacts
 
@@ -663,7 +726,8 @@ ragon-admin logs prune                   # apply §6.1's budget now
 - its size on disk;
 - the time of its last line;
 - the level in effect;
-- the time of its last `ERROR`.
+- the time of its last `ERROR`;
+- for journald sinks, the journal's storage, `persistent` or `volatile` (§3.1).
 
 **`logs <component>`** reads the component's sink:
 - `journalctl --user -u 'ragon-<component>*' -o json` (or `--system` for `signal` and `relay`); the reader runs the `journalctl` binary, so there is no libsystemd dependency;
@@ -673,7 +737,9 @@ ragon-admin logs prune                   # apply §6.1's budget now
 
 The options:
 - `--level` keeps lines at that level and above. For journald it maps to `PRIORITY`, and in files to the level token.
-- Lines not in the §5 format (SGLang, SearXNG, Conduit and other third-party containers) are shown as they are. In `--json` they get level `null` and `"raw": true`.
+- Lines not in the §5 format (SGLang, SearXNG, Conduit and other third-party containers) are shown as they are, except that escape sequences and control characters are escaped as §5.1 escapes them before they reach a terminal. In `--json` they get level `null` and `"raw": true`.
+- `--json` writes one object per line with `ts`, `component`, `level`, `severity_number`, `message` and `fields`, and the data-model names of §5.2.
+- journald writes a field longer than 4 096 bytes as `null` unless asked for all of it, so the reader asks for all of it; §5.1's 4 KiB limit keeps Ragon's own lines under that.
 - `--follow` follows one sink.
 
 ### 8.2 The merged view
@@ -692,7 +758,7 @@ The options:
 ## 9. `ragon-admin diag`: the bundle the user may send by hand (O5)
 
 ```
-ragon-admin diag [--hours 24] [--component c1,c2] [--out PATH] [--print]
+ragon-admin diag [--hours 24] [--component c1,c2] [--out PATH] [--scrub TERM]… [--print]
 ```
 
 `ragon diag` takes the same arguments.
@@ -700,11 +766,12 @@ ragon-admin diag [--hours 24] [--component c1,c2] [--out PATH] [--print]
 **What it writes.** One archive, `~/.local/state/dreamference/diag/ragon-diag-<UTC>.tar.gz`, mode 0600. Every source is capped, and the archive is streamed rather than built in memory. It contains:
 
 ```
-MANIFEST.json      created (UTC), --hours, components, and for every file: source, lines, bytes,
-                   redaction counts by rule, "flagged" for §7.6's transitional files
+MANIFEST.json      created (UTC), --hours, components, the marker, and for every file: source, lines,
+                   bytes, sha256, redaction counts by rule, "flagged" for §7.6's transitional files;
+                   "review": "possibly personal: check before sharing"
 versions.json      ragon-admin, ragon, Codex tag and patch list, ragon-serve version, git and image digest,
-                   SGLang image digest, OS, kernel, NVIDIA driver, CUDA, GPU name, memory total;
-                   the node id, never the host name
+                   SGLang image digest, OS, kernel, NVIDIA driver, CUDA, GPU name, memory total,
+                   journal storage; the node id, never the host name
 config.json        the effective DreamferenceConfig: every key; values that are enums, numbers or
                    Ragon paths; "[set]" or "[unset]" for anything else; the effective RAGON_LOG
 logs/<component>.log   the last N hours, §5 lines, re-redacted (cap: 20 MiB each)
@@ -712,8 +779,10 @@ logs/codex.log     the lifecycle extract from logs_2.sqlite, re-redacted (cap: 5
 starts/            the start records (§6.4)
 incidents/         the incident records within --hours, or the newest 5 if none are inside it
 host/              df for /, the model and state directories; free memory; PSI averages; the
-                   `nvidia-smi -q` sections for clocks, memory, power and errors; `docker ps`;
-                   `docker inspect` of Ragon's containers without Env, with mount sources as `~`
+                   `nvidia-smi -q` sections for clocks, memory, power and errors, without serial
+                   numbers or UUIDs; `docker ps`; `docker inspect` of Ragon's containers without
+                   Env, with mount sources as `~` and Args and Cmd reduced to flag names (§7.1);
+                   a crash list: time, component, signal and build for each crash, nothing more
 units.txt          `systemctl --user list-units 'ragon-*'` and their states
 ```
 
@@ -723,12 +792,17 @@ units.txt          `systemctl --user list-units 'ragon-*'` and their states
 - `config.toml`'s provider secrets;
 - `log-salt`;
 - any key, token or credential file;
-- the contents of `~/.ragon` beyond the files above.
+- the contents of `~/.ragon` beyond the files above;
+- core dumps, crash dumps, or anything a crash handler of the system recorded about a process's memory, command line or environment (O15);
+- MAC addresses, hardware serial numbers and the machine id.
 
 **Re-redaction, failing closed.** Every text file in the archive passes `redact()` a second time, as at `info` (O9: addresses become pseudonyms in a bundle). Then a final scan looks for:
 - the machine's own home path, host name, FQDN and user name;
-- every address on its network interfaces;
-- the shapes from §7.4.
+- every address on its network interfaces, and their MAC addresses;
+- the machine id;
+- `log-salt`, in raw, hex and base64 form;
+- the shapes from §7.4;
+- every term the user passed with `--scrub TERM` (a name, a project, a customer), which may be given more than once.
 
 If anything remains, `diag` writes no archive. It names the file and line and exits non-zero. That is a bug in a writer, and the fix belongs there.
 
@@ -737,10 +811,15 @@ If anything remains, `diag` writes no archive. It names the file and line and ex
 ```
 ✅ Wrote ~/.local/state/dreamference/diag/ragon-diag-20261108T140312Z.tar.gz (3.4 MB)
    24 h of 14 components, 3 start records, 1 incident. Redacted: 212 values (see MANIFEST.json).
-   Nothing was sent. Look inside before you share it:  tar -tzf <file>  ·  ragon diag --print
+   Marker DIAG-4be07a1c. Nothing was sent. It may still hold something personal:
+   look inside before you share it:  tar -tzf <file>  ·  ragon diag --print
 ```
 
 `--print` lists what would go in, with sizes, and writes nothing.
+
+**The marker.** Each run picks a random `DIAG-<8 hex>` id. It writes it into the manifest and the printout, and logs `admin INFO diag marker marker=DIAG-…` in the live logs, so the developer reading the bundle and the user reading their own logs later can find the same point in time. The id is random and local; it names no machine and no person.
+
+**Review before sharing.** The printout and the manifest say the bundle is possibly personal and must be looked at before it is shared. Error messages and third-party lines are the parts most likely to hold something the rules did not foresee.
 
 **Sending.** The product has no command, button or address for sending a bundle (rule 1). The user attaches the file wherever they choose, by hand.
 
@@ -778,6 +857,9 @@ The route is a `GET` that serves only these views. It goes into `ragon-rs/web/po
 - a home path, a host name and a user name taken from `env`, never from the real machine;
 - a 10 KB value, cut at 4 KiB with `truncated=1`;
 - a value with a newline, a quote and a control character;
+- a value with a C1 control, a bidirectional control, an escape sequence and bytes that are not UTF-8;
+- every shape in `secrets.txt`, each with a near miss that must stay;
+- `--api-key=v` and `--api-key v` on a command line;
 - an address at `info` (`[addr]`) and at `debug` (as is);
 - a pseudonym, stable for one salt and different for another.
 
@@ -787,6 +869,10 @@ The fixtures use only the documentation addresses and placeholder names (ORGANIS
 
 `tests/test_log_format.py`:
 - Every writer's output in every test matches `line.re`.
+- A property test feeds each writer arbitrary Unicode and bytes as values and keys, and every line still matches `line.re` and parses back to the same fields.
+- The sampler (§6.2): 1 000 lines of one message in a second give 10 lines and one `suppressed` line naming it with `count=990`; an `ERROR` of another message in the same second passes; 300 `request done` lines in a second give at most 200 and then a `requests summary`.
+- Rotation (§6.1): two processes of one component write while one rotates; no line is lost or duplicated, the second process reopens within a second, and only rotated files older than `.1` are compressed. A full disk, simulated, drops and counts lines and never raises into the caller.
+- A writer whose sink blocks never blocks the caller: with the sink stalled, 100 000 calls return and the dropped count is reported when the sink returns.
 - No `logging.basicConfig`, `logging.StreamHandler(` or `FileHandler(` appears outside the Python writer.
 - Every `ragon_log.*` and `logger.*` call has a literal first argument; this is checked with `ast`, not regular expressions.
 - The Rust daemon crates (`web`, `chat`, `sync`, `monitor`, `signal`, `code-index`, `docs-index`) count `eprintln!` under a ratchet that may not rise, as the ruff ratchet does.
@@ -800,7 +886,9 @@ Each writer runs under conftest's temporary `HOME`, with a fake host name, a fak
 - The launch builders never emit `--enable-log-requests`, `--enable-log-outputs`, `--max-log-len` (vLLM) or `--log-requests` (SGLang), checked for every registry entry and engine.
 - No product code sets `RAGON_DUMP_*`, `RAGON_STEP_TRACE` or `RUST_LOG=trace`. Benchmarks under `bench/` and `scripts/` are exempt.
 - Every `docker run` builder calls `ContainerLogOptions`, checked by building every container's argument list with Docker mocked.
-- Every unit template Ragon writes is named `ragon-<component>…` with a component from `components.txt`, and sets `SyslogIdentifier` and `EnvironmentFile`.
+- Every unit template Ragon writes is named `ragon-<component>…` with a component from `components.txt`, and sets `SyslogIdentifier`, `EnvironmentFile`, `LogExtraFields` and the two `LogRateLimit` settings (§3.3).
+- `ContainerLogOptions` sets `compress=true` (§6.3).
+- `diag`'s `docker inspect` and `nvidia-smi` filters drop Env, Args and Cmd values, serial numbers and UUIDs, checked against recorded outputs with planted values (§9).
 - `ragon-rs/logs` and the Python writer import no network client.
 - The egress audit's new check (§7.7) has a fixture: a strace log in which a process opens `logs/` and connects to `192.0.2.10`, which must fail.
 
@@ -830,12 +918,12 @@ Building waits for the owner's go. Each phase is shippable alone.
 | Phase | Ships | Size |
 |---|---|---|
 | **P0: stop the leaks** | the vLLM request and output flags removed (O10); the fleet's file name uses the node id and its command output becomes an artefact; the model gate's timestamp in UTC with `Z`; `ContainerLogOptions` on every `docker run` (§6.3); §11.4's flag and container tests | small: Python only |
-| **P1: the writers** | `components.txt`, `line.re` and the redaction vectors; the Python writer and `setup_logging()` at every entry point; `ragon-rs/log`; `log_level` and `RAGON_LOG` with `log.env`; `SyslogIdentifier` and `EnvironmentFile` in every unit; the files of §3.2 moved into `logs/` (`ragon-code`'s out of the user's repository); the app and app-server streams through `redact()`; the format, leak and index tests | medium |
-| **P2: the engine** | `log.hpp`; the version stamp from CMake; the start line and record; `request done` and `request refused` in the format; `ts` in the step trace; the vectors' copy, in the engine repository through its queue | small, in `ragon-engine` |
-| **P3: reading** | `ragon-rs/logs`; `ragon logs` and `ragon-admin logs list|<component>|all|level|prune` with the aliases of §8.3; `--json` | medium |
-| **P4: the bundle** | start and incident records (§6.4); `ragon diag` and `ragon-admin diag` with re-redaction that fails closed; the egress audit's new check; SYNC §4's two rows | medium |
+| **P1: the writers** | `components.txt`, `line.re`, the redaction vectors and `secrets.txt`; the writers' queue, sampler and rotation rules (§5.4, §6.1, §6.2) with their tests; the Python writer and `setup_logging()` at every entry point; `ragon-rs/log`; `log_level` and `RAGON_LOG` with `log.env`; `SyslogIdentifier`, `EnvironmentFile`, `LogExtraFields` and the rate backstop in every unit, after a check on the box that a user unit honours the last two; the files of §3.2 moved into `logs/` (`ragon-code`'s out of the user's repository); the app and app-server streams through `redact()`; the format, leak and index tests | medium |
+| **P2: the engine** | `log.hpp` with its queue and writer thread and the fatal-signal dump of the ring (§6.4); the version stamp from CMake; the start line and record; `request done` and `request refused` in the format; `ts` in the step trace; the vectors' copy, in the engine repository through its queue | small, in `ragon-engine` |
+| **P3: reading** | `ragon-rs/logs`; `ragon logs` and `ragon-admin logs list|<component>|all|level|prune` with the aliases of §8.3; `--json` with the data-model names; the journal storage report | medium |
+| **P4: the bundle** | start and incident records (§6.4) with the one-a-minute rule; `ragon diag` and `ragon-admin diag` with re-redaction that fails closed, `--scrub`, the marker and the hashes; the egress audit's new check; SYNC §4's two rows | medium |
 | **P5: the page** | `/diagnostics` in `ragon web` and the desktop app; its policy entry and conformance cases | small to medium |
-| **P6: Windows** | the file sink and rotation at the locations of §3.5; Event Log lifecycle lines for `RagonNode`; `ragon logs` and `ragon diag` on Windows, with the Windows node's build | with WINDOWS_NODE |
+| **P6: Windows** | the file sink and rotation at the locations of §3.5, with §6.1's sharing and rename rules; Event Log lifecycle lines for `RagonNode`; `ragon logs` and `ragon diag` on Windows, with the Windows node's build | with WINDOWS_NODE |
 | **P7: Codex's store** | an audit of what `logs_2.sqlite` records at TRACE in a real session, with fixtures, and a decision with the owner: keep it as is (O8), or a small patch lowering the default filter to INFO for named targets | small; a patch only if the audit finds content |
 
 ---
@@ -860,3 +948,7 @@ Every statement here is a test or a check someone can run.
 11. The Diagnostics page, from a paired device, shows components, the engine's start record and a log tail. It offers no control that changes a level or makes or downloads a bundle. Its route is read-only in `policy.json`.
 12. On Windows, `ragon logs list` and `ragon diag` work against `%LOCALAPPDATA%\Ragon\logs\` and `%ProgramData%\Ragon\logs\`, and the Event Log holds only the lifecycle lines of `RagonNode`.
 13. The redaction fixtures pass byte for byte in Python, Rust and C++.
+14. Under a load of 5 000 lines a second from one call site, a component's other messages and its first `ERROR` of each second still appear, and a `suppressed` line names the noisy message.
+15. With `logs/` on a full file system, every component keeps serving; when space returns, each writes one `log lines dropped` line with the count.
+16. The engine's serving thread holds no lock and makes no system call for logging, checked by the engine's own test with the sink stalled.
+17. A bundle carries no MAC address, machine id, GPU serial number or UUID, core dump, or `docker inspect` argument value, and its manifest holds a hash for every file and the marker that `ragon logs admin` shows.
