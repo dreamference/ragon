@@ -33,6 +33,7 @@ fn config(dir: &Path) -> Config {
         user_config: Some(dir.join("home/.config/dreamference/config.toml")),
         forge_url: None,
         phone_admin: None,
+        monitor: None,
         state_dir,
         port: 3100,
         lan_names: Vec::new(),

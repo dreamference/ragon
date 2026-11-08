@@ -81,6 +81,7 @@ fn config(dir: &Path, port: u16, lan_names: Vec<String>) -> Config {
         user_config: Some(dir.join("user/.config/dreamference/config.toml")),
         forge_url: None,
         phone_admin: None,
+        monitor: None,
         state_dir,
         port,
         lan_names,
@@ -135,6 +136,8 @@ const PROTECTED: &[(&str, &str)] = &[
     ("GET", "/api/night/repos"),
     ("POST", "/api/night/add"),
     ("GET", "/api/night/status"),
+    ("GET", "/api/monitor/status"),
+    ("GET", "/status"),
     ("GET", "/api/night/reports"),
     ("GET", "/api/ask/file?thread=t&name=a"),
     ("GET", "/images/0123456789abcdef.jpg"),
@@ -2001,4 +2004,69 @@ async fn every_answer_carries_the_safety_headers() {
         assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY", "{what}");
         assert_eq!(headers[header::CACHE_CONTROL], "no-store", "{what}");
     }
+}
+
+/// A stand-in for `ragon-node-monitor`: counts its runs in `runs` beside it and prints a document
+/// with one item down on a node that is otherwise ok.
+fn fake_monitor(dir: &Path) -> PathBuf {
+    let path = dir.join("ragon-node-monitor");
+    std::fs::write(
+        &path,
+        "#!/bin/sh\n[ \"$1 $2\" = \"status --json\" ] || exit 2\necho run >> \"$(dirname \"$0\")/runs\"\n\
+printf '{\"node\":{\"state\":\"down\"},\"items\":[{\"name\":\"engine\",\"state\":\"ok\",\"detail\":\"healthy\"},\
+{\"name\":\"disk <root>\",\"state\":\"down\",\"detail\":\"2%% free\"}]}'\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn the_status_page_and_its_json_come_from_the_monitor_and_are_cached_for_ten_seconds() {
+    let scratch = scratch("monitor");
+    let mut cfg = config(&scratch.dir, 3100, Vec::new());
+    cfg.monitor = Some(fake_monitor(&scratch.dir));
+    let server = Server::new(cfg).unwrap();
+    let cookie = sign_in(&server).await;
+    let get = |uri: &str| request("GET", uri).header(header::COOKIE, &cookie).body(Body::empty()).unwrap();
+
+    let (status, headers, body) = call(&server, get("/api/monitor/status")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers[header::CONTENT_TYPE].to_str().unwrap().starts_with("application/json"));
+    let value: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["node"]["state"], "down");
+    assert_eq!(value["items"][0]["state"], "ok");
+    assert_eq!(value["items"][1]["state"], "down");
+
+    // The page and a second ask within ten seconds reuse that run.
+    let (status, headers, page) = call(&server, get("/status")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(headers[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/html"));
+    assert!(page.contains("healthy") && page.contains("2% free"), "{page}");
+    assert!(page.contains("state down") && page.contains("state ok"));
+    assert!(page.contains("disk &lt;root&gt;") && !page.contains("<root>"));
+    let _ = call(&server, get("/api/monitor/status")).await;
+    let runs = std::fs::read_to_string(scratch.dir.join("runs")).unwrap();
+    assert_eq!(runs.lines().count(), 1, "the monitor ran more than once in ten seconds");
+}
+
+#[tokio::test]
+async fn the_status_routes_say_so_when_there_is_no_monitor_or_it_fails() {
+    let scratch = scratch("monitor-none");
+    let server = Server::new(config(&scratch.dir, 3100, Vec::new())).unwrap();
+    let cookie = sign_in(&server).await;
+    let get = |uri: &str| request("GET", uri).header(header::COOKIE, &cookie).body(Body::empty()).unwrap();
+    assert_eq!(call(&server, get("/api/monitor/status")).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(call(&server, get("/status")).await.0, StatusCode::NOT_FOUND);
+
+    let mut cfg = config(&scratch.dir, 3100, Vec::new());
+    cfg.monitor = Some(scratch.dir.join("missing"));
+    let server = Server::new(cfg).unwrap();
+    let cookie = sign_in(&server).await;
+    let get = |uri: &str| request("GET", uri).header(header::COOKIE, &cookie).body(Body::empty()).unwrap();
+    let (status, _, body) = call(&server, get("/api/monitor/status")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body.contains("did not start"), "{body}");
+    assert_eq!(call(&server, get("/status")).await.0, StatusCode::SERVICE_UNAVAILABLE);
 }

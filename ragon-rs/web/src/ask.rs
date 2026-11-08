@@ -519,6 +519,7 @@ mod tests {
             user_config: Some(user_config.clone()),
             forge_url: None,
             phone_admin: None,
+            monitor: None,
         })
         .unwrap();
 

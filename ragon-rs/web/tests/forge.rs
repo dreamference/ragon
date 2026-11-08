@@ -136,6 +136,7 @@ fn config(dir: &Path, forge_url: &str, public_names: Vec<String>) -> Config {
         user_config: Some(dir.join("user/.config/dreamference/config.toml")),
         forge_url: Some(forge_url.to_string()),
         phone_admin: None,
+        monitor: None,
         state_dir,
         port: 3100,
         lan_names: Vec::new(),

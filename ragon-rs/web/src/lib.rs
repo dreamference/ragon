@@ -26,6 +26,7 @@ pub mod cli;
 pub mod devices;
 pub mod documents;
 pub mod forge;
+pub mod monitor_status;
 pub mod night_phone;
 pub mod ocr;
 pub mod policy;

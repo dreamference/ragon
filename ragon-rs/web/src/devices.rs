@@ -34,7 +34,7 @@ fn escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-fn page(title: &str, body: &str) -> String {
+pub(crate) fn page(title: &str, body: &str) -> String {
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
 <title>{}</title>\n<link rel=\"stylesheet\" href=\"/pair.css\">\n{STYLE}\n</head>\n<body>\n<main>\n{body}\n</main>\n</body>\n</html>\n",

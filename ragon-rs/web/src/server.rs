@@ -94,6 +94,8 @@ pub struct Config {
     /// The `ragon-admin` that mints a phone's enrolment bundle for the Devices page (`remote code
     /// --bundle-file`); None unless this node is a remote-access peer.
     pub phone_admin: Option<PathBuf>,
+    /// `ragon-node-monitor`, for `/status` and `/api/monitor/status` (monitor_status.rs); none: the routes answer 404.
+    pub monitor: Option<PathBuf>,
 }
 
 pub struct Server {
@@ -114,6 +116,8 @@ pub struct Server {
     live: Mutex<Option<Arc<crate::sync_live::Live>>>,
     /// The forge's signed-in cookies, for `/forge/` (forge.rs).
     pub forge: crate::forge::ForgeProxy,
+    /// The node monitor's last result (monitor_status.rs).
+    pub monitor: crate::monitor_status::Cache,
 }
 
 impl Server {
@@ -136,6 +140,7 @@ impl Server {
             sync: Mutex::new(None),
             live: Mutex::new(None),
             forge: crate::forge::ForgeProxy::new(),
+            monitor: Default::default(),
             config,
         }))
     }
@@ -405,6 +410,8 @@ pub fn router(server: Arc<Server>) -> Router {
         .route("/api/telegram/pending-pairs", get(telegram_pending_pairs))
         .route("/api/telegram/pending-pairs/approve", post(telegram_pending_pairs_approve))
         .route("/api/telegram/pending-pairs/decline", post(telegram_pending_pairs_decline))
+        .route("/api/monitor/status", get(monitor_json))
+        .route("/status", get(monitor_page))
         .route("/api/forge", get(forge_status))
         .route("/forge", any(forge_proxy))
         .route("/forge/", any(forge_proxy))
@@ -513,6 +520,27 @@ async fn bridge_js() -> Response {
 
 async fn pair_css() -> Response {
     (StatusCode::OK, [(header::CONTENT_TYPE, "text/css; charset=utf-8")], assets::PAIR_CSS).into_response()
+}
+
+/// The node monitor's `status --json`, cached for ten seconds.
+async fn monitor_json(State(server): State<Arc<Server>>) -> Response {
+    let Some(program) = server.config.monitor.as_deref() else {
+        return json_response(StatusCode::NOT_FOUND, json!({ "error": "no node monitor" }));
+    };
+    match server.monitor.status(program).await {
+        Ok(value) => json_response(StatusCode::OK, value),
+        Err(reason) => json_response(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": reason })),
+    }
+}
+
+/// The same, as a page.
+async fn monitor_page(State(server): State<Arc<Server>>) -> Response {
+    let Some(program) = server.config.monitor.as_deref() else {
+        return html(StatusCode::NOT_FOUND, &crate::monitor_status::page(&Err("this node has no monitor".to_string())));
+    };
+    let status = server.monitor.status(program).await;
+    let code = if status.is_ok() { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    html(code, &crate::monitor_status::page(&status))
 }
 
 /// Whether the page offers its Code view: the node has a forge, and this device may see it.
@@ -1412,6 +1440,7 @@ mod tests {
             user_config: None,
             forge_url: None,
             phone_admin: None,
+            monitor: None,
         })
         .unwrap();
         let with = |cookie: String| {
@@ -1472,6 +1501,7 @@ mod tests {
             user_config: None,
             forge_url: None,
             phone_admin: None,
+            monitor: None,
         })
         .unwrap();
 
@@ -1554,6 +1584,7 @@ mod tests {
             user_config: None,
             forge_url: None,
             phone_admin: None,
+            monitor: None,
         })
         .unwrap()
     }
