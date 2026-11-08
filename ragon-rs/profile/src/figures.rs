@@ -1,0 +1,126 @@
+//! The §3 figures as pure functions over numbers, so tests can pin them with fixed deltas.
+
+pub fn median(v: &[f64]) -> Option<f64> {
+    if v.is_empty() {
+        return None;
+    }
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.total_cmp(b));
+    let n = s.len();
+    Some(if n % 2 == 1 {
+        s[n / 2]
+    } else {
+        (s[n / 2 - 1] + s[n / 2]) / 2.0
+    })
+}
+
+/// (max − min) / median, as a percentage.
+pub fn spread_pct(v: &[f64]) -> Option<f64> {
+    let m = median(v)?;
+    if m == 0.0 {
+        return None;
+    }
+    let (lo, hi) = v
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(l, h), x| (l.min(*x), h.max(*x)));
+    Some((hi - lo) / m * 100.0)
+}
+
+/// Decode over a set: Σ(generated − 1) / Σ(e2e − TTFT), weighted by tokens, never a mean of rates.
+pub fn decode_tok_s(generated: &[f64], e2e: &[f64], ttft: &[f64]) -> Option<f64> {
+    let tokens: f64 = generated.iter().map(|g| (g - 1.0).max(0.0)).sum();
+    let secs: f64 = e2e.iter().zip(ttft).map(|(e, t)| e - t).sum();
+    (secs > 0.0).then(|| tokens / secs)
+}
+
+/// Prefill ms per 1K new tokens; only from requests with at least 1,024 new tokens.
+pub fn prefill_ms_per_1k(prefill_s: f64, prompt: u64, reused: u64) -> Option<f64> {
+    let new = prompt.saturating_sub(reused);
+    (new >= 1024).then(|| prefill_s * 1000.0 * 1000.0 / new as f64)
+}
+
+/// The context bucket of a prompt: ≤ 8K, 8–32K, 32–64K, > 64K.
+pub fn bucket(prompt: u64) -> &'static str {
+    match prompt {
+        0..=8192 => "<=8K",
+        8193..=32768 => "8-32K",
+        32769..=65536 => "32-64K",
+        _ => ">64K",
+    }
+}
+
+/// Tokens per pass τ = (generated − 1) / verify passes.
+pub fn tokens_per_pass(generated: f64, passes: f64) -> Option<f64> {
+    (passes > 0.0).then(|| (generated - 1.0).max(0.0) / passes)
+}
+
+/// Accepted / drafted, as a percentage.
+pub fn acceptance_pct(accepted: f64, drafted: f64) -> Option<f64> {
+    (drafted > 0.0).then(|| accepted / drafted * 100.0)
+}
+
+/// Nearest-rank percentile of `v` (p in 0..=100).
+pub fn percentile(v: &[f64], p: f64) -> Option<f64> {
+    if v.is_empty() {
+        return None;
+    }
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.total_cmp(b));
+    let rank = ((p / 100.0) * s.len() as f64).ceil().max(1.0) as usize;
+    Some(s[rank.min(s.len()) - 1])
+}
+
+/// Inter-token gaps in ms from content chunks `(arrival seconds, tokens in the chunk)`. A chunk of k
+/// tokens counts as k gaps of (gap since the previous chunk / k). The first chunk has no gap.
+pub fn gaps_ms(chunks: &[(f64, u64)]) -> Vec<f64> {
+    let mut out = Vec::new();
+    for w in chunks.windows(2) {
+        let (t0, t1, k) = (w[0].0, w[1].0, w[1].1);
+        if k == 0 {
+            continue;
+        }
+        let gap = (t1 - t0) * 1000.0 / k as f64;
+        out.extend(std::iter::repeat_n(gap, k as usize));
+    }
+    out
+}
+
+/// p50, p90, p99 of the gaps; p90 only from 100 gaps, p99 from 1,000 gaps, otherwise None ("n/a").
+pub fn gap_percentiles(gaps: &[f64]) -> (Option<f64>, Option<f64>, Option<f64>) {
+    let p50 = percentile(gaps, 50.0);
+    let p90 = (gaps.len() >= 100)
+        .then(|| percentile(gaps, 90.0))
+        .flatten();
+    let p99 = (gaps.len() >= 1000)
+        .then(|| percentile(gaps, 99.0))
+        .flatten();
+    (p50, p90, p99)
+}
+
+/// Distribute `total` generated tokens over content chunks by their text length (largest cumulative
+/// rounding), so a burst chunk counts for more tokens than a short one. Returns tokens per chunk.
+pub fn tokens_per_chunk(lens: &[usize], total: u64) -> Vec<u64> {
+    let sum: usize = lens.iter().sum();
+    if sum == 0 || total == 0 {
+        return vec![0; lens.len()];
+    }
+    let (mut cum, mut prev, mut out) = (0usize, 0u64, Vec::new());
+    for l in lens {
+        cum += l;
+        let at = (cum as f64 / sum as f64 * total as f64).round() as u64;
+        out.push(at - prev);
+        prev = at;
+    }
+    out
+}
+
+/// Aggregate decode, span: tokens produced after the last stream's first token / the time from that
+/// first token to the last token of any stream (both in seconds).
+pub fn aggregate_span(tokens_after_last_first: f64, last_first: f64, last: f64) -> Option<f64> {
+    (last > last_first).then(|| tokens_after_last_first / (last - last_first))
+}
+
+/// Aggregate decode, wall: all generated tokens / (last token − first submission).
+pub fn aggregate_wall(generated: f64, first_submit: f64, last_token: f64) -> Option<f64> {
+    (last_token > first_submit).then(|| generated / (last_token - first_submit))
+}

@@ -1,0 +1,15 @@
+# HELP sglang:prompt_tokens_total Number of prefill tokens processed.
+# TYPE sglang:prompt_tokens_total counter
+sglang:prompt_tokens_total{model_name="m"} 0
+sglang:cached_tokens_total{model_name="m"} 0
+sglang:generation_tokens_total{model_name="m"} 0
+sglang:spec_verify_calls_total{model_name="m"} 0
+sglang:e2e_request_latency_seconds_sum{model_name="m"} 0.000000
+sglang:e2e_request_latency_seconds_count{model_name="m"} 0
+sglang:time_to_first_token_seconds_sum{model_name="m"} 0.000000
+sglang:time_to_first_token_seconds_count{model_name="m"} 0
+sglang:num_running_reqs{model_name="m"} 2
+sglang:num_queue_reqs{model_name="m"} 0
+sglang:max_total_num_tokens{model_name="m"} 400000
+ragon:spec_drafted_tokens_total{drafter="mtp"} 0
+ragon:spec_accepted_tokens_total{drafter="mtp"} 0

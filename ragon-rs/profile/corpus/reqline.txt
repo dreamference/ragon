@@ -1,0 +1,73 @@
+//! The engine's per-request stderr line (§2.1), parsed. Format owned by LOGGING; nothing else parses it.
+//!
+//! `request: session N, P prompt tokens (R reused[, from the prefix KV store]), prefill S s (C chunks,
+//! B beside a decode, T tok/s of compute); N tokens in S s (T tok/s), finish; P passes (B batched),
+//! X tokens/pass; step period M ms mean, X max over N; beside a prefill M ms mean, X max over N`
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RequestLine {
+    pub session: u64,
+    pub prompt_tokens: u64,
+    pub reused_tokens: u64,
+    pub from_prefix_store: bool,
+    pub prefill_s: f64,
+    pub prefill_chunks: u64,
+    pub generated: u64,
+    pub decode_s: f64,
+    pub decode_tok_s: f64,
+    pub finish: String,
+    pub passes: u64,
+    pub tokens_per_pass: f64,
+    pub step_period_mean_ms: Option<f64>,
+    pub step_period_max_ms: Option<f64>,
+}
+
+/// The number that ends right before `marker` (searching from `from`), and where the marker starts.
+fn num_before(s: &str, marker: &str, from: usize) -> Option<(f64, usize)> {
+    let at = from + s[from..].find(marker)?;
+    let head = &s[..at];
+    let start = head.rfind(|c: char| !(c.is_ascii_digit() || c == '.')).map(|i| i + 1).unwrap_or(0);
+    Some((head[start..].parse().ok()?, at))
+}
+
+pub fn parse(line: &str) -> Option<RequestLine> {
+    let i = line.find("request: session ")?;
+    let s = &line[i..];
+    let mut r = RequestLine::default();
+    let rest = &s["request: session ".len()..];
+    r.session = rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?;
+    let (p, at) = num_before(s, " prompt tokens", 0)?;
+    r.prompt_tokens = p as u64;
+    let (re, at) = num_before(s, " reused", at)?;
+    r.reused_tokens = re as u64;
+    r.from_prefix_store = s[at..].find(')').map(|e| s[at..at + e].contains("prefix KV store")).unwrap_or(false);
+    let (pf, at) = num_before(s, " s (", at)?; // "prefill S s ("
+    r.prefill_s = pf;
+    if let Some((c, _)) = num_before(s, " chunks", at) {
+        r.prefill_chunks = c as u64;
+    }
+    let (n, at) = num_before(s, " tokens in ", at)?;
+    r.generated = n as u64;
+    let (ds, at) = num_before(s, " s (", at + 1)?;
+    r.decode_s = ds;
+    let (t, at) = num_before(s, " tok/s)", at)?;
+    r.decode_tok_s = t;
+    let tail = &s[at..];
+    r.finish = tail.split(')').nth(1).unwrap_or("").trim_start_matches(',').split(';').next().unwrap_or("").trim().to_string();
+    if let Some((p, a2)) = num_before(s, " passes", at) {
+        r.passes = p as u64;
+        if let Some((x, _)) = num_before(s, " tokens/pass", a2) {
+            r.tokens_per_pass = x;
+        }
+    }
+    if let Some(k) = s.find("step period ") {
+        let sp = &s[k..];
+        r.step_period_mean_ms = num_before(sp, " ms mean", 0).map(|x| x.0);
+        r.step_period_max_ms = num_before(sp, " max over", 0).map(|x| x.0).or_else(|| num_before(sp, " ms max", 0).map(|x| x.0));
+    }
+    Some(r)
+}
+
+/// Every request line in `text`, in order.
+pub fn parse_all(text: &str) -> Vec<RequestLine> {
+    text.lines().filter_map(parse).collect()
+}

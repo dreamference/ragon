@@ -1,0 +1,15 @@
+{
+ "tree_steps": 512,
+ "drafter_off_steps": 0,
+ "drafters": {
+  "mtp": {
+   "requests": 16,
+   "steps": 512,
+   "drafted": 1600,
+   "accepted": 1024,
+   "draft_seconds": 12.8,
+   "verify_seconds": 25.6,
+   "commit_seconds": 1.6
+  }
+ }
+}
