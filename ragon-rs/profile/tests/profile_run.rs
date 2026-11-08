@@ -464,3 +464,31 @@ fn request_line_and_figure_functions_at_fixed_inputs() {
     assert_eq!(figures::median(&[3.0, 1.0, 2.0, 10.0]), Some(2.5));
     assert!((figures::spread_pct(&[9.0, 10.0, 11.0]).unwrap() - 20.0).abs() < 1e-9);
 }
+
+#[test]
+fn fanout_32_sends_32_distinct_forks_per_repetition_and_reports_the_cold_repetition_apart() {
+    let dir = tmp("fanout");
+    let f = fake(
+        &dir,
+        |_| "sglang:num_running_reqs 0\nsglang:num_queue_reqs 0\n".to_string(),
+        1,
+    );
+    let mut cfg = config(&f, &dir, Shape::Fanout32);
+    cfg.reps = 2;
+    let res = run::run(&cfg).unwrap();
+    assert_eq!(res.state, "clean", "{}", res.result["state"]);
+    assert_eq!(*f.done.lock().unwrap(), 32 * 3);
+    assert_eq!(res.result["shape"]["streams"], 32);
+    let figs = &res.result["figures"];
+    assert!(
+        figs["cold_rep0"]["span_tok_s"].is_number() || figs["cold_rep0"]["span_tok_s"].is_null()
+    );
+    assert!(figs["aggregate"]["span_tok_s"]["median"].as_f64().unwrap() > 0.0);
+    assert_eq!(
+        res.requests.iter().filter(|r| r["counted"] == true).count(),
+        64
+    );
+    let a = ragon_profile::workload::fork_question(0);
+    let b = ragon_profile::workload::fork_question(31);
+    assert_ne!(a, b);
+}

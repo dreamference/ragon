@@ -45,6 +45,16 @@ pub const STREAM_QUESTIONS: [&str; 4] = [
     "What does the code above do with an HTTP response body? Answer in one sentence.",
 ];
 
+/// The question of fork `i`: the four stream questions in turn, numbered so that all 32 forks differ.
+pub fn fork_question(i: usize) -> String {
+    let q = STREAM_QUESTIONS[i % STREAM_QUESTIONS.len()];
+    if i < STREAM_QUESTIONS.len() {
+        q.to_string()
+    } else {
+        format!("{q} (fork {i})")
+    }
+}
+
 /// The salt line for a cold request: derived from shape, repetition and arm visit, so both arms send
 /// the same bytes for the same repetition.
 pub fn salt(shape: &str, rep: u32, arm_visit: u32) -> String {

@@ -1,15 +1,18 @@
 //! `ragon profile compare <a> <b>` and `baseline [set|show]` are in compare.rs.
-//! `ragon profile run one-stream|four-streams [--reps N] [--url URL] [--log FILE] [--model ID]
+//! `ragon profile run one-stream|four-streams|fanout-32 [--reps N] [--url URL] [--log FILE] [--model ID]
 //! [--node ID] [--out DIR] [--lock FILE] [--pid PID] [--no-gpu] [--json] [--yes]`.
 use crate::machine::Sources;
 use crate::output;
 use crate::run::{self, Config, Shape};
 use std::time::Duration;
 
-const USAGE: &str = "usage: ragon profile run <one-stream|four-streams> [--reps N] [--url URL] [--log FILE] [--model ID] [--node ID] [--out DIR] [--lock FILE] [--pid PID] [--no-gpu] [--json] [--yes]";
+const USAGE: &str = "usage: ragon profile run <one-stream|four-streams|fanout-32> [--reps N] [--url URL] [--log FILE] [--model ID] [--node ID] [--out DIR] [--lock FILE] [--pid PID] [--no-gpu] [--json] [--yes]";
 
 pub fn run(args: &[String]) -> i32 {
-    if matches!(args.first().map(String::as_str), Some("compare" | "baseline")) {
+    if matches!(
+        args.first().map(String::as_str),
+        Some("compare" | "baseline")
+    ) {
         return crate::compare::run(args);
     }
     let mut it = args.iter().peekable();
@@ -18,7 +21,7 @@ pub fn run(args: &[String]) -> i32 {
         return 1;
     }
     let Some(shape) = it.next().and_then(|s| Shape::parse(s)) else {
-        eprintln!("{USAGE}\nshapes available in this build: one-stream, four-streams");
+        eprintln!("{USAGE}\nshapes available in this build: one-stream, four-streams, fanout-32");
         return 1;
     };
     let home = ragon_node_locator::home_dir();

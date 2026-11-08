@@ -19,6 +19,7 @@ pub const DISCARD_LIMIT: u32 = 3;
 pub enum Shape {
     OneStream,
     FourStreams,
+    Fanout32,
 }
 
 impl Shape {
@@ -26,12 +27,22 @@ impl Shape {
         match self {
             Shape::OneStream => "one-stream",
             Shape::FourStreams => "four-streams",
+            Shape::Fanout32 => "fanout-32",
+        }
+    }
+    /// Concurrent requests per repetition.
+    pub fn streams(self) -> usize {
+        match self {
+            Shape::OneStream => 1,
+            Shape::FourStreams => 4,
+            Shape::Fanout32 => 32,
         }
     }
     pub fn parse(s: &str) -> Option<Shape> {
         match s {
             "one-stream" => Some(Shape::OneStream),
             "four-streams" => Some(Shape::FourStreams),
+            "fanout-32" => Some(Shape::Fanout32),
             _ => None,
         }
     }
@@ -478,25 +489,41 @@ pub fn run(cfg: &Config) -> Result<RunResult, Refusal> {
             }
             ident = idn;
         }
-        Shape::FourStreams => {
+        Shape::FourStreams | Shape::Fanout32 => {
+            let n = cfg.shape.streams();
+            let fan_out = cfg.shape == Shape::Fanout32;
             manifest.push(format!("prefix:{}", w::sha256_hex(&prefix)));
-            for q in w::STREAM_QUESTIONS {
-                manifest.push(format!("q:{}", w::sha256_hex(q)));
+            for i in 0..n {
+                manifest.push(format!("q:{}", w::sha256_hex(&w::fork_question(i))));
             }
             let mut per_rep: Vec<Value> = vec![];
+            // Fan-out: repetition 0 is cold (salted); the counted repetitions resend its head unsalted-again, so they reuse it.
+            let mut head0: Option<String> = None;
             for rep in 0..=cfg.reps {
                 let (mut attempt, mut misses) = (0u32, 0u32);
                 let t_start = sampler.now_s();
                 let rec = loop {
-                    let salt = if attempt == 0 {
-                        w::salt(cfg.shape.name(), rep, 0)
-                    } else {
-                        format!(
-                            "[profile salt: shape=four-streams rep={rep} visit=0 attempt={attempt}]\n"
-                        )
+                    let head = match (&head0, fan_out && rep > 0) {
+                        (Some(h), true) => h.clone(),
+                        _ => {
+                            let salt = if attempt == 0 {
+                                w::salt(cfg.shape.name(), rep, 0)
+                            } else {
+                                format!(
+                                    "[profile salt: shape={} rep={rep} visit=0 attempt={attempt}]\n",
+                                    cfg.shape.name()
+                                )
+                            };
+                            format!("{salt}{prefix}\n\n")
+                        }
                     };
-                    match four(&srv, &model, &format!("{salt}{prefix}\n\n"), cfg.timeout) {
-                        Ok(Ok(v)) => break Some(v),
+                    match fan(&srv, &model, &head, n, fan_out && rep > 0, cfg.timeout) {
+                        Ok(Ok(v)) => {
+                            if fan_out && rep == 0 {
+                                head0 = Some(head);
+                            }
+                            break Some(v);
+                        }
                         Ok(Err(why)) => {
                             misses += 1;
                             attempt += 1;
@@ -519,6 +546,12 @@ pub fn run(cfg: &Config) -> Result<RunResult, Refusal> {
                 rec["counted"] = json!(rep > 0);
                 per_rep.push(rec);
             }
+            if fan_out && let Some(cold) = per_rep.first() {
+                figures.insert(
+                    "cold_rep0".into(),
+                    json!({"span_tok_s": cold["span_tok_s"], "wall_tok_s": cold["wall_tok_s"]}),
+                );
+            }
             let counted: Vec<&Value> = per_rep.iter().filter(|r| r["counted"] == true).collect();
             let stream_recs: Vec<&Value> = counted
                 .iter()
@@ -539,7 +572,7 @@ pub fn run(cfg: &Config) -> Result<RunResult, Refusal> {
             // The base arm compared with itself: the same question gives the same text in every repetition?
             let mut same = 0;
             let mut total = 0;
-            for qi in 0..4 {
+            for qi in 0..n {
                 let hs: Vec<&Value> = stream_recs
                     .iter()
                     .filter(|s| s["question"] == qi)
@@ -580,7 +613,7 @@ pub fn run(cfg: &Config) -> Result<RunResult, Refusal> {
         "schema": 1,
         "build": {"ragon_version": cfg.version, "engine": "n/a", "model": model, "drafter": "n/a"},
         "flags": "production",
-        "shape": {"name": cfg.shape.name(), "reps_counted": cfg.reps, "warmup_reps": 1, "streams": if cfg.shape == Shape::FourStreams { 4 } else { 1 }, "long_prefix_chars": cfg.long_chars},
+        "shape": {"name": cfg.shape.name(), "reps_counted": cfg.reps, "warmup_reps": 1, "streams": cfg.shape.streams(), "long_prefix_chars": cfg.long_chars},
         "workload_sha256": w::sha256_hex(&manifest.join("\n")),
         "window": "no window",
         "started_utc": started.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -598,11 +631,14 @@ pub fn run(cfg: &Config) -> Result<RunResult, Refusal> {
     })
 }
 
-/// Four sessions at once on one prefix, distinct questions; per-request figures from the request lines.
-fn four(
+/// `n` sessions at once on one prefix, distinct questions; per-request figures from the request lines.
+/// `expect_warm`: the prefix was sent before, so a request line that reused almost nothing discards the repetition.
+fn fan(
     srv: &Server,
     model: &str,
     head: &str,
+    n: usize,
+    expect_warm: bool,
     timeout: Duration,
 ) -> Result<Result<Value, String>, String> {
     let before = srv.metrics()?;
@@ -610,12 +646,12 @@ fn four(
         return Ok(Err("production busy before the request".into()));
     }
     let off = srv.log_len();
-    let barrier = Arc::new(Barrier::new(4));
+    let barrier = Arc::new(Barrier::new(n));
     let t0 = Instant::now();
-    let handles: Vec<_> = (0..4)
+    let handles: Vec<_> = (0..n)
         .map(|i| {
             let (b, addr, model) = (barrier.clone(), srv.addr.clone(), model.to_string());
-            let prompt = format!("{head}{}", w::STREAM_QUESTIONS[i]);
+            let prompt = format!("{head}{}", w::fork_question(i));
             std::thread::spawn(move || {
                 b.wait();
                 stream_request(&addr, &model, &prompt, 192, timeout)
@@ -629,9 +665,9 @@ fn four(
                 .map_err(|_| "a stream thread panicked".to_string())??,
         );
     }
-    let after = srv.settled(&before, 4.0)?;
+    let after = srv.settled(&before, n as f64)?;
     let counters = before.has(m::E2E_COUNT);
-    if counters && after.delta(&before, m::E2E_COUNT) != 4.0 {
+    if counters && after.delta(&before, m::E2E_COUNT) != n as f64 {
         return Ok(Err(format!(
             "{} requests arrived in the interval",
             after.delta(&before, m::E2E_COUNT)
@@ -658,7 +694,15 @@ fn four(
     let mut tokens_after = 0.0;
     let mut gens = vec![];
     let mut streams = vec![];
-    let use_lines = lines.len() == 4;
+    let use_lines = lines.len() == n;
+    if expect_warm && use_lines {
+        if let Some(l) = lines.iter().find(|l| l.reused_tokens <= COLD_REUSED_MAX) {
+            return Ok(Err(format!(
+                "a repeated prefix reused only {} tokens",
+                l.reused_tokens
+            )));
+        }
+    }
     let mut used = vec![false; lines.len()];
     for (i, r) in results.iter().enumerate() {
         let g = r.usage_completion.unwrap_or(r.chunks.len() as u64);
