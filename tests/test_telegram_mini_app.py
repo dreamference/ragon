@@ -8,6 +8,7 @@ records that it was opened. Nothing here touches a network or the real machine.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,8 +22,12 @@ HARNESS = Path(__file__).resolve().parent / "telegram_mini_app_harness.js"
 
 def run(hash_: str, answer: dict | list[dict], **settings: object) -> dict:
     """Run the bridge in the node harness; ``settings`` are the harness options in snake_case."""
-    if shutil.which("node") is None:
+    found = shutil.which("node")
+    if found is None:
         pytest.skip("node is not installed")
+    # A `node` found through ~/.local/bin is a link; the conftest refuses to run anything of the
+    # install, so run the link's target.
+    node = os.path.realpath(found)
     known = {
         "search": "",
         "unpaired": False,
@@ -46,7 +51,7 @@ def run(hash_: str, answer: dict | list[dict], **settings: object) -> dict:
     }
     result = subprocess.run(
         [
-            "node",
+            node,
             str(HARNESS),
             str(BRIDGE),
             hash_,
