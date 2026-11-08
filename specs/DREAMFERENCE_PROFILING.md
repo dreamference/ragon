@@ -1,6 +1,6 @@
 # Ragon Profiling: measuring the model server and the agent the same way every time
 
-**Status:** Proposed; spec only, building later. The owner's questions are in §0.1.
+**Status:** Proposed; spec only, building later. Decided by the owner on 2026-11-08 (§0.1).
 
 **Names:** post-rename (`ragon`, `ragon-admin`, `~/.ragon`, `ragon web` on port 3100); nodes `node-a`/`node-b`; the engine is ragon-serve (the `ragon-engine` repository, C++20/CUDA), SGLang the fallback engine.
 
@@ -13,18 +13,18 @@
 - [RAGON_SWE_BENCH](./DREAMFERENCE_RAGON_SWE_BENCH.md): the harness, its per-task `wall_s` and the model gate it holds;
 - the sibling specs being written at the same time, cited by name only: `DREAMFERENCE_LOGGING.md` (owns the per-request log line's format) and `DREAMFERENCE_MONITORING.md` (owns the thresholds the node watches).
 
-## 0.1 Questions for the owner
+## 0.1 Decisions
 
-Each has a recommended answer; "yes" accepts it.
+The owner approved every recommended answer on 2026-11-08. The text of the sections named here is normative.
 
-- **O1. The command's name.** `ragon-admin profile` is the user-facing profiler (§6). `ragon-admin benchmark_server` is retired: it runs `vllm bench serve` inside the model server's container, and the ragon-serve image has no vLLM, so on the default engine it cannot run (§2.3). *Recommended: yes, `profile`; `benchmark_server` removed in Phase 1 with a one-line pointer to `profile` for one release.*
-- **O2. Where the measuring code lives.** The measurement core (workloads, timing, the result file, the comparison) is a Rust leaf crate, `ragon-rs/profile/`, run as `ragon profile`; `ragon-admin profile` on Linux owns only the window (stop, start through `start_server()`, restore) and calls it. The Windows node, whose node half is Rust launcher subcommands, gets the same core with no Python. *Recommended: yes.*
-- **O3. The standard workloads the product ships.** The engine's agentlong set never leaves the machine it was recorded on (only its manifest of hashes is committed), so it cannot be a product workload. The product ships public, fixed workloads: `decode_speed.py`'s three prompts for one stream, and a long-context prefix built deterministically from the installed package's own source files for the 32K and fan-out shapes. agentlong stays the engine developers' gate on `node-a`/`node-b`. *Recommended: yes.*
-- **O4. Where results are kept.** Raw results on the machine under `~/.local/share/dreamference/profile/` (never in a repository); published figures only through the existing release entry `docs/releases/<version>.json` (a new `profile` block) and the generated `docs/benchmarks.md`. No tracked top-level `reports/` directory (§7.9 item 4 would need an allowlist change); the engine's own stage tables stay in the engine's specs. *Recommended: yes.*
-- **O5. The regression rule.** Noise is the larger of the two arms' own spread over their warm repetitions, at least 0.5%. Within noise: no change. Worse by more than twice the noise and at least 2%: a regression. In between: one more ABBA pair, then "slower, within 2%" if it stays there, which is not a regression (§7.2). *Recommended: yes.*
-- **O6. The release gate.** At each cut, on one node with the release candidate installed as production, the `one-stream` shape runs against the idle production server (no window, about three minutes): decode tok/s and TTFT not a regression against the previous release on the same node, every answer passes its check. A failure holds the cut until the owner says go. *Recommended: yes.*
-- **O7. Speed in the app.** No tok/s or TTFT in the desktop app or `ragon web` through Phase 3. Later, one row in the thread's details panel ("Last turn: TTFT 1.2 s, 63 tok/s"), from the server's own figures for that turn. *Recommended: yes, later, details panel only.*
-- **O8. Deep profiles in the product.** No `--deep` flag: Nsight Systems and Nsight Compute stay hand tools of the engine developers, never shipped, never on a release build's default path. *Recommended: yes.*
+- **O1.** `ragon-admin profile` is the user-facing profiler; `ragon-admin benchmark_server` is removed in Phase 1 with a one-line pointer to `profile` for one release (§6, §2.3); decided 2026-11-08.
+- **O2.** The measurement core is the Rust leaf crate `ragon-rs/profile/`, run as `ragon profile`; `ragon-admin profile` on Linux owns only the window; the Windows node gets the same core (§6.1, §8); decided 2026-11-08.
+- **O3.** The product ships public fixed workloads (`decode_speed.py`'s three prompts; a deterministic long-context prefix built from the installed package's own sources); the agentlong set stays on `node-a`/`node-b` (§5, §6.1); decided 2026-11-08.
+- **O4.** Raw results stay under `~/.local/share/dreamference/profile/`; published figures go only through `docs/releases/<version>.json` (a `profile` block) and `docs/benchmarks.md`; no tracked top-level `reports/` (§5.5); decided 2026-11-08.
+- **O5.** Noise is the larger of the two arms' spread, at least 0.5%; a regression is worse by more than twice the noise and at least 2%; in between, one more ABBA pair, then "slower, within 2%" (§7.2); decided 2026-11-08.
+- **O6.** The release gate runs `one-stream` against the idle production server with the release candidate installed, no window; a regression or a failed check holds the cut until the owner says go (§7.3); decided 2026-11-08.
+- **O7.** No tok/s or TTFT in the app through Phase 3; later one row in the thread's details panel (§6.2); decided 2026-11-08.
+- **O8.** No `--deep` flag: Nsight Systems and Compute stay developers' hand tools, never shipped (§4.3); decided 2026-11-08.
 
 ## 1. Scope and the rules that bind it
 
@@ -273,7 +273,7 @@ The same definitions, file format, shapes and verdict rule apply; the measuring 
 
 ## 10. Rollout
 
-- **Phase 0 (this document).** The definitions, the method and the questions.
+- **Phase 0 (this document).** The definitions, the method and the owner's decisions.
 - **Phase 1: measure what is there.** The Rust core (`ragon-rs/profile/`, O2) with the §3 figures from `/metrics`, `/spec_stats` and the request line; `result.json` and the fixed table; `ragon-admin profile run one-stream|four-streams` against idle production, with no window; `compare`, `baseline`, the results directory; `benchmark_server` retired (O1); `decode_speed.py` writing the same result format. Tests use a fake server that replays recorded `/metrics` bodies and request lines.
 - **Phase 2: windows.** The §5.1 window with the GPU lock, refusals, `windows.log` and the restore check; `fanout-32`; the level-1 counter additions in ragon-serve (engine repository, through its publish queue); `profile gemm` where the image carries the bench.
 - **Phase 3: baselines and the release gate.** The `profile` block in `docs/releases/<version>.json` and `release_benchmark.py check`; the gate of §7.3 in the release procedure; baselines handed to MONITORING.
@@ -295,7 +295,3 @@ The same definitions, file format, shapes and verdict rule apply; the measuring 
 10. `benchmark_server` is gone from the parser, and the CLI reference and docs say `profile`.
 11. Phase 3: `release_benchmark.py check` fails a release entry whose `profile` block is missing a field or names a host.
 12. Phase 5: on the Windows node, `one-stream` writes a `result.json` that the Linux `compare` reads, and the shipped prefix's hash equals the Linux one.
-
-## 12. Decisions
-
-*(Left for the owner's answers to §0.1.)*
