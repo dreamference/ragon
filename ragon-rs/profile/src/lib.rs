@@ -8,4 +8,5 @@ pub mod metrics;
 pub mod output;
 pub mod reqline;
 pub mod run;
+pub mod window;
 pub mod workload;
