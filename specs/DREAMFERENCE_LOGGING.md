@@ -313,7 +313,7 @@ A **component** is `[a-z][a-z0-9-]*`. One table, `ragon-rs/vectors/logging/compo
 - It sets `SyslogIdentifier=ragon-<component>`, so `journalctl -t ragon-forge` gathers every part of the forge.
 - It sets `EnvironmentFile=-%h/.config/dreamference/log.env` (§4.3).
 - It sets `LogExtraFields=RAGON_COMPONENT=<component>`, so every line of the unit carries an indexed field and `journalctl --user RAGON_COMPONENT=engine` finds it whatever the unit's part or instance.
-- It sets `LogRateLimitIntervalSec=30s` and `LogRateLimitBurst=3000` as a backstop under the writer's own limits (§6.2). These are unit settings, not journald's configuration (O12).
+- It sets `LogRateLimitIntervalSec=30s` and `LogRateLimitBurst=20000` as a backstop above the writer's own limits (§6.2), so it only acts when a writer is broken. These are unit settings, not journald's configuration (O12).
 
 All of today's units already follow the name rule. P1 adds the settings, checks on the box that a user unit honours the last two, and a test holds them (§11.4).
 
@@ -514,7 +514,7 @@ Each stream:
 ### 6.1 Files
 
 Each writer rotates its own file:
-- At **10 MiB**, `<component>.log` becomes `<component>.1.log`, and older files shift up. `.1.log` stays plain until the next rotation, which compresses it to `.2.log.gz`: a process may still be finishing a write to it, and a file is never compressed while it can be written. Compression runs off the logging path, in the rotating process's writer thread or a child.
+- At **10 MiB**, `<component>.log` becomes `<component>.1.log`, and older files shift up. `.1.log` stays plain until the next rotation, which compresses it to `.2.log.gz`: a process may still be finishing a write to it, and a file is never compressed while it can be written (O11: the newest rotated file waits one rotation). Compression runs off the logging path, in the rotating process's writer thread or a child.
 - **Five** files are kept.
 - On every rotation the writer deletes its own component's files older than **14 days**.
 
@@ -542,7 +542,7 @@ journald holds its buffers in memory that the model server needs, so a writer li
 
 1. **Per message.** The key is the level and the literal message. In each second, the first **10** lines with one key are written and the rest are counted, so one call site never takes more than a fifth of the process's budget. When the second ends, the writer adds one line for each key that lost lines: `WARN log lines suppressed site="<message>" count=N`.
 2. **Per process.** At most **50 lines per second** at `info` and **500** at `debug` and `trace`, after which further lines are dropped. One `WARN log lines dropped count=N` line follows once the second has passed.
-3. **What always passes.** The first `ERROR` of each key in each second passes both limits. A request's closing line (`request done`, `request refused`) is one line per unit of work, the line one most needs afterwards, so it is not sampled per message. It has its own budget of **200 per second**. Above it, the writer replaces the per-request lines with one `INFO requests summary count=… errors=… p50_ms=… p95_ms=…` line every 10 seconds.
+3. **What always passes.** The first `ERROR` of each key in each second passes both limits. A request's closing line (`request done`, `request refused`) is one line per unit of work, the line one most needs afterwards, so it is not sampled per message. It has its own budget of **200 per second**, outside the per-process cap. Above it, the writer replaces the per-request lines with one `INFO requests summary count=… errors=… p50_ms=… p95_ms=…` line every 10 seconds.
 
 The unit's `LogRateLimitIntervalSec=` and `LogRateLimitBurst=` (§3.3) and journald's own limit stay as the backstop.
 
