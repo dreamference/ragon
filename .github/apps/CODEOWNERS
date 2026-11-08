@@ -154,6 +154,8 @@
 /dreamference/node/                             @dreamference/nodes
 /dreamference/forge/                            @dreamference/nodes @dreamference/security
 /ragon-rs/node-locator/                          @dreamference/nodes
+/ragon-rs/node-monitor/                          @dreamference/nodes
+/specs/DREAMFERENCE_MONITORING.md                @dreamference/nodes
 /ragon-web-rs/src/node_locator.rs                @dreamference/nodes
 /ragon-rs/src/node.rs                            @dreamference/nodes
 /ragon-rs/src/node_command.rs                    @dreamference/nodes

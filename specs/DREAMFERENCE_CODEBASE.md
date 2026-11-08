@@ -298,6 +298,7 @@ ragon-rs/skills/                               # crate ragon-skills: links, pref
 ragon-rs/apps/                                 # crate ragon-apps: /apps over MCP (Gmail, Drive, Calendar)
 ragon-rs/delegate/                             # crate ragon-delegate: Claude plugin delegate MCP server and ledger
 ragon-rs/monitor/                              # crate ragon-monitor: Claude plugin session monitor MCP server
+ragon-rs/node-monitor/                         # crate ragon-node-monitor: node watcher, `status --json` (Phase 1; not a launcher member)
 ragon-rs/sync/                                 # crate ragon-sync: ragon sync hub and agent
 ragon-rs/tools/                                # crate ragon-tools
 ragon-rs/web/                                  # crate ragon-web-server: ragon web (UI server, Ask threads, bridge policy)

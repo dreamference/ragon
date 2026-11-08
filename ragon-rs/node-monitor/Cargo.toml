@@ -1,0 +1,26 @@
+# `ragon-node-monitor`, the node watcher (specs/DREAMFERENCE_MONITORING.md, decision O1). Phase 1:
+# `status --json` runs each probe of section 3 once and prints the item states and the node state.
+# No history, no actions, no messages, no service. The host is reached only through the `Host` trait
+# (src/host.rs), so the tests feed recorded bodies and a stubbed /proc, statvfs and systemctl. It
+# opens connections to loopback only. A crate of its own so `cargo test` in a copy of this folder
+# needs no Codex workspace; versions are the Codex workspace's, so building inside it adds no
+# second copy of any crate. It is not a dependency of the launcher and ships through the release
+# installer in a later phase, so codex_branded_builder.py's build list is unchanged.
+[package]
+name = "ragon-node-monitor"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "ragon_node_monitor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ragon-node-monitor"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2.182"
+serde_json = "1"
