@@ -946,6 +946,10 @@ def test_the_node_commands_reach_the_advertiser(machine, monkeypatch, capsys):
     from dreamference.forge.forge_service import ForgeService
 
     monkeypatch.setattr(ForgeService, "rebind", classmethod(lambda cls: calls.append(("rebind",))))
+    from dreamference.node.node_monitor_service import NodeMonitorService
+
+    monkeypatch.setattr(NodeMonitorService, "setup", classmethod(lambda cls: True))
+    monkeypatch.setattr(NodeMonitorService, "off", classmethod(lambda cls: True))
     for argv, code in (
         (["node", "enable", "--no-web"], 0),
         (["node", "disable"], 0),

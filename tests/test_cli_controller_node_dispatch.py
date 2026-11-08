@@ -71,6 +71,7 @@ def node(monkeypatch):
     )
     made.update(_patch(monkeypatch, "dreamference.node.node_adapter_sync", "NodeAdapterSync"))
     made.update(_patch(monkeypatch, "dreamference.forge.forge_service", "ForgeService"))
+    made.update(_patch(monkeypatch, "dreamference.node.node_monitor_service", "NodeMonitorService"))
     return made
 
 

@@ -4702,6 +4702,11 @@ class DreamferenceCLIController:
                     from dreamference.forge.forge_service import ForgeService
 
                     ForgeService.setup()
+                if enabled:
+                    # On by default on every node (MONITORING O11); a failure does not fail the enable.
+                    from dreamference.node.node_monitor_service import NodeMonitorService
+
+                    NodeMonitorService.setup()
                 sys.exit(0 if enabled else 1)
             if args.node_command == _ARG_DISABLE:
                 disabled = NodeAdvertiser.disable()
@@ -4710,6 +4715,9 @@ class DreamferenceCLIController:
                     from dreamference.forge.forge_service import ForgeService
 
                     ForgeService.rebind()
+                    from dreamference.node.node_monitor_service import NodeMonitorService
+
+                    NodeMonitorService.off()
                 sys.exit(0 if disabled else 1)
             if args.node_command == _ARG_STATUS and not args.name:
                 print(NodeAdvertiser.status())
