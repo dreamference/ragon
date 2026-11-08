@@ -5,7 +5,9 @@
 pub mod disk;
 pub mod host;
 pub mod memory;
+pub mod sampler;
 pub mod server;
+pub mod store;
 pub mod units;
 
 #[cfg(test)]
