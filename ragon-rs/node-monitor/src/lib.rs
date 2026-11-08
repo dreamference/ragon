@@ -1,13 +1,16 @@
-//! The node watcher, Phase 1 (specs/DREAMFERENCE_MONITORING.md §3, §4.1, §4.3, §11): every probe
-//! runs once and yields an item state. There is no history, so no hysteresis: a threshold that holds
-//! in the one sample sets the state, and the "for N minutes" parts of §3 wait for Phase 2.
+//! The node watcher (specs/DREAMFERENCE_MONITORING.md §3, §4, §11). `collect` runs every probe once;
+//! `tracker` adds the hysteresis of §4.2 over a series of samples and `liveness` the §3.3 decision
+//! (O3), both on a clock the caller supplies. `status --json` is still one sample, no history.
 
 pub mod disk;
+pub mod gate;
 pub mod host;
+pub mod liveness;
 pub mod memory;
 pub mod sampler;
 pub mod server;
 pub mod store;
+pub mod tracker;
 pub mod units;
 
 #[cfg(test)]

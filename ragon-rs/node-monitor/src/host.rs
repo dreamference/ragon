@@ -35,8 +35,47 @@ pub trait Host {
     fn run(&self, program: &str, args: &[&str], timeout: Duration) -> io::Result<CmdOutput>;
     /// A GET on `127.0.0.1:port`. There is no way to name another host.
     fn http_get(&self, port: u16, path: &str, timeout: Duration) -> io::Result<HttpResponse>;
+    /// A JSON POST on `127.0.0.1:port` (the liveness completion, §3.3).
+    fn http_post(
+        &self,
+        _port: u16,
+        _path: &str,
+        _body: &str,
+        _timeout: Duration,
+    ) -> io::Result<HttpResponse> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
     fn statvfs(&self, path: &str) -> io::Result<FsStat>;
     fn home(&self) -> Option<String>;
+}
+
+fn request(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: &str,
+    timeout: Duration,
+) -> io::Result<HttpResponse> {
+    let start = Instant::now();
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    let extra = if method == "POST" {
+        format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            body.len()
+        )
+    } else {
+        String::new()
+    };
+    write!(
+        stream,
+        "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1\r\n{extra}Connection: close\r\n\r\n{body}"
+    )?;
+    let mut raw = Vec::new();
+    stream.take(4 << 20).read_to_end(&mut raw)?;
+    parse_http_response(&raw, start.elapsed())
 }
 
 /// Splits a raw HTTP/1.0 answer into its status and body.
@@ -97,18 +136,17 @@ impl Host for RealHost {
     }
 
     fn http_get(&self, port: u16, path: &str, timeout: Duration) -> io::Result<HttpResponse> {
-        let start = Instant::now();
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-        let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
-        stream.set_read_timeout(Some(timeout))?;
-        stream.set_write_timeout(Some(timeout))?;
-        write!(
-            stream,
-            "GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
-        )?;
-        let mut raw = Vec::new();
-        stream.take(4 << 20).read_to_end(&mut raw)?;
-        parse_http_response(&raw, start.elapsed())
+        request(port, "GET", path, "", timeout)
+    }
+
+    fn http_post(
+        &self,
+        port: u16,
+        path: &str,
+        body: &str,
+        timeout: Duration,
+    ) -> io::Result<HttpResponse> {
+        request(port, "POST", path, body, timeout)
     }
 
     fn statvfs(&self, path: &str) -> io::Result<FsStat> {

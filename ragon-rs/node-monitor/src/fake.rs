@@ -15,6 +15,10 @@ pub struct FakeHost {
     pub http: HashMap<String, HttpResponse>,
     pub fs: HashMap<String, FsStat>,
     pub home: Option<String>,
+    /// Keyed by `port path`; a POST that finds nothing fails like a refused connection.
+    pub posts: HashMap<String, HttpResponse>,
+    /// Every POST made, as `port path`.
+    pub posted: std::cell::RefCell<Vec<String>>,
 }
 
 impl FakeHost {
@@ -29,6 +33,15 @@ impl FakeHost {
             elapsed: Duration::from_millis(ms),
         };
         self.http.insert(format!("{port} {path}"), r);
+        self
+    }
+    pub fn post_answer(mut self, port: u16, path: &str, status: u16) -> Self {
+        let r = HttpResponse {
+            status,
+            body: String::new(),
+            elapsed: Duration::from_millis(50),
+        };
+        self.posts.insert(format!("{port} {path}"), r);
         self
     }
     pub fn command(mut self, line: &str, stdout: &str) -> Self {
@@ -75,6 +88,14 @@ impl Host for FakeHost {
     fn http_get(&self, port: u16, path: &str, _t: Duration) -> io::Result<HttpResponse> {
         self.http
             .get(&format!("{port} {path}"))
+            .cloned()
+            .ok_or_else(|| io::ErrorKind::ConnectionRefused.into())
+    }
+    fn http_post(&self, port: u16, path: &str, _b: &str, _t: Duration) -> io::Result<HttpResponse> {
+        let key = format!("{port} {path}");
+        self.posted.borrow_mut().push(key.clone());
+        self.posts
+            .get(&key)
             .cloned()
             .ok_or_else(|| io::ErrorKind::ConnectionRefused.into())
     }
