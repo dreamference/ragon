@@ -318,6 +318,7 @@ if [ -n "$FROM" ]; then
     asset_url() { awk -F'\t' -v name="$1" '$1 == name {print $2; exit}' "$WORK/assets.tsv"; }
     fetch() {  # fetch <asset name>: copies it into $WORK, or fails
         local path; path="$(asset_url "$1")"
+        FETCH_ERR=missing
         [ -n "$path" ] || return 1
         cp "$path" "$WORK/$1"
     }
@@ -375,10 +376,16 @@ else
 
     fetch() {  # fetch <asset name>: downloads it into $WORK, or fails
         local url; url="$(asset_url "$1")"
+        FETCH_ERR=missing
         [ -n "$url" ] || return 1
-        local header=()
+        local header=() code rc
         case "$url" in "$API"/*) header=(${auth[@]+"${auth[@]}"}) ;; esac
-        curl -fsSL ${header[@]+"${header[@]}"} -H "Accept: application/octet-stream" "$url" -o "$WORK/$1"
+        # Only a real 404 means the release lacks the asset; any other failure is the download's
+        # (curl 92 is a dropped HTTP/2 stream), so it is named with curl's exit code and can be retried.
+        code="$(curl -fsSL ${header[@]+"${header[@]}"} -H "Accept: application/octet-stream" "$url" -o "$WORK/$1" -w '%{http_code}')" && return 0
+        rc=$?
+        if [ "$code" = 404 ]; then FETCH_ERR=missing; else FETCH_ERR="download failed (curl $rc), retry"; fi
+        return 1
     }
 fi
 
@@ -386,6 +393,7 @@ say "🐧 Ragon $TAG for $TARGET, role: $ROLE"
 
 SUMS="ragon-$TARGET.sha256sums"
 if ! fetch "$SUMS"; then
+    [ "$FETCH_ERR" = missing ] || fail "$SUMS: $FETCH_ERR"
     fail "release $TAG has no binaries for $TARGET (no $SUMS). Published targets: $(awk -F'\t' '/sha256sums/ {sub(/^ragon-/, "", $1); sub(/\.sha256sums$/, "", $1); printf "%s ", $1}' "$WORK/assets.tsv")"
 fi
 
@@ -408,7 +416,7 @@ signers() {  # the allowed-signers lines for the keys of a public-key file on st
 if [ -n "$(asset_url SHA256SUMS.sig)" ]; then
     command -v ssh-keygen >/dev/null 2>&1 || fail "ssh-keygen (OpenSSH 8.1 or newer) is needed to \
 check the release's signature and was not found. On Debian and Ubuntu: sudo apt install openssh-client."
-    fetch SHA256SUMS.sig || fail "could not download SHA256SUMS.sig."
+    fetch SHA256SUMS.sig || fail "${FETCH_ERR:+$FETCH_ERR: }could not download SHA256SUMS.sig."
     fetch SHA256SUMS || fail "release $TAG has SHA256SUMS.sig but no SHA256SUMS; nothing was installed."
     printf '%s\n' "$RELEASE_KEYS" | signers > "$WORK/allowed_signers"
     # A key rotation: the release names the new key, signed by a key trusted here under a namespace
@@ -463,6 +471,7 @@ INSTALLED=""
 for name in $REQUIRED $OPTIONAL; do
     asset="$name-$TARGET.gz"
     if ! fetch "$asset"; then
+        [ "$FETCH_ERR" = missing ] || fail "$asset: $FETCH_ERR"
         case " $REQUIRED " in *" $name "*) fail "release $TAG is missing $asset." ;; esac
         continue
     fi
@@ -491,7 +500,7 @@ if [ "$APP" = 1 ] && [ "$os" = "apple-darwin" ]; then
         wanted="$(awk -v file="$dmg" '{ f = $2; sub(/^\*/, "", f); if (f == file) { print $1; exit } }' "$WORK/SHA256SUMS")"
         [ -n "$wanted" ] || fail "SHA256SUMS has no checksum for $dmg; nothing was installed."
         say "📦 Downloading the desktop app ($dmg) ..."
-        fetch "$dmg" || fail "could not download $dmg; nothing was installed."
+        fetch "$dmg" || fail "${FETCH_ERR:+$FETCH_ERR: }could not download $dmg; nothing was installed."
         [ "$(sha256 "$WORK/$dmg")" = "$wanted" ] \
             || fail "$dmg does not match its checksum in SHA256SUMS; nothing was installed."
         APP_DMG="$dmg"
@@ -575,7 +584,7 @@ if [ "$ROLE" = "node" ]; then
 
     wheel="$(awk -F'\t' '$1 ~ /^dreamference-.*\.whl$/ {print $1; exit}' "$WORK/assets.tsv")"
     [ -n "$wheel" ] || fail "release $TAG has no Python wheel, so the node cannot be installed from it."
-    fetch "$wheel" || fail "could not download $wheel."
+    fetch "$wheel" || fail "${FETCH_ERR:+$FETCH_ERR: }could not download $wheel."
     # The wheel is checked like the binaries, against the release-wide SHA256SUMS (signed, and
     # already checked above); a release without one is said rather than skipped silently.
     if [ -f "$WORK/SHA256SUMS" ] || fetch SHA256SUMS; then
