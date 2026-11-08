@@ -1,3 +1,4 @@
+//! `ragon profile compare <a> <b>` and `baseline [set|show]` are in compare.rs.
 //! `ragon profile run one-stream|four-streams [--reps N] [--url URL] [--log FILE] [--model ID]
 //! [--node ID] [--out DIR] [--lock FILE] [--pid PID] [--no-gpu] [--json] [--yes]`.
 use crate::machine::Sources;
@@ -8,6 +9,9 @@ use std::time::Duration;
 const USAGE: &str = "usage: ragon profile run <one-stream|four-streams> [--reps N] [--url URL] [--log FILE] [--model ID] [--node ID] [--out DIR] [--lock FILE] [--pid PID] [--no-gpu] [--json] [--yes]";
 
 pub fn run(args: &[String]) -> i32 {
+    if matches!(args.first().map(String::as_str), Some("compare" | "baseline")) {
+        return crate::compare::run(args);
+    }
     let mut it = args.iter().peekable();
     if it.next().map(String::as_str) != Some("run") {
         eprintln!("{USAGE}");
