@@ -19,9 +19,24 @@ pub struct FakeHost {
     pub posts: HashMap<String, HttpResponse>,
     /// Every POST made, as `port path`.
     pub posted: std::cell::RefCell<Vec<String>>,
+    /// Keyed by path: the file's bytes (read_head cuts them) and its reported size.
+    pub heads: HashMap<String, (Vec<u8>, u64)>,
+    pub dirs: HashMap<String, Vec<String>>,
+    pub now: u64,
+    /// `Some(true)` arms, `Some(false)` is refused, `None` has no PSI.
+    pub psi_trigger: Option<bool>,
 }
 
 impl FakeHost {
+    pub fn head(mut self, path: &str, bytes: Vec<u8>, size: u64) -> Self {
+        self.heads.insert(path.into(), (bytes, size));
+        self
+    }
+    pub fn dir(mut self, path: &str, names: &[&str]) -> Self {
+        self.dirs
+            .insert(path.into(), names.iter().map(|n| n.to_string()).collect());
+        self
+    }
     pub fn file(mut self, path: &str, text: &str) -> Self {
         self.files.insert(path.into(), text.into());
         self
@@ -107,5 +122,28 @@ impl Host for FakeHost {
     }
     fn home(&self) -> Option<String> {
         self.home.clone()
+    }
+    fn read_head(&self, path: &str, n: usize) -> io::Result<(Vec<u8>, u64)> {
+        let (bytes, size) = self
+            .heads
+            .get(path)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        Ok((bytes[..n.min(bytes.len())].to_vec(), *size))
+    }
+    fn list_dir(&self, path: &str) -> io::Result<Vec<String>> {
+        self.dirs
+            .get(path)
+            .cloned()
+            .ok_or_else(|| io::ErrorKind::NotFound.into())
+    }
+    fn now_unix(&self) -> u64 {
+        self.now
+    }
+    fn psi_trigger_armable(&self) -> io::Result<()> {
+        match self.psi_trigger {
+            Some(true) => Ok(()),
+            Some(false) => Err(io::ErrorKind::PermissionDenied.into()),
+            None => Err(io::ErrorKind::NotFound.into()),
+        }
     }
 }

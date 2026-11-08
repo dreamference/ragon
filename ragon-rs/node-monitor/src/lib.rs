@@ -4,10 +4,14 @@
 
 pub mod disk;
 pub mod gate;
+pub mod gpu;
 pub mod host;
 pub mod liveness;
 pub mod memory;
 pub mod sampler;
+pub mod modelfiles;
+pub mod nvme;
+pub mod psi_trigger;
 pub mod server;
 pub mod store;
 pub mod tracker;
@@ -133,7 +137,11 @@ impl Config {
 pub fn collect(host: &dyn Host, config: &Config) -> Vec<Item> {
     let mut items = server::probe(host, config);
     items.extend(memory::probe(host));
+    items.push(psi_trigger::item(host));
     items.extend(disk::probe(host));
+    items.extend(nvme::probe(host));
+    items.extend(modelfiles::probe(host));
+    items.extend(gpu::probe(host));
     items.extend(units::probe(host));
     items
 }

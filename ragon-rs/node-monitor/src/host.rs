@@ -47,6 +47,14 @@ pub trait Host {
     }
     fn statvfs(&self, path: &str) -> io::Result<FsStat>;
     fn home(&self) -> Option<String>;
+    /// The first `n` bytes of a file and the file's size.
+    fn read_head(&self, path: &str, n: usize) -> io::Result<(Vec<u8>, u64)>;
+    /// The names (not paths) in a directory, sorted.
+    fn list_dir(&self, path: &str) -> io::Result<Vec<String>>;
+    /// Seconds since the Unix epoch.
+    fn now_unix(&self) -> u64;
+    /// Whether a kernel PSI trigger can be armed on /proc/pressure/memory (§3.5).
+    fn psi_trigger_armable(&self) -> io::Result<()>;
 }
 
 fn request(
@@ -170,6 +178,33 @@ impl Host for RealHost {
 
     fn home(&self) -> Option<String> {
         std::env::var("HOME").ok()
+    }
+
+    fn read_head(&self, path: &str, n: usize) -> io::Result<(Vec<u8>, u64)> {
+        let file = std::fs::File::open(path)?;
+        let size = file.metadata()?.len();
+        let mut buf = Vec::new();
+        file.take(n as u64).read_to_end(&mut buf)?;
+        Ok((buf, size))
+    }
+
+    fn list_dir(&self, path: &str) -> io::Result<Vec<String>> {
+        let mut names: Vec<String> = std::fs::read_dir(path)?
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    fn now_unix(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    }
+
+    fn psi_trigger_armable(&self) -> io::Result<()> {
+        let path = self.root.join("proc/pressure/memory");
+        crate::psi_trigger::PsiTrigger::arm(&path).map(|_| ())
     }
 }
 

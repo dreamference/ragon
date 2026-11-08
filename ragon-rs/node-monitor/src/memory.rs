@@ -1,5 +1,5 @@
 //! Memory (§3.5): PSI, MemAvailable, swap and OOM kills, read from /proc through the host.
-//! Not in Phase 1: the PSI trigger, the container's cgroup, the host-safety layer, the PSI guard.
+//! Not yet: the container's cgroup, the host-safety layer, the PSI guard.
 
 use crate::host::Host;
 use crate::{Item, State, Weight};
