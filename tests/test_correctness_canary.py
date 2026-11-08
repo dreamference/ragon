@@ -1,18 +1,13 @@
-"""The correctness canary of `ragon-admin benchmark` and the dataset `benchmark_server` stages.
+"""The correctness canary of `ragon-admin benchmark`.
 
 The canary judges whether a served model still answers correctly (arithmetic, code that parses,
-a real tool call), since a wrong kernel on SM12x emits garbage rather than raising. The sonnet
-dataset is written to the host and copied into the running container; neither test reaches
+a real tool call), since a wrong kernel on SM12x emits garbage rather than raising. No test reaches
 Docker or a server.
 """
 
-import subprocess
-
 import pytest
 
-from dreamference.cli import dreamference_cli_controller as controller
 from dreamference.cli.dreamference_cli_controller import DreamferenceCLIController
-from dreamference.cli.sonnet_dataset import SONNET_TEXT
 
 
 class Reply:
@@ -87,60 +82,3 @@ def test_a_missing_content_is_a_failure_not_a_crash():
 def test_an_unreachable_server_is_reported_unreachable_not_failed(failure):
     _, rows = canary(failure, failure, failure)
     assert set(rows.values()) == {"[red]unreachable[/red]"}
-
-
-def test_the_sonnet_dataset_is_written_and_copied_into_the_container(monkeypatch, tmp_path):
-    host = tmp_path / "sonnet.txt"
-    runs = []
-    monkeypatch.setattr(controller, "SONNET_HOST_PATH", str(host))
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda cmd, **k: runs.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""),
-    )
-    path = DreamferenceCLIController._provision_sonnet_dataset("dreamference-vllm-8000")
-    assert path == "/tmp/sonnet.txt"
-    assert host.read_text(encoding="utf-8") == SONNET_TEXT
-    assert runs == [["docker", "cp", str(host), "dreamference-vllm-8000:/tmp/sonnet.txt"]]
-
-
-def test_a_dataset_that_cannot_be_staged_is_never_copied(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr(controller, "SONNET_HOST_PATH", str(tmp_path / "missing" / "sonnet.txt"))
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("docker cp ran"))
-    assert DreamferenceCLIController._provision_sonnet_dataset("dreamference-vllm-8000") is None
-    assert "Could not stage the sonnet dataset" in capsys.readouterr().out
-
-
-def test_benchmark_server_stops_when_the_copy_fails_and_never_runs_the_benchmark(
-    monkeypatch, tmp_path, capsys
-):
-    runs = []
-
-    def run(cmd, **k):
-        runs.append(cmd[:2])
-        return subprocess.CompletedProcess(cmd, 1, "", "Error: No such container")
-
-    monkeypatch.setattr(controller, "SONNET_HOST_PATH", str(tmp_path / "sonnet.txt"))
-    monkeypatch.setattr(subprocess, "run", run)
-    with pytest.raises(SystemExit) as exit_info:
-        DreamferenceCLIController.run_cli(["benchmark_server"])
-    assert exit_info.value.code == 1
-    assert runs == [["docker", "cp"]]
-    assert "No such container" in capsys.readouterr().out
-
-
-def test_benchmark_server_runs_the_benchmark_on_the_copied_dataset(monkeypatch, tmp_path):
-    runs = []
-
-    def run(cmd, **k):
-        runs.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr(controller, "SONNET_HOST_PATH", str(tmp_path / "sonnet.txt"))
-    monkeypatch.setattr(subprocess, "run", run)
-    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
-    DreamferenceCLIController.run_cli(["benchmark_server", "--port", "8100"])
-    bench = runs[-1]
-    assert bench[:4] == ["docker", "exec", "-i", "dreamference-vllm-8100"]
-    assert bench[bench.index("--dataset-path") + 1] == "/tmp/sonnet.txt"
-    assert bench[bench.index("--base-url") + 1] == "http://localhost:8100"

@@ -125,7 +125,7 @@ A stdio MCP server (`ragon-admin mcp`) with `ide_*` tools over an in-process `ID
 
 ### 3.8. `cli/`: `ragon-admin`
 
-`dreamference_cli_controller.py` (`build_parser`, `run_cli`), `adapter_command.py` (`ragon-admin adapter`), `searxng_command.py`, `model_deep_inspector.py` (`main-model inspect --deep`), `sonnet_dataset.py` (for `benchmark_server`) and `code_index_setup.py` (`code setup`). See `DREAMFERENCE_CLI.md`.
+`dreamference_cli_controller.py` (`build_parser`, `run_cli`), `adapter_command.py` (`ragon-admin adapter`), `searxng_command.py`, `model_deep_inspector.py` (`main-model inspect --deep`), `code_index_setup.py` (`code setup`). See `DREAMFERENCE_CLI.md`.
 
 ### 3.9. `night_shift/`: the overnight queue
 

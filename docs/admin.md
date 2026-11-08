@@ -831,17 +831,13 @@ Mirror nodes.
 
 (The forge's timer) storage budget, hooks, GitHub and node mirrors.
 
-### `ragon-admin benchmark_server`
+### `ragon-admin profile`
 
-Run vLLM serve benchmark using Sonnet dataset.
+Measure the running model server (forwards to ragon-profile).
 
 | Option | Description |
 |---|---|
-| `--port` | Port of the server to benchmark. |
-| `--model` | Model name to benchmark. |
-| `--dataset-path` | Path to the sonnet dataset inside the container. Unset probes the known locations for the image the server is running. |
-| `--num-prompts` | Number of prompts to benchmark. |
-| `--max-concurrency` | Max concurrency for requests. |
+| `profile_args` |  |
 
 ### `ragon-admin desktop`
 

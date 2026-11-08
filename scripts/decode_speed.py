@@ -11,12 +11,17 @@ parse as the asked-for array. A failed check is reported and makes the exit stat
 
     python3 scripts/decode_speed.py [--host http://localhost:8000] [--runs 3] [--out result.json]
 
+`--out` writes the same `result.json` as `ragon-profile` (schema 1, specs/DREAMFERENCE_PROFILING.md),
+so the two tools' files compare with one reader; this script fills the fields it measures and leaves
+the machine and acceptance figures `null`.
+
 Standard library only, so it runs from any Python. It talks to the model server and nothing else.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import statistics
@@ -139,6 +144,44 @@ def served_model(host: str) -> Tuple[str, Optional[int]]:
     return entry["id"], entry.get("max_model_len")
 
 
+def result_json(model: str, host: str, runs: int, kinds: Dict[str, Dict[str, Any]],
+                prefill: Optional[Dict[str, Any]], failures: int) -> Dict[str, Any]:
+    """The `result.json` of ragon-profile (schema 1), single-stream, from this script's figures."""
+    figures: Dict[str, Any] = {}
+    for kind, entry in kinds.items():
+        figures[kind] = {
+            "ttft_s": {"median": entry["ttft_s"], "spread_pct": None, "n": runs},
+            "cache_state": None, "prompt_tokens": None, "reused_tokens": None,
+            "prefill_ms_per_1k": None,
+            "decode_tok_s": entry["decode_tps"],
+            "inter_token_gap_ms": None, "tokens_per_pass": None, "acceptance_pct": None,
+            "draft_ms_per_step": None, "verify_ms_per_step": None, "step_period_ms": None,
+            "energy_j_per_token": None,
+        }
+    if prefill:
+        figures["prefill"] = {"prompt_tokens": prefill["prompt_tokens"], "ttft_s": prefill["ttft_s"],
+                              "prefill_tok_s": prefill["prefill_tps"]}
+    same = sum(1 for e in kinds.values() if e["identical_runs"])
+    state = "clean" if not failures else f"{failures} correctness check(s) failed"
+    manifest = "\n".join(sorted(PROMPTS.values()))
+    return {
+        "schema": 1,
+        "build": {"ragon_version": "n/a", "engine": "n/a", "model": model, "drafter": "n/a"},
+        "flags": "production",
+        "shape": {"name": "one-stream", "reps_counted": runs, "warmup_reps": 1, "streams": 1,
+                  "long_prefix_chars": None},
+        "workload_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
+        "window": "no window",
+        "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "machine": {"node": host, "summary": None, "sm_clock_normal_mhz": None},
+        "state": state,
+        "identical": f"{same}/{len(kinds)}",
+        "figures": figures,
+        "verdict": ("no verdict (single arm; compare needs two runs)" if not failures
+                    else f"no verdict ({state})"),
+    }
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--host", default="http://localhost:8000")
@@ -183,7 +226,9 @@ def main(argv: Optional[List[str]] = None) -> int:
               f"{'correct' if ok else 'WRONG: ' + run['text'][:40]!r}")
     if args.out:
         with open(args.out, "w") as handle:
-            json.dump(result, handle, indent=2)
+            json.dump(result_json(model, args.host, args.runs, result["kinds"],
+                                  result.get("prefill"), failures), handle, indent=2)
+            handle.write("\n")
     return 1 if failures else 0
 
 

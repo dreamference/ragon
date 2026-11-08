@@ -229,21 +229,3 @@ def test_deep_inspection_tolerates_a_missing_container_and_empty_profile(monkeyp
     text = _deep(monkeypatch, lambda *a, **k: _insp(bad), profile)
     assert "Running n=" not in text
     assert "No speculative counters" not in _deep(monkeypatch, lambda *a, **k: _insp("[]"), profile)
-
-
-def test_provision_sonnet_dataset_reports_each_failure(monkeypatch, tmp_path, capsys):
-    import subprocess
-
-    monkeypatch.setattr(ctl, "SONNET_HOST_PATH", str(tmp_path / "s.txt"))
-    monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: MagicMock(returncode=0, stdout="", stderr="")
-    )
-    assert C._provision_sonnet_dataset("c") == ctl.SONNET_CONTAINER_PATH
-    monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: MagicMock(returncode=1, stdout="", stderr="nope")
-    )
-    assert C._provision_sonnet_dataset("c") is None
-    monkeypatch.setattr(ctl, "SONNET_HOST_PATH", str(tmp_path / "missing" / "s.txt"))
-    assert C._provision_sonnet_dataset("c") is None
-    out = capsys.readouterr().out
-    assert "nope" in out and "Could not stage" in out

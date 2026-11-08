@@ -69,10 +69,6 @@ def test_a_global_agent_picks_the_runner_for_run(clean_env, monkeypatch):
         (["server", "remove"], "--port", 8000),
         (["server", "logs"], "--port", 8000),
         (["logs"], "--port", 8000),
-        (["benchmark_server"], "--port", 8000),
-        (["benchmark_server"], "--model", "qwen3.8-27b-nvfp4-dflash2"),
-        (["benchmark_server"], "--num-prompts", 8),
-        (["benchmark_server"], "--max-concurrency", 1),
         (["web"], "--port", 8501),
         (["codex", "test"], "--test-threads", 8),
         (["codex", "test"], "--jobs", 6),
@@ -458,3 +454,50 @@ def test_the_tool_call_parser_and_batch_size_are_config_file_keys(clean_env, mon
     silent = clean_env / "silent.toml"
     passed = server_start_arguments(monkeypatch, ["--config", str(silent), "server", "start"])
     assert (passed["tool_call_parser"], passed["max_num_batched_tokens"]) == (None, None)
+
+
+def test_benchmark_server_is_retired_and_points_at_profile(capsys):
+    with pytest.raises(SystemExit) as info:
+        DreamferenceCLIController.run_cli(["benchmark_server", "--port", "8100"])
+    assert info.value.code == 2
+    err = capsys.readouterr().err
+    assert "ragon-admin profile" in err and "retired" in err
+    action = next(
+        a
+        for a in DreamferenceCLIController.build_parser()._actions
+        if isinstance(a, argparse._SubParsersAction)
+    )
+    assert "benchmark_server" not in action.choices and "profile" in action.choices
+
+
+def test_profile_forwards_its_arguments_to_the_ragon_profile_binary(monkeypatch):
+    import subprocess
+
+    binary = DreamferenceCLIController.profile_binary()
+    monkeypatch.setattr("os.access", lambda path, mode: path == binary)
+    calls = []
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 3)
+    )
+    with pytest.raises(SystemExit) as info:
+        DreamferenceCLIController.run_cli(["profile", "run", "--shape", "one-stream", "--help"])
+    assert info.value.code == 3
+    assert calls == [[binary, "run", "--shape", "one-stream", "--help"]]
+    assert binary.endswith("/bin/ragon-profile")
+
+
+def test_profile_says_so_when_the_binary_is_not_built(monkeypatch, capsys):
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("ran a missing binary"))
+    with pytest.raises(SystemExit) as info:
+        DreamferenceCLIController.run_cli(["profile", "run"])
+    assert info.value.code == 1
+    assert "ragon-profile is not built" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", ["status", "logs", "index", "web", "init"])
+def test_a_command_rejects_unknown_arguments(command, capsys):
+    with pytest.raises(SystemExit) as info:
+        DreamferenceCLIController.run_cli([command, "--no-such-option"])
+    assert info.value.code == 2

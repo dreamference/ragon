@@ -308,7 +308,6 @@ def test_audit_egress_variants(monkeypatch, tmp_path, capsys):
 
 
 def test_index_web_and_benchmark(monkeypatch, tmp_path):
-    import subprocess
 
     from dreamference.cli import dreamference_cli_controller as ctl
 
@@ -328,20 +327,3 @@ def test_index_web_and_benchmark(monkeypatch, tmp_path):
     monkeypatch.setattr(ctl.time, "sleep", MagicMock(side_effect=KeyboardInterrupt))
     DreamferenceCLIController.run_cli(["--config", str(tmp_path / "d.toml"), "web"])
     wc.start_web_canvas_server.assert_called_once()
-
-    import dreamference.hardware as hw
-
-    monkeypatch.setattr(hw, "resolve_model_hf_repo", lambda m: "org/m")
-    run = MagicMock()
-    monkeypatch.setattr(subprocess, "run", run)
-    base = ["--config", str(tmp_path / "d.toml"), "benchmark_server"]
-    DreamferenceCLIController.run_cli([*base, "--dataset-path", "/d.txt"])
-    assert "org/m" in run.call_args.args[0]
-    run.side_effect = subprocess.CalledProcessError(1, "x")
-    assert _go(tmp_path, "benchmark_server", "--dataset-path", "/d.txt") == 1
-    run.side_effect = KeyboardInterrupt
-    DreamferenceCLIController.run_cli([*base, "--dataset-path", "/d.txt"])
-    monkeypatch.setattr(
-        DreamferenceCLIController, "_provision_sonnet_dataset", classmethod(lambda cls, c: None)
-    )
-    assert _go(tmp_path, "benchmark_server") == 1

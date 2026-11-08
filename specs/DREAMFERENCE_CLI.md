@@ -41,7 +41,7 @@ There is no `chat` subcommand. The interactive agent is `ragon`. The other agent
 - **Setup:** `init`, `host {check,setup}`, `model {list,download}`, `main-model {set,inspect}`, `diffusion-model {set}` (absent while diffusion is switched off, §4.2), `adapter {list,install,remove,verify}`, `clear {model-cache,tensorize-cache}`, `docs setup`
 - **Agents:** `run`, `codex {build,start,stop,test}`, `night {enable,disable,status,run,every,archive,autofill,pause,resume}`
 - **Measurement and checks:** `swe-bench {setup,build-images,smoke,run,eval,report,status,clean,shard,merge}`, `audit {egress}`
-- **Model server and fleet:** `server {start,stop,remove,logs}`, `logs [server|mcp]`, `endpoints`, `benchmark_server`, `node {enable,disable,status,id,list,add,remove,set,start,stop,sync-model,power-cycle,power-config,run,jobs,logs,cancel,fetch,provision,prepare}` (plus `authorize`, `serve-job`, `job-exec` and `askpass`, which a person does not type, §4.25), `forge {status,on,off,move,promote,backup,restore,key,github-mirror,password,import,archive,mirrors}` (plus `run` and `tick`, §4.30), `remote {setup,status,remove,code,peers,revoke,certificate}` (§4.31)
+- **Model server and fleet:** `server {start,stop,remove,logs}`, `logs [server|mcp]`, `endpoints`, `profile`, `node {enable,disable,status,id,list,add,remove,set,start,stop,sync-model,power-cycle,power-config,run,jobs,logs,cancel,fetch,provision,prepare}` (plus `authorize`, `serve-job`, `job-exec` and `askpass`, which a person does not type, §4.25), `forge {status,on,off,move,promote,backup,restore,key,github-mirror,password,import,archive,mirrors}` (plus `run` and `tick`, §4.30), `remote {setup,status,remove,code,peers,revoke,certificate}` (§4.31)
 - **Web UI, desktop and messengers:** `desktop {install,run,build,status}`, `matrix {start,stop,status,add-user,push,remove}`; `ragon web` itself is the launcher's
 - **Agent tools:** `gmail {search,read,status}`, `google {start,stop,status}`, `images {start,stop,status,mcp}`, `voice {start,stop,status}`, `searxng {start,status}`, `code setup`; search and fetch are commands of their own, `ragon-search` and `ragon-fetch` (§4.16), and so is the code index, `ragon-code` (§4.22)
 - **Context and IDE:** `index`, `mcp`, `web`, `status`
@@ -84,7 +84,7 @@ These options come before the subcommand (`ragon-admin --agent cline run "…"`)
 | **`server stop` / `remove`** | Stop / remove the vLLM and diffusion containers | `[--port 8000] [--diffusion-port 8001]` |
 | **`server logs`** / **`logs [server]`** | Tail the vLLM container | `[--port 8000]` |
 | **`logs mcp`** | Codex MCP lifecycle lines from `~/.ragon/logs_2.sqlite` (or `$CODEX_HOME`) | — |
-| **`benchmark_server`** | `vllm bench serve` on the Sonnet dataset | `[--port] [--model] [--dataset-path] [--num-prompts 8] [--max-concurrency 1]` |
+| **`profile`** | Measure the running model server; forwards every argument to the `ragon-profile` binary (`benchmark_server` is retired: it prints a pointer and exits 2, for one release) | `[ragon-profile arguments]` |
 | **`codex build`** | Build `ragon` from the `codex/` submodule and `codex-patches/`, plus `ragon-search`, `ragon-fetch`, `ragon-code` and `ragon-docs`; then the egress audit | `[--force] [--no-audit]` |
 | **`codex start` / `stop`** | Start / stop the Codex app-server daemon using `ragon` | — |
 | **`codex test`** | Run Codex's own test suite on Ragon's patched tree, except the tests in `codex-tests/ragon-skips.toml` | `[-E FILTER] [--test-threads 8] [--jobs 6] [--memory-max 24G] [--accept-snapshots]` |
@@ -251,13 +251,13 @@ ragon-admin server logs [--port 8000]
 
 ---
 
-### 4.9. `ragon-admin benchmark_server`
+### 4.9. `ragon-admin profile`
 
 ```bash
-ragon-admin benchmark_server [--port 8000] [--model qwen3.8-27b-nvfp4-dflash2] [--dataset-path P] [--num-prompts 8] [--max-concurrency 1]
+ragon-admin profile <ragon-profile arguments>
 ```
 
-Runs vLLM's serving benchmark inside the running container, on the Sonnet dataset. The dataset is embedded in `sonnet_dataset.py` and staged at `/tmp/dreamference-sonnet.txt`. When `--dataset-path` is unset, the known in-image locations are probed first.
+Forwards its arguments, unparsed, to `ragon-profile` (installed beside `ragon`; the binary owns the options and rejects unknown ones) and exits with its status. When the binary is not built it says so and exits 1. `ragon-admin benchmark_server` (vLLM's serving benchmark on the Sonnet dataset) was retired for it: for one release it prints a pointer to `profile` and exits 2. See `DREAMFERENCE_PROFILING.md`.
 
 ---
 

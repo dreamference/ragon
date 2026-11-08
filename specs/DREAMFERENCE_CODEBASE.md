@@ -63,7 +63,6 @@ dreamference/
 │   ├── adapter_command.py                # AdapterCommand (ragon-admin adapter list|install|remove|verify)
 │   ├── searxng_command.py                # SearxngCommand (ragon-admin searxng start|status)
 │   ├── model_deep_inspector.py           # ModelDeepInspector (main-model inspect --deep)
-│   ├── sonnet_dataset.py                 # embedded Sonnet corpus for benchmark_server
 │   ├── code_index_setup.py               # CodeIndexSetup, PinnedTool (ragon-admin code setup)
 ├── config/
 │   ├── dreamference_config.py            # DreamferenceConfig: 4-tier resolution

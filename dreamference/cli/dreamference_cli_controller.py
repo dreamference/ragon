@@ -64,11 +64,12 @@ def rich_console() -> "Console":
     return Console()
 
 
-# Where `ragon-admin benchmark_server` stages vLLM's sonnet corpus. The text itself is embedded in
-# sonnet_dataset.py rather than read out of the image or fetched, because images disagree about
-# where they keep it and this project is meant to work without a network.
-SONNET_HOST_PATH: Final[str] = "/tmp/dreamference-sonnet.txt"
-SONNET_CONTAINER_PATH: Final[str] = "/tmp/sonnet.txt"
+# `ragon-admin benchmark_server` is retired in favour of `ragon-admin profile` (one release of pointer).
+BENCHMARK_SERVER_POINTER: Final[str] = (
+    "`ragon-admin benchmark_server` was retired: use `ragon-admin profile` "
+    "(specs/DREAMFERENCE_PROFILING.md; `ragon-admin profile --help`)."
+)
+PROFILE_BINARY_NAME: Final[str] = "ragon-profile"
 # `ragon-admin remote` (dreamference/remote/).
 REMOTE_COMMAND: Final[str] = "remote"
 # Literals the argument dispatch compares against, named once.
@@ -144,6 +145,7 @@ _ARG_AUDIT: Final[str] = "audit"
 _ARG_AUTHORIZE: Final[str] = "authorize"
 _ARG_BANG: Final[str] = "!"
 _ARG_BENCHMARK_SERVER: Final[str] = "benchmark_server"
+_ARG_PROFILE: Final[str] = "profile"
 _ARG_CANCEL: Final[str] = "cancel"
 _ARG_CHECK: Final[str] = "check"
 _ARG_CLEAR_TENSORIZE_CACHE: Final[str] = "clear-tensorize-cache"
@@ -202,49 +204,40 @@ class DreamferenceCLIController:
         )
 
     @classmethod
-    def _provision_sonnet_dataset(cls, container: str) -> "str | None":
-        """Makes vLLM's sonnet benchmark dataset available inside a running server container.
-
-        Written from the literal in `sonnet_dataset` to a host file and copied in, rather than
-        located inside the image. Images disagree about where they keep it — the project image
-        under /opt/vllm, the DFlash image under /vllm-workspace — and a benchmark that has to know
-        each image's layout breaks every time a model pins a new one. The container is already
-        running with fixed mounts, so `docker cp` is what gets a host file across the boundary.
-
-        Rewritten on every run rather than cached: the file is 22 KB, and a stale or truncated
-        /tmp copy would silently change what is being measured.
-
-        Args:
-            container (str): Name of the running vLLM container to copy the dataset into.
+    def profile_binary(cls) -> str:
+        """Path of `ragon-profile`, installed beside `ragon` like the other Rust binaries.
 
         Returns:
-            str | None: Path to the dataset *inside* the container, or None if it could not be
-                provisioned, in which case the reason has already been printed.
+            str: The executable's path.
+        """
+        from dreamference.runner.codex_branded_builder import INSTALL_DIR
+
+        return str(pathlib.Path(INSTALL_DIR, "bin", PROFILE_BINARY_NAME))
+
+    @classmethod
+    def run_profile(cls, forwarded: list[str]) -> int:
+        """Runs `ragon-profile` with the arguments given after `profile`, unparsed.
+
+        Args:
+            forwarded (list[str]): Arguments for the binary, which rejects the ones it does not know.
+
+        Returns:
+            int: The binary's exit status; 1 with a message when it is not built.
         """
         import subprocess
 
-        from dreamference.cli.sonnet_dataset import SONNET_TEXT
-
-        host_path = SONNET_HOST_PATH
-        try:
-            with pathlib.Path(host_path).open("w", encoding="utf-8") as handle:
-                handle.write(SONNET_TEXT)
-        except OSError as e:
-            print(f"❌ Could not stage the sonnet dataset at {host_path}: {e}")
-            return None
-
-        copy = subprocess.run(
-            ["docker", "cp", host_path, f"{container}:{SONNET_CONTAINER_PATH}"],
-            capture_output=True,
-            text=True,
-        )
-        if copy.returncode != 0:
+        binary = cls.profile_binary()
+        if not os.access(binary, os.X_OK):
             print(
-                f"❌ Could not copy the dataset into '{container}': "
-                f"{copy.stderr.strip() or copy.stdout.strip()}"
+                f"❌ {PROFILE_BINARY_NAME} is not built ({binary}). "
+                "Build it with `ragon-admin codex build`, or `cargo build --release -p "
+                f"{PROFILE_BINARY_NAME}` in ragon-rs/."
             )
-            return None
-        return SONNET_CONTAINER_PATH
+            return 1
+        try:
+            return subprocess.run([binary, *forwarded]).returncode
+        except KeyboardInterrupt:
+            return 130
 
     @classmethod
     def _render_deep_inspection(
@@ -2636,28 +2629,15 @@ class DreamferenceCLIController:
         # Command: ragon-admin forge (the node's Forgejo; specs/DREAMFERENCE_RAGON_FORGEJO.md §7)
         ForgeCommand.add_parser(subparsers)
 
-        # Command: dreamference benchmark_server
-        bench_parser = subparsers.add_parser(
-            "benchmark_server", help="Run vLLM serve benchmark using Sonnet dataset"
+        # Command: ragon-admin profile: forwards everything to the ragon-profile binary, which
+        # owns the options (and rejects unknown ones). `benchmark_server` is not here any more;
+        # run_cli answers it with a pointer.
+        profile_parser = subparsers.add_parser(
+            "profile",
+            add_help=False,
+            help="Measure the running model server (forwards to ragon-profile)",
         )
-        bench_parser.add_argument(
-            "--port", type=int, default=DEFAULT_MODEL_PORT, help="Port of the server to benchmark"
-        )
-        bench_parser.add_argument("--model", default=DEFAULT_MODEL, help="Model name to benchmark")
-        bench_parser.add_argument(
-            "--dataset-path",
-            default=None,
-            help=(
-                "Path to the sonnet dataset inside the container. Unset probes the known "
-                "locations for the image the server is running"
-            ),
-        )
-        bench_parser.add_argument(
-            "--num-prompts", type=int, default=8, help="Number of prompts to benchmark"
-        )
-        bench_parser.add_argument(
-            "--max-concurrency", type=int, default=1, help="Max concurrency for requests"
-        )
+        profile_parser.add_argument("profile_args", nargs=argparse.REMAINDER)
 
         # Command: ragon-admin desktop {run,build,status}
         #
@@ -3969,6 +3949,9 @@ class DreamferenceCLIController:
         """
         parser = cls.build_parser()
         raw_argv = list(sys.argv[1:] if argv is None else argv)
+        if _ARG_BENCHMARK_SERVER in raw_argv:
+            print(BENCHMARK_SERVER_POINTER, file=sys.stderr)
+            sys.exit(2)
         args = parser.parse_args(cls.night_every_shorthand(raw_argv))
 
         # Loopback and the model server never go through a proxy a shell left set, for every request
@@ -4980,72 +4963,8 @@ class DreamferenceCLIController:
             except KeyboardInterrupt:
                 print("\nStopped tailing logs.")
 
-        elif args.command == _ARG_BENCHMARK_SERVER:
-            cls.display_header()
-            import subprocess
-
-            from dreamference.hardware import resolve_model_hf_repo
-
-            hf_repo = resolve_model_hf_repo(args.model)
-            container = f"dreamference-vllm-{args.port}"
-
-            # The dataset used to be read from a path baked into one image's layout, which broke
-            # the moment a model pinned a different image (the DFlash entry keeps it under
-            # /vllm-workspace, the project image under /opt/vllm). Rather than guess where each
-            # image hides it, fetch the canonical copy from vLLM upstream and hand it to whatever
-            # container is running. One source of truth, no per-image knowledge.
-            dataset_path = args.dataset_path
-            if dataset_path is None:
-                dataset_path = cls._provision_sonnet_dataset(container)
-                if dataset_path is None:
-                    sys.exit(1)
-
-            # -t only when there is a terminal to attach to, so this stays runnable from a script.
-            exec_flags = ["-i", "-t"] if sys.stdout.isatty() else ["-i"]
-
-            cmd = [
-                "docker",
-                "exec",
-                *exec_flags,
-                container,
-                "vllm",
-                "bench",
-                "serve",
-                "--backend",
-                "openai-chat",
-                "--base-url",
-                f"http://localhost:{args.port}",
-                "--endpoint",
-                "/v1/chat/completions",
-                "--model",
-                hf_repo,
-                "--dataset-name",
-                "sonnet",
-                "--dataset-path",
-                dataset_path,
-                "--sonnet-input-len",
-                "4000",
-                "--sonnet-prefix-len",
-                "2000",
-                "--sonnet-output-len",
-                "512",
-                "--num-prompts",
-                str(args.num_prompts),
-                "--max-concurrency",
-                str(args.max_concurrency),
-                "--temperature",
-                "0",
-                "--ignore-eos",
-            ]
-
-            print(f"🚀 Running benchmark on {hf_repo} via {dataset_path}...")
-            try:
-                subprocess.run(cmd, check=True)
-            except subprocess.CalledProcessError as e:
-                print(f"❌ Benchmark failed: {e}")
-                sys.exit(1)
-            except KeyboardInterrupt:
-                print("\n⏹️  Benchmark cancelled.")
+        elif args.command == _ARG_PROFILE:
+            sys.exit(cls.run_profile(args.profile_args))
 
         elif args.command == _ARG_INDEX:
             cls._refuse_during_night_run("index")
