@@ -573,7 +573,11 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert_eq!(found[0], home.join("app-server-control/app-server-control.sock"));
         assert_ne!(found[1], found[0]);
-        assert!(found[1].starts_with(home), "{}", found[1].display());
+        // Under `$XDG_RUNTIME_DIR` when the session sets one (a hosted runner does), else in the state folder.
+        assert!(found[1].ends_with("app-server.sock"), "{}", found[1].display());
+        if !std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|dir| !dir.is_empty()) {
+            assert!(found[1].starts_with(home), "{}", found[1].display());
+        }
     }
 
     #[test]
