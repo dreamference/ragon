@@ -57,7 +57,9 @@ def test_the_crates_versions_are_the_codex_workspaces():
 def test_every_unit_the_monitor_watches_is_a_unit_the_product_writes():
     # §3.8 asks for the reverse test too (every product unit is listed); that one waits for the
     # unit table to be complete (Phase 2 adds the system units and ragon-signal@).
-    watched = re.findall(r'"(ragon-[\w@-]+\.(?:service|timer))"', (CRATE / "src" / "units.rs").read_text())
+    watched = re.findall(
+        r'"(ragon-[\w@-]+\.(?:service|timer))"', (CRATE / "src" / "units.rs").read_text()
+    )
     assert watched
     written = "\n".join(
         p.read_text(errors="replace")
