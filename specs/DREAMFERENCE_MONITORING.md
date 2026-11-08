@@ -1,6 +1,6 @@
 # Node monitoring: what a Ragon node watches, where it says so, and what it may do on its own
 
-**Status:** Proposed; spec only, building later. The owner's questions are in §0.1.
+**Status:** Proposed; spec only, building later. Decided by the owner on 2026-11-08 (§0.1).
 
 **Names:** post-rename (`ragon`, `ragon-admin`, `~/.ragon`, `ragon web` on port 3100). Nodes are written `node-a` (the first node set up, the one the user works from) and `node-b` (another GB10); real names and addresses are never written here. Paths are repository-relative or under `~`.
 
@@ -33,21 +33,21 @@
 6. **Windows gets the same items and states** through the Windows equivalents of systemd, journald and PSI (§9).
 7. **Phase 1 is a status page and a CLI with no alerts,** over probes that already exist (§11).
 
-### 0.1 Questions for the owner
+### 0.1 Decisions
 
-| # | Question | Answer |
-|---|---|---|
-| O1 | Names: the crate `ragon-rs/node-monitor/`, the binary and user unit `ragon-node-monitor`, state under `~/.local/share/dreamference/monitor/node/`, config in `[monitor.node]`, the CLI `ragon-admin monitor …`; the session monitor keeps `ragon monitor`, `ragon-monitor.timer` and the rest of `monitor/` (§2.7, §8.1)? | **Recommended: yes** |
-| O2 | The resident watcher in Rust rather than Python: 64 MiB against a Python process that must avoid most of `dreamference`'s import tree, and the same language as the Windows supervisor (§8.2)? | **Recommended: Rust** |
-| O3 | The liveness completion: a one-token request to the engine only when it has served nothing for 10 minutes, at most every 10 minutes, never while the gate holds for a SWE-bench run and never when every resident session slot is taken, so that it can never evict a user's session; otherwise the engine's own counters prove liveness (§3.3)? | **Recommended: yes, idle only** |
-| O4 | A PSI guard while the model server is resident: run the existing `MemoryPressureWatchdog` persistently as its own small unit, `ragon-psi-guard`, so a pressure spike after the load is caught by the same thresholds and kill path as during it; the monitor only reports (§6.3)? | **Recommended: yes** |
-| O5 | Docker reloads the model container after a crash or reboot (`--restart unless-stopped`) with no pre-flight and no watchdog. For now the monitor reports such a load as `degraded` ("loaded by Docker, not by `server start`"); changing the restart policy is a separate backlog item (§2.2, §3.1)? | **Recommended: report now, change later** |
-| O6 | Pages only for `down` (and for a few named `degraded` items, §4.4); everything else in one daily digest at 08:00 local; quiet hours 23:00–07:00 as the session monitor's, during which only the urgent pages go out (§4.4)? | **Recommended: yes** |
-| O7 | Delivery: the monitor's alerts reach the bridges through a new always-on route in `ragon web`, `/api/monitor/notices`, read by the same poll the bridges already run for sync notices; when `ragon web` itself is down, each bridge says so after five minutes of failed polls (§5.3)? | **Recommended: yes** |
-| O8 | Replace the call to `~/.local/bin/owner-notify` in `ragon-remote-certificate-alert.service` with `ragon-admin monitor notify send`, so the product's one alert goes through the product (§2.6, §5.3)? | **Recommended: yes** |
-| O9 | Fleet: only the node where `monitor notify` is set sends pages, for every node it watches; every node keeps its own history (§7)? | **Recommended: yes** |
-| O10 | The monitor may restart a failed unit from a fixed list, once per unit per six hours, and only after systemd's own `Restart=` has given up (§6.1)? | **Recommended: yes** |
-| O11 | The monitor service on by default on every node from Phase 2, with notifications off until `monitor notify` names a channel (§5, §11)? | **Recommended: yes** |
+The owner approved every recommended answer on 2026-11-08. The text of the sections named here is normative.
+
+- **O1.** Names: crate `ragon-rs/node-monitor/`, binary and user unit `ragon-node-monitor`, state under `~/.local/share/dreamference/monitor/node/`, config `[monitor.node]`, CLI `ragon-admin monitor …`; the session monitor keeps `ragon monitor` and `monitor/` (§2.7, §8.1); decided 2026-11-08.
+- **O2.** The resident watcher is Rust, bounded at 64 MiB (§8.2); decided 2026-11-08.
+- **O3.** The liveness completion is a one-token request only when the engine has served nothing for 10 minutes, at most every 10 minutes, never while the gate holds for a SWE-bench run and never when every resident session slot is taken (§3.3); decided 2026-11-08.
+- **O4.** The existing `MemoryPressureWatchdog` runs persistently as its own unit, `ragon-psi-guard`, while the model server is resident; the monitor only reports (§6.3); decided 2026-11-08.
+- **O5.** A model loaded by Docker's restart policy is reported as `degraded` ("loaded by Docker, not by `server start`"); changing the restart policy is a separate backlog item (§2.2, §3.1); decided 2026-11-08.
+- **O6.** Pages only for `down` and a few named `degraded` items; everything else in one daily digest at 08:00 local; quiet hours 23:00-07:00, urgent pages only (§4.4); decided 2026-11-08.
+- **O7.** Alerts reach the bridges through `/api/monitor/notices` in `ragon web`, read by the bridges' existing poll; a bridge says so after five minutes of failed polls (§5.3); decided 2026-11-08.
+- **O8.** `ragon-remote-certificate-alert.service` calls `ragon-admin monitor notify send` instead of `owner-notify` (§2.6, §5.3); decided 2026-11-08.
+- **O9.** Only the node where `monitor notify` is set sends pages, for every node it watches; every node keeps its own history (§7); decided 2026-11-08.
+- **O10.** The monitor restarts a failed unit from a fixed list, once per unit per six hours, only after systemd's `Restart=` has given up (§6.1); decided 2026-11-08.
+- **O11.** The monitor service is on by default on every node from Phase 2, notifications off until `monitor notify` names a channel (§5, §11); decided 2026-11-08.
 
 ---
 
@@ -406,7 +406,3 @@ PROFILING covers deliberate, on-demand measurement: traces, kernel timelines, pe
 15. A certificate expiring in 6 days is `down` and paged; at 20 days it is in the digest only.
 16. `ragon-remote-certificate-alert.service`, as written by the product, runs only programs the product installs.
 17. On Windows (Phase 5), the same fixtures give the same states, and transitions appear in the Event Log under `Ragon`.
-
-## 13. Decisions
-
-*(For the owner.)*
