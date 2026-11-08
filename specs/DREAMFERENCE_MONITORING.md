@@ -17,7 +17,7 @@
 - [RAGON_EGRESS](./DREAMFERENCE_RAGON_EGRESS.md) and [RAGON_AIRGAPPED](./DREAMFERENCE_RAGON_AIRGAPPED.md);
 - the engine's own specification in the `ragon-engine` submodule: `specs/API.md` §6 (the counters on `/metrics`) and `specs/SESSIONS.md` (resident session slots);
 - `docs/dev/host-safety.md`: the two layers, the pre-load plan and the side-service allowance.
-- **Not yet on main, written in parallel:** `DREAMFERENCE_LOGGING.md` and `DREAMFERENCE_PROFILING.md`. §10 states the interface this spec assumes from each; no section of either is cited.
+- [LOGGING](./DREAMFERENCE_LOGGING.md) §6.2 (journald and the writer's rate), §7 (the privacy boundary) and §12 (what an alert may carry); [PROFILING](./DREAMFERENCE_PROFILING.md) §4.1 (`/metrics` as the always-on surface), §5.1 (the profile window), §7.1 (per-node baselines) and §9. §10 states how this spec meets each.
 
 **What prompted it.** A node today has many health checks, each behind its own command (`ragon-admin status`, `server status`, `night status`, `remote status`, `node status`, `forge status`, the sidecars' own `status`), and nothing that runs them continuously, keeps their history or tells the user when one goes wrong. The one alert a product unit sends today (the public certificate's renewal failure) calls a script the product does not ship (§2.6). A model server that wedged at 02:00 is found at 09:00 by the first prompt that hangs.
 
@@ -48,6 +48,16 @@ The owner approved every recommended answer on 2026-11-08. The text of the secti
 - **O9.** Only the node where `monitor notify` is set sends pages, for every node it watches; every node keeps its own history (§7); decided 2026-11-08.
 - **O10.** The monitor restarts a failed unit from a fixed list, once per unit per six hours, only after systemd's `Restart=` has given up (§6.1); decided 2026-11-08.
 - **O11.** The monitor service is on by default on every node from Phase 2, notifications off until `monitor notify` names a channel (§5, §11); decided 2026-11-08.
+
+### 0.2 Questions from the research
+
+Open; each has a recommended answer. None reverses O1–O11; where one would widen a decided answer, it says so.
+
+- **O12. A standby pager.** O9 makes the paging node the one place every page leaves from; when it is off, nothing is sent and only the missing digest tells the user (§5.3). Recommended: one other node, the user's choice or else the lowest node id among the watching nodes, sends one page and nothing else: "<paging node> has not been heard from for 15 min". It needs `monitor notify` set on that node too, and is off until then. Phase 4. Widens O9 by one message.
+- **O13. A fallback channel.** O7 and §5.3 name one channel. Signal can stop for a CAPTCHA or a rate wait of up to a day, and Telegram pauses under `/airgapped on`. Recommended: `monitor notify fallback <channel>`, used only for a page that the first channel has failed to deliver for 15 minutes, and never for digests; off by default. Phase 3.
+- **O14. A reminder and an acknowledgement.** One episode is one page (§4.4); a page read at 03:00 and forgotten is seen again only in the 08:00 digest. Recommended: an item still `down` 4 hours after its page is paged once more, outside quiet hours, unless the user has acknowledged it, by replying `ack` to the page in the same chat or from the status page; an acknowledgement holds reminders until the episode ends, never the episode's recovery line. Phase 3. Widens O6 by one reminder per episode.
+- **O15. The monitor's states as metrics, for the user's own tools.** Recommended: off by default; `[monitor.node] metrics = true` writes a file in the OpenMetrics text format to a directory only the user can read (default `$XDG_RUNTIME_DIR/ragon/`), replaced atomically every cycle and ready for a textfile collector. It holds one gauge per item's state and one per sample value. Its labels name only the node and the item, never a model, a path or a user. It opens no port, because any local user can read a loopback port. The monitor never sends the file anywhere. Phase 2.
+- **O16. systemd's own backoff for the product's units.** Today a crashing unit hits systemd's default start limit (5 starts in 10 s) at once, and then the monitor's one restart (O10) is the only retry. Recommended: every product user unit with `Restart=on-failure` also gets `RestartSec=5`, `RestartSteps=5`, `RestartMaxDelaySec=5min` (systemd 254 and later; ignored where older) and a start limit to match, `StartLimitIntervalSec=1h` and `StartLimitBurst=8`, so a short outage is ridden out with a growing delay and only a lasting one reaches the start limit. Without the matching limit a unit restarting every 5 s or more never reaches the default limit, and systemd would never give up. O10 is unchanged: the monitor still steps in only after systemd has given up. Phase 2.
 
 ---
 
@@ -168,8 +178,9 @@ Read from `/metrics` on the engine's loopback port every 30 s, under both engine
 | `ragon:sessions`, `ragon:sessions_resident`, `ragon:session_evictions_total` | session pressure, evictions per hour | more than 6 evictions in an hour |
 | `ragon:nonfinite_logits_total` | any increase | any increase (shown with the time) |
 | `ragon:repetition_stops_total` | per hour | — (shown only) |
+| `generation_tokens_total` over `ragon:decode_seconds_total` (PROFILING §4.1) | decode tokens per second of decode time | more than 15 % under this node's baseline (PROFILING §7.1) over an hour with traffic; digest only |
 
-The KV pool's in-use figure is exported by SGLang; whether ragon-serve exports it is for the engine's `API.md` §6 to say, and the row reads "not exported" until it does. `/spec_stats` (the speculative decoder's acceptance) is recorded every 5 minutes, shown only.
+A baseline is the node's own, set by `ragon-admin profile baseline --set` (PROFILING §7.1); with none, the decode row is shown only. The monitor never starts a profile; a decode or TTFT row in the digest names `ragon-admin profile` as the next step (PROFILING §9). The KV pool's in-use figure is exported by SGLang; whether ragon-serve exports it is for the engine's `API.md` §6 to say, and the row reads "not exported" until it does. `/spec_stats` (the speculative decoder's acceptance) is recorded every 5 minutes, shown only.
 
 ### 3.5 Memory
 
@@ -179,8 +190,11 @@ The KV pool's in-use figure is exported by SGLang; whether ragon-serve exports i
 | MemAvailable | `/proc/meminfo` | 10 s | below 8 GiB | below 4 GiB |
 | Swap | `/proc/meminfo` | 60 s | more than 8 GiB used | — |
 | OOM kills | `/proc/vmstat` `oom_kill` | 60 s | any increase (shown with the time) | — |
+| The model container's OOM kills | `oom_kill` in its cgroup's `memory.events` (readable without privilege) | 60 s | any increase | — |
 | Host-safety layer | earlyoom or systemd-oomd active; swap and sysctls as `check_host_safety()` requires | 15 min | any of them missing | — |
 | PSI guard | `ragon-psi-guard` running while the model server is (O4) | 30 s | not running | — |
+
+Between samples, the PSI probe also holds a kernel PSI trigger on `/proc/pressure/memory` (`some 150000 2000000`: 150 ms stalled within 2 s; an unprivileged process must use a window that is a multiple of 2 s) and samples at once when it fires, so a spike is not missed between 10 s samples; the trigger never changes a threshold, only when the next sample is taken.
 
 The monitor reports pressure; it does not act on it (§6.3). Its `down` comes before the watchdog's trip on purpose, so the user hears of a rising pressure before the model server is killed for it.
 
@@ -190,10 +204,23 @@ The monitor reports pressure; it does not act on it (§6.3). Its `down` comes be
 |---|---|---|---|---|
 | Each filesystem holding `/`, Docker's data root, the model cache, `~/.local/share/dreamference` and `~/.ragon` (each counted once) | `statvfs` | 5 min | below 50 GiB or 10 % free | below 15 GiB free |
 | Growth | the free figure's slope over 24 h | 1 h | full within 3 days at that rate | — |
+| NVMe health | the drive's SMART health log as the system's disk service (udisks2) last read it, without privilege: critical warning, available spare and its threshold, percentage used, media errors, temperature | 1 h | percentage used ≥ 90; media errors rose; temperature at or above the drive's warning level; the cached reading older than 7 days | critical warning set; available spare at or below its threshold |
+| Model files | each served model's files: a safetensors file's header length and its last tensor's end against the file's size | when the model server becomes `ok` after a load, and on demand | — | a file shorter than its header says |
+
+"Free" is what an unprivileged user can write (`f_bavail`), never counting the filesystem's reserved blocks. The monitor never asks the drive for a fresh SMART reading (that needs an administrator); it reads the cached one and reports its age. A full checksum of the model files against the manifest written at install runs only on demand (`ragon-admin monitor doctor --models`); after an unclean shutdown the digest suggests it, and the monitor never starts it, since it reads the whole model from disk.
 
 ### 3.7 GPU
 
-On GB10 the GPU shares the host's memory, so its memory is §3.5. The probe is the GB10 telemetry the `hardware/` package already reads (`nvidia-smi` queries): utilisation, temperature, power, clocks and throttle reasons, every 30 s, shown and kept. `degraded` when a thermal or power-brake throttle reason stays set for 5 minutes, or when the driver does not answer; `down` when the GPU is gone from the driver while the model server should run (an Xid that took the device).
+On GB10 the GPU shares the host's memory, so its memory is §3.5: the driver reports no memory figures, ECC counts, retired pages or remapped rows there (each reads "N/A" by design), and the monitor does not ask for them on GB10. The probe is the GB10 telemetry the `hardware/` package already reads (`nvidia-smi` queries): utilisation, temperature, power, clocks and the clock event reasons, every 30 s, shown and kept.
+
+| Item | Probe | Interval | `degraded` | `down` |
+|---|---|---|---|---|
+| Driver | the query answers within 5 s | 30 s | no answer | the GPU is gone from the driver while the model server should run |
+| Clocks | the clock event reason counters | 30 s | a hardware slowdown, hardware thermal or power-brake counter rose; or the software thermal counter rose for 5 minutes on end | — |
+| Temperature | the temperature and the limit figure the driver reports | 30 s | — (shown and kept; thermal trouble is the Clocks row) | — |
+| GPU errors (Xid) | the kernel's GPU error records, read from the kernel journal's structured fields as they arrive | event | an Xid whose recommended action is to restart the application, or none | an Xid whose recommended action is a GPU reset or a reboot: "the GPU needs a reset or a reboot" |
+
+The software power-cap and software thermal reasons are set routinely on an idle node and are shown, never alerted on alone. An Xid's class comes from the driver vendor's published catalog of recommended actions, kept as one table in the code; an Xid not in the table is `degraded`. The monitor never resets the GPU and never reboots for an Xid (§6.2): the page names what the catalog recommends and the user does it. Reading the kernel journal needs the user in the `adm` or `systemd-journal` group; the installer checks it, and without it the GPU errors item is `unknown` with that reason.
 
 ### 3.8 Units, sidecars and Docker
 
@@ -203,6 +230,8 @@ On GB10 the GPU shares the host's memory, so its memory is §3.5. The probe is t
 | `ragon-signal@` | its state through `systemctl show` (it runs under its own system account; reading its state needs no privilege) | 60 s | as above | as above |
 | Sidecars | `docker inspect` (state, health, restart count) for the sidecars that are on, and their own health URL on loopback | 60 s | restarted in the last hour | not running while on |
 | Docker | `docker info` (a read, allowed) | 60 s | slower than 5 s | no answer |
+
+Unit changes arrive as events: the monitor subscribes to the user manager's and, for `docker.service`, the system manager's unit signals over D-Bus (subscribing and reading need no privilege) and re-reads a unit when it changes; the 60 s poll stays as the backstop and is what the tests exercise. The monitor acts on no system unit: a user unit cannot, and Docker is reported, never restarted (§6.2).
 
 A unit or sidecar that is not enabled is `off`. The list of product units is one table in the code, extended by each feature that adds a unit, with a test that every unit the product writes is in it.
 
@@ -228,7 +257,7 @@ The keys themselves are never read into the monitor; only the certificates' publ
 
 ### 3.11 The monitor itself
 
-A heartbeat file written every sample cycle. `ragon-admin monitor status` says "the monitor has not run for N minutes" when it is older than three intervals, and `ragon web`'s page says the same. Its own memory and CPU are shown (§8.3).
+The service is a notify unit with systemd's watchdog (§8.3): it pings only after a sample cycle has finished, never from a timer of its own, so a monitor that hangs is killed and restarted by systemd, and its one-line `STATUS=` shows the node's state in `systemctl --user status`. A heartbeat file written every sample cycle. `ragon-admin monitor status` says "the monitor has not run for N minutes" when it is older than three intervals, and `ragon web`'s page says the same. Its own memory and CPU are shown (§8.3).
 
 ## 4. States
 
@@ -249,10 +278,24 @@ The worst of its items, except that only these items can make the node `down`: t
 ### 4.4 Page or digest
 
 - **Page** (sent as soon as it happens, through §5.3): the node goes `down`; any item goes `down`; the model server or the gate stays `degraded` for 30 minutes; a restart action failed (§6.1); the PSI guard killed the model server; a certificate within 7 days.
-- **Digest** (once a day at 08:00 local, O6): every item that was `degraded` in the last 24 h, the restarts, the actions, the counters' day (tokens, mean TTFT, evictions), disk growth.
+- **Digest** (once a day at 08:00 local, O6): every item that was `degraded` in the last 24 h, every item still not `ok` since a page ("model server still down since 03:12"), the restarts, the actions, the silences (§4.5), the counters' day (tokens, mean TTFT, evictions), disk growth. One item is one line however often it fired. The digest is sent every day, as one line ("all ok") on a quiet day, so a missing digest tells the user that the path to the phone is broken (§5.3).
 - **Recovery** is sent only for an item that was paged, as one line ("model server ok again after 14 min").
 - **Quiet hours** 23:00–07:00 (the session monitor's default): only the node going `down`, memory `down` and disk `down` are sent; the rest wait for 07:00 or the digest.
 - **Rate:** the session monitor's rules, reused (`alerts.rs`): one episode is one page, at most one page per item per hour, at most 6 pages per hour in all.
+- **Dependencies:** an item whose parent is not `ok` is shown but never paged on its own; the parent's page names it ("model server down; 4 items below it"). The parents: the model container over engine health, models, liveness, the gate and the counters (§3.1–§3.4); Docker over every container (§3.1, §3.8); a node `unreachable` over all its items (§7). A child that stays bad after its parent recovers pages as its own episode.
+- **Grouping:** pages that become due within 30 s of each other go out as one message, the worst first. An item that recovers within those 30 s sends nothing.
+
+### 4.5 Planned work: silences
+
+Some faults are made on purpose. A **silence** holds an item's pages, never its sampling, its state, its history or its journal entries.
+
+1. **Who sets one.** The user: `ragon-admin monitor silence <item|node> --for <duration> --reason "<words>"`, `monitor silence list`, `monitor silence clear <id>`, or the same from the status page (`POST /api/monitor/silences`, behind the device credential and added to `policy.json` like §5.1's routes, so a silence can be set from the phone); at most 24 h for an item and 7 days for a whole node, refused without a reason. The product, for its own planned work: a profile window (PROFILING §5.1) silences the model server, the gate and liveness for the window plus 10 minutes; `ragon-admin node update` silences the node for its run plus 10 minutes. Each ends early when the work ends.
+2. **What shows.** The status page, `monitor status` and the app's chip show a silenced item's real state with "silenced: profile window, until 14:40". The digest lists every silence of the day with its reason.
+3. **At its end.** An item still `down` or still paging-`degraded` when its silence ends is paged then, as a new episode; one that recovered under the silence sends nothing.
+4. **Never silenced:** memory `down`, the PSI guard's kill (§6.3) and a failed restart (§6.1). A profile window ends its silence when it logs its end, so a restore that failed pages at once as the model server `down`: that page is how "the node's own alert channel is told" (PROFILING §5.1 step 7).
+5. Silences are rows in the store (§5.2) and journal entries; they survive a restart of the monitor.
+
+A gate holding for a SWE-bench run (§3.2) and a `server stop` (`idle`, §4.3) need no silence: they are states, not faults.
 
 ## 5. Channels
 
@@ -283,10 +326,18 @@ The database is capped at 256 MiB: when it passes the cap, the oldest raw sample
 
 **The circularity, said plainly.** Delivery needs `ragon web` and a bridge running, and both are things the monitor watches. So:
 - when `ragon web` is down, the bridge's poll fails; after five minutes of failed polls the bridge sends one line of its own ("the node's web service is not answering; check `ragon-admin monitor status`"), and one when it answers again;
+- when the monitor itself has stopped, `ragon web` still answers the poll and adds the age of the monitor's heartbeat (§3.11) to the reply; when that age passes 10 minutes the bridge sends one line of its own ("the node monitor has not run for 10 minutes"), and one when it runs again;
 - when the bridge itself is down, nothing reaches the phone; the outbox keeps the page and the bridge delivers it, with its age, when it returns; the digest names any page that waited more than an hour;
-- the CLI and journald always work.
+- the CLI and journald always work;
+- what nothing on the node can catch (the node off, or the bridge and `ragon web` both gone) is caught by the user: the digest arrives every day (§4.4), so a morning without one is the signal.
 
 **Under `/airgapped on`.** Signal sends nothing and Telegram pauses (§2.5): a page for those channels waits in the outbox and is delivered, with its age, when the level returns to `off`; pages older than 24 h are folded into the next digest instead. Matrix keeps working. The status page, the app's chip, the CLI and journald are unaffected by the level.
+
+**What a message looks like.** Every message, page or digest, is built from fixed words, the item, the state and counts (LOGGING §12); never a log line, a prompt, a path, a host name or an address.
+- **First line, the only one a lock screen shows:** the node's name, the state and the item, nothing more ("node-b: down, model server"). The detail follows on the next lines, then the link to `/status`.
+- **Loud or quiet:** a page is sent as an ordinary message. The digest, a recovery and the bridges' own lines (above) are sent quietly where the messenger allows it: Telegram's silent flag, a Matrix notice (which the default push rules do not ring for); a Matrix page is an ordinary text message for that reason.
+- **The messenger's rate:** at most one message a second per chat, `retry_after` honoured (RAGON_CHAT §4.4); grouping (§4.4) keeps a burst to one message.
+- A notice's id is stable for its episode, so a bridge that delivers it twice after a restart sends it once.
 
 **No other channel.** No e-mail, no push service, no webhook to a third party, no vendor cloud. A user who wants another channel uses `[monitor.node] notify_command`, the session monitor's mechanism: a local command run with the text as its argument and a 30 s timeout, which the user writes and owns.
 
@@ -296,7 +347,7 @@ The monitor watches; it acts only in the cases below, and every action is a row 
 
 ### 6.1 Restart a failed unit, once (O10)
 
-For a unit in the product's list (§3.8) that is `failed` after systemd's own `Restart=` has given up (the start limit hit, or a unit with no `Restart=`), the monitor runs `systemctl --user reset-failed` and `systemctl --user start` for that unit, **once per unit per six hours**. If the unit fails again, the monitor pages "restarted once at 03:12, failed again: <the unit's last journal line>" and does nothing more. Never for: the model server, the gate, a unit under another account (`ragon-signal@`), a timer's service whose next run will retry anyway, or any unit while the node is `down` for memory. A sidecar container is not restarted by the monitor; Docker's policy already does.
+For a unit in the product's list (§3.8) that is `failed` after systemd's own `Restart=` has given up (the start limit hit, or a unit with no `Restart=`), the monitor runs `systemctl --user reset-failed` and `systemctl --user start` for that unit, **once per unit per six hours**. If the unit fails again, the monitor pages "restarted once at 03:12, failed again (`<Result>`); see `journalctl --user -u <unit>`" and does nothing more. `<Result>` is systemd's fixed word (`exit-code`, `signal`, `core-dump`, `timeout`, `start-limit-hit`, …); the page never quotes a journal line (LOGGING §12). Never for: the model server, the gate, a unit under another account (`ragon-signal@`), a timer's service whose next run will retry anyway, or any unit while the node is `down` for memory. A sidecar container is not restarted by the monitor; Docker's policy already does.
 
 ### 6.2 What it never does
 
@@ -305,6 +356,8 @@ For a unit in the product's list (§3.8) that is `failed` after systemd's own `R
 - It never kills the model server, except through the PSI watchdog's existing path (§6.3).
 - It never reboots, never power-cycles (§2.4), never runs `sudo`.
 - It never changes a setting, a restart policy or a messenger's state.
+- It never resets the GPU and never restarts Docker or any other system unit.
+- Docker's socket is equivalent to root. The monitor uses it only for the reads in its command table (`docker inspect`, `docker info`); §12 item 9 proves it.
 
 ### 6.3 Memory pressure after the load (O4)
 
@@ -318,6 +371,8 @@ One node watches the others over the channels that already exist; no new port op
 - **Every 5 minutes,** for each paired node, the forced command gains one read-only operation, `monitor-status`, which prints the remote monitor's `status.json`. It adds no privilege: the forced command already runs `status` and `info`.
 - **Fleet status** is the list of nodes with each node's state and its items not `ok`: `ragon-admin monitor status --fleet`, and a "Fleet" section on the status page.
 - **Pages (O9):** only the node where `monitor notify` names a channel sends pages, for itself and for every node it watches; another node's own monitor keeps its history and its local channels and sends nothing. A node that is `unreachable` is paged once by the watching node, with a hint that a hung node can be power-cycled by hand (`ragon-admin node power-cycle <node>`), never automatically.
+- **Time across nodes.** Every age the watching node computes (a remote heartbeat, a remote `status.json`) is measured on its own clock from when it received the answer, never from the remote node's timestamps; an air-gapped LAN may have no time source. The difference between a remote `status.json`'s time and the receive time is shown per node, and above 60 s it is `degraded` (digest only), since certificates and the digest's hour depend on it.
+- **Unreachable or off.** The watching node cannot tell a hung node from one the user switched off. A node the user takes away on purpose is silenced first (`monitor silence node-b --for 3d --reason …`, §4.5); an `unreachable` node's own items are never paged one by one (§4.4).
 - The watched nodes are found from the pairing records, by their recorded addresses, never by an mDNS browse in the loop (an mDNS query is what the egress audit counts as a failure).
 
 ## 8. Implementation
@@ -335,7 +390,7 @@ A new crate, `ragon-rs/node-monitor/`, building one binary, `ragon-node-monitor`
 
 ### 8.3 Its memory bound
 
-`ragon-node-monitor.service` (O1): `MemoryMax=64M`, `MemoryHigh=48M`, `CPUQuota=5%`, `Nice=10`, `IOSchedulingClass=idle`, `TasksMax=32`, `Restart=on-failure`. Each probe has its own timeout and runs on one thread; a probe that hangs is abandoned and marked `unknown`, never waited on. The service is registered in `VLLMServerManager.side_service_allowance()` at its cap, as the forge is, so the pre-load check sets aside its 64 MiB like every other side service's.
+`ragon-node-monitor.service` (O1): `Type=notify`, `WatchdogSec=60`, `NotifyAccess=main`, `MemoryMax=64M`, `MemoryHigh=48M`, `CPUQuota=5%`, `Nice=10`, `IOSchedulingClass=idle`, `TasksMax=32`, `Restart=on-failure`, `RestartSec=10`, `RestartSteps=5`, `RestartMaxDelaySec=10min`. A watchdog kill is a failure like any other, so systemd restarts the monitor with a growing delay instead of hitting its start limit at once. For the monitor itself that is the intent: systemd keeps retrying it and nothing else restarts it (O10's list does not hold it). Each probe has its own timeout and runs on one thread; a probe that hangs is abandoned and marked `unknown`, never waited on. The service is registered in `VLLMServerManager.side_service_allowance()` at its cap, as the forge is, so the pre-load check sets aside its 64 MiB like every other side service's.
 
 ### 8.4 Its shape
 
@@ -347,6 +402,8 @@ A new crate, `ragon-rs/node-monitor/`, building one binary, `ragon-node-monitor`
 ### 8.5 Its tests
 
 All probes are mocked; nothing touches the real machine.
+- Every `/proc`, `/sys` and cgroup path is read under a configurable root, so fixture trees stand in for the host; time is a paused test clock, so hysteresis, flapping, quiet hours, silences and the restart-once rule run in milliseconds.
+- Event sources have fixtures too: journal export records with cursors (resume after a restart), kernel GPU error records taken from the catalog, and unit signals from a fake systemd on a private D-Bus bus. No test stresses the host's memory or GPU; a pressure or OOM test runs only in a throwaway VM.
 - Rust: every probe against fixture inputs (`/proc/pressure/memory` and `/proc/meminfo` text, `/metrics` text under both engines' names, `systemctl show` and `docker inspect` output, certificate files), the state machine's hysteresis and flapping, the node state rule, page-or-digest, quiet hours, the restart-once rule over a fake clock, retention and the size cap on a temporary database. HTTP probes run against an in-process server on an ephemeral port, never 8000 or 18000. Run with `cargo test` in a copy of the folder, as the session monitor's are.
 - Python: `ragon-admin monitor` with the binary replaced by a stand-in; `server preflight --json` with the host mocked; the PSI guard unit's command line. `tests/conftest.py`'s guards stay as they are.
 - `ragon web`: `/status`, `/api/monitor/status` and `/api/monitor/notices` with a fixture `status.json`; the policy conformance cases for both enforcers.
@@ -364,6 +421,10 @@ The items and the states are the same; the probes and the places change (WINDOWS
 | `/proc/pressure/memory`, `/proc/meminfo` | `GlobalMemoryStatusEx`, the low-memory resource notification, the DXGI memory budget for the GPU |
 | The PSI guard's kill (§6.3) | `TerminateJobObject` on the engine's job object, as WINDOWS_NODE §4.2 describes |
 | `statvfs` | `GetDiskFreeSpaceEx` |
+| systemd's watchdog on the monitor (§3.11) | the supervisor restarts a task that stops reporting |
+| unit signals over D-Bus (§3.8) | the SCM's service status change notifications |
+| the kernel's GPU error records (Xid, §3.7) | the GPU driver's error and reset events in the System Event Log, classed by the same rule: a reset or reboot is `down` |
+| NVMe health through udisks2 (§3.6) | the drive's storage reliability counters, read without elevation |
 | Restart once (§6.1) | the SCM's start of the stopped service, once per six hours |
 | `~/.local/share/dreamference/monitor/node/` | `%ProgramData%\Ragon\monitor\` |
 
@@ -373,7 +434,9 @@ The status page, the CLI, the notices route and the fleet channel are the same c
 
 ### 10.1 LOGGING
 
-LOGGING decides where the product's logs go, their format, their rotation and how long they are kept. The monitor writes no logs of its own beyond one journal entry per transition and action (§5.1), which follow LOGGING's rules for the journal, and it reads no log to decide a state: every state comes from a probe in §3. An alert names the command that shows the relevant log (`journalctl --user -u <unit>`, `ragon-admin server logs`) rather than quoting it. This spec assumes LOGGING keeps journald as the node's log sink on Linux and the Event Log on Windows; if it chooses otherwise, §5.1 follows it.
+LOGGING decides where the product's logs go, their format, their rotation and how long they are kept. The monitor writes no logs of its own beyond one journal entry per transition and action (§5.1), which follow LOGGING's rules for the journal (its component is `node-monitor`, and the PSI guard's `psi-guard`, both added to LOGGING §3.3's table, so `SyslogIdentifier=ragon-node-monitor` meets LOGGING's unit rule; its rate stays far under LOGGING §6.2's 50 lines a second, since samples are never journalled), and it never edits `journald.conf`.
+
+It reads no log *text* to decide a state: every state comes from a probe in §3. Where a probe listens to an event stream instead of polling (unit state changes, the kernel's GPU error records, §3.7, §3.8), it reads only structured fields (the unit, its `Result`, an error code and a device), never `MESSAGE`. An alert carries a fixed message, the item, the state and counts (LOGGING §12), and names the command that shows the relevant log (`journalctl --user -u <unit>`, `ragon-admin logs <component>`, `ragon-admin server logs`) rather than quoting it. LOGGING keeps journald as the units' log on Linux and the Event Log on Windows; if it changes that, §5.1 follows it.
 
 ### 10.2 PROFILING
 
@@ -382,9 +445,9 @@ PROFILING covers deliberate, on-demand measurement: traces, kernel timelines, pe
 ## 11. Rollout
 
 - **Phase 1: the status page and the CLI, no alerts, no service.** `ragon-node-monitor status --json` runs each probe once, over what exists today: the engine's `/health`, `/v1/models` and `/metrics`, the gate's `/ragon-gate`, `/proc`, `statvfs`, `systemctl show`, `docker inspect`, the certificates' `notAfter`, the forge's backup age. `ragon-admin monitor status`, `/status` and `/api/monitor/status` in `ragon web` (cached for 10 s), and the desktop app's chip. No history, no states over time, no actions, no messages.
-- **Phase 2: the service.** `ragon-node-monitor.service` on by default on a node (O11): sampling at §3's intervals, the store, hysteresis and node state, journald, `monitor history`, charts on the status page, the liveness completion (O3). Still no messages and no actions.
-- **Phase 3: alerts and the few actions.** `monitor notify`, `/api/monitor/notices` and the bridges' poll (O7), pages, digest, quiet hours, `owner-notify` replaced (O8), restart-once (O10), `ragon-psi-guard` (O4), the Docker-reload report (O5).
-- **Phase 4: the fleet.** The forced command's `monitor-status`, fleet status, pages for other nodes (O9).
+- **Phase 2: the service.** `ragon-node-monitor.service` on by default on a node (O11): sampling at §3's intervals, the store, hysteresis and node state, journald, the watchdog on the monitor itself (§8.3), unit signals, the PSI trigger, the GPU error, NVMe and model-file probes (§3.5–§3.8), `monitor history`, charts on the status page, the liveness completion (O3). Still no messages and no actions.
+- **Phase 3: alerts and the few actions.** `monitor notify`, `/api/monitor/notices` and the bridges' poll (O7), pages, digest, quiet hours, `owner-notify` replaced (O8), restart-once (O10), `ragon-psi-guard` (O4), the Docker-reload report (O5), dependencies and grouping (§4.4), silences (§4.5), the message form and the stale-heartbeat line (§5.3), the daily digest sent even when all is ok.
+- **Phase 4: the fleet.** The forced command's `monitor-status`, fleet status, pages for other nodes (O9), ages on the watching node's clock and the unreachable rule (§7).
 - **Phase 5: Windows,** with WINDOWS_NODE's phases.
 
 ## 12. Acceptance
@@ -406,3 +469,13 @@ PROFILING covers deliberate, on-demand measurement: traces, kernel timelines, pe
 15. A certificate expiring in 6 days is `down` and paged; at 20 days it is in the digest only.
 16. `ragon-remote-certificate-alert.service`, as written by the product, runs only programs the product installs.
 17. On Windows (Phase 5), the same fixtures give the same states, and transitions appear in the Event Log under `Ragon`.
+18. With Docker stopped, one page names Docker and the items below it; no item below it is paged on its own. Two unrelated items going `down` within 30 s give one message, worst first.
+19. A silenced item shows its real state with "silenced"; one still `down` when its silence ends is paged once; memory `down`, the PSI guard's kill and a failed restart page through any silence; a profile window whose restore failed pages the model server `down` at once.
+20. Every message's first line is "<node>: <state>, <item>"; a test over the message table shows that no message carries a journal line, a prompt, a model's output, a file path or a user name (LOGGING §12).
+21. The digest arrives every day at 08:00 local, as "all ok" on a quiet day.
+22. With the monitor stopped for 10 minutes, the chosen bridge sends one line saying so, and one when it runs again.
+23. A watched node whose clock is 5 minutes off shows correct ages on the watching node, and the skew is `degraded`.
+24. A monitor stopped with `SIGSTOP` is killed by systemd's watchdog and running again within two minutes, and the restart is in the journal.
+25. Kernel GPU error fixtures are classed by the catalog: an application-restart Xid is `degraded`, a reset or reboot Xid is `down` and paged, and neither leads to any action.
+26. An NVMe fixture with its critical warning set is `down`; one with the available spare above its threshold and 91 % used is `degraded`; the monitor never asks the drive for a fresh reading.
+27. A memory pressure spike of 3 s between two 10 s samples (a fixture trigger) is sampled and recorded.
