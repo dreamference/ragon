@@ -49,6 +49,7 @@ class FakeRelease:
     def __init__(self, assets, tag="v9.9.9", need_token=None, indent=2, rate_limited=False):
         self.indent = indent
         self.rate_limited = rate_limited
+        self.assets_gone = False
         self.assets = dict(assets)
         self.tag = tag
         self.need_token = need_token
@@ -74,6 +75,8 @@ class FakeRelease:
                     return self._send(200, release.document(self.server.server_address[1]).encode())
                 if "/releases/assets/" in self.path:
                     index = int(self.path.rsplit("/", 1)[1])
+                    if release.assets_gone and "code-mode-host" in list(release.assets)[index]:
+                        return self._send(404, b'{"message": "Not Found"}')
                     return self._send(200, list(release.assets.values())[index])
                 self._send(404, b'{"message": "Not Found"}')
                 return None
@@ -2394,3 +2397,32 @@ def test_an_older_release_installs_over_a_newer_one_in_both_numberings(tmp_path,
             second,
         )
         assert result.returncode == 0, (first, second, result.stdout + result.stderr)
+
+
+def test_a_dropped_download_is_a_retry_not_a_missing_asset(tmp_path, release_server):
+    server = release_server(binaries())
+    real_curl = shutil.which("curl")
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    curl = fake_bin / "curl"
+    curl.write_text(
+        "#!/bin/bash\n"
+        'case "$*" in *codex-code-mode-host-*.gz*) exit 92 ;; esac\n'
+        f'exec {real_curl} "$@"\n'
+    )
+    curl.chmod(0o755)
+    result = run_install(tmp_path, server, "--role", "client")
+    assert result.returncode == 1
+    assert f"codex-code-mode-host-{TARGET}.gz: download failed (curl 92), retry" in result.stderr
+    assert "is missing" not in result.stderr
+    assert nothing_installed(tmp_path)
+
+
+def test_a_real_404_on_an_asset_says_the_release_is_missing_it(tmp_path, release_server):
+    server = release_server(binaries())
+    server.assets_gone = True
+    result = run_install(tmp_path, server, "--role", "client")
+    assert result.returncode == 1
+    assert f"release v9.9.9 is missing codex-code-mode-host-{TARGET}.gz." in result.stderr
+    assert "download failed" not in result.stderr
+    assert nothing_installed(tmp_path)
