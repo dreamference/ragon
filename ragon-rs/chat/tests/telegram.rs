@@ -1214,6 +1214,7 @@ async fn repo_turns_send_no_content_to_telegram_or_discord() {
         port,
         lan_names: Vec::new(),
         public_names: Vec::new(),
+        monitor: None,
     };
     let server = Server::new(config).unwrap();
     /// A host with plenty of disk and no night running, whatever the real machine says.

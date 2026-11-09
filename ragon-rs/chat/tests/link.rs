@@ -130,6 +130,7 @@ async fn a_chat_message_reaches_the_agent_through_ragon_web_an_approval_comes_ba
         port,
         lan_names: Vec::new(),
         public_names: Vec::new(),
+        monitor: None,
     };
     let mut app_server = fake_app_server(&config.socket).await;
     let server = Server::new(config).unwrap();
@@ -230,6 +231,7 @@ async fn a_chat_message_reaches_the_agent_through_ragon_web_an_approval_comes_ba
         port,
         lan_names: Vec::new(),
         public_names: Vec::new(),
+        monitor: None,
     };
     let server = Server::new(config).unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
