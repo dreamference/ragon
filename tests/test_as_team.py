@@ -424,6 +424,7 @@ def test_publishing_replays_the_series_as_signed_bot_commits(keys: Path, repo: P
     routes = {
         **token_routes(),
         ("GET", f"/repos/{REPO}/git/ref/heads/work"): (404, {"message": "Not Found"}),
+        ("GET", f"/repos/{REPO}/git/commits/{base}"): (200, {"tree": {"sha": "base-tree"}}),
         ("POST", f"/repos/{REPO}/git/refs"): (201, {"ref": "refs/heads/work"}),
         ("POST", "/graphql"): [
             (200, {"data": {"createCommitOnBranch": {"commit": {"oid": "c1", "url": ""}}}}),
@@ -820,7 +821,13 @@ def test_a_held_publish_is_pinned_to_commits_and_runs_at_the_hour(
     head = git(repo, "rev-parse", "HEAD")
     body = repo / "body.md"
     body.write_text("Why.")
-    client, _session = github({})
+    client, _session = github(
+        {
+            **token_routes(),
+            ("GET", f"/repos/{REPO}/git/ref/heads/work"): (404, {"message": "Not Found"}),
+            ("GET", f"/repos/{REPO}/git/commits/{base}"): (200, {"tree": {"sha": "t"}}),
+        }
+    )
     held = ["publish", "agent", "--branch", "work", "--base", "HEAD~1"]
     assert as_team.main(["queue", *held], github=client, cwd=repo, clock=lambda: AT_NOON) == 0
     pr = ["pr", "agent", "--branch", "work", "--title", "Change a", "--body-file", str(body)]
@@ -839,6 +846,35 @@ def test_a_held_publish_is_pinned_to_commits_and_runs_at_the_hour(
     assert (publish_args.base, publish_args.head, publish_args.now) == (base, head, True)
     assert second == ("pr", "Why.")
     assert as_team.PublishQueue().entries() == []
+
+
+def test_holding_a_new_branch_refuses_a_base_github_lacks(keys: Path, repo: Path):
+    base = git(repo, "rev-parse", "HEAD")
+    (repo / "a.txt").write_text("two\n")
+    git(repo, "commit", "-q", "-am", "Change a")
+    client, _session = github(
+        {
+            **token_routes(),
+            ("GET", f"/repos/{REPO}/git/ref/heads/work"): (404, {"message": "Not Found"}),
+            ("GET", f"/repos/{REPO}/git/commits/{base}"): (
+                422,
+                {"message": "Object does not exist"},
+            ),
+        }
+    )
+    held = ["queue", "publish", "agent", "--branch", "work", "--base", "HEAD~1"]
+    assert as_team.main(held, github=client, cwd=repo, clock=lambda: AT_NOON) == 1
+    assert as_team.PublishQueue().entries() == []
+
+
+def test_a_held_command_records_the_clone_not_a_linked_worktree(keys: Path, repo: Path):
+    worktree = repo.parent / "linked"
+    git(repo, "worktree", "add", "-q", str(worktree), "-b", "side")
+    client, _session = github({})
+    argv = ["queue", "gate", "5"]
+    assert as_team.main(argv, github=client, cwd=worktree, clock=lambda: AT_NOON) == 0
+    (entry,) = as_team.PublishQueue().entries()
+    assert json.loads(entry.read_text())["cwd"] == str(repo.resolve())
 
 
 def test_a_failing_held_command_stops_the_flush_and_stays_held(

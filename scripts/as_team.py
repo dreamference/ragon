@@ -597,6 +597,11 @@ class Git:
             )
         return result.stdout
 
+    def clone_dir(self) -> Path:
+        """Return the clone's folder (its common git dir's parent), which outlives a linked worktree."""
+        common = Path(self.text("rev-parse", "--path-format=absolute", "--git-common-dir"))
+        return common.parent if common.name == ".git" else common
+
     def text(self, *args: str) -> str:
         """Run git and return its output as stripped text."""
         return self.run(*args).decode().strip()
@@ -679,6 +684,23 @@ class Publisher:
             self.github.call("GET", f"/repos/{repo}/git/commits/{sha}", token)["tree"]["sha"]
         )
 
+    def require_remote_base(self, repo: str, base_sha: str, token: str) -> None:
+        """Refuse a new branch whose base commit GitHub does not have (it answers 404 or 422)."""
+        try:
+            self.remote_tree(repo, base_sha, token)
+        except Refusal as missing:
+            raise Refusal(
+                f"GitHub does not have the base {base_sha[:12]} ({missing}); GitHub re-authors "
+                "commits, so rebase the series onto the remote commit whose tree equals the base's: "
+                "`git rebase --onto <remote-sha> <local-base>` in a worktree, then queue --base <remote-sha>"
+            ) from missing
+
+    def check_new_branch(self, team: str, repo: str, branch: str, base: str) -> None:
+        """Run the checks `publish` would make on a new branch's base, without writing."""
+        token = self.github.installation_token(team, repo)
+        if self.remote_head(repo, branch, token) is None:
+            self.require_remote_base(repo, self.git.text("rev-parse", f"{base}^{{commit}}"), token)
+
     def publish_api(self, team: str, repo: str, branch: str, base: str, head: str = "HEAD") -> str:
         """Replay base..head on GitHub with createCommitOnBranch: bot-authored, GitHub-signed commits.
 
@@ -705,6 +727,7 @@ class Publisher:
         base_sha = self.git.text("rev-parse", f"{base}^{{commit}}")
         expected = self.remote_head(repo, branch, token)
         if expected is None:
+            self.require_remote_base(repo, base_sha, token)
             self.github.call(
                 "POST",
                 f"/repos/{repo}/git/refs",
@@ -1378,7 +1401,13 @@ def run_queue(run: Run) -> None:
             print(f"{entry.stem}  {' '.join(json.loads(entry.read_text())['argv'])}")
         return
     held = [*([] if run.args.repo == DEFAULT_REPO else ["--repo", run.args.repo]), *run.args.held]
-    entry = queue.hold(held, run.git.cwd, run.git, run.clock())
+    if run.args.held[0] == "publish":
+        step = parser().parse_args(["--now", *held])
+        if step.via == "api":
+            run.publisher().check_new_branch(
+                step.team, step.repo, run.guard.name(step.branch), step.base
+            )
+    entry = queue.hold(held, run.git.clone_dir(), run.git, run.clock())
     print(f"✅ held as {entry.stem}; it runs at the next publishing hour")
 
 
