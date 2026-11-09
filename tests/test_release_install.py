@@ -2040,6 +2040,9 @@ def test_the_cli_passes_yes_to_host_setup_and_node_enable(monkeypatch):
         "enable",
         classmethod(lambda cls, no_web=False, yes=False: calls.append(("enable", yes)) or True),
     )
+    from dreamference.node.node_monitor_service import NodeMonitorService
+
+    monkeypatch.setattr(NodeMonitorService, "setup", classmethod(lambda cls: True))
     for argv in (["host", "setup", "--yes"], ["node", "enable", "--yes"], ["host", "setup"]):
         monkeypatch.setattr("sys.argv", ["ragon-admin", *argv])
         with pytest.raises(SystemExit):

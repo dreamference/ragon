@@ -1941,6 +1941,9 @@ def test_node_enable_sets_the_forge_up_unless_told_not_to(monkeypatch):
     monkeypatch.setattr(
         ForgeService, "setup", classmethod(lambda cls, show_password=True: setups.append(1) or True)
     )
+    from dreamference.node.node_monitor_service import NodeMonitorService
+
+    monkeypatch.setattr(NodeMonitorService, "setup", classmethod(lambda cls: True))
     for argv in (["node", "enable"], ["node", "enable", "--no-forge"]):
         monkeypatch.setattr(sys, "argv", ["ragon-admin", *argv])
         with pytest.raises(SystemExit) as exit_:
