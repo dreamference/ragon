@@ -50,11 +50,11 @@ def test_ask_is_a_view_of_the_app_windows_not_a_window_on_ragon_web():
         if source.name == "credentials.test.ts":  # names what must be absent from the bundles
             continue
         text = source.read_text(encoding="utf-8")
-        assert (
-            '"web", "serve"' not in text
-            and "--print-url" not in text
-            and "127.0.0.1:3100" not in text
-        ), source.name
+        assert '"web", "serve"' not in text and "--print-url" not in text, source.name
+        # The monitor chip reads the node's status route on `ragon web` (MONITORING §5.1) from the
+        # main process; it starts no server and loads no page, so its address is the one allowed.
+        if source.name != "monitor.ts":
+            assert "127.0.0.1:3100" not in text, source.name
     main = (SRC / "main.ts").read_text(encoding="utf-8")
     assert "openWork(" in main and main.count("new BrowserWindow") == 0
     assert 'openAsk: () => showView("ask"),' in main and 'openWork: () => showView("work"),' in main
