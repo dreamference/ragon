@@ -1,6 +1,6 @@
 # Node monitoring: what a Ragon node watches, where it says so, and what it may do on its own
 
-**Status:** Proposed; spec only, building later. Decided by the owner on 2026-11-08 (§0.1).
+**Status:** Proposed; spec only, building later. Decided by the owner on 2026-11-08 (§0.1), and O12–O16 on 2026-11-09 under the 12-hour rule (§0.1); no question is open.
 
 **Names:** post-rename (`ragon`, `ragon-admin`, `~/.ragon`, `ragon web` on port 3100). Nodes are written `node-a` (the first node set up, the one the user works from) and `node-b` (another GB10); real names and addresses are never written here. Paths are repository-relative or under `~`.
 
@@ -35,7 +35,7 @@
 
 ### 0.1 Decisions
 
-The owner approved every recommended answer on 2026-11-08. The text of the sections named here is normative.
+The owner approved every recommended answer of O1–O11 on 2026-11-08, and O12–O16 were decided on 2026-11-09 under the owner's 12-hour rule (the recommended answers, no veto). The text of the sections named here is normative.
 
 - **O1.** Names: crate `ragon-rs/node-monitor/`, binary and user unit `ragon-node-monitor`, state under `~/.local/share/dreamference/monitor/node/`, config `[monitor.node]`, CLI `ragon-admin monitor …`; the session monitor keeps `ragon monitor` and `monitor/` (§2.7, §8.1); decided 2026-11-08.
 - **O2.** The resident watcher is Rust, bounded at 64 MiB (§8.2); decided 2026-11-08.
@@ -48,16 +48,11 @@ The owner approved every recommended answer on 2026-11-08. The text of the secti
 - **O9.** Only the node where `monitor notify` is set sends pages, for every node it watches; every node keeps its own history (§7); decided 2026-11-08.
 - **O10.** The monitor restarts a failed unit from a fixed list, once per unit per six hours, only after systemd's `Restart=` has given up (§6.1); decided 2026-11-08.
 - **O11.** The monitor service is on by default on every node from Phase 2, notifications off until `monitor notify` names a channel (§5, §11); decided 2026-11-08.
-
-### 0.2 Questions from the research
-
-Open; each has a recommended answer. None reverses O1–O11; where one would widen a decided answer, it says so.
-
-- **O12. A standby pager.** O9 makes the paging node the one place every page leaves from; when it is off, nothing is sent and only the missing digest tells the user (§5.3). Recommended: one other node, the user's choice or else the lowest node id among the watching nodes, sends one page and nothing else: "<paging node> has not been heard from for 15 min". It needs `monitor notify` set on that node too, and is off until then. Phase 4. Widens O9 by one message.
-- **O13. A fallback channel.** O7 and §5.3 name one channel. Signal can stop for a CAPTCHA or a rate wait of up to a day, and Telegram pauses under `/airgapped on`. Recommended: `monitor notify fallback <channel>`, used only for a page that the first channel has failed to deliver for 15 minutes, and never for digests; off by default. Phase 3.
-- **O14. A reminder and an acknowledgement.** One episode is one page (§4.4); a page read at 03:00 and forgotten is seen again only in the 08:00 digest. Recommended: an item still `down` 4 hours after its page is paged once more, outside quiet hours, unless the user has acknowledged it, by replying `ack` to the page in the same chat or from the status page; an acknowledgement holds reminders until the episode ends, never the episode's recovery line. Phase 3. Widens O6 by one reminder per episode.
-- **O15. The monitor's states as metrics, for the user's own tools.** Recommended: off by default; `[monitor.node] metrics = true` writes a file in the OpenMetrics text format to a directory only the user can read (default `$XDG_RUNTIME_DIR/ragon/`), replaced atomically every cycle and ready for a textfile collector. It holds one gauge per item's state and one per sample value. Its labels name only the node and the item, never a model, a path or a user. It opens no port, because any local user can read a loopback port. The monitor never sends the file anywhere. Phase 2.
-- **O16. systemd's own backoff for the product's units.** Today a crashing unit hits systemd's default start limit (5 starts in 10 s) at once, and then the monitor's one restart (O10) is the only retry. Recommended: every product user unit with `Restart=on-failure` also gets `RestartSec=5`, `RestartSteps=5`, `RestartMaxDelaySec=5min` (systemd 254 and later; ignored where older) and a start limit to match, `StartLimitIntervalSec=1h` and `StartLimitBurst=8`, so a short outage is ridden out with a growing delay and only a lasting one reaches the start limit. Without the matching limit a unit restarting every 5 s or more never reaches the default limit, and systemd would never give up. O10 is unchanged: the monitor still steps in only after systemd has given up. Phase 2.
+- **O12.** A standby pager: one other node sends only "<paging node> not heard from for 15 min" (§7), Phase 4; decided 2026-11-09 under the 12-hour rule.
+- **O13.** A fallback channel, off by default, only for a page undelivered for 15 minutes, never for digests (§5.3), Phase 3; decided 2026-11-09 under the 12-hour rule.
+- **O14.** One reminder when an item is still down 4 hours after its page, outside quiet hours, unless acknowledged by replying `ack` or from the status page (§4.4), Phase 3; decided 2026-11-09 under the 12-hour rule.
+- **O15.** An OpenMetrics file in a user-only runtime directory, no port, labelled node and item only, off by default (§5.4), Phase 2; decided 2026-11-09 under the 12-hour rule.
+- **O16.** systemd backoff for the product's units: `RestartSec=5`, `RestartSteps=5`, `RestartMaxDelaySec=5min`, `StartLimitIntervalSec=1h`, `StartLimitBurst=8` (§6.1), Phase 2; decided 2026-11-09 under the 12-hour rule.
 
 ---
 
@@ -279,6 +274,7 @@ The worst of its items, except that only these items can make the node `down`: t
 
 - **Page** (sent as soon as it happens, through §5.3): the node goes `down`; any item goes `down`; the model server or the gate stays `degraded` for 30 minutes; a restart action failed (§6.1); the PSI guard killed the model server; a certificate within 7 days.
 - **Digest** (once a day at 08:00 local, O6): every item that was `degraded` in the last 24 h, every item still not `ok` since a page ("model server still down since 03:12"), the restarts, the actions, the silences (§4.5), the counters' day (tokens, mean TTFT, evictions), disk growth. One item is one line however often it fired. The digest is sent every day, as one line ("all ok") on a quiet day, so a missing digest tells the user that the path to the phone is broken (§5.3).
+- **Reminder and acknowledgement (O14).** An item still `down` 4 hours after its page is paged once more, outside quiet hours, unless the user has acknowledged it, by replying `ack` to the page in the same chat or from the status page. An acknowledgement holds reminders until the episode ends, never the episode's recovery line. There is at most one reminder per episode (Phase 3).
 - **Recovery** is sent only for an item that was paged, as one line ("model server ok again after 14 min").
 - **Quiet hours** 23:00–07:00 (the session monitor's default): only the node going `down`, memory `down` and disk `down` are sent; the rest wait for 07:00 or the digest.
 - **Rate:** the session monitor's rules, reused (`alerts.rs`): one episode is one page, at most one page per item per hour, at most 6 pages per hour in all.
@@ -339,13 +335,21 @@ The database is capped at 256 MiB: when it passes the cap, the oldest raw sample
 - **The messenger's rate:** at most one message a second per chat, `retry_after` honoured (RAGON_CHAT §4.4); grouping (§4.4) keeps a burst to one message.
 - A notice's id is stable for its episode, so a bridge that delivers it twice after a restart sends it once.
 
+**A fallback channel (O13).** `ragon-admin monitor notify fallback <channel>|off` names a second channel, off by default, with the same acceptance rule as the first. It is used only for a page that the first channel has failed to deliver for 15 minutes (Signal can stop for a CAPTCHA or a rate wait of up to a day, and Telegram pauses under `/airgapped on`), and never for digests, recoveries or reminders. The page is delivered there once, and the outbox notes the channel (Phase 3).
+
 **No other channel.** No e-mail, no push service, no webhook to a third party, no vendor cloud. A user who wants another channel uses `[monitor.node] notify_command`, the session monitor's mechanism: a local command run with the text as its argument and a 30 s timeout, which the user writes and owns.
+
+### 5.4 Metrics for the user's own tools, off by default (O15)
+
+`[monitor.node] metrics = true` makes the monitor write one file in the OpenMetrics text format, replaced atomically every cycle and ready for a textfile collector, to a directory only the user can read (default `$XDG_RUNTIME_DIR/ragon/`, mode 0700). It holds one gauge per item's state and one per sample value. Its labels name only the node and the item, never a model, a path or a user. The monitor opens no port for it, because any local user can read a loopback port, and never sends the file anywhere. With `metrics` off, which is the default, no file is written (Phase 2).
 
 ## 6. Actions
 
 The monitor watches; it acts only in the cases below, and every action is a row in the actions journal (§5.2), a journal entry and a line on the status page, each with the reason in words the user can read: what was seen, what was done, what happened.
 
 ### 6.1 Restart a failed unit, once (O10)
+
+**systemd's own backoff first (O16).** Every product user unit with `Restart=on-failure` also sets `RestartSec=5`, `RestartSteps=5`, `RestartMaxDelaySec=5min` (systemd 254 and later; ignored where older) and a start limit to match, `StartLimitIntervalSec=1h` and `StartLimitBurst=8`. A short outage is ridden out with a growing delay, and only a lasting one reaches the start limit; without the matching limit a unit restarting every 5 s or more would never reach the default one, and systemd would never give up. A test holds the settings in every such unit (Phase 2). The restart below is unchanged: the monitor still steps in only after systemd has given up.
 
 For a unit in the product's list (§3.8) that is `failed` after systemd's own `Restart=` has given up (the start limit hit, or a unit with no `Restart=`), the monitor runs `systemctl --user reset-failed` and `systemctl --user start` for that unit, **once per unit per six hours**. If the unit fails again, the monitor pages "restarted once at 03:12, failed again (`<Result>`); see `journalctl --user -u <unit>`" and does nothing more. `<Result>` is systemd's fixed word (`exit-code`, `signal`, `core-dump`, `timeout`, `start-limit-hit`, …); the page never quotes a journal line (LOGGING §12). Never for: the model server, the gate, a unit under another account (`ragon-signal@`), a timer's service whose next run will retry anyway, or any unit while the node is `down` for memory. A sidecar container is not restarted by the monitor; Docker's policy already does.
 
@@ -371,6 +375,7 @@ One node watches the others over the channels that already exist; no new port op
 - **Every 5 minutes,** for each paired node, the forced command gains one read-only operation, `monitor-status`, which prints the remote monitor's `status.json`. It adds no privilege: the forced command already runs `status` and `info`.
 - **Fleet status** is the list of nodes with each node's state and its items not `ok`: `ragon-admin monitor status --fleet`, and a "Fleet" section on the status page.
 - **Pages (O9):** only the node where `monitor notify` names a channel sends pages, for itself and for every node it watches; another node's own monitor keeps its history and its local channels and sends nothing. A node that is `unreachable` is paged once by the watching node, with a hint that a hung node can be power-cycled by hand (`ragon-admin node power-cycle <node>`), never automatically.
+- **A standby pager (O12).** When the paging node is off, nothing leaves it. One other node, the user's choice (`monitor notify standby <node>`) or else the lowest node id among the watching nodes, sends one page and nothing else: "<paging node> not heard from for 15 min". It needs `monitor notify` set on that node too, and is off until then (Phase 4). This widens O9 by that one message.
 - **Time across nodes.** Every age the watching node computes (a remote heartbeat, a remote `status.json`) is measured on its own clock from when it received the answer, never from the remote node's timestamps; an air-gapped LAN may have no time source. The difference between a remote `status.json`'s time and the receive time is shown per node, and above 60 s it is `degraded` (digest only), since certificates and the digest's hour depend on it.
 - **Unreachable or off.** The watching node cannot tell a hung node from one the user switched off. A node the user takes away on purpose is silenced first (`monitor silence node-b --for 3d --reason …`, §4.5); an `unreachable` node's own items are never paged one by one (§4.4).
 - The watched nodes are found from the pairing records, by their recorded addresses, never by an mDNS browse in the loop (an mDNS query is what the egress audit counts as a failure).
@@ -445,9 +450,9 @@ PROFILING covers deliberate, on-demand measurement: traces, kernel timelines, pe
 ## 11. Rollout
 
 - **Phase 1: the status page and the CLI, no alerts, no service.** `ragon-node-monitor status --json` runs each probe once, over what exists today: the engine's `/health`, `/v1/models` and `/metrics`, the gate's `/ragon-gate`, `/proc`, `statvfs`, `systemctl show`, `docker inspect`, the certificates' `notAfter`, the forge's backup age. `ragon-admin monitor status`, `/status` and `/api/monitor/status` in `ragon web` (cached for 10 s), and the desktop app's chip. No history, no states over time, no actions, no messages.
-- **Phase 2: the service.** `ragon-node-monitor.service` on by default on a node (O11): sampling at §3's intervals, the store, hysteresis and node state, journald, the watchdog on the monitor itself (§8.3), unit signals, the PSI trigger, the GPU error, NVMe and model-file probes (§3.5–§3.8), `monitor history`, charts on the status page, the liveness completion (O3). Still no messages and no actions.
-- **Phase 3: alerts and the few actions.** `monitor notify`, `/api/monitor/notices` and the bridges' poll (O7), pages, digest, quiet hours, `owner-notify` replaced (O8), restart-once (O10), `ragon-psi-guard` (O4), the Docker-reload report (O5), dependencies and grouping (§4.4), silences (§4.5), the message form and the stale-heartbeat line (§5.3), the daily digest sent even when all is ok.
-- **Phase 4: the fleet.** The forced command's `monitor-status`, fleet status, pages for other nodes (O9), ages on the watching node's clock and the unreachable rule (§7).
+- **Phase 2: the service.** `ragon-node-monitor.service` on by default on a node (O11): sampling at §3's intervals, the store, hysteresis and node state, journald, the watchdog on the monitor itself (§8.3), unit signals, the PSI trigger, the GPU error, NVMe and model-file probes (§3.5–§3.8), `monitor history`, charts on the status page, the liveness completion (O3), the OpenMetrics file (O15) and the systemd backoff settings of the product's units (O16). Still no messages and no actions.
+- **Phase 3: alerts and the few actions.** `monitor notify`, `/api/monitor/notices` and the bridges' poll (O7), pages, digest, quiet hours, `owner-notify` replaced (O8), restart-once (O10), `ragon-psi-guard` (O4), the Docker-reload report (O5), dependencies and grouping (§4.4), silences (§4.5), the message form and the stale-heartbeat line (§5.3), the daily digest sent even when all is ok, the fallback channel (O13) and the reminder with its acknowledgement (O14).
+- **Phase 4: the fleet.** The forced command's `monitor-status`, fleet status, pages for other nodes (O9), the standby pager (O12), ages on the watching node's clock and the unreachable rule (§7).
 - **Phase 5: Windows,** with WINDOWS_NODE's phases.
 
 ## 12. Acceptance

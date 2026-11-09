@@ -1,6 +1,6 @@
 # Ragon logging: one place, one line format, no content
 
-**Status:** Proposed; spec only, building later. Decided by the owner on 2026-11-08 (§0.1); five questions from a review of current practice are open (§0.2).
+**Status:** Proposed; spec only, building later. Decided by the owner on 2026-11-08 (§0.1); the five questions of the second round (O13–O17) were decided on 2026-11-09 under the owner's 12-hour rule (§0.1); no question is open.
 
 **Names:** post-rename. These are:
 - `ragon`, the agent and launcher;
@@ -41,7 +41,7 @@ This document fixes where logs go, what a line looks like, what may never be wri
 
 ## 0.1 Decisions
 
-The owner approved every recommended answer on 2026-11-08. The text of the sections named here is normative.
+The owner approved every recommended answer of O1–O12 on 2026-11-08, and O13–O17 were decided on 2026-11-09 under the owner's 12-hour rule (the recommended answers, no veto). The text of the sections named here is normative.
 
 - **O1.** One directory, `~/.local/state/dreamference/logs/` (`$XDG_STATE_HOME`), for every process Ragon starts outside systemd and Docker (§3.2); decided 2026-11-08.
 - **O2.** `RAGON_LOG` is the environment tier of the config key `log_level`, read by every Python, Rust and C++ component; no `DREAMFERENCE_LOG_LEVEL` alias, `RUST_LOG` stays Codex's (§4.3); decided 2026-11-08.
@@ -55,16 +55,11 @@ The owner approved every recommended answer on 2026-11-08. The text of the secti
 - **O10.** `--enable-log-requests --enable-log-outputs --max-log-len 2048` are removed from the vLLM launch builder in P0 (§13); decided 2026-11-08.
 - **O11.** Retention: files 10 MiB x 5 per component, compressed, at most 14 days, 256 MiB for the directory; containers 10 MiB x 3 (engine 20 MiB x 5); the last 20 start records per component; incident records 30 days, at most 50 files (§6); decided 2026-11-08.
 - **O12.** Ragon never changes journald's configuration; its writers limit their own rate (§6.2); decided 2026-11-08.
-
-## 0.2 Questions from the research
-
-A review of current logging practice after the decisions above raised five more. Each has a recommended answer. A section whose text depends on an answer names its number; the rest of each answer's text joins the sections it names once it is approved. None of them changes a decision in §0.1.
-
-- **O13. Should one id follow a request across processes?** Today nothing ties a launcher line to the gate's and the engine's lines for the same request, and §5.4 forbids the engine to use a value the client sent. *Recommended: yes.* The first Ragon process that sees a request makes a W3C Trace Context `traceparent` (version `00`, a random 16-byte trace id, an 8-byte span id) and passes it on in the `traceparent` header. A receiver accepts a header only if it matches the format exactly (lower-case hex, the right lengths, not all zeros) and otherwise makes its own. Lines carry `trace_id=` and `span_id=` (§5.3), the names OpenTelemetry gives these fields outside its own protocol. The id is random, carries nothing about the user, and needs no tracing library; no baggage header is read or sent. The engine's rule in §5.4 then reads: its own session id, or a `trace_id` that passed this check. Affects §5.3, §5.4, P2 and P3.
-- **O14. Should the incident ring keep `debug` lines when the level is `info`?** Today the ring holds only lines that were written, so an incident record repeats what is already in the log. *Recommended: yes.* At the default level the writer formats `debug` lines (never `trace`) under the `info` rules, including `[addr]`, keeps them only in the ring, and writes them only into an incident record. The ring's bounds stay 200 lines and 128 KiB, and formatting them costs the writer thread, not the caller. This is the flight-recorder pattern: the detail one did not log, kept for the moment something fails. Affects §6.4 and P1.
-- **O15. Should Ragon's processes write core dumps?** A core of the engine holds prompts, the KV cache and mapped weights, may be tens of GB on unified memory, and the system's crash handler keeps it, with the process's command line and environment, for days. *Recommended: no.* Ragon's units set `LimitCORE=0`, its containers get `--ulimit core=0`, the Windows node registers no local dump collection for `RagonNode`, and `diag` never reads a dump (§9). A developer turns dumps on by hand on their own machine. Incident records (§6.4) and the crash list in the bundle keep the time, component, signal and build. Affects §3.3, §6.3, §6.4, §9 and P1.
-- **O16. What does Ragon do on a system whose journal is not stored on disk?** There `journalctl --user` shows nothing and every journald line is gone at reboot, and O12 rules out changing journald. *Recommended: report and advise, never change.* `logs list`, `diag` and the doctor say `journal: volatile`, as a `WARN` with the one command the user may run to make it persistent (§3.1, §8.1). Ragon does not create `/var/log/journal` and does not fall back to a file sink for units. Affects §3.1, §8.1, §9 and P3.
-- **O17. What happens to a bundle once it reaches a developer?** A bundle is pseudonymised, but pseudonymised data stays personal for whoever could link it, and an error message is near free text. *Recommended:* a received bundle is kept only with the issue it was sent for, is never committed to a repository or pasted into a public tracker, and is deleted within 30 days of the issue closing. The release checklist's blocker template says so, and `diag`'s printout tells the user which issue to attach it to rather than where to post it. Affects §9 and the release checklist.
+- **O13.** One W3C `traceparent`-format id per request, made by the first Ragon process, strictly validated, logged as `trace_id`/`span_id`; no baggage, no tracing library (§5.3, §5.4); decided 2026-11-09 under the 12-hour rule.
+- **O14.** The incident ring also keeps `debug` lines (never `trace`) at the default `info` level, written only into incident records; 200 lines, 128 KiB (§6.4); decided 2026-11-09 under the 12-hour rule.
+- **O15.** Core dumps are off for Ragon's processes (`LimitCORE=0`, `--ulimit core=0`, no Windows local dumps); a developer opts in by hand; `diag` never reads a dump (§3.3, §6.3, §6.4, §9); decided 2026-11-09 under the 12-hour rule.
+- **O16.** A volatile journal is reported as `WARN` with the one-line fix in `logs list`, `diag` and the doctor; Ragon never creates `/var/log/journal` and has no file fallback (§3.1, §8.1); decided 2026-11-09 under the 12-hour rule.
+- **O17.** A received bundle is kept only with its issue, never committed or posted, and deleted within 30 days of the issue closing; the blocker template says so (§9); decided 2026-11-09 under the 12-hour rule.
 
 ---
 
@@ -268,7 +263,7 @@ Each process has **one sink**. A writer chooses it at start-up:
 
 No process writes the same line to two sinks. A CLI command's output to the terminal is not log output (§5.6).
 
-**A volatile journal.** Per-user journal files exist only when journald stores to disk; on a system that keeps the journal in memory, `journalctl --user` shows nothing and every journald line is lost at reboot. Ragon does not change that (O12). `ragon logs list`, `diag` and the doctor report the journal's storage as `persistent` or `volatile`, and a volatile journal is a `WARN` with the one-line fix for the user to run (O16).
+**A volatile journal.** Per-user journal files exist only when journald stores to disk; on a system that keeps the journal in memory, `journalctl --user` shows nothing and every journald line is lost at reboot. Ragon does not change that (O12). `ragon logs list`, `diag` and the doctor report the journal's storage as `persistent` or `volatile`, and a volatile journal is a `WARN` that carries the one command the user may run to make it persistent (O16). Ragon does not create `/var/log/journal` and does not fall back to a file sink for units: the lines of a unit on a volatile journal are lost at reboot, and the `WARN` says so.
 
 ### 3.2 The directory (O1)
 
@@ -314,6 +309,7 @@ A **component** is `[a-z][a-z0-9-]*`. One table, `ragon-rs/vectors/logging/compo
 - It sets `EnvironmentFile=-%h/.config/dreamference/log.env` (§4.3).
 - It sets `LogExtraFields=RAGON_COMPONENT=<component>`, so every line of the unit carries an indexed field and `journalctl --user RAGON_COMPONENT=engine` finds it whatever the unit's part or instance.
 - It sets `LogRateLimitIntervalSec=30s` and `LogRateLimitBurst=20000` as a backstop above the writer's own limits (§6.2), so it only acts when a writer is broken. These are unit settings, not journald's configuration (O12).
+- It sets `LimitCORE=0`, so no core dump of a Ragon process is written (O15).
 
 All of today's units already follow the name rule. P1 adds the settings, checks on the box that a user unit honours the last two, and a test holds them (§11.4).
 
@@ -464,7 +460,7 @@ The writer API takes typed fields. The type decides how a value is written and r
 
 **Reserved keys.** These keys mean one thing in every component, and no call site uses them for anything else:
 - `session`, `req`, `job`, `run`: Ragon's own ids, of type `id`;
-- `trace_id`, `span_id`: the correlation ids of O13;
+- `trace_id`, `span_id`: the correlation ids of O13. The first Ragon process that sees a request makes a W3C Trace Context `traceparent` (version `00`, a random 16-byte trace id, an 8-byte span id) and passes it on in the `traceparent` header. A receiver accepts a header only if it matches the format exactly (lower-case hex, the right lengths, not all zeros) and otherwise makes its own. Lines carry `trace_id=` and `span_id=`. The id is random, carries nothing about the user, and needs no tracing library; no `baggage` header is read or sent;
 - `count`: the number of lines a summary line stands for (§6.2, §6.4);
 - `truncated`: set by the writer (§5.1);
 - on the `start` line of every component: `version`, `git`, `pid` and `log_format=1`, the version of this grammar. A reader that meets a higher `log_format` says so instead of guessing.
@@ -482,7 +478,7 @@ ragon-serve is C++ in the engine repository. Its changes land there, through the
    - `flags`: the command-line flags plus every `RAGON_*` tuning variable that is set, with its value. All of these are numbers or names.
 
    The JSON file adds the plan (`plan_json`, today printed to stdout at `main.cpp:1944`) and the KV page pool, sessions and batch size from the start print. `serving <name> on <host>:<port>` becomes `listening addr=… port=…`, with the address under the `addr` rule.
-2. **The request log.** One line per finished request, `engine INFO request done …`, with today's counts and timings (§2.4). The session id is the engine's own short id, never a value the client sent. A refused request is `engine WARN request refused reason=<enum> mem_available_mb=… reserve_mb=…`.
+2. **The request log.** One line per finished request, `engine INFO request done …`, with today's counts and timings (§2.4). The session id is the engine's own short id, never a value the client sent; the one exception is a `trace_id` that passed the strict check of §5.3 (O13), which the engine logs as received. A refused request is `engine WARN request refused reason=<enum> mem_available_mb=… reserve_mb=…`.
 3. **The step and perf stream.** `RAGON_STEP_TRACE` stays a JSON-lines file, because it is PROFILING's input (§12), with today's fields plus `ts` (UTC ISO) beside `t`. It is off unless set, and the product never sets it (§7.3).
 
 The node's starter (`server start`) reads the engine's start JSON from the container's stdout. It writes the start record, keeps the last 20 (§6.4), and is the only Python code that touches the engine's output.
@@ -550,6 +546,7 @@ The unit's `LogRateLimitIntervalSec=` and `LogRateLimitBurst=` (§3.3) and journ
 
 One helper, `ContainerLogOptions.args(component)`, returns:
 - `--log-driver json-file --log-opt max-size=10m --log-opt max-file=3 --log-opt compress=true`, so rotated container logs are compressed as files are (O11's sizes are unchanged);
+- `--ulimit core=0`, so a container writes no core dump (O15);
 - `--label ragon.component=<component>`;
 - `-e RAGON_LOG=…` from `log.env`.
 
@@ -570,8 +567,8 @@ A release blocker is investigated after the fact, often days later, so three thi
 2. **Incident records.** When a component logs `ERROR`, its writer dumps the last **200** lines it emitted from a ring in memory, at most **128 KiB**, into `incidents/<UTC>-<component>.log`. The same happens when a supervisor sees a crash: the PSI watchdog's kill, a unit's failure, or the engine's container exiting non-zero. In that case the supervisor also adds the last 500 lines of the container's log, re-redacted. Records are kept for **30 days**, at most 50 files. The rules:
    - **One per minute.** A component writes at most one incident record a minute. Further `ERROR`s in that minute are appended to it as lines, and the record ends with `count=N`, so an error storm costs one file, not fifty.
    - **A fatal signal.** The C++ writer keeps the ring already formatted and installs a handler for `SIGSEGV`, `SIGBUS`, `SIGFPE`, `SIGILL` and `SIGABRT` that writes it with `write(2)` to an incident file opened at start-up, then re-raises the signal. The Python writer points the standard library's fault handler at that file. The Rust writer does the same from its panic hook.
-   - **What the ring holds** at the default level is decided by O14.
-   - **No core dumps.** An incident record is lines, never memory. A core dump of the engine holds prompts and the KV cache, so it is never written by Ragon, never read by `diag` and never bundled (O15).
+   - **What the ring holds.** At the default level the writer also formats `debug` lines, never `trace`, under the `info` rules, including `[addr]`, and keeps them only in the ring; they are written only into an incident record (O14). The ring's bounds stay 200 lines and 128 KiB, and formatting them costs the writer thread, not the caller.
+   - **No core dumps.** An incident record is lines, never memory. A core dump of the engine holds prompts and the KV cache, so it is never written by Ragon (`LimitCORE=0` in units, `--ulimit core=0` in containers, no local dump collection registered for `RagonNode` on Windows), never read by `diag` and never bundled (O15). A developer turns dumps on by hand on their own machine. The incident record and the crash list in the bundle keep the time, component, signal and build.
 3. **The journal window**, as journald keeps it.
 
 `ragon-admin diag` (§9) packs these with the last N hours of every component. The release checklist's blocker template asks for one bundle from the machine that showed the bug.
@@ -821,7 +818,9 @@ If anything remains, `diag` writes no archive. It names the file and line and ex
 
 **Review before sharing.** The printout and the manifest say the bundle is possibly personal and must be looked at before it is shared. Error messages and third-party lines are the parts most likely to hold something the rules did not foresee.
 
-**Sending.** The product has no command, button or address for sending a bundle (rule 1). The user attaches the file wherever they choose, by hand.
+**Sending.** The product has no command, button or address for sending a bundle (rule 1). The user attaches the file wherever they choose, by hand; the printout names the issue to attach it to, not a place to post it.
+
+**A bundle that reaches a developer** (O17) is kept only with the issue it was sent for. It is never committed to a repository and never pasted into a public tracker, and it is deleted within 30 days of the issue closing. The release checklist's blocker template says so.
 
 ---
 

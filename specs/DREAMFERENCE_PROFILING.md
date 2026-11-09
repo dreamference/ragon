@@ -1,6 +1,6 @@
 # Ragon Profiling: measuring the model server and the agent the same way every time
 
-**Status:** Proposed; spec only, building later. Decided by the owner on 2026-11-08 (§0.1); three questions from a review of current practice are open (§0.2).
+**Status:** Proposed; spec only, building later. Decided by the owner on 2026-11-08 (§0.1); the three questions of the second round (O9–O11) were decided on 2026-11-09 under the owner's 12-hour rule (§0.1); no question is open.
 
 **Names:** post-rename (`ragon`, `ragon-admin`, `~/.ragon`, `ragon web` on port 3100); nodes `node-a`/`node-b`; the engine is ragon-serve (the `ragon-engine` repository, C++20/CUDA), SGLang the fallback engine.
 
@@ -15,7 +15,7 @@
 
 ## 0.1 Decisions
 
-The owner approved every recommended answer on 2026-11-08. The text of the sections named here is normative.
+The owner approved every recommended answer of O1–O8 on 2026-11-08, and O9–O11 were decided on 2026-11-09 under the owner's 12-hour rule (the recommended answers, no veto). The text of the sections named here is normative.
 
 - **O1.** `ragon-admin profile` is the user-facing profiler; `ragon-admin benchmark_server` is removed in Phase 1 with a one-line pointer to `profile` for one release (§6, §2.3); decided 2026-11-08.
 - **O2.** The measurement core is the Rust leaf crate `ragon-rs/profile/`, run as `ragon profile`; `ragon-admin profile` on Linux owns only the window; the Windows node gets the same core (§6.1, §8); decided 2026-11-08.
@@ -25,14 +25,9 @@ The owner approved every recommended answer on 2026-11-08. The text of the secti
 - **O6.** The release gate runs `one-stream` against the idle production server with the release candidate installed, no window; a regression or a failed check holds the cut until the owner says go (§7.3); decided 2026-11-08.
 - **O7.** No tok/s or TTFT in the app through Phase 3; later one row in the thread's details panel (§6.2); decided 2026-11-08.
 - **O8.** No `--deep` flag: Nsight Systems and Compute stay developers' hand tools, never shipped (§4.3); decided 2026-11-08.
-
-## 0.2 Questions from the research
-
-A review of 2025–26 practice in serving benchmarks, speculative decoding, performance statistics and GPU measurement found three points the decisions above do not settle. Each has a recommended answer. Until the owner answers, the sections keep the decided behaviour, and the text that depends on an answer says so.
-
-- **O9. Cumulative drift.** O5 compares a candidate with one base. A series of releases, each slower by less than 2%, passes every gate and still adds up to a large loss. Should the release gate (§7.3) also compare decode per stream and TTFT with the median of the last five gate runs on the same node, by the same §7.2 rule? **Recommended: yes.** It costs no extra run (the earlier gate runs are in the release entries' `profile` blocks), and it is the check performance-testing practice adds once a per-change gate exists. A fail there holds the cut the same way.
-- **O10. Speed in the terminal client.** O7 keeps tok/s and TTFT out of the app through Phase 3. Local model tools commonly show the last reply's speed on request, and a figure without the cache state misleads (a reused 32K prefix answers in a fraction of a cold one's time). Should the CLI's `/status` card show one line for the last turn, from the server's figures, with the cache state, e.g. "Last turn: TTFT 1.2 s (31.8K of 32K reused), 63 tok/s"? **Recommended: yes, no earlier than O7's row,** with the same source and the same wording, so the two never disagree.
-- **O11. Reused-prefix TTFT in the gate.** O6's `one-stream` measures cold TTFT (§3 rule 6). An agent's turns mostly reuse a long prefix, so a regression in the reuse path (the prefix KV store, session reuse) passes the gate unseen. Should `one-stream` add one follow-up turn on the same 32K prefix (about 20 s more) and the gate judge its reused TTFT as a third decisive figure? **Recommended: yes.** The cold TTFT stays the decided figure either way; this adds one figure, it does not replace one.
+- **O9.** The release gate also compares decode per stream and TTFT with the median of the last five gate runs on the node, by the §7.2 rule (§7.3); decided 2026-11-09 under the 12-hour rule.
+- **O10.** The CLI's `/status` card shows the last turn's TTFT (with cache state) and tok/s from the server's figures, no earlier than O7's row (§6.2); decided 2026-11-09 under the 12-hour rule.
+- **O11.** `one-stream` adds a follow-up turn on the same 32K prefix, and the gate judges its reused TTFT as a third decisive figure (§3, §7.2, §7.3); decided 2026-11-09 under the 12-hour rule.
 
 ## 1. Scope and the rules that bind it
 
@@ -232,7 +227,7 @@ The standard shapes:
 
 | Shape | Workload | Needs a window | Figures |
 |---|---|---|---|
-| `one-stream` | the three fixed prompts (prose, code, JSON), thinking off, plus one 32K-context turn on the shipped prefix | no, when production is idle | TTFT (cold, §3 rule 6), prefill per 1K, decode per stream, inter-token gap, tokens per pass and acceptance per prompt kind, step period, energy per token |
+| `one-stream` | the three fixed prompts (prose, code, JSON), thinking off, plus one 32K-context turn on the shipped prefix and a follow-up turn on the same prefix (O11) | no, when production is idle | TTFT (cold, §3 rule 6), reused-prefix TTFT of the follow-up turn (with its cache state), prefill per 1K, decode per stream, inter-token gap, tokens per pass and acceptance per prompt kind, step period, energy per token |
 | `four-streams` | four sessions at once on the shipped prefix, distinct questions | no when production's sessions cover four, else yes | aggregate span and wall, per-stream decode, step period, MemAvailable minimum |
 | `fanout-32` | 32 forks of one 32K prefix, greedy | yes (the recipe needs 33 sessions at 32,768) | span and wall, draft + verify per step, step period, pool bytes, cold rep 0 reported apart |
 | `swe-slice` | N instances (default 8) of the seeded gate slice (`scripts/swe_bench_slice.py`) through `ragon-admin swe-bench run` | no window; it holds the SWE-bench gate | task wall (sum, median), agent turn wall, the server's figures over the run |
@@ -246,7 +241,7 @@ The shapes send requests one after another or in a fixed set (a closed loop), as
 
 ### 6.2 What the app shows
 
-Today, nothing about speed (§2.3). Through Phase 3, still nothing: speed is a node-administration matter, and a per-turn figure from the client's clock would contradict the server's. Later (O7), one row in the thread's details panel beside "Context", from the server's own figures for the turn's last request. Whatever shows a TTFT shows its cache state with it (§3). O10 (§0.2) asks whether the CLI's `/status` card shows the same line.
+Today, nothing about speed (§2.3). Through Phase 3, still nothing: speed is a node-administration matter, and a per-turn figure from the client's clock would contradict the server's. Later (O7), one row in the thread's details panel beside "Context", from the server's own figures for the turn's last request. Whatever shows a TTFT shows its cache state with it (§3). The CLI's `/status` card shows one line for the last turn, no earlier than O7's row, from the server's figures with the cache state and in the same wording as that row, so the two never disagree (O10), e.g. "Last turn: TTFT 1.2 s (31.8K of 32K reused), 63 tok/s".
 
 ### 6.3 Other users of the figures
 
@@ -268,18 +263,18 @@ For one figure of one shape, with base and candidate measured as in §5.2:
 - **faster**: better by more than max(2 × noise, 2%);
 - **unclear**: anything in between. One more ABBA pair runs; if it is still unclear, the verdict is "slower (or faster) within 2%", which is not a regression and not a gain to claim.
 
-The figures judged are the shape's **decisive** ones: decode per stream and TTFT for `one-stream`; span tok/s for the concurrent shapes; task wall for `swe-slice`, where the noise floor is 5% because model nondeterminism across tasks is larger; the sum of TTFT and decode per stream for `agent-loop`. Other figures are reported but not judged: inter-token gap, speculation gain, decode bandwidth use and energy per token stay reported figures. A run whose state is "throttled" or "production busy" (§3 rules 7, 8) gets no verdict on any figure. The figures of §2.4 support these numbers: ABBA arms 0.3–0.4% apart and warm repetitions 1.3% apart sit inside the band, and the 6% TTFT loss the KV-pages job rejected sits well outside it.
+The figures judged are the shape's **decisive** ones: decode per stream, cold TTFT and the reused-prefix TTFT of the follow-up turn for `one-stream` (O11; the cold TTFT stays a decisive figure, the reused one is added); span tok/s for the concurrent shapes; task wall for `swe-slice`, where the noise floor is 5% because model nondeterminism across tasks is larger; the sum of TTFT and decode per stream for `agent-loop`. Other figures are reported but not judged: inter-token gap, speculation gain, decode bandwidth use and energy per token stay reported figures. A run whose state is "throttled" or "production busy" (§3 rules 7, 8) gets no verdict on any figure. The figures of §2.4 support these numbers: ABBA arms 0.3–0.4% apart and warm repetitions 1.3% apart sit inside the band, and the 6% TTFT loss the KV-pages job rejected sits well outside it.
 
 ### 7.3 The release gate (O6)
 
 A release has none today. The proposed gate is cheap and needs no window:
 
 1. On one node, after the release candidate is installed as production (the release test procedure already installs it), with production idle and no SWE-bench run active: `ragon-admin profile run one-stream --reps 3`.
-2. **Pass** when every answer passes its check (the `decode_speed.py` checks), and decode per stream and TTFT are not a regression (§7.2) against the previous release's gate run **on the same node**.
+2. **Pass** when every answer passes its check (the `decode_speed.py` checks), and decode per stream, cold TTFT and reused-prefix TTFT are not a regression (§7.2) against the previous release's gate run **on the same node** (O11), and decode per stream and cold TTFT are not a regression (§7.2) against the **median of the last five gate runs on that node** (O9), so a series of releases each slower by less than 2% is caught. The earlier runs are read from the release entries' `profile` blocks, so the comparison costs no extra run.
 3. The table goes into `docs/releases/<version>.json` under `profile`, with the node id, not the host name. `scripts/release_benchmark.py check` validates the block.
 4. A fail holds the cut and is reported to the owner with the table. The owner may release anyway, and the release notes then say so.
 5. A gate run whose state is "throttled" or "production busy" is not a pass or a fail. It is run once more; if the second run is not clean either, the result is "no verdict", reported to the owner as a fail would be.
-6. O9 and O11 (§0.2), if the owner accepts them, add a comparison with the median of the last five gate runs on the node and a third decisive figure, the reused TTFT. Until then the gate is items 1–5.
+6. A fail against the median of five (item 2) holds the cut the same way (item 4). With fewer than five earlier gate runs on the node, the median is taken over those there are.
 
 The byte-identical gate does not apply across releases, since the model, drafter or engine may legitimately change outputs. It stays the gate for engine changes (§5.3), which happen before the cut.
 
@@ -307,10 +302,10 @@ The same definitions, file format, shapes and verdict rule apply; the measuring 
 - **Phase 0 (this document).** The definitions, the method and the owner's decisions.
 - **Phase 1: measure what is there.** The Rust core (`ragon-rs/profile/`, O2) with the §3 figures from `/metrics`, `/spec_stats` and the request line; `result.json` and the fixed table; `ragon-admin profile run one-stream|four-streams` against idle production, with no window; `compare`, `baseline`, the results directory; `benchmark_server` retired (O1; done: removed from the parser, answers with a pointer to `profile` and exits 2, `ragon-admin profile …` forwards to `ragon-profile`); `decode_speed.py` writing the same result format (done: `--out` writes schema 1, tested by `tests/test_decode_speed_result.py`). From the start: TTFT with its cache state and the salted cold requests (§3 rule 6), the undisturbed check (rule 7), the machine-state samples and the throttled state (rule 8), the inter-token gap, the `schema` and `workload` fields, `requests.jsonl` and `machine.jsonl`. Tests use a fake server that replays recorded `/metrics` bodies and request lines.
 - **Phase 2: windows.** The §5.1 window with the GPU lock, refusals, `windows.log` and the restore check; `fanout-32`; the level-1 counter additions in ragon-serve (engine repository, through its publish queue), with the log-spaced step-period histogram and the per-position acceptance counts; speculation gain and decode bandwidth use; `profile gemm` where the image carries the bench; `profile trace`.
-- **Phase 3: baselines and the release gate.** The `profile` block in `docs/releases/<version>.json` and `release_benchmark.py check`; the gate of §7.3 in the release procedure, with the "no verdict" rule; baselines with the normal SM clock handed to MONITORING; O9 and O11 if accepted.
+- **Phase 3: baselines and the release gate.** The `profile` block in `docs/releases/<version>.json` and `release_benchmark.py check`; the gate of §7.3 in the release procedure, with the "no verdict" rule; baselines with the normal SM clock handed to MONITORING; the median-of-five comparison (O9) and the reused-prefix TTFT (O11).
 - **Phase 4: the agent and SWE-bench.** `swe-slice`; `agent-loop`; agent turn wall from the session's events.
 - **Phase 5: the Windows node,** with the engine port's W1 (WINDOWS_NODE §5.5).
-- **Later (O7):** the details-panel row in the app and `ragon web`; the CLI's `/status` line if O10 is accepted.
+- **Later (O7):** the details-panel row in the app and `ragon web`; the CLI's `/status` line (O10).
 
 ## 11. Acceptance
 
