@@ -13,7 +13,6 @@ use ragon_sync::agent::Agent;
 use ragon_sync::client::HubClient;
 use ragon_sync::config::DeviceFile;
 use ragon_sync::config::Settings;
-use ragon_web_server::app_server::Launch;
 use ragon_web_server::auth;
 use ragon_web_server::server;
 use ragon_web_server::server::Config;
@@ -89,22 +88,9 @@ async fn hub(dir: &Path, enabled: bool) -> Hub {
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let state_dir = auth::state_dir(&codex_home);
     let config = Config {
-        phone_admin: None,
-        codex_home: codex_home.clone(),
-        socket: dir.join("run").join("s.sock"),
-        launch: Launch { ragon: dir.join("no-ragon"), env: Vec::new(), log: state_dir.join("app-server.log") },
-        images_dir: dir.join("images"),
-        speech_addr: "127.0.0.1:9".to_string(),
-        // Never the real ~/.config/dreamference/config.toml: a scratch one, absent unless a test writes it.
         user_config: Some(dir.join("user/.config/dreamference/config.toml")),
-        forge_url: None,
-        state_dir,
-        port,
-        lan_names: Vec::new(),
-        public_names: Vec::new(),
-        monitor: None,
+        ..Config::for_test(&dir, codex_home.clone(), port)
     };
     let server = Server::new(config).unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();

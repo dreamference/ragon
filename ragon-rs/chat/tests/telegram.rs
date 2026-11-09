@@ -1202,19 +1202,11 @@ async fn repo_turns_send_no_content_to_telegram_or_discord() {
     let socket_path = root_dir.join("run").join("s.sock");
     let mut app_server = fake_app_server(&socket_path).await;
     let config = Config {
-        phone_admin: None,
-        codex_home: codex_home.clone(),
         socket: socket_path,
         launch: Launch { ragon: fake_ragon, env: Vec::new(), log: state_dir.join("app-server.log") },
-        images_dir: root_dir.join("images"),
-        speech_addr: "127.0.0.1:9".to_string(),
         user_config: Some(user_config),
         forge_url: Some(forge_url),
-        state_dir: state_dir.clone(),
-        port,
-        lan_names: Vec::new(),
-        public_names: Vec::new(),
-        monitor: None,
+        ..Config::for_test(&root_dir, codex_home.clone(), port)
     };
     let server = Server::new(config).unwrap();
     /// A host with plenty of disk and no night running, whatever the real machine says.

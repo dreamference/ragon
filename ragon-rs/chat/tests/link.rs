@@ -117,20 +117,8 @@ async fn a_chat_message_reaches_the_agent_through_ragon_web_an_approval_comes_ba
     let codex_home = scratch.dir.join("home");
     let state_dir = auth::state_dir(&codex_home);
     let config = Config {
-        phone_admin: None,
-        codex_home: codex_home.clone(),
-        socket: scratch.dir.join("run").join("s.sock"),
         launch: Launch { ragon: fake_ragon(&scratch.dir), env: Vec::new(), log: state_dir.join("app-server.log") },
-        images_dir: scratch.dir.join("images"),
-        // Nothing listens on port 9 (discard); the chat link uses neither sidecar.
-        speech_addr: "127.0.0.1:9".to_string(),
-        user_config: None,
-        forge_url: None,
-        state_dir: state_dir.clone(),
-        port,
-        lan_names: Vec::new(),
-        public_names: Vec::new(),
-        monitor: None,
+        ..Config::for_test(&scratch.dir, codex_home.clone(), port)
     };
     let mut app_server = fake_app_server(&config.socket).await;
     let server = Server::new(config).unwrap();
@@ -218,20 +206,8 @@ async fn a_chat_message_reaches_the_agent_through_ragon_web_an_approval_comes_ba
     serving.await.unwrap().unwrap();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
     let config = Config {
-        phone_admin: None,
-        codex_home: codex_home.clone(),
-        socket: scratch.dir.join("run").join("s.sock"),
         launch: Launch { ragon: fake_ragon(&scratch.dir), env: Vec::new(), log: state_dir.join("app-server.log") },
-        images_dir: scratch.dir.join("images"),
-        // Nothing listens on port 9 (discard); the chat link uses neither sidecar.
-        speech_addr: "127.0.0.1:9".to_string(),
-        user_config: None,
-        forge_url: None,
-        state_dir: state_dir.clone(),
-        port,
-        lan_names: Vec::new(),
-        public_names: Vec::new(),
-        monitor: None,
+        ..Config::for_test(&scratch.dir, codex_home.clone(), port)
     };
     let server = Server::new(config).unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();

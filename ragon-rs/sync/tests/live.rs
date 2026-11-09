@@ -13,7 +13,6 @@ use ragon_sync::client::HubClient;
 use ragon_sync::config::Settings;
 use ragon_sync::live::Connection;
 use ragon_sync::live::Host;
-use ragon_web_server::app_server::Launch;
 use ragon_web_server::auth;
 use ragon_web_server::policy::Policy;
 use ragon_web_server::server;
@@ -121,21 +120,8 @@ async fn hub(dir: &Path) -> (Arc<Server>, String) {
     sync_store::set_enabled(&codex_home, true).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let state_dir = auth::state_dir(&codex_home);
     let config = Config {
-        phone_admin: None,
-        codex_home,
-        socket: dir.join("run").join("s.sock"),
-        launch: Launch { ragon: dir.join("no-ragon"), env: Vec::new(), log: state_dir.join("app-server.log") },
-        images_dir: dir.join("images"),
-        speech_addr: "127.0.0.1:9".to_string(),
-        state_dir,
-        port,
-        lan_names: Vec::new(),
-        public_names: Vec::new(),
-        user_config: None,
-        forge_url: None,
-        monitor: None,
+        ..Config::for_test(&dir, codex_home, port)
     };
     let server = Server::new(config).unwrap();
     tokio::spawn(server::serve(server.clone(), vec![listener], std::future::pending::<()>()));

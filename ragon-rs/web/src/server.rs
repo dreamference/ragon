@@ -120,6 +120,32 @@ pub struct Server {
     pub monitor: crate::monitor_status::Cache,
 }
 
+impl Config {
+    /// A configuration for tests, with every path under `dir` and nothing real touched: no
+    /// sidecars (the speech address is the discard port), no forge, no phone admin, no monitor,
+    /// no user config, and a launcher naming a `ragon` that does not exist. Tests override the
+    /// few fields they care about with struct-update syntax (`Config { forge_url, ..Config::for_test(..) }`),
+    /// so a new field breaks none of them.
+    pub fn for_test(dir: &Path, codex_home: PathBuf, port: u16) -> Config {
+        let state_dir = crate::auth::state_dir(&codex_home);
+        Config {
+            codex_home,
+            socket: dir.join("run").join("s.sock"),
+            launch: Launch { ragon: dir.join("no-ragon"), env: Vec::new(), log: state_dir.join("app-server.log") },
+            images_dir: dir.join("images"),
+            speech_addr: "127.0.0.1:9".to_string(),
+            user_config: None,
+            forge_url: None,
+            state_dir,
+            port,
+            lan_names: Vec::new(),
+            public_names: Vec::new(),
+            phone_admin: None,
+            monitor: None,
+        }
+    }
+}
+
 impl Server {
     pub fn new(config: Config) -> std::io::Result<Arc<Server>> {
         auth::private_dir(&config.state_dir)?;
