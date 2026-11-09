@@ -163,11 +163,6 @@ The specs were ranked by the commits on the paths each one cites since its own l
 | Where | Was | Now |
 |---|---|---|
 | `HF_HOME` and the model containers | The host downloaded to `$HF_HOME/hub`, but the model server, the diffusion sidecar and the tensorizer container always mounted `~/.cache/huggingface`, so a host with a custom `HF_HOME` launched SGLang against snapshot paths the container could not see (and the tensorizer's container path also lacked `hub/`) | `ModelDownloader.container_volume_args()` mounts the resolved home (`HF_HOME`, `$XDG_CACHE_HOME/huggingface`, `~/.cache/huggingface`) at `/root/.cache/huggingface`, plus a separate hub mount when `HF_HUB_CACHE` moves it |
-
-### Fixed
-
-| Where | Was | Now |
-|---|---|---|
 | `clear tensorize-cache` / `clear model-cache` | Deleted the *parents*: all of `~/.cache/dreamference` (build and compile caches) and all of `~/.cache/huggingface` (including the login token) | Remove only `tensorizer/` and `hub/`, and report files a container left behind as root |
 | `ragon-admin clear-tensorize-cache` | Parsed and did nothing | Same as `clear tensorize-cache` |
 | `ensure_docker_image()` | Built the plain `Dockerfile` under a pinned DFlash tag | Builds only `DEFAULT_VLLM_IMAGE`; for other missing local tags, says how they are built |
