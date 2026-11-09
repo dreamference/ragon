@@ -135,6 +135,7 @@ async fn hub(dir: &Path) -> (Arc<Server>, String) {
         public_names: Vec::new(),
         user_config: None,
         forge_url: None,
+        monitor: None,
     };
     let server = Server::new(config).unwrap();
     tokio::spawn(server::serve(server.clone(), vec![listener], std::future::pending::<()>()));

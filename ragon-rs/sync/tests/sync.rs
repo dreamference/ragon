@@ -104,6 +104,7 @@ async fn hub(dir: &Path, enabled: bool) -> Hub {
         port,
         lan_names: Vec::new(),
         public_names: Vec::new(),
+        monitor: None,
     };
     let server = Server::new(config).unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
