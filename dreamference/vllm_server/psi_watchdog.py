@@ -480,3 +480,40 @@ class MemoryPressureWatchdog:
         if len(parts) < HTTP_STATUS_PARTS or not parts[1].isdigit():
             return False
         return HTTP_OK_MIN <= int(parts[1]) < HTTP_OK_END
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Runs the watchdog in the foreground, as the `ragon-psi-guard` user unit does.
+
+    Args:
+        argv (Optional[List[str]]): The container name; defaults to `sys.argv[1:]`.
+
+    Returns:
+        int: 0 when stopped, 1 when the watchdog fired, 2 on a usage error or without PSI.
+    """
+    import sys
+
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) != 1:
+        sys.stdout.write("usage: python -m dreamference.vllm_server.psi_watchdog CONTAINER\n")
+        return 2
+
+    def _report(reason: str, pressure: float, window_s: float) -> None:
+        sys.stdout.write(
+            f"memory stalled {pressure:.0f}% of the last {window_s:.0f}s ({reason}); "
+            f"'{args[0]}' was killed\n"
+        )
+        sys.stdout.flush()
+
+    watchdog = MemoryPressureWatchdog(args[0], on_trip=_report)
+    if not watchdog.start():
+        sys.stdout.write("the kernel does not expose /proc/pressure/memory\n")
+        return 2
+    signal.signal(signal.SIGTERM, lambda *_: watchdog._stop.set())
+    watchdog._stop.wait()
+    watchdog.stop()
+    return 1 if watchdog.tripped else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

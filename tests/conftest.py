@@ -502,6 +502,18 @@ def _changes_something(argv) -> bool:
 
 
 @pytest.fixture(autouse=True)
+def _no_real_psi_guard_unit(request, monkeypatch):
+    # `server start` and `server stop` start and stop the user unit ragon-psi-guard; only its own
+    # test (systemd mocked there) runs the real class.
+    if request.module.__name__.endswith("test_psi_guard_unit"):
+        return
+    from dreamference.vllm_server.psi_guard_unit import PsiGuardUnit
+
+    monkeypatch.setattr(PsiGuardUnit, "start", classmethod(lambda cls, container: False))
+    monkeypatch.setattr(PsiGuardUnit, "stop", classmethod(lambda cls: None))
+
+
+@pytest.fixture(autouse=True)
 def _no_leaked_watchdog():
     # A background `start_server` leaves its PSI watchdog running. One test did so against the
     # real /proc/pressure/memory, and the thread's `docker inspect` retries were counted by a

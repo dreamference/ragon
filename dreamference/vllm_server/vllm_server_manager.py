@@ -26,6 +26,7 @@ from dreamference.hardware.model_matrix_registry import (
     QWEN38_RAGON_SESSIONS,
     ModelMatrixRegistry,
 )
+from dreamference.vllm_server.psi_guard_unit import PsiGuardUnit
 from dreamference.vllm_server.psi_watchdog import MemoryPressureWatchdog
 from dreamference.vllm_server.ragon_serve_launch_builder import (
     RAGON_SERVE_PROGRAM,
@@ -214,6 +215,7 @@ class VLLMServerManager:
         # Armed at launch and left armed for the life of the container: a serving process that
         # stalls the whole host is as dangerous as one that stalls while loading.
         self.watchdog: MemoryPressureWatchdog | None = None
+        self.psi_guard_running = False
 
         from dreamference.vllm_server.diagnostics import ContainerDiagnostics
 
@@ -2315,6 +2317,7 @@ class VLLMServerManager:
         # which is the state that actually required the power button. This watches for it and
         # ends the container first.
         self.watchdog = None
+        self.psi_guard_running = False
         if cmd and cmd[0] == DOCKER_BINARY:
 
             def _report(reason: str, pressure: float, window_s: float) -> None:
@@ -2330,6 +2333,12 @@ class VLLMServerManager:
             if not self.watchdog.start():
                 self.watchdog = None
                 print("⚠️  Kernel does not expose /proc/pressure/memory; load is unguarded.")
+            elif PsiGuardUnit.start(container_name):
+                # The unit outlives this process and guards the resident server; the thread
+                # was only the guard until it was up.
+                self.watchdog.stop()
+                self.watchdog = None
+                self.psi_guard_running = True
 
         if background:
             if cmd and cmd[0] == DOCKER_BINARY:
@@ -2366,7 +2375,14 @@ class VLLMServerManager:
         finally:
             if self.watchdog is not None:
                 self.watchdog.stop()
+            self._stop_psi_guard()
         return None
+
+    def _stop_psi_guard(self) -> None:
+        """Stops the `ragon-psi-guard` unit, whichever process started it."""
+        # Unconditional: `server stop` runs in a new process, not the one that started the unit.
+        PsiGuardUnit.stop()
+        self.psi_guard_running = False
 
     def _abandon_launch(self, port: int) -> None:
         """Takes down what start_server set up around an engine that did not start.
@@ -2380,6 +2396,7 @@ class VLLMServerManager:
         if self.watchdog is not None:
             self.watchdog.stop()
             self.watchdog = None
+        self._stop_psi_guard()
         from dreamference.vllm_server.model_gate import ModelGate
 
         # No docker means no gate; the launch's own error is the one to report.
@@ -2397,6 +2414,7 @@ class VLLMServerManager:
         if self.watchdog is not None:
             self.watchdog.stop()
             self.watchdog = None
+        self._stop_psi_guard()
         subprocess.run(
             ["docker", "stop", container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
