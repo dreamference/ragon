@@ -1,0 +1,15 @@
+# The log level spec (specs/DREAMFERENCE_LOGGING.md §4.2-4.3): one parser for RAGON_LOG and log.env, the same
+# grammar and vectors as dreamference/config/log_level_spec.py. Std only, so its tests run alone.
+[package]
+name = "ragon-log"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "ragon_log"
+path = "src/lib.rs"
+
+# Its own workspace root: the launcher manifest above inherits from the Codex workspace, not here.
+[workspace]

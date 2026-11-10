@@ -1,0 +1,14 @@
+# Shared vectors for the log level spec (LOGGING §4.2). Read by tests/test_logging_writer.py and
+# by ragon-rs/log/tests/vectors.rs: both must parse every line the same way.
+# Format: spec | default (- when none) | overrides as component=level;... (- when none) | warnings
+debug | debug | - | 0
+info,engine=debug,gate=trace | info | engine=debug;gate=trace | 0
+engine=debug | - | engine=debug | 0
+loud | - | - | 1
+info,engine=loud,gate=trace | info | gate=trace | 1
+info,,gate=warn | info | gate=warn | 1
+=debug | - | - | 1
+DEBUG | - | - | 1
+off | off | - | 0
+ trace , forge=error | trace | forge=error | 0
+ | - | - | 0

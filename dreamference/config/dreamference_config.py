@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Final
 from dreamference.config.airgapped_resolver import AirgappedResolver
 from dreamference.config.config_file_storage_manager import ConfigFileStorageManager
 from dreamference.config.config_path_resolver import ConfigPathResolver
+from dreamference.config.log_level_spec import LogLevelSpec
 from dreamference.config.ports import DEFAULT_VLLM_HOST
 from dreamference.hardware import check_model_compatibility
 from dreamference.hardware.model_matrix_registry import (
@@ -22,6 +23,7 @@ from dreamference.hardware.model_matrix_registry import (
 
 # System defaults
 DEFAULT_MODEL: Final[str] = DEFAULT_MODEL_ALIAS
+DEFAULT_LOG_LEVEL: Final[str] = "info"
 DEFAULT_DIFFUSION_MODEL: Final[str] = DEFAULT_DIFFUSION_MODEL_ALIAS
 DEFAULT_SPECULATIVE_TOKENS: Final[int] = 8
 DEFAULT_AGENT_RUNNER: Final[str] = "codex"
@@ -155,6 +157,7 @@ class DreamferenceConfig:
         ragon_prompt: str | None = None,
         ragon_refine: bool | None = None,
         ragon_refine_version: str | None = None,
+        log_level: str | None = None,
     ):
         """Initializes DreamferenceConfig by loading file defaults and overriding with environment variables and parameters."""
         self.config_file_path: Path = ConfigPathResolver.resolve_path(config_file)
@@ -381,6 +384,18 @@ class DreamferenceConfig:
                     self._from_environment["ragon_airgapped"] = level
                 break
 
+        # The log level spec, through the same tiers (LOGGING §4.3): a blank value is unset, and
+        # LogLevelSpec ignores the spec's unknown parts when it is read, not here.
+        self.log_level: str = DEFAULT_LOG_LEVEL
+        for candidate in (
+            log_level,
+            os.getenv("RAGON_LOG"),
+            self.file_data.get("log_level"),
+        ):
+            if LogLevelSpec.is_set(candidate):
+                self.log_level = str(candidate).strip()
+                break
+
         # The prompt's name, through the same tiers. Only its form is checked here: which prompts
         # are installed is known to the launcher, which skips a name it does not have.
         self.ragon_prompt: str = DEFAULT_RAGON_PROMPT
@@ -562,6 +577,14 @@ class DreamferenceConfig:
             f"address. Set it in ~/.config/dreamference/config.toml or {VLLM_HOST_VARIABLE} instead.\n"
         )
 
+    def _log_level_entry(self) -> dict[str, Any]:
+        """Return the `log_level` entry for the config file, or nothing when it is the default.
+
+        Returns:
+            dict[str, Any]: `{"log_level": spec}` when the spec differs from DEFAULT_LOG_LEVEL.
+        """
+        return {"log_level": self.log_level} if self.log_level != DEFAULT_LOG_LEVEL else {}
+
     def save_config(self, target_path: Path | None = None) -> Path:
         """Saves current active configuration parameters to the TOML, YAML or JSON config file.
 
@@ -572,7 +595,7 @@ class DreamferenceConfig:
             Path: Written config file path.
         """
         out_path = target_path or self.config_file_path
-        data: dict[str, Any] = {}
+        data: dict[str, Any] = self._log_level_entry()
         # Originally these two were written whatever their value, the only fields that broke
         # the rule the rest of this method follows: a default written to the file stops following
         # the default, so a later change of DEFAULT_VLLM_HOST would have skipped every saved config.
