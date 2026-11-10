@@ -2,7 +2,7 @@
 
 **Draft for review, 2026-11-06.** Nothing is built. The owner answered WN1 to WN8 on 2026-11-06; the answers are folded into §2 and the rest of the text may still show the earlier recommendations until the review.
 **Target:** AMD Strix Halo (Ryzen AI Max+ 395, Radeon 8060S `gfx1151`, 128 GB LPDDR5X-8000, Windows 11 Pro) first; NVIDIA Windows PCs second.
-**Builds on:** the AMD study (`DREAMFERENCE_RAGON_ENGINE_AMD.md`, on branch `specs/amd-port` of the engine's old local clone, not yet in the ragon-engine repository; backlog `win-engine-carry-study` carries it); [RAGON_AMD_NODES](./DREAMFERENCE_RAGON_AMD_NODES.md); [RAGON_WINDOWS_ARM](./DREAMFERENCE_RAGON_WINDOWS_ARM.md) §8–§10, §13, §14, §16, §23; [RAGON_NODE](./DREAMFERENCE_RAGON_NODE.md); [RAGON_FORGEJO](./DREAMFERENCE_RAGON_FORGEJO.md); the ragon-engine repository's `DREAMFERENCE_RAGON_ENGINE_METAL.md` and `DREAMFERENCE_RAGON_ENGINE_LOWBIT.md`; the survey [windows-node-2026-10-14](./research/windows-node-2026-10-14.md).
+**Builds on:** the AMD study (`DREAMFERENCE_RAGON_ENGINE_AMD.md`, on branch `specs/amd-port` of the engine's old local clone, not yet in the ragon-engine repository; backlog `win-engine-carry-study` carries it); [RAGON_AMD_NODES](./DREAMFERENCE_RAGON_AMD_NODES.md); [RAGON_WINDOWS_ARM](./DREAMFERENCE_RAGON_WINDOWS_ARM.md) §8–§10, §13, §14, §16, §23; [RAGON_NODE](./DREAMFERENCE_RAGON_NODE.md); [RAGON_FORGEJO](./DREAMFERENCE_RAGON_FORGEJO.md); the ragon-engine repository's `DREAMFERENCE_RAGON_ENGINE_METAL.md` and `DREAMFERENCE_RAGON_ENGINE_LOWBIT.md`; the survey [windows-node](./research/windows-node.md).
 
 Every figure below carries a tag: **[M]** measured on the AMD box, **[E]** an estimate, **[?]** unknown. Week counts are engineer-weeks and are estimates.
 
@@ -14,10 +14,10 @@ Every figure below carries a tag: **[M]** measured on the AMD box, **[E]** an es
 
 **Five things this draft found that change the plan.**
 
-1. **The engine's feasibility is already half answered.** The AMD study passed its first milestone on 2026-10-27: the served NVFP4 checkpoint streams close to the box's read bandwidth at 16 rows **[M]**. The spike is therefore smaller than it looked, and starts from the unmeasured parts (§5.3).
+1. **The engine's feasibility is already half answered.** The AMD study passed its first milestone: the served NVFP4 checkpoint streams close to the box's read bandwidth at 16 rows **[M]**. The spike is therefore smaller than it looked, and starts from the unmeasured parts (§5.3).
 2. **The premise on format is half right.** Strix Halo has no FP4 matrix unit, so the block-scaled prefill path cannot be reused. But the GB10's *decode* path never used FP4 tensor cores: `stream_gemm` decodes NVFP4 and FP8 to FP16 in registers and runs FP16 `mma.sync`. The same trick works on WMMA. The result: **"the fastest quantisation" reduces to "the fewest bytes that pass the quality ladder"**, which is the GB10's own question, and the port need not fork the served model. The only format choice specific to AMD is prefill's (§5.2).
 3. **Docker Desktop fits a node badly.** It needs WSL2 or Hyper-V (WSL, Virtual Machine Platform and Hyper-V are all off on the box **[M]**), needs a paid subscription above 250 employees or $10M revenue, and by public reports does not run without a logged-in user. A node runs unattended; the box has no console session **[M]**. It stays first in the measuring order, as the brief asks, but is not this draft's recommendation for the product (§4.3, WN2).
-4. **Native equivalents are thinner than hoped.** Forgejo's release page lists Linux assets only (amd64, arm-6, arm64, for 16.0.7 and 17.0.1). SearXNG's documentation lists no Windows install. So the recommendation is a small Ragon-owned Linux distribution in WSL2 for sidecars and forge, with the engine native. This touches the owner's "no WSL" of 2026-10-07 and needs a decision (WN2).
+4. **Native equivalents are thinner than hoped.** Forgejo's release page lists Linux assets only (amd64, arm-6, arm64, for 16.0.7 and 17.0.1). SearXNG's documentation lists no Windows install. So the recommendation is a small Ragon-owned Linux distribution in WSL2 for sidecars and forge, with the engine native. This touches the owner's "no WSL" decision and needs a decision (WN2).
 5. **The largest open question is not Docker but Python.** `ragon-admin` does not exist on Windows. The node half, Night Shift and the sidecar and forge management are Python (the node package alone is 9,128 lines). "No Python" was decided for the client. A node needs its own answer (WN1).
 
 **The first measurable milestone** is the end of the spike (§5.4): every GEMM shape of the served 27B at 1 and 16 rows on the current driver, at least 200 GB/s and M16/M1 at most 1.15, one hipified engine kernel bit-identical across two runs, and a table per format and prefill candidate, all recorded. That closes in a decision point: port viable or not, and which format.
@@ -40,8 +40,8 @@ Every figure below carries a tag: **[M]** measured on the AMD box, **[E]** an es
 
 ### 1.2 Non-goals (owner to confirm the list, WN6)
 
-- A Linux node on AMD. "Later, if ever" (2026-10-27) stands, and no dual boot.
-- An interim llama.cpp engine (2026-10-26). llama.cpp remains a measuring baseline only.
+- A Linux node on AMD. "Later, if ever" stands, and no dual boot.
+- An interim llama.cpp engine. llama.cpp remains a measuring baseline only.
 - The SWE-bench harness on Windows. It stays on a GB10 and the Windows node only serves (G20). The model gate exists for SWE-bench nights on a node, so it is not ported either.
 - Hosting on the Windows node, at least for the first gate: the remote-access control plane (NetBird), the messenger bridges, the Google service, the fleet hub, serving LoRA adapters (SGLang only today), and `node provision`'s Linux root helper.
 - Vulkan or any second GPU backend.
@@ -54,7 +54,7 @@ Every figure below carries a tag: **[M]** measured on the AMD box, **[E]** an es
 | # | Question | Options | Recommendation | Owner answer |
 |---|---|---|---|---|
 | **WN1** | What language is the node half on Windows? | (a) Ship an embedded Python and add Windows branches to the Linux-bound node, forge and Night Shift code. (b) Rust subcommands of the launcher (`ragon node`, `ragon server`, `ragon night run`), reading a JSON export of the model registry, as AMD_NODES §6.3 sketched. (c) All of it in a Linux VM, which is the excluded W2 route. | **(b) for what must be native**: lifecycle, advertisement, pairing, jobs, Night Shift, host safety, with about 4,200 lines of Python as the model and `node.rs`, `node_command.rs` and `night.rs` (3,219 lines of Rust) as the base. Anything in the Linux distribution of WN2 keeps today's Python unchanged.  | **Owner, 2026-11-06:** Decided: (b). Rust launcher subcommands. |
-| **WN2** | How do sidecars and the forge run? | (a) Docker Desktop, the brief's first choice. (b) Docker Engine inside a Ragon-owned WSL2 distribution, `ragon-admin` unchanged inside it, engine native. No licence question. (c) Native per sidecar. | **Measure (a) first, ship (b), keep (c) as per-sidecar fallbacks.** This overrides the "no WSL" of 2026-10-07, whose reasons were speed through paravirtualised GPU and two memory layers for the *engine*. Under (b) the engine never enters WSL. **Needs the owner's explicit yes.**  | **Owner, 2026-11-06:** Decided: (c). Native per sidecar; no WSL, no Docker Desktop. |
+| **WN2** | How do sidecars and the forge run? | (a) Docker Desktop, the brief's first choice. (b) Docker Engine inside a Ragon-owned WSL2 distribution, `ragon-admin` unchanged inside it, engine native. No licence question. (c) Native per sidecar. | **Measure (a) first, ship (b), keep (c) as per-sidecar fallbacks.** This overrides the "no WSL" decision, whose reasons were speed through paravirtualised GPU and two memory layers for the *engine*. Under (b) the engine never enters WSL. **Needs the owner's explicit yes.**  | **Owner, 2026-11-06:** Decided: (c). Native per sidecar; no WSL, no Docker Desktop. |
 | **WN3** | May the shared box have WSL or Docker Desktop enabled before the second box arrives? | Enabling either needs a reboot and changes the machine the release runner uses. | Wait for the second box if it arrives within about three weeks; otherwise once, straight after a release cut, with a written rollback.  | **Owner, 2026-11-06:** Decided: no reboot is needed; TheRock is already on the box. |
 | **WN4** | Format for AMD | The same NVFP4 checkpoint decoded in shader; or other formats by the micro-benchmark | **Same checkpoint for decode**; prefill format at the spike's decision point (§5.2). Move to the all-NVFP4 projections when the GB10 does, or earlier on AMD alone only if LOWBIT §7's ladder passes.  | **Owner, 2026-11-06:** Decided: the same NVFP4 checkpoint for decode. |
 | **WN5** | Carve-out on a node: 96 GB (D3) or 64 GB? | 96 leaves Windows 31.6 GB; 64 leaves about 64 GB. | **Measure, expect 64 for the 27B.** The engine's budget is about 57 GB **[E]**. 96 exists for Flash-Next. Windows, the distribution and any CI build then share 64 GB and not 32.  | **Owner, 2026-11-06:** Decided: measure; expect 64 GB. |
@@ -69,15 +69,15 @@ Two further owner answers (2026-11-06): the install takes **one UAC elevation**,
 
 ## 3. What this replaces
 
-| Earlier decision | Date | Now |
-|---|---|---|
-| The AMD port waits for 2.0 | 2026-10-27 | **Superseded**: 1.0 waits for it. [DREAMFERENCE_2_0](./DREAMFERENCE_2_0.md) §3 moves out, with what it says on dependencies. |
-| A Windows node is inference only, "sidecars: none" (AMD_NODES §6.3) | 2026-10-21 | **Superseded**: the full node. |
-| No Python on Windows | 2026-10-07 | Stands for the client. Open for the node (WN1). |
-| No WSL2 | 2026-10-07 | Stands for the engine. Open for sidecars and forge (WN2). |
-| Windows only, no Linux phase; no interim llama.cpp | 2026-10-26/27 | Stand. |
-| Carve-out 96 GB (D3); Smart App Control off on the box (D2) | 2026-10-21/26 | Stand on the box until WN5 and WN8 are decided. |
-| Windows client bugs W1–W10 as a dependency (2_0 §3) | 2026-10-26 | Nearly gone: W2 fixed by patch 0033, W4–W10 in 1.7.2. Left: W1 (hooks on Windows), W11 (several users' sandbox setup). W11 matters here: a forced-command user and the owner are two users (§4.2). |
+| Earlier decision | Now |
+|---|---|
+| The AMD port waits for 2.0 | **Superseded**: 1.0 waits for it. [DREAMFERENCE_2_0](./DREAMFERENCE_2_0.md) §3 moves out, with what it says on dependencies. |
+| A Windows node is inference only, "sidecars: none" (AMD_NODES §6.3) | **Superseded**: the full node. |
+| No Python on Windows | Stands for the client. Open for the node (WN1). |
+| No WSL2 | Stands for the engine. Open for sidecars and forge (WN2). |
+| Windows only, no Linux phase; no interim llama.cpp | Stand. |
+| Carve-out 96 GB (D3); Smart App Control off on the box (D2) | Stand on the box until WN5 and WN8 are decided. |
+| Windows client bugs W1–W10 as a dependency (2_0 §3) | Nearly gone: W2 fixed by patch 0033, W4–W10 in 1.7.2. Left: W1 (hooks on Windows), W11 (several users' sandbox setup). W11 matters here: a forced-command user and the owner are two users (§4.2). |
 
 ---
 
@@ -123,7 +123,7 @@ The containers are Linux images. On Windows that means a Linux kernel, whichever
 | Route | What it costs | What it gives | Evidence |
 |---|---|---|---|---|
 | (a) Docker Desktop | WSL2 or Hyper-V on; subscription above 250 employees or $10M (each customer's own concern, and we cannot silently install it); **public reports that it does not start without a signed-in user** | Same images; little to write | Docker's install page; Docker forum threads. Not yet measured by us |
-| (b) Docker Engine in a Ragon WSL2 distribution | WSL2 on, one reboot; a distribution of 3–5 GB plus images of about 15 GB (RAGON_WINDOWS_ARM §8.3); a memory cap in `.wslconfig`; `networkingMode = mirrored` | Same images, **and `ragon-admin images`, `voice`, `forge` and their systemd timers run unchanged inside**; no licence; no second implementation of the forge's 17 Python files | Designed as W2 in 2026-10; not measured. Boot with no logon **[?]** |
+| (b) Docker Engine in a Ragon WSL2 distribution | WSL2 on, one reboot; a distribution of 3–5 GB plus images of about 15 GB (RAGON_WINDOWS_ARM §8.3); a memory cap in `.wslconfig`; `networkingMode = mirrored` | Same images, **and `ragon-admin images`, `voice`, `forge` and their systemd timers run unchanged inside**; no licence; no second implementation of the forge's 17 Python files | Designed as W2; not measured. Boot with no logon **[?]** |
 | (c) Native | See below; several unsupported builds to maintain | No VM, no second memory layer | See below |
 
 Native, per part:
@@ -254,7 +254,7 @@ Host safety follows RAGON_WINDOWS_ARM §9.2–§9.4, unchanged except that the e
 
 ## 7. Security assumptions
 
-- **The LAN is trusted**, the decision of 2026-09-30 for GB10 nodes. The model server listens on the LAN as there. Firewall rules are per program, Private and Domain; on a Public network the node advertises nothing and says why.
+- **The LAN is trusted**, the earlier decision for GB10 nodes. The model server listens on the LAN as there. Firewall rules are per program, Private and Domain; on a Public network the node advertises nothing and says why.
 - **The forced-command account is not an administrator.** The account used on the AMD box today for agents is the local administrator; that is a test convenience and never the node's design. Win32-OpenSSH reads administrators' keys from a different file and its `DefaultShell` handling of `command=` must be verified (backlog `win-node-forced-command`), since it is the node's one remote entry.
 - **Jobs are contained** by a Job Object (memory cap, time limit, kill on close) and the Windows sandbox accounts (`CodexSandboxOffline/Online`, ACLs, WFP). A cap on committed memory does not limit GPU memory, hence the DXGI check.
 - **New at `/airgapped on`, in the distribution route:** sandboxed commands must reach neither `wsl.exe` nor `\\wsl$` nor Docker's pipe. Each is a way out of the empty network, the Windows twin of patch 0019's `host_sockets_at`. This must be tested by the egress audit and by a sandbox test; it is a condition on WN2 (b).
@@ -357,7 +357,7 @@ Calendar shapes, not dates:
 
 The engine stays CUDA, so most of §5 does not apply and §5.1's host seams, §6 and §7 carry over. What decides it:
 
-1. **Which machines.** The research note (2026-10-14) ordered a Windows on Arm RTX Spark laptop, 128 GB: unified, 45–80 W, CUDA 13.4 for `aarch64-pc-windows-msvc`. A discrete x64 RTX PC has too little VRAM for the 57 GB budget, even when the weights fit, unless sessions shrink. The owner says which class counts (WN6).
+1. **Which machines.** The research note ordered a Windows on Arm RTX Spark laptop, 128 GB: unified, 45–80 W, CUDA 13.4 for `aarch64-pc-windows-msvc`. A discrete x64 RTX PC has too little VRAM for the 57 GB budget, even when the weights fit, unless sessions shrink. The owner says which class counts (WN6).
 2. **The toolchain question, without a GPU** (research note §8, stage 0.1): does ptxas under MSVC accept the block-scaled MMAs for the target architecture? If not, the engine has no Windows build for that class.
 3. **Memory**: `cudaMalloc` dedicated then spilling; no `cudaMallocManaged` (research note §3, §9).
 4. **Gate**: §9 unchanged except G4–G6's thresholds, set from that machine's first measurements (research note §9).
@@ -368,6 +368,6 @@ Started only after AMD's W1 gate, except the toolchain probe, which needs no GPU
 
 ## 13. Sources
 
-Local: the AMD study and `bench/amd/`; AMD_NODES §6, §12, §13; RAGON_WINDOWS_ARM §8–§10, §13, §14, §16, §17, §23; LOWBIT §0, §7, §8; METAL §4, §7; the reports on the AMD box of 2026-10-26 to 11-05.
+Local: the AMD study and `bench/amd/`; AMD_NODES §6, §12, §13; RAGON_WINDOWS_ARM §8–§10, §13, §14, §16, §17, §23; LOWBIT §0, §7, §8; METAL §4, §7; the reports on the AMD box.
 
 Public, read 2026-11-06: ROCm/TheRock issue 9564 (Windows `gfx1151`: code compiled with 10.1.0 runs about 50× slower than with 10.0.0 and triggers repeated TDR); TheRock `windows_support.md` ("relatively new and not yet mature"); rocm.docs.amd.com component support; Docker Desktop's Windows install page (subscription terms, WSL2 or Hyper-V); Docker forum threads on starting without login (reports, not tested); codeberg.org/forgejo/forgejo releases (assets for 16.0.7 and 17.0.1: Linux amd64, arm-6, arm64 only); docs.searxng.org (install methods); Microsoft's `DnsServiceRegister` page. Study §7 for gufo, halogen and WMMA.
