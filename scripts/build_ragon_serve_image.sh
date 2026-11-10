@@ -45,6 +45,24 @@
 # (/opt/ragon-deps made by root and given to the build user; ccache off so that no object compiled
 # under another path comes back from its cache.)
 #
+# Structured output: the engine is built with -DRAGON_GRAMMAR=ON (its grammar library; structured
+# output is then on by default in ragon-serve, RAGON_STRUCTURED=0 turns it off) against the XGrammar
+# prebuilt at DEPS/xgrammar (static, linked into the binary, so the image needs no library for it).
+# The lanes' prebuilt (~/ragon-deps/xgrammar, ragon-engine scripts/build_xgrammar.sh) was compiled
+# under a home directory and carries that path in its assertion strings, so it is not used: the same
+# pinned source (v0.2.8, 97787376, dlpack its only submodule) is copied to DEPS/src/xgrammar and built
+# once per machine, offline, with ragon-engine's scripts/build_xgrammar.sh recipe (its config.cmake)
+# and the paths mapped away:
+#
+#   M="-ffile-prefix-map=/opt/ragon-deps=/build -fdebug-prefix-map=/opt/ragon-deps=/build"
+#   cmake -S /opt/ragon-deps/src/xgrammar -B /opt/ragon-deps/src/xgrammar/build-ragon -DCMAKE_BUILD_TYPE=Release \
+#     -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+#     -DCMAKE_C_FLAGS="-fno-lto $M" -DCMAKE_CXX_FLAGS="-fno-lto $M" -DCMAKE_INSTALL_PREFIX=/opt/ragon-deps/xgrammar
+#   cmake --build ... -j 8 && cmake --install ...
+#
+# (build_xgrammar.sh itself fetches and sets CMAKE_CXX_FLAGS, which drops CXXFLAGS' maps). The
+# script refuses an archive that names /home/ before it configures.
+#
 # Vision: a ragon-serve built with vision
 # starts with `--vision on` by default and then needs libpng16-16t64, libwebp7 and libjpeg-turbo8
 # in the image (libnvjpeg optional), or it does not start. Add them to docker/ragon-serve/Dockerfile's
@@ -136,15 +154,24 @@ if [ -z "$BINARY" ]; then
     [ "$(cat "$WORK/src/.engine-commit")" = "$COMMIT" ] || { log "$WORK/src is not $COMMIT"; exit 1; }
     export PATH=/usr/local/cuda/bin:$PATH
     MAPS="-ffile-prefix-map=$WORK/src=/build -fdebug-prefix-map=$WORK/src=/build -ffile-prefix-map=$DEPS=/deps -fdebug-prefix-map=$DEPS=/deps"
+    XGRAMMAR=$DEPS/xgrammar
+    [ -f "$XGRAMMAR/lib/libxgrammar.a" ] || { log "no XGrammar at $XGRAMMAR (see above)"; exit 1; }
+    if strings -a "$XGRAMMAR/lib/libxgrammar.a" | grep -q -e /home/ -e "$HOME"; then
+        log "$XGRAMMAR/lib/libxgrammar.a names a home directory: rebuild it with the paths mapped (see above)"; exit 1
+    fi
     log "configure $COMMIT"
     cmake -S "$WORK/src" -B "$WORK/src/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DRAGON_PROXYGEN_PREFIX="$DEPS/proxygen" \
+        -DRAGON_GRAMMAR=ON -DRAGON_XGRAMMAR_PREFIX="$XGRAMMAR" \
         -DRAGON_FBCODE_CMAKE="$DEPS/src/proxygen/build/fbcode_builder/CMake" \
         -DCMAKE_CXX_FLAGS="$MAPS" -DCMAKE_CUDA_FLAGS="-Xcompiler=${MAPS// /,}"
     log "build"
     nice -n 19 ninja -C "$WORK/src/build" -j 4 ragon-serve
     BINARY=$WORK/src/build/ragon-serve
 fi
+# A build without the grammar library serves no structured output: refuse it (its startup line is
+# compiled in only with RAGON_GRAMMAR).
+grep -q -a -F "structured output on:" "$BINARY" || { log "$BINARY was built without -DRAGON_GRAMMAR=ON"; exit 1; }
 GLOG=$(ldd "$BINARY" | awk '/libglog/ {print $3}')
 [ -n "$GLOG" ] && [ -f "$GLOG" ] || { log "libglog.so.1 not found by ldd (is $DEPS built?)"; exit 1; }
 cp "$BINARY" "$WORK/context/ragon-serve"

@@ -401,11 +401,13 @@ ENGINE_RAGON: Final[str] = "ragon"
 #
 # The commit the image's ragon-serve was built from (the full hash, never abbreviated), recorded in
 # the image's labels (`org.opencontainers.image.revision`, `ai.dreamference.ragon-engine.commit`).
-# Fair pairing (`--fair-pairing 1|0`, default 0) and the page pool (`--kv-pages`) are both in it and both
-# stay off: the recipe passes neither. The image's binary was built from that commit under neutral paths
-# (scripts/build_ragon_serve_image.sh). scripts/pin_ragon_serve_image.py rewrites this, the features and
+# Fair pairing (`--fair-pairing 1|0`, default 0) and the page pool are both in it and both stay off: the
+# pool is the engine's default since P4e, so the launch says `--no-kv-pages` (an alias of `--kv-flat`) and
+# `--fair-pairing 0`. The image's binary was built from that commit under neutral paths with the grammar
+# library (-DRAGON_GRAMMAR=ON, scripts/build_ragon_serve_image.sh), so structured output (response_format,
+# tool_choice, parallel_tool_calls) is enforced by default; RAGON_STRUCTURED=0 in the container turns it off. scripts/pin_ragon_serve_image.py rewrites this, the features and
 # the image digest together.
-QWEN38_RAGON_ENGINE_COMMIT: Final[str] = "9ae475006d1c1747cb10b6af7dcc47110b6cf022"
+QWEN38_RAGON_ENGINE_COMMIT: Final[str] = "2f8062b32c188be557a638fbb60c5d58f69d6fbf"
 
 # What the engine at that commit has that an asset or a launch may depend on, so the runtime asks
 # a list rather than git: "sparse-head" (the drafter's sparse head, read from a file beside the
@@ -432,15 +434,15 @@ ENGINE_FEATURE_ADAPTERS: Final[str] = "lora-adapters"
 # `--sessions` and `--batch` are parsed by every ragon-serve, but without the
 # feature they stay the engine's own (auto-sized from MemAvailable, at most four).
 QWEN38_RAGON_SESSIONS: Final[int] = 4
-# Whether the recipe turns the page pool on. Off (see the recipe); the pinned engine
-# (P4d merged) is flat by default and takes `--kv-pages` only when asked.
+# Whether the recipe turns the page pool on. Off (see the recipe); the pinned engine pages by
+# default (P4e), so the launch passes `--no-kv-pages` ("paging-switch") to keep it flat.
 QWEN38_RAGON_KV_PAGES: Final[bool] = False
 QWEN38_RAGON_BATCH: Final[int] = 4
 # Each flat session's context when the pool is off (the coordinator's decision:
 # serve four flat sessions, paging off): the 786,432 positions of three flat sessions at 262,144,
-# shared by four (a multiple of 2,048). Its plan, 4 x 13.4 GB beside 27.8 GB of weights and scratch,
-# is 81.2 GB, below the 82.4 GB of the three at 262,144 the engine chose by itself (`--plan-only`
-# in the pinned image). Given both `--sessions` and `--max-context`, the engine sizes
+# shared by four (a multiple of 2,048). Its plan, 4 x 13.4 GB beside 32.4 GB of weights (23.5) and
+# scratch (8.9), is 85.9 GB (`--plan-only` with the launch's own arguments in the pinned image; 81.2 GB
+# at the previous pin 9ae47500). Given both `--sessions` and `--max-context`, the engine sizes
 # nothing: a host that cannot hold the plan refuses the start (exit 3) rather than serve fewer.
 QWEN38_RAGON_FLAT_CONTEXT: Final[int] = 196608
 
@@ -452,7 +454,7 @@ QWEN38_DEFAULT_ENGINE: Final[str] = ENGINE_RAGON
 # ragon-serve's image (docker/ragon-serve/Dockerfile, built by scripts/build_ragon_serve_image.sh on an
 # aarch64 machine from QWEN38_RAGON_ENGINE_COMMIT), pinned by the digest GHCR gave the push (linux/arm64).
 QWEN38_RAGON_IMAGE: Final[str] = (
-    "ghcr.io/dreamference/ragon-serve@sha256:f16977ed68695f763431869fcc15ba5ea4d06747981091f58493d22330c7e46a"
+    "ghcr.io/dreamference/ragon-serve@sha256:ee7543afdfaa5424fe9a4697fa2f889fccb9544c04a94649fd1738e3e1b8aad5"
 )
 
 # The DFlash2 drafters ragon-serve can run, pinned. Speculation is exact, so the drafter moves
