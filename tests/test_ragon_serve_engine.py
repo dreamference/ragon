@@ -606,7 +606,9 @@ def test_the_image_records_the_engine_commit_in_its_labels():
 
 def test_the_image_recipe_builds_the_grammar_library_from_a_neutral_xgrammar():
     """Structured output needs RAGON_GRAMMAR; the CMake default is OFF and its XGrammar under $HOME."""
-    script = (DOCKERFILE.parent.parent.parent / "scripts" / "build_ragon_serve_image.sh").read_text()
+    script = (
+        DOCKERFILE.parent.parent.parent / "scripts" / "build_ragon_serve_image.sh"
+    ).read_text()
     configure = re.search(r'^\s+cmake -S "\$WORK/src".*?(?<!\\)\n', script, re.M | re.S)
     assert configure, "the engine's configure line is gone"
     assert "-DRAGON_GRAMMAR=ON" in configure.group(0)
