@@ -44,6 +44,7 @@
 /dreamference/runner/                           @dreamference/agent
 /dreamference/cli/                              @dreamference/agent
 /dreamference/config/                           @dreamference/agent
+/dreamference/config/log_level_spec.py            @dreamference/agent
 /dreamference/__init__.py                       @dreamference/agent
 /dreamference.toml                              @dreamference/agent
 
@@ -170,6 +171,7 @@
 # Security & Egress: last, so its paths are never shadowed by the area that holds them.
 /SECURITY.md                                    @dreamference/security
 /dreamference/audit/                            @dreamference/security
+/ragon-rs/log/                                    @dreamference/agent
 /ragon-rs/airgapped/                             @dreamference/security
 /ragon-web-rs/src/airgapped.rs                   @dreamference/security
 /ragon-rs/src/airgapped.rs                       @dreamference/security
