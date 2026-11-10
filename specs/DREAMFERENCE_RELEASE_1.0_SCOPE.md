@@ -55,13 +55,13 @@ A separate programme owns this track and its backlog (labels `win-<area>-<topic>
 4. Windows CI runs on the self-hosted runner for every change that touches the node.
 5. The second Strix Halo being bought passes the same gate, so the claim rests on more than one box.
 
-**What the programme found.** Its spec recommends AMD's gate as required and NVIDIA on Windows in a 1.x (its WN6); this draft assumes that. For the first gate a Windows node hosts no LoRA adapters, messenger bridges, NetBird control plane, Google service or fleet hub, and SWE-bench does not run on it (its §1.2, for the owner to confirm), so the announcement must say what a Windows node does and does not do. Its largest open questions are the language of the node half (WN1) and how sidecars and the forge run (WN2). On WN2 it recommends a Ragon-owned WSL2 distribution with the engine native, which overrides the "no WSL" decision of 2026-10-07 and needs the owner's explicit yes.
+**What the programme found.** Its spec recommends AMD's gate as required and NVIDIA on Windows in a 1.x (its WN6); this draft assumes that. For the first gate a Windows node hosts no LoRA adapters, messenger bridges, NetBird control plane, Google service or fleet hub, and SWE-bench does not run on it (its §1.2, for the owner to confirm), so the announcement must say what a Windows node does and does not do. Its largest open questions are the language of the node half (WN1) and how sidecars and the forge run (WN2). On WN2 it recommends a Ragon-owned WSL2 distribution with the engine native, which overrides the "no WSL" decision and needs the owner's explicit yes.
 
 **The size does not fit January.** The programme estimates about 27-37 engineer-weeks, or 18-27 calendar weeks with Windows first and a second person on the node track (its §10). Counted from today, that is 2027-03-12 to 2027-05-14. These are estimates, and how far jobs compress engineer-weeks is not measured; the spike (1-2 weeks) is the first evidence. Metal wants the same kernel work from 2026-11-18 (its WN7). D8 takes this up.
 
 ## 5. Adapters on `ragon-serve` (gate)
 
-Today a node with an installed adapter is started on SGLang (`_engine_for_adapters`, `dreamference/cli/dreamference_cli_controller.py`:524; `docs/dev/adapters.md`:42-44). The measurement of 2026-10-30 was 0.944x decode against the 0.95x bar, +43% prefill, correctness passed.
+Today a node with an installed adapter is started on SGLang (`_engine_for_adapters`, `dreamference/cli/dreamference_cli_controller.py`:524; `docs/dev/adapters.md`:42-44). The measurement was 0.944x decode against the 0.95x bar, +43% prefill, correctness passed.
 
 **Done means:**
 
@@ -108,7 +108,7 @@ The owner registers the application and a test server from a script in `/tmp`, w
 
 ## 8. Web search
 
-The owner's definition has two halves. `ragon-search` today is SearXNG only and says so plainly when it fails (`ragon-web-rs/src/search.rs`). On 2026-10-20 all four default general engines refused the node at once.
+The owner's definition has two halves. `ragon-search` today is SearXNG only and says so plainly when it fails (`ragon-web-rs/src/search.rs`). Once, all four default general engines refused the node at once.
 
 ### 8.1 The owner's URL router as a backend
 
@@ -157,7 +157,7 @@ The old spec recorded ideas, not a design. Nothing in the product uses fan-out: 
 ### 10.1 What the data say
 
 - **Scan, 111 cases (2026-11-03):** recall by line 10.8% against the baseline's 15.3%, by judge 9.0 against 5.4, by both 3.6 against 3.6. 46.7 s per file against 3.0 s, at 229 probes. Findings on the fixed files 151 against 558. Round 1 alone reaches 29.7% line recall at 4.3 candidates per file; the confirm round throws most hits away because the framings disagree on half. The 60-case precision sample is still ungraded.
-- **Choosing among attempts:** night 13's chooser v1 chose 62% against the oracle's 72%. The local confidence signals did not beat v1, because rollouts carry no generation logprobs. A hosted judge reached the oracle at 7-9 cents per task, which is not the local product.
+- **Choosing among attempts:** an earlier night's chooser v1 chose 62% against the oracle's 72%. The local confidence signals did not beat v1, because rollouts carry no generation logprobs. A hosted judge reached the oracle at 7-9 cents per task, which is not the local product.
 
 So the promising shape is round 1 alone, and the slow part may be fixable in the engine. Neither is proven.
 
