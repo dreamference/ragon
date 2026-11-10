@@ -604,6 +604,20 @@ def test_the_image_records_the_engine_commit_in_its_labels():
     assert re.search(r"^ARG CUDA_BASE=nvidia/cuda@sha256:[0-9a-f]{64}$", text, re.M)
 
 
+def test_the_image_recipe_builds_the_grammar_library_from_a_neutral_xgrammar():
+    """Structured output needs RAGON_GRAMMAR; the CMake default is OFF and its XGrammar under $HOME."""
+    script = (DOCKERFILE.parent.parent.parent / "scripts" / "build_ragon_serve_image.sh").read_text()
+    configure = re.search(r'^\s+cmake -S "\$WORK/src".*?(?<!\\)\n', script, re.M | re.S)
+    assert configure, "the engine's configure line is gone"
+    assert "-DRAGON_GRAMMAR=ON" in configure.group(0)
+    assert '-DRAGON_XGRAMMAR_PREFIX="$XGRAMMAR"' in configure.group(0)
+    # The prebuilt sits under DEPS (a neutral path, refused under /home/), never the CMake default.
+    assert re.search(r"^\s+XGRAMMAR=\$DEPS/xgrammar$", script, re.M)
+    assert 'grep -q -e /home/ -e "$HOME"' in script
+    # A given BINARY must be a grammar build too: its startup line is compiled in only with it.
+    assert 'grep -q -a -F "structured output on:" "$BINARY"' in script
+
+
 def test_the_drafter_is_one_pinned_constant_away_from_the_scalesearch_one():
     from dreamference.hardware.model_matrix_registry import (
         QWEN38_RAGON_DRAFTER,
