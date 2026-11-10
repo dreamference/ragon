@@ -8,7 +8,7 @@ Range: `git log v0.9.3..origin/main`. The text was finalised on 2026-11-10 again
 
 ## Ragon 0.9.4 "Fafnir"
 
-**Ragon 0.9.4 completes 0.9.2 and 0.9.3 and brings a new engine: it carries every 0.9.2 change and every 0.9.3 change, including the x86_64 Linux client and the macOS disk images that 0.9.2 was published without, and its ragon-serve engine can now constrain output exactly.** The 0.9.2 release page listed fewer downloads than a full release; 0.9.3 added the missing assets, and 0.9.4 keeps them. If you are on 0.9.2 you need nothing but the client download. The product and its install steps are otherwise those of 0.9.0.
+**Ragon 0.9.4 brings a new engine: constrained output that is exact (a JSON schema, a required tool choice, custom grammars), faster decoding when several agents share a node, and a per-conversation decode floor.** It also carries every 0.9.2 and 0.9.3 change, including the x86_64 Linux client and the macOS disk images; if you are on 0.9.2 or 0.9.3 you need nothing but the client download. The product and its install steps are otherwise those of 0.9.0.
 
 ### What 0.9.4 adds
 
