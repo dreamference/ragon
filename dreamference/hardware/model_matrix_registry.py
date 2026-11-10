@@ -405,8 +405,8 @@ ENGINE_RAGON: Final[str] = "ragon"
 # pool is the engine's default since P4e, so the launch says `--no-kv-pages` (an alias of `--kv-flat`) and
 # `--fair-pairing 0`. The image's binary was built from that commit under neutral paths with the grammar
 # library (-DRAGON_GRAMMAR=ON, scripts/build_ragon_serve_image.sh), so structured output (response_format,
-# tool_choice, parallel_tool_calls) is enforced by default; RAGON_STRUCTURED=0 in the container turns it off. scripts/pin_ragon_serve_image.py rewrites this, the features and
-# the image digest together.
+# tool_choice, parallel_tool_calls) is enforced by default; RAGON_STRUCTURED=0 in the container turns
+# it off. scripts/pin_ragon_serve_image.py rewrites this, the features and the image digest together.
 QWEN38_RAGON_ENGINE_COMMIT: Final[str] = "2f8062b32c188be557a638fbb60c5d58f69d6fbf"
 
 # What the engine at that commit has that an asset or a launch may depend on, so the runtime asks
