@@ -601,6 +601,100 @@ def test_the_rewrite_is_deterministic_and_chained_branches_share_commits(
     assert git(repo, "rev-parse", f"{pushed[2]}~1") == pushed[0]
 
 
+def merged_series(repo: Path) -> tuple[str, str, str, str]:
+    """Return (base, side, merge, head): a side branch merged into main, then one more commit."""
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "-b", "side")
+    (repo / "b.txt").write_text("side\n")
+    env = {**os.environ, "GIT_AUTHOR_DATE": "2020-01-02T03:04:05+00:00"}
+    env["GIT_COMMITTER_DATE"] = env["GIT_AUTHOR_DATE"]
+    git(repo, "add", "b.txt")
+    subprocess.run(["git", "commit", "-q", "-m", "Side"], cwd=repo, check=True, env=env)
+    side = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "main")
+    person_commit(repo, "two\n", "Main", "2020-01-03T03:04:05+00:00")
+    env["GIT_AUTHOR_DATE"] = env["GIT_COMMITTER_DATE"] = "2020-01-04T03:04:05+00:00"
+    subprocess.run(
+        ["git", "merge", "-q", "--no-ff", "-m", "Merge side", "side"],
+        cwd=repo,
+        check=True,
+        env=env,
+        capture_output=True,
+    )
+    merge = git(repo, "rev-parse", "HEAD")
+    head = person_commit(repo, "three\n", "After", "2020-01-05T03:04:05+00:00")
+    return base, side, merge, head
+
+
+def test_a_merge_in_the_series_is_re_authored_with_both_parents_mapped(
+    keys: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+):
+    base, side, merge, head = merged_series(repo)
+    publisher, pushed = reauthoring(repo, {base}, monkeypatch)
+    publisher.publish_git("engine", REPO, "work", base, head)
+    publisher.publish_git("engine", REPO, "work", base, head)
+    assert pushed[0] == pushed[1]
+    old = git(repo, "rev-list", "--topo-order", "--reverse", f"{base}..{head}").split()
+    new = git(repo, "rev-list", "--topo-order", "--reverse", f"{base}..{pushed[0]}").split()
+    assert len(old) == len(new) == 4
+    for before, after in zip(old, new, strict=True):
+        assert git(repo, "rev-parse", f"{before}^{{tree}}") == git(
+            repo, "rev-parse", f"{after}^{{tree}}"
+        )
+        assert "[bot]" in git(repo, "log", "-1", "--format=%an|%cn", after)
+    rebuilt_merge = new[old.index(merge)]
+    rebuilt_side = new[old.index(side)]
+    parents = git(repo, "rev-list", "--parents", "-n", "1", rebuilt_merge).split()[1:]
+    assert len(parents) == 2 and rebuilt_side in parents
+    assert not {side, merge} & set(new)
+
+
+def outside_parent_series(repo: Path) -> tuple[str, str, str, str]:
+    """Return (base, old_side, start, merge): merge's second parent is behind `start`, outside start..merge."""
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "-b", "side")
+    (repo / "b.txt").write_text("1\n")
+    git(repo, "add", "b.txt")
+    subprocess.run(["git", "commit", "-q", "-m", "Side one"], cwd=repo, check=True)
+    old_side = git(repo, "rev-parse", "HEAD")
+    (repo / "b.txt").write_text("2\n")
+    subprocess.run(["git", "commit", "-q", "-am", "Side two"], cwd=repo, check=True)
+    start = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "main")
+    person_commit(repo, "two\n", "Main", "2020-01-03T03:04:05+00:00")
+    subprocess.run(
+        ["git", "merge", "-q", "--no-ff", "-m", "Merge", old_side],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    return base, old_side, start, git(repo, "rev-parse", "HEAD")
+
+
+def test_a_merge_parent_outside_the_series_is_kept_when_github_has_it(
+    keys: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+):
+    base, old_side, start, merge = outside_parent_series(repo)
+    publisher, pushed = reauthoring(repo, {base, old_side, start}, monkeypatch)
+    publisher.publish_git("engine", REPO, "work", start, merge)
+    [new_head] = pushed
+    parents = git(repo, "rev-list", "--parents", "-n", "1", new_head).split()[1:]
+    assert len(parents) == 2 and old_side in parents
+    assert git(repo, "rev-parse", f"{new_head}^{{tree}}") == git(
+        repo, "rev-parse", f"{merge}^{{tree}}"
+    )
+
+
+def test_a_merge_parent_outside_the_series_that_github_lacks_is_refused(
+    keys: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+):
+    base, old_side, start, merge = outside_parent_series(repo)
+    publisher, pushed = reauthoring(repo, {base, start}, monkeypatch)
+    with pytest.raises(as_team.Refusal, match=old_side[:12]):
+        publisher.publish_git("engine", REPO, "work", start, merge)
+    assert pushed == []
+
+
 def test_a_base_github_lacks_with_no_known_ancestor_is_refused(
     keys: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
 ):

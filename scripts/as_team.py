@@ -622,6 +622,14 @@ class Git:
             commits.append(sha)
         return commits
 
+    def series(self, base: str, head: str) -> list[tuple[str, list[str]]]:
+        """Return (commit, parents) of base..head in topological order, parents first, merges included."""
+        listed = self.text("rev-list", "--topo-order", "--reverse", "--parents", f"{base}..{head}")
+        series = [(line.split()[0], line.split()[1:]) for line in listed.splitlines()]
+        if not series:
+            raise Refusal(f"nothing to publish: {base}..{head} is empty")
+        return series
+
     def changes(self, commit: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
         """Return a commit's file additions (base64) and deletions, refusing what GitHub cannot take.
 
@@ -810,26 +818,42 @@ class Publisher:
             "rebase the series onto a commit GitHub has"
         )
 
-    def reauthor(self, team: str, start: str, head: str) -> str:
+    def reauthor(self, team: str, start: str, head: str, repo: str, token: str) -> str:
         """Rebuild start..head as the bot's commits (same trees, author dates, cleaned messages).
+
+        Merges are rebuilt too: a parent inside the series maps to its rebuilt commit, a parent
+        outside it stays as it is and must be on GitHub.
 
         Args:
             team: The authoring team.
             start: The commit the first rebuilt commit sits on (`base`, or its nearest ancestor GitHub has).
             head: The series' last commit.
+            repo: The repository on GitHub.
+            token: The installation token for it.
 
         Returns:
             The rebuilt head's id.
         """
         login, email = self.github.identity(team)
-        parent = start
-        series = self.git.commits(start, head)
-        for commit in series:
-            parent = self.rebuild(commit, parent, login, email)
-        return parent
+        series = self.git.series(start, head)
+        rebuilt: dict[str, str] = {}
+        outside: dict[str, bool] = {start: True}
+        for commit, parents in series:
+            mapped = []
+            for parent in parents:
+                if parent not in rebuilt and parent not in outside:
+                    outside[parent] = self.github_has(repo, parent, token)
+                if parent not in rebuilt and not outside[parent]:
+                    raise Refusal(
+                        f"{commit[:12]} has a parent {parent[:12]} outside the series that GitHub lacks; "
+                        "publish it first or include it in the series"
+                    )
+                mapped.append(rebuilt.get(parent, parent))
+            rebuilt[commit] = self.rebuild(commit, mapped, login, email)
+        return rebuilt[series[-1][0]]
 
-    def rebuild(self, commit: str, parent: str, login: str, email: str) -> str:
-        """Return the bot's copy of one commit on `parent`, dated as the original author date."""
+    def rebuild(self, commit: str, parents: list[str], login: str, email: str) -> str:
+        """Return the bot's copy of one commit on `parents`, dated as the original author date."""
         message = self.guard.clean(self.git.run("log", "-1", "--format=%B", commit).decode())
         if not message.strip():
             raise Refusal(
@@ -845,8 +869,9 @@ class Publisher:
             "GIT_COMMITTER_DATE": stamp,
             "TZ": "UTC",
         }
+        flags = [flag for parent in parents for flag in ("-p", parent)]
         made = self.git.run(
-            "commit-tree", f"{commit}^{{tree}}", "-p", parent, env=identity, stdin=message.encode()
+            "commit-tree", f"{commit}^{{tree}}", *flags, env=identity, stdin=message.encode()
         )
         return made.decode().strip()
 
@@ -859,7 +884,7 @@ class Publisher:
         token = self.github.installation_token(team, repo)
         start = self.published_base(repo, base, token)
         # Check every message and the series' shape before anything is built or sent.
-        rebuilt = self.reauthor(team, start, head)
+        rebuilt = self.reauthor(team, start, head, repo, token)
         count = len(self.git.text("rev-list", f"{start}..{head}").splitlines())
         old_head = self.git.text("rev-parse", f"{head}^{{commit}}")
         print(f"re-authored {count} commits as {bot_login(team)} from {start[:12]}")
