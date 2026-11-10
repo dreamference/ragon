@@ -31,6 +31,10 @@ on:
         description: "Publish with GitHub's generated notes when the version has no notes spec (a patch released automatically)"
         type: boolean
         default: false
+      allow_fewer_assets:
+        description: "Publish even when an asset of the previous release has no counterpart in this one (the run prints which); off: a missing asset stops the release before it is published"
+        type: boolean
+        default: false
       run_tests:
         description: "Gate the release on the test suite"
         type: boolean
@@ -194,6 +198,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           sparse-checkout: |
+            scripts/release_asset_check.py
             ragon-rs/release-signing.pub
             ragon-rs/release-key-transition.pub
             ragon-rs/release-key-transition.pub.sig
@@ -259,6 +264,23 @@ jobs:
           }
           # Everything attested: each file the release carries, SHA256SUMS and its signature.
           { cat SHA256SUMS; sha256sum SHA256SUMS SHA256SUMS.sig; } > attested.sha256
+      # The release must carry every asset of the previous published one (version substituted in
+      # the names): 0.9.2 shipped without the x86-64 Linux and Mac clients and only an after-the-
+      # fact diff warned. Fails before anything is published unless allow_fewer_assets is set.
+      - name: Check the assets against the previous release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')"
+          if [[ -z "$prev" ]]; then
+            echo "No previous published release; nothing to compare."
+            exit 0
+          fi
+          gh release view "$prev" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' > previous-assets.txt
+          flags=()
+          [[ "${{ inputs.allow_fewer_assets }}" == "true" ]] && flags+=(--allow-fewer)
+          python3 source/scripts/release_asset_check.py --version "$VERSION" --previous-version "${prev#v}" \
+            --previous-assets previous-assets.txt --files artifacts --extra SHA256SUMS SHA256SUMS.sig "${flags[@]}"
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
