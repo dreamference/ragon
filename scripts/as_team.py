@@ -12,7 +12,7 @@ same guard before it leaves the machine.
     whoami <team>                              the bot's login and the commit email GitHub links
     commit <team> -m MSG                       a local commit as the bot, dated in UTC
     publish <team> --branch B [--base REF]     replays REF..HEAD as GitHub-signed bot commits
-    publish <team> --branch B --via git        pushes REF..HEAD (made by `commit`) as they are
+    publish <team> --branch B --via git        pushes REF..HEAD re-authored as the team bot
     pr <team> --branch B --title T [--body-file F]   opens a pull request as the bot
     review <team> <number> --approve|--request-changes|--comment [--body-file F]
     gate <number>                              sets the `team-review` status, as the Quality bot
@@ -86,6 +86,7 @@ JWT_LIFETIME_SECONDS: Final[int] = 540
 REGISTER_TIMEOUT_SECONDS: Final[int] = 3600
 HTTP_OK: Final[int] = 200
 # createCommitOnBranch takes a path and its contents, never a mode: only plain files survive it.
+MAX_BASE_WALK: Final[int] = 400
 PLAIN_FILE_MODE: Final[str] = "100644"
 ABSENT_MODE: Final[str] = "000000"
 # Lines no bot ever sends, whatever the denylist says.
@@ -780,19 +781,89 @@ class Publisher:
         self.git.run("commit", "--no-verify", "-F", "-", env=identity, stdin=cleaned.encode())
         return self.git.text("rev-parse", "HEAD")
 
+    def github_has(self, repo: str, sha: str, token: str) -> bool:
+        """Return whether GitHub has the commit (a HEAD request on it answers 404 when not)."""
+        try:
+            self.github.call("HEAD", f"/repos/{repo}/commits/{sha}", token)
+        except Refusal as missing:
+            if " 404 " in str(missing) or " 422 " in str(missing):
+                return False
+            raise
+        return True
+
+    def published_base(self, repo: str, base: str, token: str) -> str:
+        """Return `base` when GitHub has it, else its nearest first-parent ancestor GitHub has.
+
+        The re-authoring is deterministic, so the commits between that ancestor and `base`
+        coincide with what an earlier publish of the branch they came from pushed.
+        """
+        sha = self.git.text("rev-parse", f"{base}^{{commit}}")
+        for _step in range(MAX_BASE_WALK + 1):
+            if self.github_has(repo, sha, token):
+                return sha
+            parent = self.git.text("rev-list", "--parents", "-n", "1", sha).split()[1:2]
+            if not parent:
+                break
+            sha = parent[0]
+        raise Refusal(
+            f"GitHub has neither {base} nor any of its {MAX_BASE_WALK} first-parent ancestors; "
+            "rebase the series onto a commit GitHub has"
+        )
+
+    def reauthor(self, team: str, start: str, head: str) -> str:
+        """Rebuild start..head as the bot's commits (same trees, author dates, cleaned messages).
+
+        Args:
+            team: The authoring team.
+            start: The commit the first rebuilt commit sits on (`base`, or its nearest ancestor GitHub has).
+            head: The series' last commit.
+
+        Returns:
+            The rebuilt head's id.
+        """
+        login, email = self.github.identity(team)
+        parent = start
+        series = self.git.commits(start, head)
+        for commit in series:
+            parent = self.rebuild(commit, parent, login, email)
+        return parent
+
+    def rebuild(self, commit: str, parent: str, login: str, email: str) -> str:
+        """Return the bot's copy of one commit on `parent`, dated as the original author date."""
+        message = self.guard.clean(self.git.run("log", "-1", "--format=%B", commit).decode())
+        if not message.strip():
+            raise Refusal(
+                f"{commit[:12]}'s message is empty once the lines no bot sends are stripped"
+            )
+        stamp = self.git.text("log", "-1", "--format=%aI", commit)
+        identity = {
+            "GIT_AUTHOR_NAME": login,
+            "GIT_AUTHOR_EMAIL": email,
+            "GIT_COMMITTER_NAME": login,
+            "GIT_COMMITTER_EMAIL": email,
+            "GIT_AUTHOR_DATE": stamp,
+            "GIT_COMMITTER_DATE": stamp,
+            "TZ": "UTC",
+        }
+        made = self.git.run(
+            "commit-tree", f"{commit}^{{tree}}", "-p", parent, env=identity, stdin=message.encode()
+        )
+        return made.decode().strip()
+
     def publish_git(self, team: str, repo: str, branch: str, base: str, head: str = "HEAD") -> None:
-        """Push base..head as it is, after checking every commit is this bot's and its message clean."""
-        _login, email = self.github.identity(team)
-        for commit in self.git.commits(base, head):
-            author, committer = self.git.text("log", "-1", "--format=%ae%n%ce", commit).splitlines()
-            if author != email or committer != email:
-                raise Refusal(
-                    f"{commit[:12]} is not {bot_login(team)}'s; make the series with `as_team.py commit {team}`"
-                )
-            message = self.git.run("log", "-1", "--format=%B", commit).decode().rstrip("\n")
-            if self.guard.clean(message) != message:
-                raise Refusal(f"{commit[:12]}'s message carries a line no bot sends; reword it")
+        """Push base..head re-authored as the team's bot, leaving the local branch untouched.
+
+        When GitHub lacks `base`, the series is rebuilt from its nearest first-parent ancestor GitHub
+        has; the rebuild is deterministic, so chained branches share GitHub commits.
+        """
         token = self.github.installation_token(team, repo)
+        start = self.published_base(repo, base, token)
+        # Check every message and the series' shape before anything is built or sent.
+        rebuilt = self.reauthor(team, start, head)
+        count = len(self.git.text("rev-list", f"{start}..{head}").splitlines())
+        old_head = self.git.text("rev-parse", f"{head}^{{commit}}")
+        print(f"re-authored {count} commits as {bot_login(team)} from {start[:12]}")
+        print(f"{old_head[:12]}..{rebuilt[:12]}")
         basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
         # The token goes in through the environment, never the command line other users can list.
         header = {
@@ -800,7 +871,7 @@ class Publisher:
             "GIT_CONFIG_KEY_0": f"http.{WEB}/.extraheader",
             "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic}",
         }
-        self.git.run("push", f"{WEB}/{repo}.git", f"{head}:refs/heads/{branch}", env=header)
+        self.git.run("push", f"{WEB}/{repo}.git", f"{rebuilt}:refs/heads/{branch}", env=header)
 
 
 class PullRequests:

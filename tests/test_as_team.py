@@ -509,14 +509,132 @@ def test_a_bot_commit_carries_the_bots_identity_in_utc(keys: Path, repo: Path):
     )
 
 
-def test_a_push_refuses_a_commit_the_bot_did_not_make(keys: Path, repo: Path):
+BOT_EMAIL = "9+dreamference-engine[bot]@users.noreply.github.com"
+
+
+class HasSession(FakeSession):
+    """A FakeSession whose HEAD /commits/<sha> answers 200 for the shas in `has`, else 404."""
+
+    def __init__(self, routes: dict[tuple[str, str], Any], has: set[str]) -> None:
+        super().__init__(routes)
+        self.has = has
+
+    def request(
+        self, method: str, url: str, headers: dict[str, str], json: Any, timeout: int
+    ) -> FakeResponse:
+        path = url.removeprefix(API).split("?")[0]
+        if method == "HEAD":
+            self.calls.append({"method": method, "path": path, "auth": None, "json": None})
+            found = path.rsplit("/", 1)[1] in self.has
+            return FakeResponse(200, None) if found else FakeResponse(404, {"message": "Not Found"})
+        return super().request(method, url, headers, json, timeout)
+
+
+def reauthoring(
+    repo: Path, has: set[str], monkeypatch: pytest.MonkeyPatch
+) -> tuple[Any, list[str]]:
+    """A Publisher over `repo` whose pushes are recorded (the pushed shas) instead of sent."""
+    routes = {
+        ("GET", "/users/dreamference-engine%5Bbot%5D"): (200, {"id": 9}),
+        **token_routes(1, "secret-token"),
+    }
+    session = HasSession(routes, has)
+    client = as_team.GitHub(session=session, signer=FakeSigner())
+    pushed: list[str] = []
+    real_run = as_team.Git.run
+
+    def run(
+        self: Any, *args: str, env: dict[str, str] | None = None, stdin: bytes | None = None
+    ) -> bytes:
+        if args[0] == "push":
+            pushed.append(args[2].split(":")[0])
+            return b""
+        return real_run(self, *args, env=env, stdin=stdin)
+
+    monkeypatch.setattr(as_team.Git, "run", run)
+    return as_team.Publisher(client, as_team.Git(repo), as_team.MessageGuard()), pushed
+
+
+def person_commit(repo: Path, text: str, message: str, date: str) -> str:
+    (repo / "a.txt").write_text(text)
+    env = {**os.environ, "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
+    subprocess.run(
+        ["git", "commit", "-q", "-am", message], cwd=repo, check=True, env=env, capture_output=True
+    )
+    return git(repo, "rev-parse", "HEAD")
+
+
+def test_a_series_by_another_identity_is_pushed_re_authored_as_the_bot(
+    keys: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+):
     base = git(repo, "rev-parse", "HEAD")
-    (repo / "a.txt").write_text("two\n")
-    git(repo, "commit", "-q", "-am", "By a person")
-    client, _session = github({("GET", "/users/dreamference-engine%5Bbot%5D"): (200, {"id": 9})})
-    publisher = as_team.Publisher(client, as_team.Git(repo), as_team.MessageGuard())
-    with pytest.raises(as_team.Refusal, match="is not dreamference-engine"):
-        publisher.publish_git("engine", REPO, "work", base)
+    first = person_commit(
+        repo, "two\n", "First\n\nCo-Authored-By: X <x@example.com>", "2020-01-02T03:04:05+00:00"
+    )
+    second = person_commit(repo, "three\n", "Second", "2020-01-03T03:04:05+00:00")
+    publisher, pushed = reauthoring(repo, {base}, monkeypatch)
+    publisher.publish_git("engine", REPO, "work", base, second)
+    [new_head] = pushed
+    login = "dreamference-engine[bot]"
+    rebuilt = git(repo, "rev-list", "--reverse", f"{base}..{new_head}").split()
+    for new, old, date in zip(rebuilt, (first, second), ("2020-01-02", "2020-01-03"), strict=True):
+        shown = git(repo, "log", "-1", "--format=%an|%ae|%cn|%ce|%aI|%cI|%T", new)
+        stamp = f"{date}T03:04:05+00:00"
+        tree = git(repo, "rev-parse", f"{old}^{{tree}}")
+        assert shown == f"{login}|{BOT_EMAIL}|{login}|{BOT_EMAIL}|{stamp}|{stamp}|{tree}"
+    assert git(repo, "rev-parse", f"{new_head}~2") == base
+    assert git(repo, "log", "-1", "--format=%B", f"{new_head}~1").strip() == "First"
+
+
+def test_the_rewrite_is_deterministic_and_chained_branches_share_commits(
+    keys: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+):
+    base = git(repo, "rev-parse", "HEAD")
+    lane_a = person_commit(repo, "two\n", "A", "2020-01-02T03:04:05+00:00")
+    lane_b = person_commit(repo, "three\n", "B", "2020-01-03T03:04:05+00:00")
+    publisher, pushed = reauthoring(repo, {base}, monkeypatch)
+    publisher.publish_git("engine", REPO, "a", base, lane_a)
+    publisher.publish_git("engine", REPO, "a", base, lane_a)
+    assert pushed[0] == pushed[1]
+    # lane_b is chained on lane_a, which GitHub lacks: the walk finds `base` and re-authors A too.
+    publisher.publish_git("engine", REPO, "b", lane_a, lane_b)
+    assert git(repo, "rev-parse", f"{pushed[2]}~1") == pushed[0]
+
+
+def test_a_base_github_lacks_with_no_known_ancestor_is_refused(
+    keys: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+):
+    base = git(repo, "rev-parse", "HEAD")
+    head = person_commit(repo, "two\n", "A", "2020-01-02T03:04:05+00:00")
+    publisher, pushed = reauthoring(repo, set(), monkeypatch)
+    with pytest.raises(as_team.Refusal, match="GitHub has neither"):
+        publisher.publish_git("engine", REPO, "work", base, head)
+    assert pushed == []
+
+
+def test_a_message_that_cleans_to_nothing_is_refused(
+    keys: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+):
+    base = git(repo, "rev-parse", "HEAD")
+    head = person_commit(
+        repo, "two\n", "Co-Authored-By: X <x@example.com>", "2020-01-02T03:04:05+00:00"
+    )
+    publisher, pushed = reauthoring(repo, {base}, monkeypatch)
+    with pytest.raises(as_team.Refusal, match="message is empty"):
+        publisher.publish_git("engine", REPO, "work", base, head)
+    assert pushed == []
+
+
+def test_a_publish_leaves_the_local_branch_and_its_reflog_alone(
+    keys: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
+):
+    base = git(repo, "rev-parse", "HEAD")
+    head = person_commit(repo, "two\n", "A", "2020-01-02T03:04:05+00:00")
+    before = (git(repo, "rev-parse", "main"), git(repo, "reflog", "show", "main"))
+    publisher, _pushed = reauthoring(repo, {base}, monkeypatch)
+    publisher.publish_git("engine", REPO, "work", base, head)
+    assert (git(repo, "rev-parse", "main"), git(repo, "reflog", "show", "main")) == before
+    assert before[0] == head
 
 
 def test_a_push_passes_the_token_in_the_environment_only(
@@ -529,7 +647,8 @@ def test_a_push_passes_the_token_in_the_environment_only(
         ("GET", "/users/dreamference-engine%5Bbot%5D"): (200, {"id": 9}),
         **token_routes(1, "secret-token"),
     }
-    client, _session = github(routes)
+    session = HasSession(routes, {base})
+    client = as_team.GitHub(session=session, signer=FakeSigner())
     publisher = as_team.Publisher(client, as_team.Git(repo), as_team.MessageGuard())
     publisher.commit("engine", "Tune")
     pushes: list[tuple[tuple[str, ...], dict[str, str]]] = []
@@ -546,7 +665,8 @@ def test_a_push_passes_the_token_in_the_environment_only(
     monkeypatch.setattr(as_team.Git, "run", run)
     publisher.publish_git("engine", REPO, "work", base)
     [(args, env)] = pushes
-    assert args == ("push", f"https://github.com/{REPO}.git", "HEAD:refs/heads/work")
+    assert args[:2] == ("push", f"https://github.com/{REPO}.git")
+    assert args[2].endswith(":refs/heads/work")
     assert not any("secret-token" in arg for arg in args)
     expected = base64.b64encode(b"x-access-token:secret-token").decode()
     assert env["GIT_CONFIG_VALUE_0"] == f"AUTHORIZATION: basic {expected}"
