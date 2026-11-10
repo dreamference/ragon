@@ -822,9 +822,8 @@ class ModelGateService:
     @classmethod
     def log(cls, line: str) -> None:
         """One line to the container's log."""
-        print(
-            f"{time.strftime('%Y-%m-%dT%H:%M:%S')} model gate: {line}", file=sys.stderr, flush=True
-        )
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        print(f"{stamp} model gate: {line}", file=sys.stderr, flush=True)
 
     async def start(self) -> int:
         """Starts serving.

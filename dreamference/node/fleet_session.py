@@ -480,8 +480,9 @@ class FleetSession:
         timeout: int | None = None,
     ) -> subprocess.CompletedProcess:
         environment = None if env is None else {**os.environ, **env}
+        started = time.monotonic()
         try:
-            return subprocess.run(
+            result = subprocess.run(
                 command,
                 capture_output=capture,
                 text=True,
@@ -492,9 +493,11 @@ class FleetSession:
                 stdin=None if input_text is not None else (subprocess.DEVNULL if capture else None),
             )
         except subprocess.TimeoutExpired:
-            return subprocess.CompletedProcess(command, 124, "", "timed out")
+            result = subprocess.CompletedProcess(command, 124, "", "timed out")
         except OSError as error:
-            return subprocess.CompletedProcess(command, 255, "", str(error))
+            result = subprocess.CompletedProcess(command, 255, "", str(error))
+        result.elapsed_s = time.monotonic() - started  # type: ignore[attr-defined]
+        return result
 
     def _log(
         self,
@@ -505,15 +508,48 @@ class FleetSession:
         if self.log_path is None:
             return
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [f"$ {shlex.join(command)}"]
+        program = Path(command[0]).name if command else ""
+        elapsed = getattr(result, "elapsed_s", None)
+        took = f" in {elapsed:.1f}s" if isinstance(elapsed, float) else ""
+        with Path(self.log_path).open("a") as handle:
+            handle.write(f"{program} -> exit {result.returncode}{took}\n")
+        # The command line and its output are an artefact beside the log, never in it.
+        artefact = [f"$ {shlex.join(command)}"]
         if input_note:
-            lines.append(f"  (input: {input_note})")
+            artefact.append(f"  (input: {input_note})")
         for stream in (result.stdout, result.stderr):
             if stream:
-                lines.append(stream.rstrip())
-        lines.append(f"  -> exit {result.returncode}")
-        with Path(self.log_path).open("a") as handle:
-            handle.write("\n".join(lines) + "\n")
+                artefact.append(stream.rstrip())
+        artefact.append(f"  -> exit {result.returncode}")
+        with self.artefact_path().open("a") as handle:
+            handle.write("\n".join(artefact) + "\n")
+
+    def artefact_path(self) -> Path:
+        """Where the commands and their output go: the log's name with `.out`.
+
+        Returns:
+            Path: The artefact beside the log; the session must have a log path.
+        """
+        assert self.log_path is not None
+        return self.log_path.with_suffix(".out")
+
+    def name_log(self, stem: str) -> None:
+        """Rename the log and its artefact to a stem once the node id is known.
+
+        Args:
+            stem: The new file stem, for example `<date>-<node-id>`.
+        """
+        if self.log_path is None:
+            return
+        new = self.log_path.with_name(f"{stem}.log")
+        if new == self.log_path:
+            return
+        for old, target in ((self.artefact_path(), new.with_suffix(".out")), (self.log_path, new)):
+            if old.exists():
+                with target.open("a") as handle, old.open() as source:
+                    handle.write(source.read())
+                old.unlink()
+        self.log_path = new
 
     @classmethod
     def new_run_dir(cls) -> Path:

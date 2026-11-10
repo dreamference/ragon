@@ -22,7 +22,7 @@ def test_a_master_that_times_out_is_not_open_and_its_error_is_kept(session, monk
     monkeypatch.setattr(subprocess, "run", hang)
     assert session.open() is False
     assert "timed out" in session.last_error
-    assert "-> exit 255" in session.log_path.read_text()
+    assert "-> exit 255" in session.artefact_path().read_text()
 
 
 def test_a_master_that_cannot_be_started_is_not_open(session, monkeypatch):
@@ -156,7 +156,7 @@ def test_a_pipeline_is_streamed_into_the_remote_command(session, popen):
     assert zstd.stdin is save.stdout and ssh.stdin is zstd.stdout
     assert save.stdout.closed and zstd.stdout.closed
     assert ssh.command[-3:] == ["-T", "owner@node-b", "zstd -d | docker load"]
-    assert "(input: docker save img | zstd)" in session.log_path.read_text()
+    assert "(input: docker save img | zstd)" in session.artefact_path().read_text()
 
 
 def test_a_failing_local_command_fails_a_pipeline_the_remote_end_accepted(session, popen):

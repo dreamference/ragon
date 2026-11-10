@@ -25,6 +25,7 @@ import getpass
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import sys
@@ -47,7 +48,7 @@ from dreamference.node.node_role_provisioner import NodeRoleProvisioner
 FLAG_SET: Final[str] = "1"
 FLAG_TRUE: Final[str] = "true"
 VERIFY_OK: Final[str] = "ok"
-SAFE_NAME_EXTRA: Final[str] = "-."
+SAFE_NAME_EXTRA: Final[str] = "-_"
 LOG_DIR: Final[str] = str(Path("~/.local/state/dreamference/fleet").expanduser())
 
 # Where a bundle is copied to on the node before `install.sh --from` reads it.
@@ -296,8 +297,12 @@ class NodeProvisioner:
 
     def _session_for(self, host: str) -> FleetSession:
         address = self._address(host)
-        safe = "".join(ch if ch.isalnum() or ch in SAFE_NAME_EXTRA else "_" for ch in host)
-        log = Path(LOG_DIR) / f"{datetime.date.today().isoformat()}-{safe}.log"
+        # The host name stays out of the file name (LOGGING §2.1): a placeholder until the probe
+        # reads the node id, then `_step_probe` renames it.
+        log = (
+            Path(LOG_DIR)
+            / f"{datetime.date.today().isoformat()}-pending-{secrets.token_hex(4)}.log"
+        )
         session = FleetSession(address, self._user(host), self.run_dir, log_path=log)
         if self.role is not None:
             # The main node's key (`ssh -G`'s, or the default), the one the role authorises, so a
@@ -359,6 +364,11 @@ class NodeProvisioner:
             )
         state = FleetProbe.parse(answer.stdout)
         self.results[host].update(probe=state, node=state.get("node_id", ""))
+        node_id = "".join(
+            ch for ch in state.get("node_id", "") if ch.isalnum() or ch in SAFE_NAME_EXTRA
+        )
+        if node_id:
+            session.name_log(f"{datetime.date.today().isoformat()}-{node_id}")
         if not FleetProbe.is_gb10(state):
             return self._fail(
                 host, "check the machine", "not a GB10 (no /etc/dgx-release, no GB10 GPU)", ""

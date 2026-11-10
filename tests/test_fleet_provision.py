@@ -84,7 +84,7 @@ def test_sudo_with_a_held_password_sends_it_on_stdin_and_never_logs_it(tmp_path,
     assert kwargs["input"] == SECRET + "\n"
     assert SECRET not in " ".join(command)
     assert kwargs.get("env") is None or SECRET not in str(kwargs["env"])
-    text = log.read_text()
+    text = log.read_text() + log.with_suffix(".out").read_text()
     assert SECRET not in text and "(input: <password>)" in text
 
 
@@ -483,7 +483,11 @@ class FakeSession:
     def __init__(self, host, user, run_dir, ssh_port=22, log_path=None):
         self.host, self.user, self.ssh_port = host, user, ssh_port
         self.machine = FakeSession.machines[host]
+        self.log_path = log_path
         self.askpass_env = None
+
+    def name_log(self, stem):
+        pass
 
     def open(self):
         FakeSession.order.append(("open", self.host))
