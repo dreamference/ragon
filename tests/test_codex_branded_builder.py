@@ -159,6 +159,24 @@ def test_the_lockfile_pins_every_third_party_crate_of_ragon_rs():
     )
 
 
+def test_every_dependency_in_the_lockfile_names_one_locked_package():
+    # Cargo writes a bare name only while the lock holds that crate once, and "name version"
+    # otherwise. A hand-added second version leaves the bare names pointing at either, which is
+    # how a second libsqlite3-sys broke resolution of the 0.9.3 build: regenerate the lock instead.
+    packages = tomllib.loads(Path(CODEX_LOCKFILE).read_text())["package"]
+    versions = {}
+    for package in packages:
+        versions.setdefault(package["name"], set()).add(package["version"])
+    broken = set()
+    for package in packages:
+        for dependency in package.get("dependencies", []):
+            name, *rest = dependency.split(" ")
+            locked = versions.get(name, set())
+            if (rest and rest[0] not in locked) or (not rest and len(locked) != 1):
+                broken.add(f"{package['name']} {package['version']} -> {dependency}")
+    assert not broken, sorted(broken)
+
+
 def test_the_lockfile_was_made_for_the_pinned_codex():
     # A submodule bump keeps the lock's old upstream pins until the lock is refreshed with it.
     listed = subprocess.run(

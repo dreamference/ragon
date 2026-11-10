@@ -48,10 +48,25 @@ def test_the_crates_versions_are_the_codex_workspaces():
     deps = tomllib.loads((CRATE / "Cargo.toml").read_text())["dependencies"]
     pinned = workspace.read_text()
     for name, spec in deps.items():
+        if name == "rusqlite":  # not a Codex crate; the next test ties it to Codex's libsqlite3-sys
+            continue
         version = spec if isinstance(spec, str) else spec["version"]
         found = re.search(rf'^{name} = (?:"([^"]+)"|\{{ version = "([^"]+)")', pinned, re.M)
         assert found, name
         assert (found.group(1) or found.group(2)).lstrip("=") == version.lstrip("="), name
+
+
+def test_rusqlite_links_the_one_sqlite_the_codex_lock_holds():
+    # libsqlite3-sys links `sqlite3`, so a graph may hold one version of it. codex-state locks
+    # 0.37 (through sqlx-sqlite), so the store's rusqlite must be a release built on that same one:
+    # a second libsqlite3-sys in the lock broke the 0.9.3 build at resolution.
+    lock = tomllib.loads((REPO / "codex-patches" / "Cargo.lock").read_text())["package"]
+    sqlite = [p["version"] for p in lock if p["name"] == "libsqlite3-sys"]
+    rusqlite = [p for p in lock if p["name"] == "rusqlite"]
+    assert len(sqlite) == 1 and len(rusqlite) == 1, (sqlite, [p["version"] for p in rusqlite])
+    assert "libsqlite3-sys" in rusqlite[0]["dependencies"]
+    wanted = tomllib.loads((CRATE / "Cargo.toml").read_text())["dependencies"]["rusqlite"]
+    assert rusqlite[0]["version"].startswith(wanted["version"] + ".")
 
 
 def test_every_unit_the_monitor_watches_is_a_unit_the_product_writes():
