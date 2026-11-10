@@ -5377,7 +5377,7 @@ def test_the_exec_tool_arm_is_kept_on_resume_told_apart_by_against_and_parsed(be
     assert store.state("acme__widget-2")["exec_tool"]["calls"] == 1
     for name in ("plain", "free", "fn"):
         SweBenchEvaluator.grade(SweBenchRunStore(name), bench["settings"])
-    # Night 6: the candidate (the launcher's choice) against the record arm (freeform).
+    # An earlier night: the candidate (the launcher's choice) against the record arm (freeform).
     assert "differs: exec_tool: auto | freeform" in SweBenchReport.against(
         SweBenchRunStore("plain"), SweBenchRunStore("free")
     )

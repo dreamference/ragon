@@ -34,7 +34,7 @@ from dreamference.vllm_server.vllm_server_manager import VLLMServerManager
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "sglang"
 EXCERPT = (FIXTURES / "serving_responses_v0.5.21_excerpt.py.txt").read_text(encoding="utf-8")
-# Night 12's SGLang arm, django__django-15268: the response items Codex sent back on its last
+# An earlier night's SGLang arm, django__django-15268: the response items Codex sent back on its last
 # request (ids dropped, outputs shortened, the task text replaced). Three announcements before a
 # tool call, then the early stop itself, an announcement with no call.
 ROLLOUT = FIXTURES / "django-15268-items.jsonl"

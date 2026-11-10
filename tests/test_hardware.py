@@ -212,7 +212,7 @@ def test_the_default_model_is_marked_vision_capable():
 
 
 def test_the_minima_candidate_differs_from_production_in_the_checkpoint_alone():
-    # Night 2's A/B (specs/DREAMFERENCE_MODELS.md §2.2) is fair only if the candidate is served by
+    # The A/B night (specs/DREAMFERENCE_MODELS.md §2.2) is fair only if the candidate is served by
     # production's recipe: same image, flags, drafter and chat-template patches. Its two departures
     # are its own revision and a BF16 KV pool, which SGLang would otherwise make FP8 for a checkpoint
     # that ships KV scales. It is never the default.

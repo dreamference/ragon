@@ -122,7 +122,7 @@ def test_ragon_serve_runs_inside_the_same_guarded_container_with_the_nights_flag
     assert "--oom-score-adj=800" in prefix and "--gpus" in prefix
     assert "--entrypoint" not in prefix
 
-    # Night 15's launch (scripts/engine_ab_remote.sh), on Ragon's pinned files.
+    # The engine A/B launch (scripts/engine_ab_remote.sh), on Ragon's pinned files.
     assert server[0] == RAGON_SERVE_PROGRAM
     assert flag(server, "--model").endswith(
         "models--RadixArk--Qwen3.8-27B-NVFP4/snapshots/52d1adc5f38aa5ebf099c29ed7025ba34cfbb854"
