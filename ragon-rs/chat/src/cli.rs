@@ -85,6 +85,11 @@ pub fn unit_text(ragon: &Path) -> String {
          After=ragon-web.service\n\
          \n\
          [Service]\n\
+         SyslogIdentifier=ragon-chat\n\
+         EnvironmentFile=-%h/.config/dreamference/log.env\n\
+         LogExtraFields=RAGON_COMPONENT=chat\n\
+         LogRateLimitIntervalSec=30s\n\
+         LogRateLimitBurst=20000\n\
          ExecStart={} chat serve\n\
          Restart=on-failure\n\
          RestartSec=5\n\

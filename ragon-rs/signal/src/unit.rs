@@ -176,6 +176,11 @@ fn service_text(account: &str, state_dir: &str, runtime_dir: &str, memory_max: &
 Wants=network-online.target\n\
 \n\
 [Service]\n\
+SyslogIdentifier=ragon-signal\n\
+EnvironmentFile=-/etc/dreamference/log.env\n\
+LogExtraFields=RAGON_COMPONENT=signal\n\
+LogRateLimitIntervalSec=30s\n\
+LogRateLimitBurst=20000\n\
 User={account}\n\
 Group={account}\n\
 StateDirectory={state_name}\n\
@@ -224,6 +229,11 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+SyslogIdentifier=ragon-signal
+EnvironmentFile=-/etc/dreamference/log.env
+LogExtraFields=RAGON_COMPONENT=signal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=20000
 User=ragon-signal
 Group=ragon-signal
 StateDirectory=ragon-signal

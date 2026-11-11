@@ -209,6 +209,11 @@ pub fn unit_text(ragon: &Path) -> String {
          Description=Ragon sync agent (ragon sync)\n\
          \n\
          [Service]\n\
+         SyslogIdentifier=ragon-sync\n\
+         EnvironmentFile=-%h/.config/dreamference/log.env\n\
+         LogExtraFields=RAGON_COMPONENT=sync\n\
+         LogRateLimitIntervalSec=30s\n\
+         LogRateLimitBurst=20000\n\
          ExecStart={} sync agent\n\
          Restart=on-failure\n\
          RestartSec=5\n\

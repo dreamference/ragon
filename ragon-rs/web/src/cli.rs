@@ -190,6 +190,11 @@ pub fn unit_text_on(ragon: &Path, lan: bool, port: u16) -> String {
          Description=Ragon web server (ragon web)\n\
          \n\
          [Service]\n\
+         SyslogIdentifier=ragon-web\n\
+         EnvironmentFile=-%h/.config/dreamference/log.env\n\
+         LogExtraFields=RAGON_COMPONENT=web\n\
+         LogRateLimitIntervalSec=30s\n\
+         LogRateLimitBurst=20000\n\
          ExecStart={} web serve{lan}{port}\n\
          Restart=on-failure\n\
          RestartSec=2\n\

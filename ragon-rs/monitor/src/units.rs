@@ -26,7 +26,7 @@ fn exec_line(exec_prefix: &[String], command: &str) -> String {
 
 fn service(description: &str, exec: &str) -> String {
     format!(
-        "[Unit]\nDescription={description}\n\n[Service]\nType=oneshot\nExecStart={exec}\nMemoryMax=512M\nNice=10\n\
+        "[Unit]\nDescription={description}\n\n[Service]\nSyslogIdentifier=ragon-monitor\nEnvironmentFile=-%h/.config/dreamference/log.env\nLogExtraFields=RAGON_COMPONENT=monitor\nLogRateLimitIntervalSec=30s\nLogRateLimitBurst=20000\nType=oneshot\nExecStart={exec}\nMemoryMax=512M\nNice=10\n\
          IOSchedulingClass=idle\nTimeoutStartSec=120\n"
     )
 }
