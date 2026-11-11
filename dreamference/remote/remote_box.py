@@ -29,6 +29,7 @@ import tarfile
 from pathlib import Path
 from typing import Final
 
+from dreamference.config.unit_log_directives import UnitLogDirectives
 from dreamference.remote.remote_settings import (
     BOX_PUBLIC_PORT,
     BOX_RELAY_DIR,
@@ -245,6 +246,7 @@ class RemoteBox:
                 "Wants=network-online.target",
                 "",
                 "[Service]",
+                *UnitLogDirectives.block("relay", system=True).splitlines(),
                 f"User={RELAY_USER}",
                 f"EnvironmentFile={BOX_RELAY_DIR}/relay.env",
                 f"ExecStart={BOX_RELAY_DIR}/netbird-relay --listen-address :{RELAY_PORT}"

@@ -12,6 +12,7 @@ from dreamference.config.dreamference_config import (
     DreamferenceConfig,
 )
 from dreamference.config.proxy_bypass import ProxyBypass
+from dreamference.config.unit_log_directives import UnitLogDirectives
 
 __all__ = [
     "DEFAULT_MODEL",
@@ -24,4 +25,5 @@ __all__ = [
     "ConfigPathResolver",
     "DreamferenceConfig",
     "ProxyBypass",
+    "UnitLogDirectives",
 ]

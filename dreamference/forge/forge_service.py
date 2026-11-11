@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Final
 
 from dreamference.config.ports import WEB_PORT
+from dreamference.config.unit_log_directives import UnitLogDirectives
 from dreamference.forge.forge_accounts import ForgeAccounts
 from dreamference.forge.forge_anonymity import ForgeAnonymity
 from dreamference.forge.forge_app_ini import ForgeAppIni
@@ -93,14 +94,17 @@ class ForgeService:
 
         def oneshot(description: str, command: str) -> str:
             return (
-                f"[Unit]\nDescription={description}\n\n[Service]\nType=oneshot\n"
-                f"ExecStart={admin} forge {command}\nNice=10\n"
+                f"[Unit]\nDescription={description}\n\n[Service]\n"
+                + UnitLogDirectives.block("forge")
+                + f"Type=oneshot\nExecStart={admin} forge {command}\nNice=10\n"
             )
 
         return {
             UNIT: (
                 "[Unit]\nDescription=Ragon forge (Forgejo)\nAfter=network-online.target\n\n"
-                f"[Service]\nExecStartPre=-{docker} rm -f {ForgeContainer.name}\nExecStart={admin} forge run\n"
+                "[Service]\n"
+                + UnitLogDirectives.block("forge")
+                + f"ExecStartPre=-{docker} rm -f {ForgeContainer.name}\nExecStart={admin} forge run\n"
                 f"ExecStop={docker} stop -t 30 {ForgeContainer.name}\nRestart=on-failure\nRestartSec=30\n\n"
                 "[Install]\nWantedBy=default.target\n"
             ),

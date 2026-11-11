@@ -15,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
+from dreamference.config.unit_log_directives import UnitLogDirectives
 from dreamference.night_shift.night_shift_queue import NightShiftQueue
 from dreamference.night_shift.night_shift_settings import NightShiftSettings
 
@@ -89,10 +90,14 @@ class NightShiftScheduler:
         )
         service = (
             "[Unit]\nDescription=Ragon Night Shift run\n\n"
-            "[Service]\nType=oneshot\n"
-            f"Environment={cls._unit_word('PATH=' + path)}\n"
-            f"WorkingDirectory={home.replace('%', '%%')}\n"
-            f"ExecStart={cls._unit_word(admin)} night run --until {end:%H:%M}\n"
+            "[Service]\n"
+            + UnitLogDirectives.block("night")
+            + "Type=oneshot\n"
+            + (
+                f"Environment={cls._unit_word('PATH=' + path)}\n"
+                f"WorkingDirectory={home.replace('%', '%%')}\n"
+                f"ExecStart={cls._unit_word(admin)} night run --until {end:%H:%M}\n"
+            )
         )
         return timer, service
 

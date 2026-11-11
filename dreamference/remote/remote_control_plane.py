@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import Any, Final
 
+from dreamference.config.unit_log_directives import UnitLogDirectives
 from dreamference.remote.remote_certificate_authority import RemoteCertificateAuthority
 from dreamference.remote.remote_settings import (
     CONTROL_ADDRESS,
@@ -382,7 +383,9 @@ class RemoteControlPlane:
             "# Written by `ragon-admin remote setup`.\n"
             "[Unit]\nDescription=Ragon remote access: the control plane's loopback proxy\n"
             f"Requires={PROXY_SOCKET_UNIT}\nAfter={PROXY_SOCKET_UNIT}\n\n"
-            f"[Service]\nExecStart={SOCKET_PROXYD} {CONTROL_ADDRESS}:{CONTROL_LISTEN_PORT}\n"
+            "[Service]\n"
+            + UnitLogDirectives.block("remote")
+            + f"ExecStart={SOCKET_PROXYD} {CONTROL_ADDRESS}:{CONTROL_LISTEN_PORT}\n"
         )
         return {PROXY_SOCKET_UNIT: socket_unit, PROXY_SERVICE_UNIT: service_unit}
 

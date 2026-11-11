@@ -37,6 +37,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Final
 
+from dreamference.config.unit_log_directives import UnitLogDirectives
 from dreamference.remote.remote_control_plane import RemoteControlPlane
 from dreamference.remote.remote_settings import (
     ACME_PRODUCTION,
@@ -629,7 +630,9 @@ class RemotePublicCertificate:
             + "[Unit]\nDescription=Ragon remote access: renew the public certificates (control plane and relay)\n"
             + "Wants=network-online.target\nAfter=network-online.target\n"
             + f"OnFailure={CERTIFICATE_ALERT_UNIT}\n\n"
-            + "[Service]\nType=oneshot\nSlice=ragon-batch.slice\nNice=10\n"
+            + "[Service]\n"
+            + UnitLogDirectives.block("remote")
+            + "Type=oneshot\nSlice=ragon-batch.slice\nNice=10\n"
             + "ExecStart=%h/.local/bin/ragon-admin remote certificate renew\n"
         )
         # A failed renewal tells the owner the day it fails (the same Telegram path as the acceptance
@@ -637,7 +640,9 @@ class RemotePublicCertificate:
         alert = (
             header
             + "[Unit]\nDescription=Ragon remote access: tell the owner a certificate renewal failed\n\n"
-            + "[Service]\nType=oneshot\nSlice=ragon-batch.slice\nNice=10\n"
+            + "[Service]\n"
+            + UnitLogDirectives.block("remote")
+            + "Type=oneshot\nSlice=ragon-batch.slice\nNice=10\n"
             + "ExecStart=%h/.local/bin/owner-notify 'Remote access: the public certificate renewal "
             + "failed. See: journalctl --user -u ragon-remote-certificate.service; "
             + "ragon-admin remote status shows the days left.'\n"

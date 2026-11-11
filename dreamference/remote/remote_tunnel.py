@@ -16,6 +16,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from dreamference.config.unit_log_directives import UnitLogDirectives
 from dreamference.remote.remote_settings import (
     BOX_TUNNEL_PORT,
     BOX_TUNNEL_USER,
@@ -188,6 +189,7 @@ class RemoteTunnel:
                 "After=network-online.target",
                 "",
                 "[Service]",
+                *UnitLogDirectives.block("remote").splitlines(),
                 f"ExecStart={command}",
                 "Restart=always",
                 "RestartSec=10",

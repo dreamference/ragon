@@ -10,6 +10,7 @@ import pathlib
 import subprocess
 from typing import Final
 
+from dreamference.config.unit_log_directives import UnitLogDirectives
 from dreamference.runner.codex_branded_builder import INSTALL_DIR
 
 _LOG: Final = logging.getLogger(__name__)
@@ -47,10 +48,12 @@ class NodeMonitorService:
         """
         return (
             "[Unit]\nDescription=Ragon node monitor\nAfter=default.target\n\n"
-            f"[Service]\nType=notify\nNotifyAccess=main\nExecStart={cls.executable()} run\n"
+            "[Service]\n"
+            + UnitLogDirectives.block("monitor")
+            + f"Type=notify\nNotifyAccess=main\nExecStart={cls.executable()} run\n"
             "WatchdogSec=60\nMemoryHigh=48M\nMemoryMax=64M\nCPUQuota=5%\nNice=10\n"
             "IOSchedulingClass=idle\nTasksMax=32\nStandardOutput=journal\n"
-            "StandardError=journal\nSyslogIdentifier=ragon-node-monitor\n"
+            "StandardError=journal\n"
             "Restart=on-failure\nRestartSec=10\nRestartSteps=5\nRestartMaxDelaySec=10min\n\n"
             "[Install]\nWantedBy=default.target\n"
         )

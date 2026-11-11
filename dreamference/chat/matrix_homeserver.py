@@ -32,6 +32,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Final
 
+from dreamference.config.unit_log_directives import UnitLogDirectives
+
 LOG: Final[logging.Logger] = logging.getLogger(__name__)
 
 MATRIX_CONTAINER: Final[str] = "dreamference-matrix"
@@ -251,7 +253,9 @@ class MatrixHomeserver:
             "# node's CA (specs/DREAMFERENCE_RAGON_REMOTE_ACCESS.md §8).\n"
             "[Unit]\nDescription=Ragon Matrix homeserver, on the overlay\n"
             f"After={PROXY_SOCKET_UNIT}\n\n"
-            f"[Service]\nExecStart=socat {listen} TCP:127.0.0.1:{MATRIX_PORT}\n"
+            "[Service]\n"
+            + UnitLogDirectives.block("matrix")
+            + f"ExecStart=socat {listen} TCP:127.0.0.1:{MATRIX_PORT}\n"
             "Restart=always\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n"
         )
 
@@ -431,7 +435,9 @@ class MatrixHomeserver:
             "# Written by `ragon-admin matrix start`.\n"
             "[Unit]\nDescription=Ragon Matrix homeserver proxy\n"
             f"Requires={PROXY_SOCKET_UNIT}\nAfter={PROXY_SOCKET_UNIT}\n\n"
-            f"[Service]\nExecStart={SOCKET_PROXYD} {target}\n"
+            "[Service]\n"
+            + UnitLogDirectives.block("matrix")
+            + f"ExecStart={SOCKET_PROXYD} {target}\n"
         )
         return {PROXY_SOCKET_UNIT: socket, PROXY_SERVICE_UNIT: service}
 
