@@ -19,6 +19,7 @@ from dreamference.cli.monitor_command import MONITOR_COMMAND, MonitorCommand
 from dreamference.config import DreamferenceConfig, ProxyBypass
 from dreamference.config.dreamference_config import DEFAULT_DIFFUSION_MODEL, DEFAULT_MODEL
 from dreamference.config.ports import DEFAULT_MODEL_PORT
+from dreamference.config.setup_logging import setup_logging
 from dreamference.forge.forge_command import ForgeCommand
 from dreamference.hardware import (
     clear_model_cache,
@@ -5091,6 +5092,7 @@ def main(argv: list[str] | None = None) -> None:
     Args:
         argv (Optional[List[str]]): Arguments to parse; None reads `sys.argv`.
     """
+    setup_logging("admin")
     try:
         DreamferenceCLIController.run_cli(argv)
     except KeyboardInterrupt:

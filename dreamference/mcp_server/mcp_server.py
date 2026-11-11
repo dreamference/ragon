@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
     from dreamference.context_engine import ContextEngine
+from dreamference.config.setup_logging import setup_logging
 from dreamference.mcp_server.ide_state import IDEState
 from dreamference.mcp_server.mcp_tool_registry import MCPToolRegistry
 
@@ -276,5 +277,6 @@ class MCPServer:
 
 def main() -> None:
     """Main CLI entrypoint for `ragon-admin mcp` command."""
+    setup_logging("mcp")
     server = MCPServer()
     server.run_stdio()
