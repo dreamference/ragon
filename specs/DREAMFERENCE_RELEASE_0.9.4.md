@@ -58,7 +58,7 @@ The SWE-bench Verified subset that runs on this hardware (357 validated instance
 
 The same model served by ragon-serve answers one agent at about 64 tokens/s against 51 on SGLang, and four agents at 31–67 tokens/s each against 13 aggregate on SGLang, with byte-identical outputs. SGLang stays ahead only at wide speculative fan-out.
 
-The 0.9.4 engine was run through the full 357-task set on 10–11 November with no loss against the previous build: Verified slice 1 resolved 28 of 39, the same as the 0.9.1 night, and the r1 list 26 of 39 against 24 of 39 (0 errors or timeouts in either); the other slices are still running as this text is written.
+The 0.9.4 engine was run on Verified slice 1 (39 tasks) three times on 10 and 11 November: 28, 26 and 27 of 39 resolved, against 28 and 24 on two nights of the previous build and 30 on the 0.9.0 weekend run; the run-to-run spread of the same build is 3 to 7 flipped tasks per 39 with the net inside one task, so none of these differences is measurable; 0 errors or timeouts in any run. The other three slices (318 tasks) ran overnight on 10 to 11 November and are reported in 0.9.5.
 
 These are this machine's numbers for comparing configurations, not a leaderboard score.
 
