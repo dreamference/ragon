@@ -1,0 +1,21 @@
+diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
+--- a/codex-rs/core/src/session/handlers.rs
++++ b/codex-rs/core/src/session/handlers.rs
+@@ -425,7 +425,4 @@ pub(super) async fn submission_loop(
+     while let Ok(sub) = rx_sub.recv().await {
+-        if matches!(sub.op, Op::ResolveElicitation { .. }) {
+-            debug!(submission_id = %sub.id, operation = sub.op.kind(), "Submission");
+-        } else {
+-            debug!(?sub, "Submission");
+-        }
++        // Ragon: no payload (a prompt) in logs_2.sqlite.
++        debug!(submission_id = %sub.id, operation = sub.op.kind(), "Submission");
+         let dispatch_span = submission_dispatch_span(&sub);
+diff --git a/codex-rs/state/src/log_db.rs b/codex-rs/state/src/log_db.rs
+--- a/codex-rs/state/src/log_db.rs
++++ b/codex-rs/state/src/log_db.rs
+@@ -85,2 +85,4 @@ pub fn default_filter() -> Targets {
+         .with_target("codex_tui::streaming::table_holdback", LevelFilter::DEBUG)
++        // Ragon: reply text, as above.
++        .with_target("codex_tui::markdown_stream", LevelFilter::DEBUG)
+ }
