@@ -564,6 +564,16 @@ def person_commit(repo: Path, text: str, message: str, date: str) -> str:
     return git(repo, "rev-parse", "HEAD")
 
 
+def instant(text: str) -> datetime:
+    """A git strict-ISO date as an instant: newer git prints UTC as "Z", older as "+00:00"."""
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+@pytest.mark.parametrize("text", ["2020-01-02T03:04:05+00:00", "2020-01-02T03:04:05Z"])
+def test_instant_reads_both_git_renderings_of_utc(text: str):
+    assert instant(text) == datetime(2020, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+
 def test_a_series_by_another_identity_is_pushed_re_authored_as_the_bot(
     keys: Path, repo: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -579,9 +589,11 @@ def test_a_series_by_another_identity_is_pushed_re_authored_as_the_bot(
     rebuilt = git(repo, "rev-list", "--reverse", f"{base}..{new_head}").split()
     for new, old, date in zip(rebuilt, (first, second), ("2020-01-02", "2020-01-03"), strict=True):
         shown = git(repo, "log", "-1", "--format=%an|%ae|%cn|%ce|%aI|%cI|%T", new)
-        stamp = f"{date}T03:04:05+00:00"
-        tree = git(repo, "rev-parse", f"{old}^{{tree}}")
-        assert shown == f"{login}|{BOT_EMAIL}|{login}|{BOT_EMAIL}|{stamp}|{stamp}|{tree}"
+        name, email, cname, cemail, authored, committed, tree = shown.split("|")
+        assert (name, email, cname, cemail) == (login, BOT_EMAIL, login, BOT_EMAIL)
+        stamp = instant(f"{date}T03:04:05+00:00")
+        assert instant(authored) == instant(committed) == stamp
+        assert tree == git(repo, "rev-parse", f"{old}^{{tree}}")
     assert git(repo, "rev-parse", f"{new_head}~2") == base
     assert git(repo, "log", "-1", "--format=%B", f"{new_head}~1").strip() == "First"
 
