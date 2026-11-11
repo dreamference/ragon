@@ -407,7 +407,7 @@ ENGINE_RAGON: Final[str] = "ragon"
 # library (-DRAGON_GRAMMAR=ON, scripts/build_ragon_serve_image.sh), so structured output (response_format,
 # tool_choice, parallel_tool_calls) is enforced by default; RAGON_STRUCTURED=0 in the container turns
 # it off. scripts/pin_ragon_serve_image.py rewrites this, the features and the image digest together.
-QWEN38_RAGON_ENGINE_COMMIT: Final[str] = "2f8062b32c188be557a638fbb60c5d58f69d6fbf"
+QWEN38_RAGON_ENGINE_COMMIT: Final[str] = "47277016b563f5d8191f63767fa4a7afec3b9d15"
 
 # What the engine at that commit has that an asset or a launch may depend on, so the runtime asks
 # a list rather than git: "sparse-head" (the drafter's sparse head, read from a file beside the
@@ -454,7 +454,7 @@ QWEN38_DEFAULT_ENGINE: Final[str] = ENGINE_RAGON
 # ragon-serve's image (docker/ragon-serve/Dockerfile, built by scripts/build_ragon_serve_image.sh on an
 # aarch64 machine from QWEN38_RAGON_ENGINE_COMMIT), pinned by the digest GHCR gave the push (linux/arm64).
 QWEN38_RAGON_IMAGE: Final[str] = (
-    "ghcr.io/dreamference/ragon-serve@sha256:ee7543afdfaa5424fe9a4697fa2f889fccb9544c04a94649fd1738e3e1b8aad5"
+    "ghcr.io/dreamference/ragon-serve@sha256:83653f53dbfdbc992a18fe3cbeb4ece277a7b3feca9647201039ed8cd12f348b"
 )
 
 # The DFlash2 drafters ragon-serve can run, pinned. Speculation is exact, so the drafter moves
