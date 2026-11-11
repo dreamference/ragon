@@ -98,6 +98,7 @@ On the GB10, under `flock ~/.ragon-build.lock nice -n 10` and `-j 12`, keep the 
 - not raised for `0035-code-mode-host-beside-resolved-exe` (640 bytes: `install-context`'s `code_mode_host_program_from_exe` canonicalizes the running executable before looking for `codex-code-mode-host` beside it, so `ragon` reached through the `~/.local/bin` symlink finds the helper in the install folder; 60,136 in all);
 - down the same day when cave mode was removed: `0017-cave-mode` (2,834 bytes) deleted and `0018`, `0019`, `0025` and `0028` re-cut against the tree without it (2,065 → 1,808, 5,637 → 5,891, 3,382 → 3,520 and 1,849 → 1,983 bytes; `0019` also took over the `app-server/Cargo.toml` dependency line from `0017`); 57,571 in all;
 - not raised for `0036-macos-trust-evaluation-agent` (554 bytes: the network policy allows `com.apple.TrustEvaluationAgent`, which Apple's curl asks when `/etc/ssl/cert.pem` cannot build the chain); 62,774 after;
+- not raised for `0037-submission-log-without-payload` (1,101 bytes: the Submission debug line logs the id and the kind instead of the payload, and the log store's filter caps the TUI's reply-text trace; [codex-log-store.md](codex-log-store.md)); 63,875 after;
 - and to be raised again, explicitly, for each hook that needs it.
 
 Not raised, when plugins were allowed at `/airgapped off`: the launcher and the bridge policy do it (`ragon-rs/src/plugins.rs`), and the only patch change is 0030's empty Curated tab, which now says the vendor's catalogue is closed in Ragon (33 bytes; overlay `0004-tests-neutral-vendor-names`).
