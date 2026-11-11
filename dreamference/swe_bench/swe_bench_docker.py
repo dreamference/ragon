@@ -6,16 +6,21 @@ container, pull an image or reach the network.
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
 from typing import IO, Any, Final
+
+from dreamference.swe_bench import swe_bench_settings
 
 # The variable `image_path` reads from an image's configuration.
 PATH_VARIABLE: Final[str] = "PATH"
 
 
 PULL_ATTEMPTS: Final[int] = 3
+# Names the box holding the locally built images, for the message when one is missing.
+BUILT_IMAGE_BOX_ENV: Final[str] = "SWE_BENCH_BUILT_IMAGE_BOX"
 PULL_RETRY_SECONDS: Final[int] = 30
 
 
@@ -142,11 +147,17 @@ class SweBenchDocker:
                     break
                 sys.stdout.write(
                     f"⚠️ pulling {image} failed (attempt {attempt + 1} of {PULL_ATTEMPTS}): "
-                    f"{(result.stderr or '').strip()[-200:]}\n"
+                    f"{((result.stderr or result.stdout or '').strip()[-400:]) or 'no output from docker pull'}\n"
                 )
                 if attempt + 1 < PULL_ATTEMPTS:
                     time.sleep(PULL_RETRY_SECONDS)
             else:
+                if image.startswith(f"{swe_bench_settings.BUILT_IMAGE_REPO}:"):
+                    holder = os.environ.get(BUILT_IMAGE_BOX_ENV) or "the box that built it"
+                    sys.stdout.write(
+                        f"❌ {image} is built locally, not pulled: it exists only on {holder} "
+                        f"(pull error above); run there or build it with `swe-bench build-images`.\n"
+                    )
                 return None
             digest, pulled = cls.image_digest(image), True
         problem = SweBenchImagePins.problem(image, digest)

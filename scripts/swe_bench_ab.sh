@@ -553,6 +553,15 @@ start() {
     if [ -n "$SHARD" ] && { ! [[ "$SHARD" =~ ^[1-9][0-9]*/[1-9][0-9]*$ ]] || [ "${SHARD%/*}" -gt "${SHARD#*/}" ]; }; then
         echo "❌ SHARD=$SHARD: I/K, the I-th of K shards of the list."; exit 2
     fi
+    if [ "$DATASET" = multilingual ]; then
+        # Built images are never pulled: a missing one would fail its task silently, so name them before arming.
+        missing=$(grep -v '^\s*\(#\|$\)' "$LIST" | while read -r id; do
+            docker image inspect "ragon/swe-bench-built-arm64:${id//__/-}" >/dev/null 2>&1 || echo "$id"; done)
+        if [ -n "$missing" ]; then
+            echo "❌ $(echo "$missing" | wc -l) built image(s) missing here (they exist only on the box that built them; set SWE_BENCH_BUILT_IMAGE_BOX to name it):"
+            echo "$missing" | head -5; exit 1
+        fi
+    fi
     count=$(grep -cv '^\s*\(#\|$\)' "$LIST")
     # One chunk of the largest repository's images is on disk at once while it is run and graded
     # (the whole list's count: a shard holds no more).
