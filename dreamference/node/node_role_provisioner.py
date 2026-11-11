@@ -65,7 +65,11 @@ NIGHT_DIRS: Final[tuple[str, ...]] = (
     "$HOME/.local/share/dreamference/swe-bench/chain",
     "$HOME/.local/share/dreamference/swe-bench/pins",
 )
-GPU_LOCK_FILES: Final[tuple[str, ...]] = ("$HOME/.ragon-gpu.lock", "$HOME/.ragon-gpu-holds.log")
+GPU_LOGS_DIR: Final[str] = "${XDG_STATE_HOME:-$HOME/.local/state}/dreamference/logs"
+GPU_HOLDS_LOG: Final[str] = f"{GPU_LOGS_DIR}/gpu-holds.log"
+# LOGGING §3.2: the holds log moved from the home directory into logs/; the old file is read once.
+GPU_HOLDS_LOG_OLD: Final[str] = "$HOME/.ragon-gpu-holds.log"
+GPU_LOCK_FILES: Final[tuple[str, ...]] = ("$HOME/.ragon-gpu.lock", GPU_HOLDS_LOG)
 # `swe-bench smoke`'s record of a pass (SweBenchRunner.smoke_path), which needs `setup` before it.
 SMOKE_PASSED: Final[str] = (
     "grep -qs '\"passed\": true' $HOME/.cache/dreamference/swe-bench/smoke-*.json"
@@ -528,7 +532,10 @@ class NodeRoleProvisioner:
             host,
             "swe-bench/{chain,pins} and the GPU lock files",
             lambda: session.run(
-                f"mkdir -p {' '.join(NIGHT_DIRS)} && touch {' '.join(GPU_LOCK_FILES)}"
+                f"mkdir -p {' '.join(NIGHT_DIRS)} && mkdir -p -m 700 {GPU_LOGS_DIR} && "
+                f"{{ ! test -f {GPU_HOLDS_LOG_OLD} || test -f {GPU_HOLDS_LOG} "
+                f"|| mv {GPU_HOLDS_LOG_OLD} {GPU_HOLDS_LOG}; }} && "
+                f"touch {' '.join(GPU_LOCK_FILES)}"
             ),
         ):
             return False
