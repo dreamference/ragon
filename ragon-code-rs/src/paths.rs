@@ -754,6 +754,118 @@ pub fn codex_home() -> PathBuf {
     }
 }
 
+/// The directory every Ragon log lives in: `$XDG_STATE_HOME/dreamference/logs`, by default
+/// `~/.local/state/dreamference/logs` (LOGGING §3.2). Never inside a repository.
+pub fn logs_dir() -> PathBuf {
+    let base = match std::env::var_os("XDG_STATE_HOME") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => home().join(".local").join("state"),
+    };
+    base.join("dreamference").join("logs")
+}
+
+/// The ragon-code supervisor's log, `code-index.log` in [`logs_dir`].
+pub fn code_index_log() -> PathBuf {
+    logs_dir().join("code-index.log")
+}
+
+/// A short stable pseudonym for a repository, so the log names no path (LOGGING §7.4): the first
+/// eight hex digits of SHA-256 over the salt (when `~/.config/dreamference/log-salt` exists) and
+/// the repository root.
+pub fn repo_pseudonym(root: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    if let Some(salt) = read_state_file_bytes(&home().join(".config/dreamference/log-salt")) {
+        hasher.update(salt);
+    }
+    hasher.update(root.to_string_lossy().as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .take(4)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn read_state_file_bytes(path: &Path) -> Option<Vec<u8>> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > 4096 {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
+/// Opens `code-index.log` for appending, creating the directory (0700) and the file (0600), and
+/// refusing a symlink in the file's place.
+pub fn open_code_index_log() -> std::io::Result<std::fs::File> {
+    let dir = logs_dir();
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(code_index_log())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(code_index_log())
+    }
+}
+
+/// Appends `text` to `code-index.log` under a header naming the repository by pseudonym.
+pub fn append_code_index_log(repo: &Repo, what: &str, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut file = open_code_index_log()?;
+    writeln!(
+        file,
+        "--- ts={at} repo={} {what}",
+        repo_pseudonym(&repo.main_root)
+    )?;
+    file.write_all(text.as_bytes())?;
+    if !text.ends_with('\n') {
+        writeln!(file)?;
+    }
+    Ok(())
+}
+
+/// Reads, once, the logs older versions wrote inside the repository (`<state>/logs/<unit>.log` and
+/// `<state>/plans/supervisor-<pid>.log`) into `code-index.log`, and removes them (LOGGING §3.2).
+pub fn migrate_old_code_index_logs(repo: &Repo) {
+    let state = repo.state_dir();
+    for dir in [state.join("logs"), state.join("plans")] {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let old = (dir.ends_with("plans")
+                && name.starts_with("supervisor-")
+                && name.ends_with(".log"))
+                || (dir.ends_with("logs") && name.ends_with(".log"));
+            if !old {
+                continue;
+            }
+            if let Some(text) = read_regular(&path) {
+                let _ = append_code_index_log(repo, &format!("migrated={name}"), &text);
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 /// The per-user runtime directory, for the host-wide admission lock (spec §6.4).
 pub fn runtime_dir() -> PathBuf {
     match std::env::var_os("XDG_RUNTIME_DIR") {
@@ -802,5 +914,41 @@ mod worktree_tests {
         let repo = Repo::discover(&forged).unwrap();
         assert_eq!(real(&repo.root), real(&forged));
         assert_eq!(real(&repo.main_root), real(&forged));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod code_index_log_tests {
+    use super::*;
+
+    #[test]
+    fn the_logs_move_out_of_the_repository_and_the_old_ones_are_read_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join("repo/.dreamference");
+        std::fs::create_dir_all(state.join("logs")).unwrap();
+        std::fs::create_dir_all(state.join("plans")).unwrap();
+        std::fs::write(state.join("logs/unit1.log"), "old unit text\n").unwrap();
+        std::fs::write(state.join("plans/supervisor-7.log"), "old supervisor\n").unwrap();
+        std::fs::create_dir_all(tmp.path().join("repo")).unwrap();
+        let repo = Repo {
+            root: tmp.path().join("repo"),
+            main_root: tmp.path().join("repo"),
+            is_git: false,
+        };
+        // SAFETY of the env use: this test is the only one touching these variables.
+        std::env::set_var("XDG_STATE_HOME", tmp.path().join("xdg"));
+        migrate_old_code_index_logs(&repo);
+        let log = std::fs::read_to_string(code_index_log()).unwrap();
+        assert!(log.contains("old unit text") && log.contains("old supervisor"));
+        assert!(log.contains(&format!("repo={}", repo_pseudonym(&repo.main_root))));
+        assert!(!log.contains(tmp.path().to_str().unwrap()));
+        assert!(!state.join("logs/unit1.log").exists());
+        assert!(!state.join("plans/supervisor-7.log").exists());
+        let mode = std::fs::metadata(code_index_log()).unwrap();
+        assert_eq!(
+            std::os::unix::fs::PermissionsExt::mode(&mode.permissions()) & 0o777,
+            0o600
+        );
+        assert!(code_index_log().starts_with(tmp.path().join("xdg")));
     }
 }

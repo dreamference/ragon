@@ -208,7 +208,7 @@ fn execute_one(
             _ if log_text.contains("registry/cache") && log_text.contains("Read-only file system") => {
                 "dependencies not unpacked (run `cargo fetch` in the crate once)".to_string()
             }
-            Some(code) => format!("exit {code}; see {}", repo.state_dir().join("logs").join(format!("{}.log", run.unit)).display()),
+            Some(code) => format!("exit {code}; see {}", crate::paths::code_index_log().display()),
         };
         // A killed run records its cap as the lower bound, so the next attempt is not doomed the
         // same way (§6.4).
@@ -355,9 +355,8 @@ pub fn scope_argv(run: &Run, peak_file: &Path) -> Vec<String> {
 }
 
 fn keep_log(repo: &Repo, run: &Run, log: &Path) {
-    let dir = repo.state_dir().join("logs");
-    if std::fs::create_dir_all(&dir).is_ok() {
-        let _ = crate::paths::copy_fresh(log, &dir.join(format!("{}.log", run.unit)));
+    if let Some(text) = crate::paths::read_regular(log) {
+        let _ = crate::paths::append_code_index_log(repo, &format!("unit={}", run.unit), &text);
     }
 }
 

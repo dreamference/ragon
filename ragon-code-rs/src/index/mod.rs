@@ -100,8 +100,8 @@ pub fn spawn_supervisor_child(repo: &Repo, plan: &plan::Plan) -> Result<std::pro
         &mut crate::paths::create_fresh(&path)?,
         &serde_json::to_vec_pretty(plan)?,
     )?;
-    let log =
-        crate::paths::create_fresh(&dir.join(format!("supervisor-{}.log", std::process::id())))?;
+    crate::paths::migrate_old_code_index_logs(repo);
+    let log = crate::paths::open_code_index_log()?;
     let exe = std::env::current_exe()?;
     let mut command = Command::new(exe);
     command
