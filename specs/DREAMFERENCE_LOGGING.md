@@ -145,8 +145,9 @@ The owner approved every recommended answer of O1–O12 on 2026-11-08, and O13�
 
 - Codex writes its `tracing` events to `~/.ragon/logs_2.sqlite`; patch 0014 moved the home there. The filter is `codex-rs/state/src/log_db.rs:61` `default_filter()`:
   - **TRACE for every target**;
-  - except that the HTTP transport and SSE targets are capped at DEBUG, so full request bodies "remain available to explicit TRACE subscribers" and stay out of the default store.
-- Retention is `LOG_RETENTION_DAYS = 10` (`state/src/runtime/logs.rs:3`), pruned by each process.
+  - except that the HTTP transport, the SSE targets and the TUI streaming targets (`codex_tui::markdown_stream` included, by patch 0037) are capped at DEBUG, so request bodies and the model's reply text stay out of the default store;
+  - and `ragon exec` does not install the layer: the file is created but gets no rows.
+- Retention is `LOG_RETENTION_DAYS = 10` (`state/src/runtime/logs.rs:3`), pruned only by the startup maintenance; a long-lived app-server never prunes by age. Each partition is also capped at 10 MiB and 1,000 rows.
 - `ragon-admin logs mcp` (`cli/dreamference_cli_controller.py:4162`) reads the database read-only (`SELECT … ORDER BY rowid DESC LIMIT 8000`) and keeps MCP lifecycle lines.
 - Patches that already close log channels to the vendor:
   - 0009 removes `/feedback`, which uploaded session logs;
@@ -154,7 +155,9 @@ The owner approved every recommended answer of O1–O12 on 2026-11-08, and O13�
   - 0013 turns analytics off;
   - 0015 sets `OtelExporter::None` and removes Statsig.
 
-  No patch changes a log level.
+  - 0037 logs each submission by id and operation kind only (no prompt, shell command or tool response) and caps `codex_tui::markdown_stream` at DEBUG.
+
+- The audit and how to re-run it after a Codex bump: `docs/dev/codex-log-store.md` (P7).
 
 ### 2.4 The engine (`ragon-engine/`, read-only here)
 
@@ -685,7 +688,7 @@ A **log** describes what the software did, under §7.1.
 
 | Artefact | Why it is one |
 |---|---|
-| Codex rollouts (`~/.ragon/sessions/`) and the SQLite stores, `logs_2.sqlite` included (O8) | conversations; Codex's TRACE store may hold tool payloads (unaudited) |
+| Codex rollouts (`~/.ragon/sessions/`) and the SQLite stores, `logs_2.sqlite` included (O8) | conversations; Codex's TRACE store holds tool names and paths, not prompts or reply text since patch 0037 (audited in `docs/dev/codex-log-store.md`) |
 | Night Shift's `night/logs/<task>.*` | the agent's transcript, its test output, its diff |
 | Node jobs' `jobs/<id>/output.log` | the user's script's output |
 | SWE-bench run records and harness logs, `night-traces/`, `turn-end-compaction/` | benchmark transcripts |
