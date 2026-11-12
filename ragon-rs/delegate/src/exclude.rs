@@ -82,7 +82,48 @@ pub const DEFAULT_EXCLUDES: &[(&str, &str)] = &[
     ("the delegation policy itself", ".claude-plugin"),
     ("the delegation policy itself", "dreamference.toml"),
     ("release signing and publishing", ".github/workflows"),
+    ("the quality gates (the ratchet baselines)", "tests/quality_baseline.json"),
+    ("the quality gates (the ratchet baselines)", "tests/typing_baseline.json"),
+    ("the quality gates (the ratchet tests)", "tests/test_code_quality.py"),
+    ("the quality gates (the ratchet tests)", "tests/test_typing.py"),
+    ("the quality gates (test configuration)", "**/conftest.py"),
+    ("the quality gates (the RBRB scripts)", "scripts/rbrb.py"),
+    ("the quality gates (the RBRB scripts)", "docs/rbrb.json"),
 ];
+
+/// The existing file an acceptance command names (a pytest node id's file, an npm test pattern
+/// that is a path), relative to the worktree; `None` for a cargo filter or a bare name.
+pub fn acceptance_file(runner: &str, target: &str, cwd: Option<&str>) -> Option<String> {
+    if runner == "cargo" {
+        return None;
+    }
+    let file = target.split("::").next().unwrap_or("").trim();
+    if file.is_empty() || !file.contains('/') && !file.contains('.') {
+        return None;
+    }
+    let file = file.trim_start_matches("./");
+    Some(match cwd.map(|c| c.trim_matches('/')).filter(|c| !c.is_empty()) {
+        Some(c) => format!("{c}/{file}"),
+        None => file.to_string(),
+    })
+}
+
+/// Why a change to `file`, the existing file the acceptance command names, is refused: any
+/// status but a new file (`?` or `A`) counts, so a task cannot edit the test that judges it.
+/// A new test file stays allowed.
+pub fn acceptance_file_change(
+    entries: &[(String, char)],
+    file: Option<&str>,
+) -> Option<String> {
+    let file = file?;
+    let want = segments(file);
+    entries
+        .iter()
+        .find(|(p, c)| segments(p) == want && !matches!(c, '?' | 'A'))
+        .map(|(p, _)| {
+            format!("{p} is the existing file the acceptance command names; a task never edits the test that judges it")
+        })
+}
 
 /// Lockfiles: any change is refused. `(file name, what)`.
 const LOCKFILES: &[(&str, &str)] = &[
@@ -553,6 +594,16 @@ mod tests {
             ("claude-plugin/.mcp.json", "delegation policy"),
             ("dreamference.toml", "delegation policy"),
             (".github/workflows/release-build.yml", "release"),
+            ("tests/quality_baseline.json", "ratchet baselines"),
+            ("tests/typing_baseline.json", "ratchet baselines"),
+            ("tests/test_code_quality.py", "ratchet tests"),
+            ("tests/test_typing.py", "ratchet tests"),
+            ("conftest.py", "test configuration"),
+            ("tests/conftest.py", "test configuration"),
+            ("ragon-rs/x/tests/conftest.py", "test configuration"),
+            (".github/workflows/ci.yml", "release"),
+            ("scripts/rbrb.py", "RBRB scripts"),
+            ("docs/rbrb.json", "RBRB scripts"),
         ] {
             let rule = r
                 .matching(path)
@@ -565,6 +616,10 @@ mod tests {
             "ragon-rs/src/lib.rs",
             "docs/dev/claude-plugin.md",
             "tests/test_night_shift.py",
+            "tests/test_new_thing.py",
+            "tests/quality_baseline.py",
+            "scripts/other.py",
+            "docs/other.json",
             "desktop/ui/src/keymap.ts",
         ] {
             assert_eq!(r.matching(path), None, "{path}");
@@ -855,5 +910,36 @@ mod tests {
         assert!(dependency_change("notes.md", None, Some("x")).is_none());
         let why = dependency_change("Cargo.toml", None, Some("[dependencies]\na = \"1\"\n")).unwrap();
         assert!(why.contains("changed"), "{why}");
+    }
+
+    #[test]
+    fn the_acceptance_file_is_found_and_an_existing_one_is_refused() {
+        assert_eq!(
+            acceptance_file("pytest", "tests/test_a.py::test_b", None).as_deref(),
+            Some("tests/test_a.py")
+        );
+        assert_eq!(
+            acceptance_file("npm", "src/a.test.ts", Some("desktop/ui/")).as_deref(),
+            Some("desktop/ui/src/a.test.ts")
+        );
+        assert_eq!(acceptance_file("cargo", "my_test", None), None);
+        assert_eq!(acceptance_file("npm", "keymap", None), None);
+        let file = acceptance_file("pytest", "tests/test_a.py::t", None);
+        for code in ['M', 'D', 'R'] {
+            let why = acceptance_file_change(&[("tests/test_a.py".into(), code)], file.as_deref())
+                .unwrap_or_else(|| panic!("{code}"));
+            assert!(why.contains("acceptance command names"), "{why}");
+        }
+        for code in ['?', 'A'] {
+            assert_eq!(
+                acceptance_file_change(&[("tests/test_a.py".into(), code)], file.as_deref()),
+                None,
+                "a new test file stays allowed"
+            );
+        }
+        assert_eq!(
+            acceptance_file_change(&[("tests/test_b.py".into(), 'M')], file.as_deref()),
+            None
+        );
     }
 }

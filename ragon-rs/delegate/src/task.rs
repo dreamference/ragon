@@ -15,7 +15,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::exclude::{Rules, dependency_change, is_manifest, lockfile};
+use crate::exclude::{Rules, acceptance_file, acceptance_file_change, dependency_change, is_manifest, lockfile};
 use crate::exec::{
     RunSpec, Runner, StatusEntry, check_relative, delegate_ragon_bin, git, ignored_paths,
     is_build_artifact, linked_worktree, main_checkout, parse_numstat, sandbox_check, sandbox_env,
@@ -560,6 +560,7 @@ fn protected_change(
     entries: &[StatusEntry],
     new_ignored: &[String],
     rules: &Rules,
+    acceptance: Option<&str>,
 ) -> Option<(&'static str, String)> {
     let paths = entries
         .iter()
@@ -569,6 +570,10 @@ fn protected_change(
         if let Some(rule) = rules.matching(path) {
             return Some(("excluded", rule.explain(path)));
         }
+    }
+    let changed: Vec<(String, char)> = entries.iter().map(|e| (e.path.clone(), e.code)).collect();
+    if let Some(why) = acceptance_file_change(&changed, acceptance) {
+        return Some(("excluded", why));
     }
     for path in paths {
         if lockfile(path).is_none() && !is_manifest(path) {
@@ -739,7 +744,14 @@ pub fn execute(req: &TaskRequest, runner: &dyn Runner, env: &TaskEnv) -> Result<
         .collect();
     // A protected path or a dependency change, whatever the scope said, rejects the whole diff:
     // every change goes, in scope or not (§6.1, §6.2 item 5).
-    if let Some((reason, why)) = protected_change(runner, &wt, &entries, &new_ignored, &rules) {
+    if let Some((reason, why)) = protected_change(
+        runner,
+        &wt,
+        &entries,
+        &new_ignored,
+        &rules,
+        acceptance_file(&accept.runner, &accept.target, accept.cwd.as_deref()).as_deref(),
+    ) {
         for e in &entries {
             tri!(revert(runner, &wt, e));
             r.reverted.push(e.path.clone());
@@ -1241,12 +1253,12 @@ mod tests {
     fn a_new_file_hidden_by_a_gitignore_rule_is_removed_and_fails_the_task() {
         let (wt, env) = setup("ignored");
         let mut w = world(&wt);
-        w.writes = vec![("src/a.py", "x = 1\n"), ("src/conftest.py", "import os\n"), ("src/__pycache__/a.pyc", "x")];
-        w.ignored_after = "!! .mypy_cache/\0!! src/__pycache__/\0!! src/conftest.py\0".into();
+        w.writes = vec![("src/a.py", "x = 1\n"), ("src/local_settings.py", "import os\n"), ("src/__pycache__/a.pyc", "x")];
+        w.ignored_after = "!! .mypy_cache/\0!! src/__pycache__/\0!! src/local_settings.py\0".into();
         let r = execute(&request(&wt, "T3"), &w, &env).unwrap();
         assert_eq!(r.reason, "scope");
-        assert_eq!(r.reverted, vec!["src/conftest.py"]);
-        assert!(!wt.join("src/conftest.py").exists());
+        assert_eq!(r.reverted, vec!["src/local_settings.py"]);
+        assert!(!wt.join("src/local_settings.py").exists());
         assert!(wt.join("src/__pycache__/a.pyc").exists(), "build output stays");
         assert!(r.acceptance.is_none(), "no test runs");
     }
@@ -1270,20 +1282,20 @@ mod tests {
     fn test_files_are_off_limits_outside_t2() {
         let (wt, env) = setup("tests");
         let mut w = world(&wt);
-        w.writes = vec![("tests/test_a.py", "assert True\n")];
-        w.status_after = "?? tests/test_a.py\0".into();
+        w.writes = vec![("tests/test_c.py", "assert True\n")];
+        w.status_after = "?? tests/test_c.py\0".into();
         let mut q = request(&wt, "T1");
         q.allowed_files = vec!["tests/".into()];
         let r = execute(&q, &w, &env).unwrap();
         assert_eq!(r.reason, "test_files");
-        assert!(!wt.join("tests/test_a.py").exists());
+        assert!(!wt.join("tests/test_c.py").exists());
         // In T2 the same file is allowed.
         let (wt2, env2) = setup("tests2");
         let mut w2 = world(&wt2);
-        w2.writes = vec![("tests/test_a.py", "assert True\n")];
-        w2.status_after = " M tests/test_a.py\0".into();
-        w2.numstat = "1\t0\ttests/test_a.py\n".into();
-        w2.diff = "diff --git a/tests/test_a.py b/tests/test_a.py\n+assert 1\n".into();
+        w2.writes = vec![("tests/test_c.py", "assert True\n")];
+        w2.status_after = " M tests/test_c.py\0".into();
+        w2.numstat = "1\t0\ttests/test_c.py\n".into();
+        w2.diff = "diff --git a/tests/test_c.py b/tests/test_c.py\n+assert 1\n".into();
         let mut q2 = request(&wt2, "T2");
         q2.allowed_files = vec!["tests/".into()];
         assert!(execute(&q2, &w2, &env2).unwrap().pass);
