@@ -1,6 +1,7 @@
-"""The node half of Ragon: the GB10 that serves the model, advertised on the local network as
-`_ragon-node._tcp` so that clients find it with no address typed
-(specs/DREAMFERENCE_RAGON_NODE.md).
+"""The node half of Ragon: the GB10 that serves the model.
+
+It is advertised on the local network as `_ragon-node._tcp` so that clients find it with no
+address typed (specs/DREAMFERENCE_RAGON_NODE.md).
 """
 
 from dreamference.node.fleet_askpass import FleetAskpass
