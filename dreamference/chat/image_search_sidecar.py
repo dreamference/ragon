@@ -38,12 +38,14 @@ IMAGE_SEARCH_SERVICE_IMAGE: Final[str] = (
 )
 # One folder holds everything: the staged service, its secret and its store (`data/`), mounted as
 # the container's `/config` and owned by the user, so `ragon web` can read the images it wrote.
-IMAGE_SEARCH_DATA_DIR: Final[str] = os.path.expanduser("~/.config/dreamference/image-search")
-IMAGE_SEARCH_SECRET_FILE: Final[str] = os.path.join(IMAGE_SEARCH_DATA_DIR, "secret")
-IMAGE_STORE_DIR: Final[str] = os.path.join(IMAGE_SEARCH_DATA_DIR, "data", "images")
+IMAGE_SEARCH_DATA_DIR: Final[str] = str(
+    pathlib.Path("~/.config/dreamference/image-search").expanduser()
+)
+IMAGE_SEARCH_SECRET_FILE: Final[str] = str(pathlib.Path(IMAGE_SEARCH_DATA_DIR) / "secret")
+IMAGE_STORE_DIR: Final[str] = str(pathlib.Path(IMAGE_SEARCH_DATA_DIR) / "data" / "images")
 STAGED_SERVICE: Final[str] = "service.py"
 # The `ragon-admin` the launcher declares as the tool's server (`ragon-rs/src/images.rs` ADMIN_LINK).
-SESSION_ADMIN_LINK: Final[str] = os.path.expanduser("~/.local/bin/ragon-admin")
+SESSION_ADMIN_LINK: Final[str] = str(pathlib.Path("~/.local/bin/ragon-admin").expanduser())
 
 # SearXNG as the sidecar network names it; it publishes only on loopback, so the network is the way.
 SEARXNG_CONTAINER_URL: Final[str] = f"http://{SEARXNG_CONTAINER_NAME}:8080"
@@ -167,7 +169,7 @@ class ImageSearchSidecar:
         try:
             pathlib.Path(IMAGE_STORE_DIR).mkdir(exist_ok=True, parents=True)
             shutil.copyfile(
-                image_search_service.__file__, os.path.join(IMAGE_SEARCH_DATA_DIR, STAGED_SERVICE)
+                image_search_service.__file__, pathlib.Path(IMAGE_SEARCH_DATA_DIR) / STAGED_SERVICE
             )
         except OSError as exc:
             cls.problem = f"Could not stage the image search service: {exc}"
@@ -326,8 +328,9 @@ class ImageSearchSidecar:
 
     @classmethod
     def start(cls, vllm_host: str, model: str, siglip: bool = True, wait: bool = True) -> bool:
-        """Makes the service run on the sidecar network, recreated so the staged file and the
-        served model take effect.
+        """Makes the service run on the sidecar network.
+
+        Recreated so the staged file and the served model take effect.
 
         Args:
             vllm_host (str): The model server's base URL on the host.
@@ -376,10 +379,11 @@ class ImageSearchSidecar:
 
     @classmethod
     def ensure_on_node(cls, vllm_host: str, model: str) -> bool | None:
-        """Starts the service on a node when it is absent, as `server start` does for the Google
-        service (decided). Never raises and never waits for its health: the model
-        server must start anyway. SigLIP is left to `ragon-admin images start`, since its image
-        is large and has no arm64 build upstream.
+        """Starts the service on a node when it is absent.
+
+        As `server start` does for the Google service (decided). Never raises and never waits for
+        its health: the model server must start anyway. SigLIP is left to
+        `ragon-admin images start`, since its image is large and has no arm64 build upstream.
 
         Args:
             vllm_host (str): The model server's base URL on the host.
@@ -429,7 +433,9 @@ class ImageSearchSidecar:
             where = f" on {network}" if network else ""
             lines.append(f"{label} ({container}): {state or 'absent'}{where}")
         try:
-            count = sum(1 for name in os.listdir(IMAGE_STORE_DIR) if name.endswith(".jpg"))
+            count = sum(
+                1 for path in pathlib.Path(IMAGE_STORE_DIR).iterdir() if path.name.endswith(".jpg")
+            )
         except OSError:
             count = 0
         lines.append(f"Store: {IMAGE_STORE_DIR} ({count} images)")
