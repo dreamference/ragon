@@ -10,7 +10,7 @@ pinned snapshot byte-identical to what was downloaded.
 """
 
 import hashlib
-import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -20,7 +20,7 @@ from dreamference.hardware.model_downloader import ModelDownloader
 # at /root/.cache/dreamference, so the same file is visible on both sides. Not under `sglang/`:
 # the container creates that directory as root for its compile cache, and the first launch
 # failed there with PermissionError.
-HOST_TEMPLATE_DIR = Path(os.path.expanduser("~/.cache/dreamference/chat-templates"))
+HOST_TEMPLATE_DIR = Path("~/.cache/dreamference/chat-templates").expanduser()
 CONTAINER_TEMPLATE_DIR = "/root/.cache/dreamference/chat-templates"
 
 
@@ -110,6 +110,6 @@ class ChatTemplatePatcher:
             HOST_TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
             target.write_text(patched, encoding="utf-8")
         except OSError as error:
-            print(f"⚠️  Could not write the patched chat template to {target}: {error}")
+            sys.stdout.write(f"⚠️  Could not write the patched chat template to {target}: {error}\n")
             return None
         return target
