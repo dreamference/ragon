@@ -36,8 +36,10 @@ class SpeechSidecar:
 
     @classmethod
     def state(cls) -> str:
-        """Returns:
-        str: `running`, `exited`, another Docker state, or "" when there is no container.
+        """The container's Docker state.
+
+        Returns:
+            str: `running`, `exited`, another Docker state, or "" when there is no container.
         """
         result = subprocess.run(
             ["docker", "inspect", STT_CONTAINER_NAME, "--format", "{{.State.Status}}"],
@@ -133,9 +135,10 @@ class SpeechSidecar:
 
     @classmethod
     def ensure_on_node(cls) -> bool | None:
-        """Starts the server on a node when it is absent, as `server start` does for the Google
-        service (decided). Never raises, and the model downloads in the background:
-        the model server must start anyway.
+        """Starts the server on a node when it is absent.
+
+        As `server start` does for the Google service (decided). Never raises, and the model
+        downloads in the background: the model server must start anyway.
 
         Returns:
             Optional[bool]: None when this machine is not a node or the container exists already
@@ -165,8 +168,10 @@ class SpeechSidecar:
 
     @classmethod
     def status_lines(cls) -> list[str]:
-        """Returns:
-        List[str]: The container's state and network, and where the audio goes.
+        """The speech server's status lines.
+
+        Returns:
+            List[str]: The container's state and network, and where the audio goes.
         """
         state = cls.state()
         network = SidecarNetwork.network_mode(STT_CONTAINER_NAME) if state else ""
