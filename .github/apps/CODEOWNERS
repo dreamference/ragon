@@ -19,6 +19,7 @@
 /website/                                       @dreamference/docs
 /images/                                        @dreamference/docs
 /README.md                                      @dreamference/docs
+/scripts/rbrb.py                                @dreamference/docs
 /AGENTS.md                                      @dreamference/docs
 /mkdocs.yml                                     @dreamference/docs
 /CONTRIBUTING.md                                @dreamference/docs
