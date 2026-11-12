@@ -14,6 +14,8 @@ DEFAULT_BRIDGE_GATEWAY: Final[str] = "172.17.0.1"
 LOOPBACK_HOSTS: Final[tuple] = ("localhost", "127.0.0.1", "0.0.0.0", "::1")
 # Only an IPv6 address has a colon in its host part; a URL must bracket it.
 IPV6_SEPARATOR: Final[str] = ":"
+# A URL that names its scheme has this after the scheme.
+SCHEME_SEPARATOR: Final[str] = "//"
 
 
 class DockerBridge:
@@ -33,7 +35,7 @@ class DockerBridge:
         Returns:
             str: A base URL including the `/v1` suffix, reachable from a bridged container.
         """
-        parsed = urlparse(vllm_host if "//" in vllm_host else f"http://{vllm_host}")
+        parsed = urlparse(vllm_host if SCHEME_SEPARATOR in vllm_host else f"http://{vllm_host}")
         host = parsed.hostname or "localhost"
         port = parsed.port or 8000
 
