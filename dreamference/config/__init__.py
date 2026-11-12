@@ -1,3 +1,5 @@
+"""Configuration: where the config file is found, how it is stored and the resolved settings."""
+
 from dreamference.config.airgapped_resolver import AirgappedResolver
 from dreamference.config.config_file_storage_manager import ConfigFileStorageManager
 from dreamference.config.config_path_resolver import (
