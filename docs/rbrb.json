@@ -1,6 +1,27 @@
 {
   "name": "Ragon-Builds-Ragon benchmark",
-  "unit": "generated tokens",
+  "unit": "price-weighted tokens (generated tokens only for method_version 0)",
+  "weights": {
+    "output": 1.0,
+    "input": 0.25,
+    "cache_read": 0.025
+  },
+  "method": {
+    "0": {
+      "ragon_tokens": "the node's model-server generation counter; generated tokens only; interactive use and QA smoke included",
+      "other_tokens": "the coordinator's usage ledger, output tokens; a lower bound",
+      "exclusions": "benchmark nights",
+      "retry_rule": "not applied",
+      "weeks_omitted": "none"
+    },
+    "1": {
+      "ragon_tokens": "the model gate's per-request usage counters, by job tag; generated, input and cache-read tokens at the published weights; reasoning tokens included",
+      "other_tokens": "the coordinator's per-job usage ledger; the same three kinds, reasoning tokens included where reported",
+      "exclusions": "benchmark nights, the morning QA, Night Shift tasks of the product, requests without a job tag",
+      "retry_rule": "one retry, then fallback; every attempt's tokens count",
+      "weeks_omitted": "none"
+    }
+  },
   "points": [
     {
       "week": "2026-W46",

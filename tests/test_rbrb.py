@@ -23,7 +23,9 @@ def _data() -> dict:
 
 def test_schema() -> None:
     data = _data()
-    assert set(data) == {"name", "unit", "points", "quality"}
+    assert set(data) == {"name", "unit", "weights", "method", "points", "quality"}
+    assert data["weights"] == {"output": 1.0, "input": 0.25, "cache_read": 0.025}
+    assert set(data["method"]) >= {"0", "1"}
     assert data["points"]
     keys = {
         "week", "from", "to", "ragon_generated_tokens", "other_generated_tokens",
