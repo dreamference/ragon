@@ -1,3 +1,8 @@
+"""Context engine: indexes a project's source into symbols and ranks them by TF-IDF.
+
+See specs/DREAMFERENCE_CONTEXT.md.
+"""
+
 from dreamference.context_engine.ast_symbol_extractor import ASTSymbolExtractor
 from dreamference.context_engine.code_symbol import CodeSymbol
 from dreamference.context_engine.context_engine import ContextEngine
