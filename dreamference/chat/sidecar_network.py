@@ -1,5 +1,6 @@
-"""The Docker network Dreamference's own sidecars are created on, and the check for a container that
-was not created on one.
+"""The Docker network Dreamference's own sidecars are created on.
+
+It also holds the check for a container that was not created on one.
 
 A container's DNS setup is decided by the network it is *created* on, and attaching it to another
 network later does not change it. On Docker's default bridge a container gets a copy of the host's
@@ -21,6 +22,9 @@ from typing import Final
 # time. A network of its own, because SearXNG serves `ragon-search` and the MCP server on
 # machines where the web UI is not installed.
 SIDECAR_NETWORK: Final[str] = "dreamference-sidecars"
+
+# Docker's error text when the network exists.
+ALREADY_EXISTS: Final[str] = "already exists"
 
 # `HostConfig.NetworkMode` of a container created without `--network`: `bridge` from the CLI,
 # `default` from some API clients.
@@ -54,7 +58,7 @@ class SidecarNetwork:
             check=False,
         )
         # Two commands racing to create it: the loser's "already exists" is success.
-        return created.returncode == 0 or "already exists" in created.stderr
+        return created.returncode == 0 or ALREADY_EXISTS in created.stderr
 
     @classmethod
     def network_mode(cls, container: str) -> str:
@@ -77,8 +81,9 @@ class SidecarNetwork:
 
     @classmethod
     def created_on_default_bridge(cls, container: str) -> bool:
-        """Tells whether a container exists and was created on Docker's default bridge, where its
-        DNS servers are a copy taken at start.
+        """Tells whether a container exists and was created on Docker's default bridge.
+
+        There its DNS servers are a copy taken at start.
 
         Args:
             container: The container's name.
