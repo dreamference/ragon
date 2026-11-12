@@ -8,6 +8,7 @@ and launches VS Code.
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,11 @@ from dreamference.config import DreamferenceConfig
 from dreamference.runner.continue_installer import ContinueInstaller
 from dreamference.runner.vllm_readiness_waiter import VLLMReadinessWaiter
 from dreamference.vllm_server import VLLMServerManager
+
+
+def _say(text: str) -> None:
+    """Writes one line for the person launching Continue."""
+    sys.stdout.write(text + "\n")
 
 
 class ContinueRunner:
@@ -103,18 +109,18 @@ class ContinueRunner:
 
         # Step 2: Ensure VS Code and Continue extension are installed
         if not ContinueInstaller.is_vscode_installed():
-            print("❌ VS Code CLI (`code` or `codium`) is not installed or not in PATH.")
-            print("💡 Install VS Code or add `code` to PATH to launch Continue.")
+            _say("❌ VS Code CLI (`code` or `codium`) is not installed or not in PATH.")
+            _say("💡 Install VS Code or add `code` to PATH to launch Continue.")
             return 1
 
         ContinueInstaller.install_continue_if_missing()
 
         # Step 3: Write ~/.continue/config.json
         cfg_path = self.ensure_continue_config()
-        print(f"✅ Configured Continue IDE settings at {cfg_path}")
+        _say(f"✅ Configured Continue IDE settings at {cfg_path}")
 
         code_bin = ContinueInstaller.get_vscode_executable()
-        print(
+        _say(
             f"🚀 Launching VS Code with Continue extension ({self.config.model} + Tab Autocomplete)..."
         )
         try:
@@ -122,5 +128,5 @@ class ContinueRunner:
                 raise FileNotFoundError("no `code` or `codium` found")
             return subprocess.call([code_bin, str(Path.cwd())])
         except OSError as e:
-            print(f"❌ Failed to launch VS Code: {e}")
+            _say(f"❌ Failed to launch VS Code: {e}")
             return 1
