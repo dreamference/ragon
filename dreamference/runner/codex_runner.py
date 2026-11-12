@@ -11,7 +11,9 @@ logic here would give the two entry points two setups to keep in step.
 
 import os
 import subprocess
+import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Final
 
 from dreamference.config import DreamferenceConfig
@@ -19,6 +21,11 @@ from dreamference.runner.codex_installer import CodexInstaller
 
 # The variable the launcher reads for the compatibility mode (ragon-rs/src/compat.rs).
 COMPAT_ENV: Final[str] = "DREAMFERENCE_RAGON_COMPAT"
+
+
+def _say(text: str) -> None:
+    """Writes one line for the person launching ragon."""
+    sys.stdout.write(text + "\n")
 
 
 class CodexRunner:
@@ -56,8 +63,8 @@ class CodexRunner:
             return 1
         ragon = CodexInstaller.get_codex_executable()
         if not ragon:
-            print("❌ `ragon` is not built.")
-            print("💡 Build it with: `ragon-admin codex build`")
+            _say("❌ `ragon` is not built.")
+            _say("💡 Build it with: `ragon-admin codex build`")
             return 1
 
         cmd: list[str] = [ragon, *(agent_args or [])]
@@ -79,12 +86,12 @@ class CodexRunner:
             env["RUST_LOG"] = os.getenv(
                 "RUST_LOG", "codex_mcp=trace,codex_core=debug,codex_app_server=debug,info"
             )
-            print(f"🐞 Debug logging on (RUST_LOG={env['RUST_LOG']})")
-            print(f"   TUI logs go to: {os.path.join(CodexInstaller.home_dir(), 'logs_2.sqlite')}")
-            print("   Read MCP lifecycle with: ragon-admin logs mcp")
+            _say(f"🐞 Debug logging on (RUST_LOG={env['RUST_LOG']})")
+            _say(f"   TUI logs go to: {Path(CodexInstaller.home_dir()) / 'logs_2.sqlite'}")
+            _say("   Read MCP lifecycle with: ragon-admin logs mcp")
 
         try:
             return subprocess.call(cmd, env=env)
         except OSError as error:
-            print(f"❌ Failed to run ragon: {error}")
+            _say(f"❌ Failed to run ragon: {error}")
             return 1
