@@ -245,6 +245,8 @@ Example (illustrative):
 
 The counters are specified here and not yet built.
 
+**Built first (2026-11-12), differing from points 1 and 2:** the tag rides in an HTTP header, `X-Ragon-Job: <job id>`, which coord's `ragon` calls send through a provider-header override (`-c model_providers.openai-custom.http_headers.X-Ragon-Job=…`, the way `share_scope.rs` sends its own), so the launcher needs no change. The gate's state folder is mounted read-only into its container, so the count is one line in the gate's container log, not a file: `<end time> model gate: usage {"job":…,"path":…,"generated":…,"prompt":…,"cached":…}` (`ModelGateService.usage_line`), a count null when the answer carried none. Nights and SWE-bench never send the header, which covers point 3. Point 1's `client_metadata` key stays the plan for callers that cannot set a header.
+
 1. **The tag.** The launcher puts `ragon_job` into `client_metadata` when `DREAMFERENCE_RAGON_JOB` is set. It goes beside `ragon_surface` and `ragon_workload`, where the extension API puts them ([docs/dev/loop-guard.md](../docs/dev/loop-guard.md)). `ragon exec` and the `task` tool pass the coordinator's job id through it.
 2. **The count.** The model gate appends one line per finished request to its usage log in the gate's state folder on the node. The line holds the end time, the job tag, and the prompt, cached and generated tokens from the engine's usage block.
 3. **What is skipped.** Requests without a tag are counted in the engine's totals but not here. So are requests whose workload is `swe-bench` or `night`.

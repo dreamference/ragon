@@ -14,6 +14,11 @@ A `/v1/responses` body is read whole and passes `model_gate_guard.py`, which tur
 guard asks in the body's `client_metadata` (a length cap, a sampling arm) into the request's own
 fields where the body sets none; a body that asks for nothing goes on byte for byte.
 
+A generation request that names its job (`X-Ragon-Job`, which coord's `ragon` calls send) gets
+one `usage` line in the gate's log when its connection ends: the job, the path and the token counts
+the engine's answer carried (its `usage` object, read as the answer streams by, never held back),
+so the work a job did on the node can be counted. An untagged request logs nothing new.
+
 A request is the run's when it comes from the run's internal Docker network: its containers reach
 the model at that network's gateway, so their source address is in the network's subnet, which
 the run writes into its record. No other client can send from there without the Docker socket.
@@ -31,6 +36,7 @@ import importlib
 import ipaddress
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Awaitable, Callable
@@ -127,6 +133,18 @@ POST: Final[str] = "POST"
 FORBIDDEN: Final[int] = 403
 TOO_LARGE: Final[int] = 413
 BAD_GATEWAY: Final[int] = 502
+# The job a generation request names (`X-Ragon-Job`) and the answer's `usage` object, logged once
+# per tagged request. A tag outside the allowed characters is ignored, so the log line stays one line.
+JOB_HEADER: Final[bytes] = b"x-ragon-job"
+JOB_TAG_MAX: Final[int] = 120
+JOB_TAG_CHARS: Final[str] = "._:-/@+"
+USAGE_KEY: Final[bytes] = b'"usage":'
+# A usage object longer than this is not one: the scan gives up on it rather than buffer an answer.
+USAGE_LIMIT: Final[int] = 1 << 12
+# A chunk-size line of a chunked answer, which may fall inside the object between two reads.
+CHUNK_LINE: Final[re.Pattern[bytes]] = re.compile(rb"\r\n[0-9a-fA-F]+(?:;[^\r\n]*)?\r\n")
+OPEN_BRACE: Final[int] = ord("{")
+CLOSE_BRACE: Final[int] = ord("}")
 
 
 class ModelGateService:
@@ -502,8 +520,12 @@ class ModelGateService:
         source: asyncio.StreamReader,
         sink: asyncio.StreamWriter,
         replacement: tuple[bytes, bytes] | None = None,
+        tap: dict[str, Any] | None = None,
     ) -> None:
-        """Copies bytes as they arrive until the source ends, replacing one id with another of its length."""
+        """Copies bytes as they arrive until the source ends, replacing one id with another of its length.
+
+        Each piece, once written, is fed to the usage tap (`usage_tap`) when there is one.
+        """
         carry = b""
         while True:
             read = data = await source.read(BUFFER)
@@ -517,6 +539,8 @@ class ModelGateService:
                 continue  # The whole read may be the start of the id: held back, not the end.
             sink.write(data)
             await sink.drain()
+            if tap is not None:
+                cls.feed_usage(tap, data)
 
     @classmethod
     async def pipe_response(
@@ -524,6 +548,7 @@ class ModelGateService:
         source: asyncio.StreamReader,
         sink: asyncio.StreamWriter,
         replacement: tuple[bytes, bytes] | None = None,
+        tap: dict[str, Any] | None = None,
     ) -> None:
         """Copies the engine's answer.
 
@@ -542,7 +567,107 @@ class ModelGateService:
             sink.write(cls.rewrite_head(head))
             await sink.drain()
             break
-        await cls.pipe(source, sink, replacement)
+        await cls.pipe(source, sink, replacement, tap)
+
+    @classmethod
+    def usage_tap(
+        cls, method: str, path: str, headers: list[tuple[bytes, bytes]]
+    ) -> dict[str, Any] | None:
+        """A usage tap for a generation request that names its job (`X-Ragon-Job`), else None.
+
+        Args:
+            method: The request's method.
+            path: Its path.
+            headers: Its headers, names lowercased (`parse_head`).
+
+        Returns:
+            The tap (`feed_usage` fills it, `usage_line` reports it), or None.
+        """
+        if method != POST or path not in gate_adapters.GENERATION_PATHS:
+            return None
+        tag = dict(headers).get(JOB_HEADER, b"").decode("ascii", "replace").strip()
+        if (
+            not tag
+            or len(tag) > JOB_TAG_MAX
+            or not all(c.isalnum() or c in JOB_TAG_CHARS for c in tag)
+        ):
+            return None
+        return {"job": tag, "path": path, "carry": b"", "usage": None}
+
+    @classmethod
+    def feed_usage(cls, tap: dict[str, Any], data: bytes) -> None:
+        """Scans one piece of an answer for its `usage` object; the last complete one wins.
+
+        A key or object cut by the end of the piece is carried to the next, at most `USAGE_LIMIT`
+        bytes. Nothing here raises on what the engine sends.
+
+        Args:
+            tap: `usage_tap()`'s answer, updated in place.
+            data: The piece, as written to the client.
+        """
+        buffer = tap["carry"] + data
+        tap["carry"] = buffer[-(len(USAGE_KEY) - 1) :]
+        start = buffer.find(USAGE_KEY)
+        while start >= 0:
+            found = cls.usage_object(buffer[start + len(USAGE_KEY) :])
+            if found is None:
+                tap["carry"] = buffer[start:]
+                return
+            if found:
+                tap["usage"] = found
+            start = buffer.find(USAGE_KEY, start + len(USAGE_KEY))
+
+    @classmethod
+    def usage_object(cls, rest: bytes) -> dict[str, Any] | None:
+        """The object that follows a `"usage":` key.
+
+        Args:
+            rest: The answer from just after the key.
+
+        Returns:
+            The object; an empty dict when the value is not one (`null`, too long, unparsable);
+            None when it runs past `rest`, to be read again with the next piece.
+        """
+        window = rest[:USAGE_LIMIT]
+        body = CHUNK_LINE.sub(b"", window).lstrip()
+        if not body.startswith(b"{"):
+            return None if not body and len(window) < USAGE_LIMIT else {}
+        depth = 0
+        for end, byte in enumerate(body):
+            depth += (byte == OPEN_BRACE) - (byte == CLOSE_BRACE)
+            if depth == 0:
+                try:
+                    found = json.loads(body[: end + 1])
+                except ValueError:
+                    return {}
+                return found if isinstance(found, dict) else {}
+        return None if len(window) < USAGE_LIMIT else {}
+
+    @classmethod
+    def usage_line(cls, tap: dict[str, Any]) -> str:
+        """The log line for a tagged request: `usage` and one JSON object.
+
+        `generated` is the answer's output tokens (`output_tokens`, or `completion_tokens` on the
+        chat paths), `prompt` its input tokens, `cached` the cached part of those; each is null when
+        the answer carried none (the client left before the end, or the engine sent no usage).
+
+        Args:
+            tap: `usage_tap()`'s answer after the answer was copied.
+
+        Returns:
+            str: The line, without the gate's stamp.
+        """
+        usage = tap["usage"] or {}
+        details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details")
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        counts = {
+            "generated": usage.get("output_tokens", usage.get("completion_tokens")),
+            "prompt": usage.get("input_tokens", usage.get("prompt_tokens")),
+            "cached": cached,
+        }
+        record = {"job": tap["job"], "path": tap["path"]}
+        record.update({key: value if type(value) is int else None for key, value in counts.items()})
+        return "usage " + json.dumps(record, separators=(",", ":"))
 
     @classmethod
     async def watch_client(cls, reader: asyncio.StreamReader) -> None:
@@ -622,6 +747,7 @@ class ModelGateService:
         """Serves one connection: one request, decided, then refused or streamed through."""
         upstream_writer: asyncio.StreamWriter | None = None
         tasks: list[asyncio.Task] = []
+        tap: dict[str, Any] | None = None
         try:
             peer = writer.get_extra_info("peername")
             peer_address = str(peer[0]) if peer else ""
@@ -664,9 +790,10 @@ class ModelGateService:
                     await self.copy_body(reader, framing, upstream_writer)
                 await self.watch_client(reader)
 
+            tap = self.usage_tap(method, path, headers)
             tasks = [
                 asyncio.ensure_future(client_side()),
-                asyncio.ensure_future(self.pipe_response(upstream_reader, writer, forward[2])),
+                asyncio.ensure_future(self.pipe_response(upstream_reader, writer, forward[2], tap)),
             ]
             # The answer is over when the engine closes (it was asked to) or the client leaves,
             # which also tells the engine to stop generating.
@@ -681,6 +808,13 @@ class ModelGateService:
             pass
         finally:
             await self.close_connection(tasks, (upstream_writer, writer))
+            self.log_usage(tap)
+
+    @classmethod
+    def log_usage(cls, tap: dict[str, Any] | None) -> None:
+        """Logs a tagged request's `usage_line`, once its connection is closed; nothing without a tap."""
+        if tap is not None:
+            cls.log(cls.usage_line(tap))
 
     @staticmethod
     async def close_connection(
