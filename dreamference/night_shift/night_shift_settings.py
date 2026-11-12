@@ -44,8 +44,10 @@ class NightShiftSettings:
     """Resolved Night Shift settings, defaults filled in."""
 
     def __init__(self, table: dict[str, Any] | None = None) -> None:
-        """Args:
-        table: The `[night]` table; None reads it from the config file.
+        """Resolves the settings, defaults filled in.
+
+        Args:
+            table: The `[night]` table; None reads it from the config file.
         """
         if table is None:
             table = self.read_table()
@@ -169,7 +171,7 @@ class NightShiftSettings:
         return table if isinstance(table, dict) else {}
 
     @classmethod
-    def parse_duration(cls, value: Any) -> int:
+    def parse_duration(cls, value: object) -> int:
         """Parses `90m`, `2h`, `45s` or a bare number of minutes.
 
         Args:
