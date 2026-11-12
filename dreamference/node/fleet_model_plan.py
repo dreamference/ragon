@@ -18,6 +18,11 @@ GIB: Final[int] = 1024**3
 # Free space a node keeps after everything is copied.
 DISK_MARGIN_GB: Final[int] = 20
 
+# A registry reference names its repository with a slash (owner/name).
+REPOSITORY_SEPARATOR: Final[str] = "/"
+# A reference pinned to a digest carries this before the digest.
+DIGEST_MARKER: Final[str] = "@sha256:"
+
 
 class FleetModelPlan:
     """The folders and images one matrix entry needs on a node."""
@@ -57,7 +62,10 @@ class FleetModelPlan:
             bool: True if it names a registry repository (has a `/`), which the node pulls;
             False for a bare tag built on this machine, which is copied.
         """
-        return "/" in reference.split("@", 1)[0].split(":", 1)[0] or "@sha256:" in reference
+        return (
+            REPOSITORY_SEPARATOR in reference.split("@", 1)[0].split(":", 1)[0]
+            or DIGEST_MARKER in reference
+        )
 
     @classmethod
     def hub(cls) -> Path:
