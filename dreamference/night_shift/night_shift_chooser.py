@@ -34,6 +34,11 @@ MIN_COMPARISONS: Final[int] = 2
 SWISS_WINDOW: Final[int] = 8
 WEIGHT_FLOOR: Final[float] = 0.1
 RATING: Final[re.Pattern] = re.compile(r"RATING_([AB]):\s*\**\s*(\d+(?:\.\d+)?)")
+# The two sides `RATING` captures.
+SIDE_A: Final[str] = "A"
+SIDE_B: Final[str] = "B"
+# The key the judge's model id is kept under once `/models` has named it.
+MODEL_ID_KEY: Final[str] = "id"
 
 # The judge's sampling, as measured: Qwen3.8's recommended settings and room for its thinking.
 JUDGE_MAX_TOKENS: Final[int] = 16384
@@ -61,7 +66,8 @@ USER_TEMPLATE: Final[str] = """<issue>
 {b}
 </solution_B>
 
-Rate the correctness of each solution from 1 (wrong) to 10 (certainly correct). End your answer with exactly these two lines:
+Rate the correctness of each solution from 1 (wrong) to 10 (certainly correct). \
+End your answer with exactly these two lines:
 RATING_A: <1-10>
 RATING_B: <1-10>"""
 
@@ -84,7 +90,7 @@ class NightShiftChooser:
         found: dict[str, float] = {}
         for side, value in RATING.findall(answer):
             found[side] = min(10.0, max(1.0, float(value)))
-        return (found["A"], found["B"]) if "A" in found and "B" in found else None
+        return (found[SIDE_A], found[SIDE_B]) if SIDE_A in found and SIDE_B in found else None
 
     @classmethod
     def messages(cls, issue: str, a: str, b: str) -> list[dict[str, str]]:
@@ -298,10 +304,12 @@ class NightShiftChooser:
         def compare(a: ChooserCandidate, b: ChooserCandidate) -> tuple[float, float] | None:
             record: dict[str, Any] = {"a": a.id, "b": b.id}
             try:
-                if "id" not in model:
-                    model["id"] = str(((request("/models").get("data") or [{}])[0]).get("id") or "")
+                if MODEL_ID_KEY not in model:
+                    model[MODEL_ID_KEY] = str(
+                        ((request("/models").get("data") or [{}])[0]).get("id") or ""
+                    )
                 payload: dict[str, Any] = {
-                    "model": model["id"],
+                    "model": model[MODEL_ID_KEY],
                     "max_tokens": JUDGE_MAX_TOKENS,
                     "temperature": JUDGE_TEMPERATURE,
                     "top_p": JUDGE_TOP_P,
