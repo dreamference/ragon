@@ -10,6 +10,7 @@ and a no-op patch does not. Only validated instances are run, and the rest are r
 
 import json
 import os
+import sys
 import time
 import urllib.request
 from collections.abc import Callable
@@ -84,7 +85,9 @@ class SweBenchImages:
             fetched = cls.fetch_tags()
         except (OSError, ValueError, KeyError) as error:
             if not cached:
-                print(f"⚠️  Could not list {swe_bench_settings.COMMUNITY_IMAGE_REPO}: {error}")
+                sys.stdout.write(
+                    f"⚠️  Could not list {swe_bench_settings.COMMUNITY_IMAGE_REPO}: {error}\n"
+                )
             return cached
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"fetched_at": time.time(), "tags": sorted(fetched)}) + "\n")
