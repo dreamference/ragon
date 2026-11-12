@@ -28,6 +28,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -78,6 +79,11 @@ INDEX_MOUNT: Final[str] = "/ragon-index"
 INDEX_TIMEOUT_S: Final[int] = 30 * 60
 RECORD_NAME: Final[str] = "index.json"
 STAMP_NAME: Final[str] = "source-hash"
+
+
+def _say(text: str) -> None:
+    """Writes one line of the code-index setup's progress."""
+    sys.stdout.write(text + "\n")
 
 
 class SweBenchCodeIndex:
@@ -142,7 +148,7 @@ class SweBenchCodeIndex:
 
         binary = cls.host_binary()
         if binary is None:
-            print("❌ ragon-code is not installed: run `ragon-admin codex build` first.")
+            _say("❌ ragon-code is not installed: run `ragon-admin codex build` first.")
             return None
         wanted = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
         target = cls.runtime_dir()
@@ -175,7 +181,7 @@ class SweBenchCodeIndex:
                 raise ValueError(patched.stderr.strip()[-300:])
         except (OSError, subprocess.CalledProcessError, ValueError) as error:
             shutil.rmtree(staging, ignore_errors=True)
-            print(f"❌ Could not build ragon-code for the instance images: {error}")
+            _say(f"❌ Could not build ragon-code for the instance images: {error}")
             return None
         (staging / STAMP_NAME).write_text(wanted + "\n")
         shutil.rmtree(target, ignore_errors=True)
@@ -243,14 +249,14 @@ class SweBenchCodeIndex:
         created = SweBenchDocker.run(["create", image], timeout=300)
         container = created.stdout.strip()
         if created.returncode != 0 or not container:
-            print(f"⚠️  {row['instance_id']}: could not create a container to copy /testbed from")
+            _say(f"⚠️  {row['instance_id']}: could not create a container to copy /testbed from")
             return False
         copied = SweBenchDocker.run(
             ["cp", "-q", f"{container}:/testbed", str(checkout)], timeout=900
         )
         SweBenchDocker.run(["rm", "-f", container], timeout=120)
         if copied.returncode != 0:
-            print(f"⚠️  {row['instance_id']}: could not copy /testbed out of {image}")
+            _say(f"⚠️  {row['instance_id']}: could not copy /testbed out of {image}")
             return False
         return True
 
@@ -276,7 +282,7 @@ class SweBenchCodeIndex:
             return dict(cached, cached=True)
         binary = cls.host_binary()
         if binary is None:
-            print("❌ ragon-code is not installed: run `ragon-admin codex build` first.")
+            _say("❌ ragon-code is not installed: run `ragon-admin codex build` first.")
             return None
         if arm == EXACT_TEXT:
             return cls.ensure_exact(row, image, binary)
@@ -312,7 +318,7 @@ class SweBenchCodeIndex:
         )
         shutil.rmtree(checkout, ignore_errors=True)  # queries read the container's own /testbed
         if code != 0 or not graphs:
-            print(
+            _say(
                 f"⚠️  {row['instance_id']}: ragon-code index failed ({code}); see {directory / 'index.log'}"
             )
             return None
@@ -419,12 +425,12 @@ class SweBenchCodeIndex:
             "tool_hash": hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
         }
         if not stores:
-            print(
+            _say(
                 f"⚠️  {row['instance_id']}: no SCIP store was built; the agent will have the text search alone "
                 f"(see {directory / 'index.log'})"
             )
         elif failed:
-            print(
+            _say(
                 f"⚠️  {row['instance_id']}: {len(failed)} indexer run(s) did not finish: {', '.join(sorted(failed))}"
             )
         (directory / RECORD_NAME).write_text(json.dumps(record, indent=2) + "\n")
