@@ -43,6 +43,10 @@ EVENTS: Final[list[tuple]] = [
     ("Stop", "stop", "stop"),
 ]
 HOOK_TIMEOUT_S: Final[int] = 30
+# A Codex config that already has hooks has a table whose header starts with this.
+HOOKS_TABLE_PREFIX: Final[str] = "[hooks"
+# The gate counts the calls it got before it had conditions under this key; it is not an event.
+BEFORE_CONDITIONS: Final[str] = "before_conditions"
 
 
 class SweBenchHooks:
@@ -125,7 +129,7 @@ class SweBenchHooks:
         """
         path = codex_home / "config.toml"
         existing = path.read_text() if path.exists() else ""
-        if "[hooks" in existing:
+        if HOOKS_TABLE_PREFIX in existing:
             raise ValueError(f"{path} already has hooks")
         text = cls.config_text(f"{container_codex_home}/config.toml", container_directory)
         path.write_text((existing.rstrip("\n") + "\n\n" if existing.strip() else "") + text)
@@ -202,9 +206,7 @@ class SweBenchHooks:
         stops = state.get("stops", [])
         edit_hold, stop_hold = state.get("edit_hold"), state.get("stop_hold")
         return {
-            "ran": any(
-                count for event, count in invocations.items() if event != "before_conditions"
-            ),
+            "ran": any(count for event, count in invocations.items() if event != BEFORE_CONDITIONS),
             "invocations": invocations,
             "targets": [target["label"] for target in targets],
             "dropped": len(conditions.get("dropped", [])),
