@@ -40,6 +40,17 @@ PARENT: Final[str] = ".."
 _SLASH: Final[str] = "/"
 
 
+def _say(text: str) -> None:
+    """Writes one line for the person running the copy, and shows it at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
+
+
+def _warn(text: str) -> None:
+    """Writes one line to standard error, where the node's side of the copy reports."""
+    sys.stderr.write(text + "\n")
+
+
 class NodeModelSync:
     """Both ends of a model copy."""
 
@@ -155,11 +166,11 @@ class NodeModelSync:
         from dreamference.node.node_pairing import NodePairing
 
         if model_key not in ModelMatrixRegistry.MATRIX:
-            print(f"❌ {model_key} is not a key of the model matrix (`ragon-admin model list`).")
+            _say(f"❌ {model_key} is not a key of the model matrix (`ragon-admin model list`).")
             return 1
         record: dict[str, Any] | None = NodePairing.find(name)
         if record is None:
-            print(f"❌ {name} is not a paired node. Pair once with: ragon-admin node add {name}")
+            _say(f"❌ {name} is not a paired node. Pair once with: ragon-admin node add {name}")
             return 1
         if address:
             # An address given by hand is used as it is; otherwise every connection resolves the
@@ -170,7 +181,7 @@ class NodeModelSync:
         found = {repo: cls.members(hub, repo) for repo in repos}
         missing = [cls._described(repo) for repo, paths in found.items() if paths is None]
         if missing:
-            print(
+            _say(
                 f"❌ This machine does not have {', '.join(missing)}: `ragon-admin model download {model_key}` "
                 f"here first, or on {record['name']}."
             )
@@ -180,12 +191,11 @@ class NodeModelSync:
         try:
             command = NodePairing.ssh_command(record, f"model-receive {model_key} {size}")
         except LookupError as error:
-            print(f"❌ {error}")
+            _say(f"❌ {error}")
             return 1
-        print(
+        _say(
             f"📤 Copying {model_key} ({size / GIB:.1f} GiB, {len(repos)} folder(s)) to {record['name']} "
-            f"at {command[-2].partition('@')[2]}...",
-            flush=True,
+            f"at {command[-2].partition('@')[2]}..."
         )
         started = time.time()
         tar = subprocess.Popen(
@@ -206,13 +216,13 @@ class NodeModelSync:
         code = ssh.wait()
         tar.wait()
         if code != 0 or tar.returncode not in (0, None):
-            print(
+            _say(
                 f"❌ The copy did not complete (node exit {code}, tar exit {tar.returncode}); "
                 f"{record['name']}'s cache is as it was."
             )
             return 1
         seconds = max(1.0, time.time() - started)
-        print(
+        _say(
             f"✅ {record['name']} has {model_key} ({size / GIB / seconds * 8:.1f} Gbit/s over {seconds:.0f} s). "
             f"Serve it there with: ragon-admin node set {record['name']} --model {model_key}"
         )
@@ -244,16 +254,15 @@ class NodeModelSync:
         from dreamference.node.node_serve import MODEL_KEY
 
         if not MODEL_KEY.fullmatch(model_key) or model_key not in ModelMatrixRegistry.MATRIX:
-            print(f"❌ {model_key!r} is not a model this node knows.", file=sys.stderr)
+            _warn(f"❌ {model_key!r} is not a model this node knows.")
             return 2
         hub = cls.hub()
         hub.mkdir(parents=True, exist_ok=True)
         free = shutil.disk_usage(hub).free
         if free < size + DISK_MARGIN:
-            print(
+            _warn(
                 f"❌ This node has {free / GIB:.0f} GiB free; the copy needs {(size + DISK_MARGIN) / GIB:.0f} "
-                f"with the margin.",
-                file=sys.stderr,
+                f"with the margin."
             )
             return 2
         allowed = {cls.folder_name(repo) for repo in cls.repos(model_key)}
@@ -264,12 +273,12 @@ class NodeModelSync:
             problem = cls._unpack(sys.stdin.buffer, staging, allowed, size)
             problem = problem or cls._verify(staging)
             if problem:
-                print(f"❌ {problem}; nothing was added to the cache.", file=sys.stderr)
+                _warn(f"❌ {problem}; nothing was added to the cache.")
                 return 1
             added, kept = cls._merge(staging, hub)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
-        print(json.dumps({"model": model_key, "added": added, "already_here": kept}))
+        _say(json.dumps({"model": model_key, "added": added, "already_here": kept}))
         return 0
 
     @classmethod
