@@ -6,17 +6,8 @@
   "dreamference/runner/codex_branded_builder.py": {
    "attr-defined": 2,
    "union-attr": 1
-  },
-  "dreamference/swe_bench/swe_bench_arm_smoke.py": {
-   "union-attr": 4
-  },
-  "dreamference/swe_bench/swe_bench_images.py": {
-   "assignment": 1
-  },
-  "dreamference/swe_bench/swe_bench_relay.py": {
-   "union-attr": 1
   }
  },
  "mypy": "2.4.0",
- "total": 15
+ "total": 9
 }
