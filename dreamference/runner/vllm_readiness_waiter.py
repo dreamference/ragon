@@ -17,6 +17,11 @@ HTTP_OK: Final = 200
 GATE_CLOSED_STATE: Final = "closed"
 
 
+def _say(text: str) -> None:
+    """Writes one line for the person waiting on the server."""
+    sys.stdout.write(text + "\n")
+
+
 class VLLMReadinessWaiter:
     """Polls the configured model server until it is healthy and able to complete a chat request."""
 
@@ -41,15 +46,15 @@ class VLLMReadinessWaiter:
                 cancellation.
         """
         start_time = time.monotonic()
-        print(f"⏳ Waiting for local vLLM server at {self.config.vllm_host} to become available...")
+        _say(f"⏳ Waiting for local vLLM server at {self.config.vllm_host} to become available...")
 
         while True:
             try:
                 if self.vllm_manager.check_health(timeout=1.0) and self._pre_warm():
-                    print("\n✅ vLLM server is online and ready!")
+                    _say("\n✅ vLLM server is online and ready!")
                     return True
             except (KeyboardInterrupt, SystemExit):
-                print("\n🛑 Cancelled checking vLLM server.")
+                _say("\n🛑 Cancelled checking vLLM server.")
                 return False
 
             # The server is up but its gate refuses everyone but a benchmark run: waiting would
@@ -58,12 +63,12 @@ class VLLMReadinessWaiter:
 
             gate = ModelGate.probe(self.config.vllm_host, timeout=1.0) or {}
             if gate.get("state") == GATE_CLOSED_STATE:
-                print(f"\n⛔ {gate.get('message')}")
+                _say(f"\n⛔ {gate.get('message')}")
                 return False
 
             if max_wait is not None and (time.monotonic() - start_time) > max_wait:
-                print(f"\n❌ Timed out waiting for vLLM server after {max_wait} seconds.")
-                print("💡 Start vLLM in another terminal via: `ragon-admin server start`")
+                _say(f"\n❌ Timed out waiting for vLLM server after {max_wait} seconds.")
+                _say("💡 Start vLLM in another terminal via: `ragon-admin server start`")
                 return False
 
             sys.stdout.write(".")
