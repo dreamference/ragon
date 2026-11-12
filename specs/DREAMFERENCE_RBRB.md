@@ -665,6 +665,35 @@ The land queue's refusal (§3.3) is tested in the coordinator's own tools, which
 | The `client_metadata` tag, a usage log file in the gate's state folder, and the ledger in this repository | Not built. |
 | The derived fields of §7.1 (commits, surviving lines, rework, reverts, the band, landed tokens), the weighted share, the interval and the hollow points, the extra chart lines, the README number block and `.github/workflows/rbrb.yml` | Not built. |
 
+## 14a. The research amendments (2026-11-12)
+
+The amendments of the rbrb research are numbered C1 to C15. The eight below are **adopted by default**: they are in the spec, each at the section named.
+
+| Id | Amendment | Where |
+|---|---|---|
+| C3 | Rework counted for both groups, Ragon's and the rest | §2.8, §7.1 (`rework`) |
+| C5 | Tokens per landed commit, published beside the shares | §7.1, §10 |
+| C6 | Jobs per week, the 80 % job-level interval and the hollow point below 5 jobs | §7.1 (`jobs`, `rbrb_share_ci80`) |
+| C8 | The acceptance test fixed before the task and outside the file list | §9 |
+| C9 | Gate files off limits to Ragon | §9 |
+| C12 | Review findings by category | §9, §4.2 (`review_category`) |
+| C13 | `ragon_version` and the version-change tick | §4.2, §7.1 (`ragon_version_changed`) |
+| C14 | The `method` block and `attempts_per_landed_ragon_commit` | §7.1 |
+
+**Open, not adopted: these wait for the owner's decision.** The default in each line is what the spec does until then.
+
+| Id | Question | State |
+|---|---|---|
+| C1 | Rework rate with a 95 % control limit as a fourth condition of the quality band (§2.8) | Open. Written into §2.8 provisionally because an earlier brief named it; revert if the owner objects. |
+| C2 | Strata (kind of work) for the rework comparison | Open, not adopted. The comparison stays unstratified. |
+| C4 | Landed tokens for the gates and S4 work as the counted measure | Open, not adopted. All Ragon spend counts; the landed share is published beside, unused by the rule. |
+| C7 | The four-week pooled share as the headline (§7.3) | Open. Written into §7.3 provisionally because an earlier brief named it; revert if the owner objects. |
+| C10 | Attempt every eligible row | Open, not adopted. |
+| C11 | A Wilson lower bound for the phase-2 decision | Open, not adopted. |
+| C15 | A training cutoff for the model's knowledge | Open, not adopted. |
+
+---
+
 ## 15. Known defects
 
 None yet. The first point's limits are not defects: they are recorded in its `notes` (§7.1) and in §10.
