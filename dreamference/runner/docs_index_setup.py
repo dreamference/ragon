@@ -32,6 +32,7 @@ import pathlib
 import platform
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import urllib.request
@@ -244,7 +245,7 @@ class DocsIndexSetup:
     @classmethod
     def _say(cls, message: str) -> None:
         """One line of the setup's progress for the person running it."""
-        print(message)
+        sys.stdout.write(message + "\n")
 
     @classmethod
     def _install_library(cls, url: str, sha: str, member: str, name: str) -> None:
