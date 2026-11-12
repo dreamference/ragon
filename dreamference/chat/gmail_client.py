@@ -12,7 +12,6 @@ Every method returns the service's JSON, or a dict with `error` and `hint` in th
 """
 
 import json
-import os
 import pathlib
 import urllib.error
 import urllib.parse
@@ -27,7 +26,7 @@ GMAIL_SERVICE_URL: Final[str] = f"http://127.0.0.1:{GOOGLE_HOST_PORT}"
 
 # The file GoogleService.secret() creates and hands the container as RAGON_GMAIL_SECRET. Only
 # read here: a client that created one would hold a secret the running service does not know.
-SERVICE_SECRET_PATH: Final[str] = os.path.join(CREDENTIALS_DIR, SECRET_FILE_NAME)
+SERVICE_SECRET_PATH: Final[str] = str(pathlib.Path(CREDENTIALS_DIR) / SECRET_FILE_NAME)
 
 NOT_RUNNING_ERROR: Final[dict[str, str]] = {
     "error": "Gmail service is not running.",
