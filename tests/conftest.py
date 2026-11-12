@@ -73,6 +73,44 @@ PSI_THREAD_NAME = "psi-watchdog"
 LEAK_GRACE_S = 2.0
 
 
+def _wake_event_loops_without_send() -> None:
+    """Lets a thread wake an asyncio loop where the sandbox refuses `send()` on a socketpair.
+
+    Ragon's sandbox with the network off (the task tool's test runner, a workspace-write agent)
+    denies the `sendto` syscall by seccomp. asyncio wakes its loop from a worker thread
+    (`asyncio.to_thread`, `call_soon_threadsafe`) by `send()` on its self-pipe socketpair and
+    swallows the EPERM, so the loop sleeps in `select()` forever: tests/test_mcp_server.py hung
+    until the runner's 900 s limit. `write()` on the same socket is allowed. Only when the probe
+    below is refused does the wake-up go through it; on the host nothing changes.
+    """
+    import asyncio.selector_events
+    import contextlib
+    import socket
+
+    first, second = socket.socketpair()
+    with first, second:
+        try:
+            first.send(b"\0")
+        except PermissionError:
+            refused = True
+        else:
+            refused = False
+    loop_class = asyncio.selector_events.BaseSelectorEventLoop
+    if not refused or not hasattr(loop_class, "_write_to_self"):
+        return
+
+    def _write_to_self(self) -> None:
+        csock = getattr(self, "_csock", None)
+        if csock is not None:
+            with contextlib.suppress(OSError):
+                os.write(csock.fileno(), b"\0")
+
+    loop_class._write_to_self = _write_to_self
+
+
+_wake_event_loops_without_send()
+
+
 @pytest.fixture(autouse=True)
 def _no_compiler_cache(monkeypatch):
     monkeypatch.setattr(
