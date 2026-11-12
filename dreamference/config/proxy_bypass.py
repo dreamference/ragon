@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 # The names this machine answers to, always exempt.
 LOOPBACK_HOSTS: Final[tuple[str, ...]] = ("localhost", "127.0.0.1", "::1")
 NO_PROXY_KEYS: Final[tuple[str, str]] = ("NO_PROXY", "no_proxy")
+# A URL that names its scheme has this between the scheme and the host.
+SCHEME_SEPARATOR: Final[str] = "://"
 
 
 class ProxyBypass:
@@ -34,7 +36,7 @@ class ProxyBypass:
         if not url or not url.strip():
             return None
         text = url.strip()
-        if "://" not in text:
+        if SCHEME_SEPARATOR not in text:
             text = f"http://{text}"
         try:
             host = urlsplit(text).hostname
