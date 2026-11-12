@@ -28,6 +28,14 @@ WINDOW_MARKER: Final[str] = "# Night Shift window: "
 UNIT_QUOTED_CHARS: Final[str] = "\"'\\"
 
 
+# What `loginctl show-user -p Linger --value` prints while lingering is on.
+LINGER_ON: Final[str] = "yes"
+
+
+def _say(text: str) -> None:
+    sys.stdout.write(text + "\n")
+
+
 class NightShiftScheduler:
     """Installs, removes and reports the `ragon-night` timer."""
 
@@ -131,7 +139,7 @@ class NightShiftScheduler:
         try:
             timer, service = cls.render_units(window, cls.admin_executable())
         except ValueError as error:
-            print(f"❌ {error}")
+            _say(f"❌ {error}")
             return False
         directory = cls.unit_dir()
         directory.mkdir(parents=True, exist_ok=True)
@@ -140,11 +148,11 @@ class NightShiftScheduler:
         for args in (["daemon-reload"], ["enable", "--now", f"{UNIT}.timer"]):
             result = cls.systemctl(args)
             if result.returncode != 0:
-                print(f"❌ systemctl --user {' '.join(args)}: {result.stderr.strip()}")
+                _say(f"❌ systemctl --user {' '.join(args)}: {result.stderr.strip()}")
                 return False
-        print(f"✅ Night Shift enabled: {window} every night.")
+        _say(f"✅ Night Shift enabled: {window} every night.")
         if not cls.lingering():
-            print(
+            _say(
                 "⚠️  Lingering is off for this user, so the timer only fires while you are logged in.\n"
                 f"   To run it after logout: sudo loginctl enable-linger {getpass.getuser()}"
             )
@@ -165,7 +173,7 @@ class NightShiftScheduler:
                 if path.exists():
                     path.unlink()
             cls.systemctl(["daemon-reload"])
-        print(
+        _say(
             "✅ Night Shift disabled."
             if disabled
             else f"❌ systemctl --user disable --now {UNIT}.timer: {stopped.stderr.strip()}"
@@ -228,4 +236,4 @@ class NightShiftScheduler:
             )
         except (OSError, subprocess.SubprocessError):
             return False
-        return result.stdout.strip() == "yes"
+        return result.stdout.strip() == LINGER_ON
