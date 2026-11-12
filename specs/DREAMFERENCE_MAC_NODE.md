@@ -24,7 +24,7 @@ Every figure below carries a tag: **[E]** an estimate, **[?]** unknown. Nothing 
 2. **No strace.** The egress audit needs a different method on macOS, and a DNS lookup there is IPC to mDNSResponder, not a socket the process opens (§4.6).
 3. **Unattended boot.** With FileVault on, a Mac that loses power waits at the unlock screen until someone types a password; and whether Metal works from a launchd daemon with nobody logged in is the first probe (§4.2).
 
-**The calendar, stated plainly.** The engine's Metal specification puts its first release (M8) at about the end of March 2027 **[E]**, from code starting 2026-11-18. If 1.0 waits for the Mac node, it waits for that, unless the engine work is restaged or staffed differently (§9). The node track does not need the engine: a stand-in engine that answers `/v1/models` lets everything outside §5 be built and gated first.
+**The calendar, stated plainly.** The engine's Metal specification puts its first release (M8) at about the end of March 2027 **[E]**, from code starting 2026-11-18. If 1.0 waits for the Mac node, it waits for that, unless the engine work is restaged or staffed differently (§9). The node track does not need the engine: a stand-in engine that answers `/v1/models` lets the node's own parts (§4, §6) be built and their checks passed first; the checks that need Metal wait for the engine (§9).
 
 **Decisions wanted:** the table in §2, each with a default the work proceeds on.
 
@@ -149,7 +149,7 @@ The node registers `_ragon-node._tcp` with the system's mDNSResponder through `D
 
 **The firewall.** macOS's application firewall allows a signed binary's incoming connections by rule (`socketfilterfw --add`, `--unblockapp`), set once at install for `ragon-serve`, `ragon` (web on 3100) and the forge; an unsigned binary would prompt (MN7). On a network the user marks as public, the node advertises nothing and says why, as on Windows.
 
-**Local Network privacy (MN10) [?].** macOS 15 asks the user before a process reaches devices on the LAN. Whether that applies to a launchd daemon running as a role account, and to the client's browse from Terminal, is the second probe of §4.2.
+**Local Network privacy (MN10) [?].** macOS 15 asks the user before a process reaches devices on the LAN. Whether that applies to a launchd daemon running as a role account, and to the client's browse from Terminal, is the third probe, run on the same development box as §4.2's two.
 
 ### 4.5 The node install role, pairing and the forced command
 
@@ -167,7 +167,7 @@ The node registers `_ragon-node._tcp` with the system's mDNSResponder through `D
 
 ### 4.6 The egress audit on macOS
 
-There is no strace, and DTrace needs System Integrity Protection relaxed, which a product never asks for. The audit (`ragon audit egress`, the Rust twin of the Windows audit) runs one real `ragon exec` against the node's own engine, plus `ragon-serve`, the supervisor and the sidecars, by two methods whose verdicts must both pass:
+There is no strace, and DTrace needs System Integrity Protection relaxed, which a product never asks for. The audit (`ragon audit egress`, the Rust twin of the Windows audit) runs one real `ragon exec` against the node's own engine, plus `ragon-serve`, the supervisor and the sidecars, by three methods; the first decides, the other two must not contradict it:
 
 1. **Confined run (the verdict).** Each process runs under a Seatbelt profile that allows outbound network only to the allowlisted loopback ports (the model server, search 8888, image search 8768) and denies everything else, with denials logged. Every denial in the unified log (`com.apple.sandbox`) during the run fails it. **DNS:** on macOS a name lookup is IPC to mDNSResponder over `/var/run/mDNSResponder`, not a socket to port 53, so a socket trace would never see it; the profile denies that path, and any denial there counts as a query that would have left the machine.
 2. **Observed run (corroboration).** The same session unconfined, with every process in the tree's sockets sampled once a second (libproc, `proc_pidfdinfo`). Any socket that is not listening, loopback to an allowlisted port, or an accepted loopback connection fails it. Sampling misses short connections, which is why it does not decide alone.
@@ -215,7 +215,7 @@ A stand-in engine with the same CLI and `/v1/models` lets §4 and §6 be built a
 1. **Check first, change nothing:** Apple silicon, the macOS version the engine's release names, memory (128 GB for the gate, MN5; the Metal spec's smaller recipes warn), the GPU working-set cap, FileVault state, Remote Login, the Command Line Tools, power source (desktop or laptop), cable or Wi-Fi.
 2. **Client steps as today.**
 3. **Node assets:** the engine tarball, SHA-256 against `SHA256SUMS`, unpacked under `/usr/local/lib/ragon` (root-owned, not user-writable).
-4. **One `sudo`**, for: the role account; the LaunchDaemons; `/Library/Application Support/Ragon` and its permissions; firewall rules; `pmset`; the `sshd_config.d` file for the job user. Over SSH, `sudo` asks once on the terminal; the script says so up front.
+4. **One `sudo`**, for: the role account `_ragon` and the job user (a second hidden, non-administrator account that owns job worktrees and the forced-command key); the LaunchDaemons; `/Library/Application Support/Ragon` and its permissions; firewall rules; `pmset`; the `sshd_config.d` file for the job user. Over SSH, `sudo` asks once on the terminal; the script says so up front.
 5. **The model:** download from Hugging Face then `ragon-convert`, or `sync-model` from another node (another Mac sends the converted blob; a GB10 sends the checkpoint and the Mac converts).
 6. **The egress audit** once, printing the verdict.
 
@@ -278,7 +278,7 @@ G1 to G20 on the gate box; user and developer docs; the release assets; MN1 to M
 | Egress audit on macOS | 1 | This draft |
 | Installer, signing, notarization, docs, gate | 2 | This draft |
 
-**The engine is the long pole.** From 2026-11-18, M8 lands around the end of March 2027 **[E]**. The owner's choices: (S1) 1.0 waits for M8; (S2) a second kernel engineer, or restaged milestones (M5's server before M3's pipeline, accepting a slower first decode), to bring M8 forward; (S3) the Mac node ships as a 1.0 preview behind `--role node` once G1–G3 and G9–G18 pass with a stand-in engine, and the 1.0 cut then waits for the engine's checks (G4–G8, G19, G20). **Default: S3's staging**, so the node track never waits for the engine, while the 1.0 cut still waits for the whole gate as Q204 says.
+**The engine is the long pole.** From 2026-11-18, M8 lands around the end of March 2027 **[E]**. The owner's choices: (S1) 1.0 waits for M8; (S2) a second kernel engineer, or restaged milestones (M5's server before M3's pipeline, accepting a slower first decode), to bring M8 forward; (S3) the Mac node ships as a 1.0 preview behind `--role node` once G1–G3, G9–G14 and G16–G18 pass with a stand-in engine, and the 1.0 cut then waits for the checks that need the Metal engine (G4–G8, G15, G19, G20). **Default: S3's staging**, so the node track never waits for the engine, while the 1.0 cut still waits for the whole gate as Q204 says.
 
 ---
 
