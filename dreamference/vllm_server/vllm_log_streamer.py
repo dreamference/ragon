@@ -7,7 +7,7 @@ subprocesses in a background thread and queues lines for non-blocking consumptio
 import contextlib
 import queue
 import threading
-from typing import Any
+from typing import IO
 
 
 class VLLMLogStreamer:
@@ -18,34 +18,32 @@ class VLLMLogStreamer:
         self.log_queue: queue.Queue = queue.Queue()
         self.log_thread: threading.Thread | None = None
 
-    def start_streaming(self, stdout_pipe: Any) -> None:
+    def start_streaming(self, stdout_pipe: IO[str] | None) -> None:
         """Launches background daemon thread to read lines from process stdout pipe.
 
         Args:
-            stdout_pipe (Any): Readable file-like object connected to subprocess stdout.
+            stdout_pipe (IO[str] | None): Readable text pipe connected to subprocess stdout.
         """
         self.log_thread = threading.Thread(
             target=self._enqueue_output, args=(stdout_pipe,), daemon=True
         )
         self.log_thread.start()
 
-    def _enqueue_output(self, out: Any) -> None:
+    def _enqueue_output(self, out: IO[str] | None) -> None:
         """Worker thread function reading lines continuously until process exit.
 
         Args:
-            out (Any): Process stdout pipe handle.
+            out (IO[str] | None): Process stdout pipe handle; None reads nothing.
         """
-        try:
+        if out is None:
+            return
+        with contextlib.suppress(Exception):
             for line in iter(out.readline, ""):
-                if line:
-                    self.log_queue.put(line.rstrip("\r\n"))
-                else:
+                if not line:
                     break
-        except Exception:
-            pass
-        finally:
-            with contextlib.suppress(Exception):
-                out.close()
+                self.log_queue.put(line.rstrip("\r\n"))
+        with contextlib.suppress(Exception):
+            out.close()
 
     def pop_logs(self) -> list[str]:
         """Retrieves all currently queued log lines without blocking.
