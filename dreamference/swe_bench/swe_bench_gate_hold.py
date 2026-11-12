@@ -11,6 +11,7 @@ interval a pause (`ragon-admin night pause`) let other requests through, so the 
 which instances shared the model.
 """
 
+import contextlib
 import json
 import os
 import pathlib
@@ -25,6 +26,10 @@ from dreamference.vllm_server.model_gate import ModelGate
 
 HEARTBEAT_S = 15.0
 GATE_RECORD = "gate.json"
+# The gate's live `state` while it refuses everyone but this run.
+CLOSED_STATE = "closed"
+# The gate's live `state` while a pause lets other requests through.
+PAUSED_STATE = "paused"
 
 
 class SweBenchGateHold:
@@ -78,7 +83,7 @@ class SweBenchGateHold:
         self._thread.start()
         return self
 
-    def __exit__(self, *_: Any) -> None:
+    def __exit__(self, *_: object) -> None:
         """Closes the hold: stops the heartbeat, clears the record and persists the final one."""
         self._stop.set()
         if self._thread is not None:
@@ -90,10 +95,9 @@ class SweBenchGateHold:
 
     def _beat(self) -> None:
         while not self._stop.wait(HEARTBEAT_S):
-            try:
+            # A heartbeat must never take the run down; the next one tries again.
+            with contextlib.suppress(Exception):
                 self.tick()
-            except Exception:  # A heartbeat must never take the run down; the next one tries again.
-                pass
 
     # -- what the run tells the gate -----------------------------------------------------------
 
@@ -176,7 +180,7 @@ class SweBenchGateHold:
         paused): the run then neither waits for open sessions nor for other requests.
         """
         live = self.live or {}
-        return self.enforced and live.get("state") == "closed"
+        return self.enforced and live.get("state") == CLOSED_STATE
 
     def paused(self) -> bool:
         """Whether a pause is letting other requests through right now.
@@ -184,7 +188,7 @@ class SweBenchGateHold:
         Returns:
         bool: Whether a pause is letting other requests through right now.
         """
-        return self.enforced and (self.live or {}).get("state") == "paused"
+        return self.enforced and (self.live or {}).get("state") == PAUSED_STATE
 
     # -- the run's record of it ----------------------------------------------------------------
 
