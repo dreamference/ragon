@@ -21,6 +21,12 @@ RUNNABLE_STATUSES: Final[tuple] = ("queued", "interrupted")
 # Statuses that end a task for good.
 FINAL_STATUSES: Final[tuple] = ("done", "no-change", "stalled", "failed", "cancelled")
 
+# The status of a task that a `/night drop` ended.
+CANCELLED: Final[str] = "cancelled"
+
+# Statuses of a task that a `/night drop` cancelled or asked to cancel.
+CANCELLING_STATUSES: Final[tuple] = ("cancel-requested", CANCELLED)
+
 
 class NightShiftQueue:
     """The files under `$CODEX_HOME/night/`."""
@@ -32,7 +38,7 @@ class NightShiftQueue:
         Returns:
             Path: `$CODEX_HOME/night`, with `CODEX_HOME` defaulting to `~/.ragon`.
         """
-        codex_home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.ragon")
+        codex_home = os.environ.get("CODEX_HOME") or Path("~/.ragon").expanduser()
         return Path(codex_home) / "night"
 
     @classmethod
@@ -69,7 +75,7 @@ class NightShiftQueue:
         return cls._read(night_dir / "tasks" / f"{task_id}.json")
 
     @classmethod
-    def update(cls, night_dir: Path, task_id: str, change: Callable[[dict[str, Any]], Any]) -> Any:
+    def update[T](cls, night_dir: Path, task_id: str, change: Callable[[dict[str, Any]], T]) -> T:
         """Changes one task under its lock and writes it back whole.
 
         Args:
@@ -79,7 +85,7 @@ class NightShiftQueue:
                 passed through.
 
         Returns:
-            Any: What `change` returned.
+            T: What `change` returned.
         """
         tasks_dir = night_dir / "tasks"
         with cls._locked(tasks_dir / f"{task_id}.lock"):
@@ -108,7 +114,7 @@ class NightShiftQueue:
 
     @classmethod
     def transition(
-        cls, night_dir: Path, task_id: str, status: str, note: str | None = None, **fields: Any
+        cls, night_dir: Path, task_id: str, status: str, note: str | None = None, **fields: object
     ) -> str:
         """Moves a task to `status` unless it was cancelled meanwhile.
 
@@ -131,8 +137,8 @@ class NightShiftQueue:
             for key, value in fields.items():
                 record[key] = value
             wanted = status
-            if record.get("status") in ("cancel-requested", "cancelled") and status != "cancelled":
-                wanted = "cancelled"
+            if record.get("status") in CANCELLING_STATUSES and status != CANCELLED:
+                wanted = CANCELLED
             if record.get("status") != wanted or note:
                 cls.set_status(record, wanted, note)
             return wanted
@@ -215,8 +221,10 @@ class NightShiftQueue:
 
     @classmethod
     def now(cls) -> str:
-        """Returns:
-        str: The local time as RFC 3339 with its offset, the launcher's history format.
+        """The local time, in the launcher's history format.
+
+        Returns:
+            str: The local time as RFC 3339 with its offset, the launcher's history format.
         """
         return datetime.now().astimezone().isoformat(timespec="seconds")
 
