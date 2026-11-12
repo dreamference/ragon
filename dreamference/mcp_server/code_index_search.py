@@ -35,7 +35,7 @@ class CodeIndexSearch:
         Returns:
             Optional[str]: Absolute path to the binary, or None if it has not been built.
         """
-        path = os.path.join(INSTALL_DIR, "bin", "ragon-code")
+        path = str(pathlib.Path(INSTALL_DIR) / "bin" / "ragon-code")
         return path if pathlib.Path(path).is_file() and os.access(path, os.X_OK) else None
 
     @classmethod
@@ -70,7 +70,7 @@ class CodeIndexSearch:
                     "--",
                     *query.split(),
                 ],
-                cwd=cwd or os.getcwd(),
+                cwd=cwd or str(pathlib.Path.cwd()),
                 capture_output=True,
                 text=True,
                 stdin=subprocess.DEVNULL,
