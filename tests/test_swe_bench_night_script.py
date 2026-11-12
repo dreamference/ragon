@@ -42,6 +42,9 @@ def night(tmp_path, arms, ragon=None, **extra):
         f'  *" stop "*) echo "$*" >> "{tmp_path / "systemctl.txt"}" ;; esac\nexit 0\n'
     )
     (stand_ins / "systemctl").chmod(0o755)
+    # The night's tests never ask the host's resolver.
+    (stand_ins / "getent").write_text("#!/bin/bash\nexit 2\n")
+    (stand_ins / "getent").chmod(0o755)
     env = {
         **os.environ,
         "WT": ROOT,
@@ -873,7 +876,10 @@ def test_the_night_folder_reaches_the_helper_and_the_unit(tmp_path):
         'case "$*" in *"serve sglang"*) echo "ready sglang" ;; *"serve engine"*) echo "ready ragon-engine" ;;'
         " *) echo restored ;; esac\n"
     )
-    for path in (fake, ssh):
+    getent = bindir / "getent"
+    # No overlay name: the test must not depend on the host's resolver.
+    getent.write_text("#!/bin/bash\nexit 2\n")
+    for path in (fake, ssh, getent):
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
     task_list = tmp_path / "list.txt"
     task_list.write_text("acme__widget-1\n")
