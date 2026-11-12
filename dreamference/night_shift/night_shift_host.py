@@ -258,7 +258,7 @@ class NightShiftHost:
     ) -> tuple[int, int | None]:
         """Work out how many night tasks run at once and the context each may hold.
 
-        Together they fit in the KV pool: `parallel × limit ≤ 90% of the pool`. The limit is
+        Together they fit in the KV pool: `parallel x limit ≤ 90% of the pool`. The limit is
         enforced by passing it to every `ragon exec` of a task as its compaction limit.
 
         Args:
