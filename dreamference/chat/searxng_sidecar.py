@@ -8,9 +8,10 @@ it on Docker's default bridge and gave it a copy of the host's DNS servers taken
 and a container found on the default bridge is replaced.
 """
 
-import os
 import subprocess
+import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import Final
 
 from dreamference.chat.searxng_settings import OWN, UNWRITTEN, WRITTEN, SearxngSettings
@@ -24,17 +25,24 @@ SEARXNG_IMAGE: Final[str] = "docker.io/searxng/searxng:latest"
 SEARXNG_HOST_PORT: Final[int] = 8888
 
 
+def _say(text: str) -> None:
+    """Writes one line for the person starting SearXNG."""
+    sys.stdout.write(text + "\n")
+
+
 class SearxngSidecar:
     """Starts SearXNG on the sidecar network, replacing a container made on the default bridge."""
 
     @classmethod
     def config_dir(cls) -> str:
-        """Returns:
-        str: `~/.config/searxng`, mounted as the container's `/etc/searxng`. Its
-        `settings.yml`, written by `SearxngSettings`, enables the JSON API and picks the
-        engines.
+        """Names SearXNG's configuration folder.
+
+        Returns:
+            str: `~/.config/searxng`, mounted as the container's `/etc/searxng`. Its
+            `settings.yml`, written by `SearxngSettings`, enables the JSON API and picks the
+            engines.
         """
-        return os.path.expanduser("~/.config/searxng")
+        return str(Path("~/.config/searxng").expanduser())
 
     @classmethod
     def run_command(cls) -> list[str]:
@@ -135,8 +143,7 @@ class SearxngSidecar:
 
     @classmethod
     def extra_networks(cls) -> list[str]:
-        """Lists the user-defined networks the existing container is attached to, so a
-        replacement can rejoin them.
+        """Lists the existing container's user-defined networks, so a replacement can rejoin them.
 
         Returns:
             List[str]: Network names, without the default bridge and the sidecar network.
@@ -160,9 +167,11 @@ class SearxngSidecar:
 
     @classmethod
     def published_address(cls) -> str:
-        """Returns:
-        str: The host address the existing container publishes its port on (`127.0.0.1`,
-        `0.0.0.0`), or "" when there is no container or no published port.
+        """Names the host address SearXNG's port is published on.
+
+        Returns:
+            str: The host address the existing container publishes its port on (`127.0.0.1`,
+            `0.0.0.0`), or "" when there is no container or no published port.
         """
         result = subprocess.run(
             [
@@ -218,15 +227,15 @@ class SearxngSidecar:
             return started.returncode == 0
 
         if not SidecarNetwork.ensure():
-            print(f"⚠️  Could not create the Docker network {SIDECAR_NETWORK}.")
+            _say(f"⚠️  Could not create the Docker network {SIDECAR_NETWORK}.")
             return False
         rejoin = cls.extra_networks() if mode else []
         if mode and on_bridge:
-            print(
+            _say(
                 "🔁 Recreating SearXNG off Docker's default bridge, whose DNS is a copy taken at start..."
             )
         elif mode:
-            print(f"🔁 Recreating SearXNG to publish it on {NodeSettings.search_bind_address()}...")
+            _say(f"🔁 Recreating SearXNG to publish it on {NodeSettings.search_bind_address()}...")
         if mode:
             subprocess.run(
                 ["docker", "rm", "-f", SEARXNG_CONTAINER_NAME],
@@ -239,7 +248,7 @@ class SearxngSidecar:
             cls.run_command(), capture_output=True, text=True, timeout=600, check=False
         )
         if result.returncode != 0:
-            print(f"⚠️  {result.stderr.strip()[:200]}")
+            _say(f"⚠️  {result.stderr.strip()[:200]}")
             return False
         for network in rejoin:
             subprocess.run(
