@@ -1,6 +1,6 @@
 # RBRB: the Ragon-Builds-Ragon benchmark
 
-**Status:** decided, **built in part** (§14). On `main`: both trailers and their reader (`scripts/as_team.py commit … --ragon-tokens N --made-with ragon`, `as_team.ragon_trailers`), and a first cut of the public curve (`scripts/rbrb.py` renders `images/rbrb.svg` from `docs/rbrb.json`, which holds the hand-measured first point; the README section). Not built: the job tag on Ragon's requests, the private ledger, the routing rule, the ratchet, the land queue's refusal, the derived fields and extra lines of §7, and the weekly workflow. §2–§9 are normative. The numbers in the examples are illustrative unless they are marked as measured.
+**Status:** decided, **built in part** (§14). On `main`: both trailers and their reader (`scripts/as_team.py commit … --ragon-tokens N --made-with ragon`, `as_team.ragon_trailers`), and a first cut of the public curve (`scripts/rbrb.py` renders `images/rbrb.svg` from `docs/rbrb.json`, which holds the hand-measured first point; the README section). Built since: the job tag as a header and the gate's usage line (§4.3). Not built: the `client_metadata` tag, the private ledger, the routing rule, the ratchet, the land queue's refusal, the derived fields and extra lines of §7, and the weekly workflow. §2–§9 are normative. The numbers in the examples are illustrative unless they are marked as measured.
 **Names:** the programme and its curve are the **Ragon-Builds-Ragon benchmark**, short **RBRB**. The files are `scripts/rbrb.py`, `docs/rbrb.json`, `images/rbrb.svg`, and the ledger is `rbrb.jsonl`.
 **Builds on:**
 - [ORGANISATION](./DREAMFERENCE_ORGANISATION.md): the team bots and `scripts/as_team.py`, the only way commits are made as a team, and its message guard.
@@ -243,9 +243,9 @@ Example (illustrative):
 
 ### 4.3 The Ragon side's counters
 
-The counters are specified here and not yet built.
+The counters were specified first as below; what was built differs from points 1 and 2.
 
-**Built first (2026-11-12), differing from points 1 and 2:** the tag rides in an HTTP header, `X-Ragon-Job: <job id>`, which coord's `ragon` calls send through a provider-header override (`-c model_providers.openai-custom.http_headers.X-Ragon-Job=…`, the way `share_scope.rs` sends its own), so the launcher needs no change. The gate's state folder is mounted read-only into its container, so the count is one line in the gate's container log, not a file: `<end time> model gate: usage {"job":…,"path":…,"generated":…,"prompt":…,"cached":…}` (`ModelGateService.usage_line`), a count null when the answer carried none. Nights and SWE-bench never send the header, which covers point 3. Point 1's `client_metadata` key stays the plan for callers that cannot set a header.
+**Built (2026-11-12):** the tag rides in an HTTP header, `X-Ragon-Job: <job id>`, which the coordinator's `ragon` calls are to send through a provider-header override (`-c model_providers.openai-custom.http_headers.X-Ragon-Job=…`, the way `share_scope.rs` sends its own), so the launcher needs no change. The gate's state folder is mounted read-only into its container, so the count is one line in the gate's container log, not a file: `<end time> model gate: usage {"job":…,"path":…,"generated":…,"prompt":…,"cached":…}` (`ModelGateService.usage_line`), a count null when the answer carried none. Nights and SWE-bench do not pass the override, which covers point 3. The line is live on a node once a release carries it and the gate restarts. Point 1's `client_metadata` key stays the plan for callers that cannot set a header.
 
 1. **The tag.** The launcher puts `ragon_job` into `client_metadata` when `DREAMFERENCE_RAGON_JOB` is set. It goes beside `ragon_surface` and `ragon_workload`, where the extension API puts them ([docs/dev/loop-guard.md](../docs/dev/loop-guard.md)). `ragon exec` and the `task` tool pass the coordinator's job id through it.
 2. **The count.** The model gate appends one line per finished request to its usage log in the gate's state folder on the node. The line holds the end time, the job tag, and the prompt, cached and generated tokens from the engine's usage block.
@@ -585,7 +585,8 @@ The land queue's refusal (§3.3) is tested in the coordinator's own tools, which
 | `Made-with: ragon` and `Ragon-Tokens: <n>` | **Built**, on `main`. `scripts/as_team.py commit <team> -m MSG --ragon-tokens N --made-with ragon` adds them once, last, after one blank line, `Ragon-Tokens` first. A negative count and any other `--made-with` value are refused, and a re-run replaces instead of duplicating (`with_ragon_trailers`). `as_team.ragon_trailers(git, <range>)` reads `(sha, tokens or None, made_with)`. The tests are in `tests/test_as_team.py`; [docs/dev/testing.md](../docs/dev/testing.md) describes them ("The `Ragon-Tokens` and `Made-with: ragon` trailers"). |
 | The public curve, first cut | **Built**, on `main`. `docs/rbrb.json` holds the first point; `scripts/rbrb.py` renders `images/rbrb.svg` from it, and `--check` exits 1 when the chart is stale (`tests/test_rbrb.py`); the README section shows the chart. |
 | The land queue's refusal of a commit without `Ragon-Tokens` | Not built (phase 0, §3.3). |
-| The job tag, the gate's usage log and the ledger | Not built. |
+| The job tag and the gate's usage line | **Built**, on `main`, differing from §4.3's plan: an `X-Ragon-Job` header and one `usage` line per tagged request in the gate's log (`ModelGateService.usage_line`, `tests/test_model_gate_usage.py`). |
+| The `client_metadata` tag, a usage log file in the gate's state folder, and the ledger in this repository | Not built. |
 | The derived fields of §7.1 (commits, lines, reverts, the band, landed tokens), the extra chart lines, the README number block and `.github/workflows/rbrb.yml` | Not built. |
 
 ## 15. Known defects
