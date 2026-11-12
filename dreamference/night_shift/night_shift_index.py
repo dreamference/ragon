@@ -23,6 +23,11 @@ INDEX_SLICE: Final[str] = "ragon-index.slice"
 
 KILL_GRACE_S: Final[int] = 20
 
+# Between a run's unit and its status in the indexer's output.
+STATUS_SEPARATOR: Final[str] = ": "
+# The status of a run that finished.
+STATUS_OK: Final[str] = "ok"
+
 
 class NightShiftIndex:
     """Runs `ragon-code index` for the night run."""
@@ -92,12 +97,15 @@ class NightShiftIndex:
         counts: dict[str, int] = {}
         problems: list[str] = []
         for line in output.splitlines():
-            if line.startswith("skipped:") or ": " not in line:
+            if line.startswith("skipped:") or STATUS_SEPARATOR not in line:
                 continue
-            unit, status = line.rsplit(": ", 1) if line.count(": ") == 1 else line.split(": ", 1)
+            if line.count(STATUS_SEPARATOR) == 1:
+                unit, status = line.rsplit(STATUS_SEPARATOR, 1)
+            else:
+                unit, status = line.split(STATUS_SEPARATOR, 1)
             kind = status.split(":")[0].strip()
             counts[kind] = counts.get(kind, 0) + 1
-            if kind != "ok":
+            if kind != STATUS_OK:
                 problems.append(f"{unit.split('-', 3)[-1]} {status.strip()}")
         if not counts:
             return "nothing to index"
