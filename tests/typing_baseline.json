@@ -3,18 +3,6 @@
   "dreamference/config/dreamference_config.py": {
    "assignment": 1
   },
-  "dreamference/night_shift/night_shift_best_of_n.py": {
-   "arg-type": 1
-  },
-  "dreamference/night_shift/night_shift_chooser.py": {
-   "var-annotated": 1
-  },
-  "dreamference/night_shift/night_shift_runner.py": {
-   "arg-type": 2
-  },
-  "dreamference/night_shift/night_shift_scheduler.py": {
-   "var-annotated": 1
-  },
   "dreamference/runner/codex_branded_builder.py": {
    "attr-defined": 2,
    "union-attr": 1
