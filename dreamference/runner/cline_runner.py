@@ -5,12 +5,18 @@ ensures local vLLM server readiness, provisions the Cline extension, and launche
 """
 
 import subprocess
+import sys
 from pathlib import Path
 
 from dreamference.config import DreamferenceConfig
 from dreamference.runner.cline_installer import ClineInstaller
 from dreamference.runner.vllm_readiness_waiter import VLLMReadinessWaiter
 from dreamference.vllm_server import VLLMServerManager
+
+
+def _say(text: str) -> None:
+    """Writes one line for the person launching Cline."""
+    sys.stdout.write(text + "\n")
 
 
 class ClineRunner:
@@ -72,33 +78,33 @@ class ClineRunner:
 
         # Step 2: Ensure VS Code and Cline extension are installed
         if not ClineInstaller.is_vscode_installed():
-            print("❌ VS Code CLI (`code` or `codium`) is not installed or not in PATH.")
-            print("💡 Install VS Code or add `code` to PATH to launch Cline.")
+            _say("❌ VS Code CLI (`code` or `codium`) is not installed or not in PATH.")
+            _say("💡 Install VS Code or add `code` to PATH to launch Cline.")
             return 1
 
         ClineInstaller.install_cline_if_missing()
 
         # Step 3: Write .clinerules in workspace
         rules_file = self.ensure_clinerules()
-        print(f"✅ Configured Cline rules at {rules_file}")
+        _say(f"✅ Configured Cline rules at {rules_file}")
 
         # Step 4: Display connection details for user
         hf_model = VLLMReadinessWaiter.served_model(self.vllm_manager, self.config.model)
-        print("\n[Cline Configuration Details]")
-        print("  API Provider: OpenAI Compatible")
-        print(f"  Base URL:     {self.config.vllm_host}/v1")
-        print(f"  Model ID:     {hf_model}")
-        print("  API Key:      gb10-local-token")
+        _say("\n[Cline Configuration Details]")
+        _say("  API Provider: OpenAI Compatible")
+        _say(f"  Base URL:     {self.config.vllm_host}/v1")
+        _say(f"  Model ID:     {hf_model}")
+        _say("  API Key:      gb10-local-token")
         if prompt:
-            print(f"  Prompt:       {prompt}")
+            _say(f"  Prompt:       {prompt}")
 
         # Step 5: Launch VS Code in workspace directory
         code_bin = ClineInstaller.get_vscode_executable()
-        print(f"\n🚀 Launching VS Code with Cline extension for {self.config.model}...")
+        _say(f"\n🚀 Launching VS Code with Cline extension for {self.config.model}...")
         try:
             if code_bin is None:
                 raise FileNotFoundError("no `code` or `codium` found")
             return subprocess.call([code_bin, str(Path.cwd())])
         except OSError as e:
-            print(f"❌ Failed to launch VS Code: {e}")
+            _say(f"❌ Failed to launch VS Code: {e}")
             return 1
