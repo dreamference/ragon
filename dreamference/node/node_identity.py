@@ -15,16 +15,20 @@ class NodeIdentity:
 
     @classmethod
     def path(cls) -> Path:
-        """Returns:
-        Path: `~/.config/dreamference/node-id`, resolved at call time so a test's own home
-        folder is used.
+        """Where this machine's node id is kept.
+
+        Returns:
+            Path: `~/.config/dreamference/node-id`, resolved at call time so a test's own home
+            folder is used.
         """
         return Path("~/.config/dreamference/node-id").expanduser()
 
     @classmethod
     def read(cls) -> str | None:
-        """Returns:
-        Optional[str]: The id, or None if this machine has none (or the file is not a UUID).
+        """This machine's node id.
+
+        Returns:
+            Optional[str]: The id, or None if this machine has none (or the file is not a UUID).
         """
         try:
             text = cls.path().read_text().strip()
