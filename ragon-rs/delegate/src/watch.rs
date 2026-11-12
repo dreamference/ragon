@@ -763,7 +763,12 @@ impl Probe for SystemProbe {
             let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
             ragon_safegit::output(dir, &rest)
         } else {
-            Command::new(prog).args(args).output()
+            let mut cmd = Command::new(prog);
+            cmd.args(args);
+            if prog == "systemctl" {
+                crate::exec::fix_user_bus(&mut cmd);
+            }
+            cmd.output()
         }
         .map_err(|e| format!("spawn {prog}: {e}"))?;
         Ok(CommandOutput {

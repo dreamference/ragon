@@ -119,6 +119,32 @@ fn drain(mut source: impl Read + Send + 'static, tail: Arc<Mutex<Vec<u8>>>) -> s
     })
 }
 
+/// The user bus directory for `systemctl --user` when `XDG_RUNTIME_DIR` is unset: `/run/user/<uid>`
+/// if it exists (an SSH job or a unit often runs without the variable).
+pub fn user_runtime_dir(current: Option<&str>, root: &Path, uid: u32) -> Option<PathBuf> {
+    if current.is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    let dir = root.join(uid.to_string());
+    dir.is_dir().then_some(dir)
+}
+
+/// Points a `systemctl` command at the user bus when the environment lacks `XDG_RUNTIME_DIR`.
+pub fn fix_user_bus(cmd: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let current = std::env::var("XDG_RUNTIME_DIR").ok();
+        if let Ok(meta) = std::fs::metadata("/proc/self") {
+            if let Some(dir) = user_runtime_dir(current.as_deref(), Path::new("/run/user"), meta.uid()) {
+                cmd.env("XDG_RUNTIME_DIR", dir);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = cmd;
+}
+
 impl Runner for SystemRunner {
     fn run(&self, spec: &RunSpec) -> Result<RunOutput, String> {
         let argv = if spec.batch { batch_wrap(spec.argv.clone()) } else { spec.argv.clone() };
@@ -129,6 +155,9 @@ impl Runner for SystemRunner {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if program == "systemctl" {
+            fix_user_bus(&mut cmd);
+        }
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
@@ -441,6 +470,17 @@ pub fn parse_numstat(raw: &str) -> Vec<NumStat> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn user_bus_dir_is_used_only_when_the_variable_is_unset_and_the_dir_exists() {
+        let root = std::env::temp_dir().join(format!("ragon-ub-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("1234")).unwrap();
+        assert_eq!(super::user_runtime_dir(None, &root, 1234), Some(root.join("1234")));
+        assert_eq!(super::user_runtime_dir(Some(""), &root, 1234), Some(root.join("1234")));
+        assert_eq!(super::user_runtime_dir(Some("/x"), &root, 1234), None);
+        assert_eq!(super::user_runtime_dir(None, &root, 99), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     use super::*;
 
     #[test]
