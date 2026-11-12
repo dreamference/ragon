@@ -1,5 +1,6 @@
-"""A TCP relay from the benchmark network's gateway to another node's model server
-(specs/DREAMFERENCE_RAGON_NODE.md §12.3, specs/DREAMFERENCE_RAGON_SWE_BENCH.md).
+"""A TCP relay from the benchmark network's gateway to another node's model server.
+
+Specs: specs/DREAMFERENCE_RAGON_NODE.md §12.3, specs/DREAMFERENCE_RAGON_SWE_BENCH.md.
 
 An instance's container is on an internal Docker network whose only reachable address is the
 gateway, where this machine's model server answers. A paired node serving the same model is not
@@ -14,13 +15,17 @@ import threading
 from typing import Final
 
 BUFFER: Final[int] = 65536
+# An IPv6 address is the only address that contains it.
+IPV6_SEPARATOR: Final[str] = ":"
 
 
 class SweBenchRelay:
     """One listening socket on the gateway, forwarding to one model server."""
 
     def __init__(self, listen_address: str, target: tuple[str, int]) -> None:
-        """Args:
+        """Sets up the relay.
+
+        Args:
         listen_address: The gateway's address.
         target: The other node's model server, `(address, port)`.
         """
@@ -37,7 +42,7 @@ class SweBenchRelay:
         Returns:
             int: The port.
         """
-        family = socket.AF_INET6 if ":" in self.listen_address else socket.AF_INET
+        family = socket.AF_INET6 if IPV6_SEPARATOR in self.listen_address else socket.AF_INET
         server = socket.socket(family, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((self.listen_address, 0))
