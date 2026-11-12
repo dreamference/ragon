@@ -10,7 +10,7 @@ same guard before it leaves the machine.
     owners <path>... [--author TEAM]           the teams that own (or must review) these paths
     register [TEAM...]                         the phone's page on the LAN that registers the Apps
     whoami <team>                              the bot's login and the commit email GitHub links
-    commit <team> -m MSG [--made-with ragon]   a local commit as the bot, dated in UTC (the trailer marks a Ragon task's change)
+    commit <team> -m MSG [--ragon-tokens N] [--made-with ragon]   a local commit as the bot, dated in UTC (trailers: Ragon's token spend; a Ragon task's change)
     publish <team> --branch B [--base REF]     replays REF..HEAD as GitHub-signed bot commits
     publish <team> --branch B --via git        pushes REF..HEAD re-authored as the team bot
     pr <team> --branch B --title T [--body-file F]   opens a pull request as the bot
@@ -251,6 +251,60 @@ class TeamRegistry:
 
 MADE_WITH = "ragon"
 MADE_WITH_TRAILER = f"Made-with: {MADE_WITH}"
+TOKENS_KEY = "Ragon-Tokens"
+TOKENS_LINE = re.compile(rf"{TOKENS_KEY}: (\d+)")
+
+
+def with_ragon_trailers(message: str, ragon_tokens: int | None, made_with: str | None) -> str:
+    """Return the message with the Ragon trailers last (tokens, then made-with), replacing earlier ones.
+
+    Args:
+        message: The cleaned commit message.
+        ragon_tokens: Generated tokens Ragon spent on the change (>= 0), or None for no trailer.
+        made_with: `ragon` for the Made-with trailer, or None.
+
+    Returns:
+        The message, unchanged when neither trailer is asked for.
+
+    Raises:
+        Refusal: A negative token count or a made-with value other than `ragon`.
+    """
+    if made_with is not None and made_with != MADE_WITH:
+        raise Refusal(f"--made-with takes only {MADE_WITH!r}, not {made_with!r}")
+    if ragon_tokens is not None and ragon_tokens < 0:
+        raise Refusal(f"--ragon-tokens takes an integer >= 0, not {ragon_tokens}")
+    if ragon_tokens is None and not made_with:
+        return message
+    lines = message.rstrip().splitlines()
+    while lines and (TOKENS_LINE.fullmatch(lines[-1]) or lines[-1] == MADE_WITH_TRAILER):
+        lines.pop()
+    body = "\n".join(lines).rstrip()
+    trailers = []
+    if ragon_tokens is not None:
+        trailers.append(f"{TOKENS_KEY}: {ragon_tokens}")
+    if made_with:
+        trailers.append(MADE_WITH_TRAILER)
+    return body + "\n\n" + "\n".join(trailers)
+
+
+def ragon_trailers(git: "Git", revisions: str) -> list[tuple[str, int | None, bool]]:
+    """Read the Ragon trailers of a revision range.
+
+    Args:
+        git: The repository.
+        revisions: A range such as `origin/main~20..origin/main`.
+
+    Returns:
+        One (sha, Ragon-Tokens or None, Made-with: ragon present) per commit, newest first.
+    """
+    rows = []
+    for record in git.text("log", "-z", "--format=%H%n%B", revisions).split("\0"):
+        sha, _, body = record.strip().partition("\n")
+        if not sha:
+            continue
+        found = TOKENS_LINE.findall(body)
+        rows.append((sha, int(found[-1]) if found else None, MADE_WITH_TRAILER in body.splitlines()))
+    return rows
 
 
 class MessageGuard:
@@ -773,7 +827,12 @@ class Publisher:
         return expected
 
     def commit(
-        self, team: str, message: str, now: datetime | None = None, made_with: str | None = None
+        self,
+        team: str,
+        message: str,
+        now: datetime | None = None,
+        made_with: str | None = None,
+        ragon_tokens: int | None = None,
     ) -> str:
         """Commit what is staged, as the bot, dated in UTC, with the guarded message.
 
@@ -782,15 +841,12 @@ class Publisher:
             message: The commit message.
             now: The commit time (default: now).
             made_with: `ragon` appends the `Made-with: ragon` trailer, once, last; any other value is refused.
+            ragon_tokens: Appends `Ragon-Tokens: N` (N >= 0) before it, once, replacing an earlier one.
 
         Returns:
             The new commit's id.
         """
-        if made_with is not None and made_with != MADE_WITH:
-            raise Refusal(f"--made-with takes only {MADE_WITH!r}, not {made_with!r}")
-        cleaned = self.guard.clean(message)
-        if made_with and cleaned.splitlines()[-1:] != [MADE_WITH_TRAILER]:
-            cleaned = f"{cleaned}\n\n{MADE_WITH_TRAILER}"
+        cleaned = with_ragon_trailers(self.guard.clean(message), ragon_tokens, made_with)
         login, email = self.github.identity(team)
         stamp = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%S+0000")
         identity = {
@@ -1285,6 +1341,7 @@ def parser() -> argparse.ArgumentParser:
     commit = commands.add_parser("commit", help="commit what is staged, as the bot")
     commit.add_argument("team")
     commit.add_argument("-m", "--message", required=True)
+    commit.add_argument("--ragon-tokens", type=int, help="add `Ragon-Tokens: N`, the tokens Ragon generated for the change")
     commit.add_argument("--made-with", help="`ragon`: add the trailer for a change that came from a Ragon task")
     publish = commands.add_parser("publish", help="put base..HEAD on a GitHub branch as the bot")
     publish.add_argument("team")
@@ -1458,7 +1515,9 @@ def run_whoami(run: Run) -> None:
 
 def run_commit(run: Run) -> None:
     """Commit what is staged, as the bot."""
-    print(f"✅ {run.publisher().commit(run.team, run.args.message, made_with=run.args.made_with)}")
+    print(f"✅ {run.publisher().commit(
+            run.team, run.args.message, made_with=run.args.made_with, ragon_tokens=run.args.ragon_tokens
+        )}")
 
 
 def run_publish(run: Run) -> None:

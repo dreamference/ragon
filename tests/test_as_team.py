@@ -537,6 +537,40 @@ def test_no_trailer_by_default(keys: Path, repo: Path):
     assert "Made-with" not in git(repo, "log", "-1", "--format=%B")
 
 
+def test_ragon_tokens_and_made_with_go_last_tokens_first_once(keys: Path, repo: Path):
+    message = "Tune\n\nBody\n\nMade-with: ragon\nRagon-Tokens: 5\n"
+    trailer_publisher(repo).commit("engine", message, made_with="ragon", ragon_tokens=1200)
+    shown = git(repo, "log", "-1", "--format=%B").strip()
+    assert shown == "Tune\n\nBody\n\nRagon-Tokens: 1200\nMade-with: ragon"
+
+
+def test_ragon_tokens_zero_alone_is_allowed(keys: Path, repo: Path):
+    trailer_publisher(repo).commit("engine", "Tune", ragon_tokens=0)
+    assert git(repo, "log", "-1", "--format=%B").strip() == "Tune\n\nRagon-Tokens: 0"
+
+
+def test_ragon_tokens_refuses_negative_and_is_absent_by_default(keys: Path, repo: Path):
+    with pytest.raises(as_team.Refusal):
+        trailer_publisher(repo).commit("engine", "Tune", ragon_tokens=-1)
+    trailer_publisher(repo).commit("engine", "Tune")
+    assert "Ragon-Tokens" not in git(repo, "log", "-1", "--format=%B")
+
+
+def test_the_reader_yields_tokens_and_made_with_per_commit(keys: Path, repo: Path):
+    base = git(repo, "rev-parse", "HEAD").strip()
+    trailer_publisher(repo).commit("engine", "One", ragon_tokens=7, made_with="ragon")
+    (repo / "a.txt").write_text("again\n")
+    git(repo, "add", "a.txt")
+    trailer_publisher_commit = as_team.Publisher(
+        github({("GET", "/users/dreamference-engine%5Bbot%5D"): (200, {"id": 9})})[0],
+        as_team.Git(repo),
+        as_team.MessageGuard(),
+    )
+    trailer_publisher_commit.commit("engine", "Two")
+    rows = as_team.ragon_trailers(as_team.Git(repo), f"{base}..HEAD")
+    assert [(tokens, made) for _sha, tokens, made in rows] == [(None, False), (7, True)]
+
+
 BOT_EMAIL = "9+dreamference-engine[bot]@users.noreply.github.com"
 
 
