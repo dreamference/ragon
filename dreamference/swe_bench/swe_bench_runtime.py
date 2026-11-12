@@ -37,6 +37,11 @@ OPTIONAL_RUNTIME_LIBRARIES: Final[tuple] = ("liblzma.so.5",)
 
 STAMP_NAME: Final[str] = "source-hash"
 
+# In `ldd` output, the arrow between a library's name and its resolved path.
+LDD_ARROW: Final[str] = "=>"
+# The dynamic loader's entry in `ldd` output has this in its name.
+LOADER_MARKER: Final[str] = "ld-linux"
+
 
 class SweBenchRuntime:
     """Builds and locates the relocated runtime."""
@@ -151,13 +156,13 @@ class SweBenchRuntime:
             words = line.split()
             if not words or words[0].startswith("linux-vdso"):
                 continue
-            if "=>" in words:
-                name, path = words[0], words[words.index("=>") + 1]
+            if LDD_ARROW in words:
+                name, path = words[0], words[words.index(LDD_ARROW) + 1]
                 if name not in RUNTIME_LIBRARIES + OPTIONAL_RUNTIME_LIBRARIES:
                     raise ValueError(f"ragon needs {name}, which the runtime does not carry")
                 names.append(name)
                 libraries.append(path)
-            elif "ld-linux" in words[0]:
+            elif LOADER_MARKER in words[0]:
                 loader = words[0]
         if loader is None or not set(RUNTIME_LIBRARIES) <= set(names):
             raise ValueError(f"unexpected `ldd {ragon_bin}` output")
