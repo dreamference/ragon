@@ -874,6 +874,9 @@ pub fn execute(req: &TaskRequest, runner: &dyn Runner, env: &TaskEnv) -> Result<
             if sub == "format" {
                 argv.push("--check".to_string());
             }
+            if sub == "check" {
+                argv.push("--output-format=concise".to_string());
+            }
             argv.extend(py.iter().map(|p| p.to_string()));
             // ruff reads the worktree's own config: the sandbox too.
             let spec = RunSpec {
@@ -884,8 +887,23 @@ pub fn execute(req: &TaskRequest, runner: &dyn Runner, env: &TaskEnv) -> Result<
                 batch: false,
             };
             let out = tri!(runner.run(&spec));
-            let ok = out.exit == Some(0) && !out.timed_out;
-            r.gates.push(Gate { name: name.to_string(), ok, tail: tail_of(&out.output, 15, 1500).0 });
+            let mut ok = out.exit == Some(0) && !out.timed_out;
+            let mut tail = tail_of(&out.output, 15, 1500).0;
+            if !ok && sub == "check" && !out.timed_out {
+                // Only findings the edit introduced fail the gate: compare with the files at HEAD.
+                let mut base = Vec::new();
+                for p in &py {
+                    base.extend(tri!(ruff_baseline(runner, env, &wt, &ruff, p)));
+                }
+                let new = introduced_findings(&out.output, &base);
+                if new.is_empty() && !parse_findings(&out.output).is_empty() {
+                    ok = true;
+                    tail = "only findings already in the files before the edit".to_string();
+                } else if !new.is_empty() {
+                    tail = tail_of(&new.join("\n"), 15, 1500).0;
+                }
+            }
+            r.gates.push(Gate { name: name.to_string(), ok, tail });
         }
         if r.gates.iter().any(|g| !g.ok) {
             return Ok(log_and_return(&ledger, &repo_hash, env, finish(fail(r, "gate", "a gate fails on the touched Python files"))));
@@ -895,6 +913,55 @@ pub fn execute(req: &TaskRequest, runner: &dyn Runner, env: &TaskEnv) -> Result<
     r.reason = "ok".to_string();
     r.notes.push("the diff is not applied or committed; review it, then record the verdict with task_verdict".to_string());
     Ok(log_and_return(&ledger, &repo_hash, env, finish(r)))
+}
+
+/// One ruff finding as `path: CODE message` plus its full line; the position is dropped so a
+/// finding that only moved with the edit still counts as the one that was there before.
+fn parse_findings(output: &str) -> Vec<(String, String)> {
+    output
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.splitn(4, ':');
+            let (path, line, col, rest) = (it.next()?, it.next()?, it.next()?, it.next()?);
+            if line.trim().parse::<u32>().is_err() || col.trim().parse::<u32>().is_err() {
+                return None;
+            }
+            Some((format!("{path}:{}", rest.trim()), l.to_string()))
+        })
+        .collect()
+}
+
+/// The lines of `after` that have no counterpart in `base` (each baseline finding cancels one).
+fn introduced_findings(after: &str, base: &[(String, String)]) -> Vec<String> {
+    let mut pool: Vec<&str> = base.iter().map(|(k, _)| k.as_str()).collect();
+    let mut new = Vec::new();
+    for (key, line) in parse_findings(after) {
+        match pool.iter().position(|k| *k == key) {
+            Some(i) => {
+                pool.remove(i);
+            }
+            None => new.push(line),
+        }
+    }
+    new
+}
+
+/// `ruff check` findings of `path` as committed at HEAD (none when it is new), run in the sandbox
+/// with the file on stdin under its own name so the worktree's config applies.
+fn ruff_baseline(runner: &dyn Runner, env: &TaskEnv, wt: &Path, ruff: &str, path: &str) -> Result<Vec<(String, String)>, String> {
+    let script = format!(
+        "git show 'HEAD:{path}' | '{ruff}' check --output-format=concise --stdin-filename '{path}' -"
+    );
+    let argv = vec!["sh".to_string(), "-c".to_string(), script];
+    let spec = RunSpec {
+        argv: sandboxed(&env.ragon_bin, wt, wt, &argv),
+        cwd: wt.to_path_buf(),
+        env: sandbox_env(),
+        timeout_s: 120,
+        batch: false,
+    };
+    let out = runner.run(&spec)?;
+    Ok(parse_findings(&out.output).into_iter().collect())
 }
 
 /// The environment `ragon exec` gets beyond the server's own: `RAGON_NODE` when the plugin's
@@ -949,6 +1016,9 @@ mod tests {
         head: RefCell<Vec<String>>,
         accept_exit: i32,
         ruff_exit: i32,
+        /// What `ruff check` prints now, and on the file at HEAD (`git show` in the pipeline).
+        ruff_out: String,
+        ruff_base_out: String,
         ragon_exit: i32,
         log: RefCell<Vec<String>>,
         status_after: String,
@@ -990,8 +1060,12 @@ mod tests {
                 if inner.contains("pytest") || inner.contains("cargo test") {
                     return Ok(RunOutput { exit: Some(self.accept_exit), output: "1 passed".into(), timed_out: false, elapsed_s: 3 });
                 }
+                if inner.contains("ruff format") && self.ruff_out != "ruff said" {
+                    return Ok(RunOutput { exit: Some(0), output: String::new(), timed_out: false, elapsed_s: 1 });
+                }
                 if inner.contains("ruff") {
-                    return Ok(RunOutput { exit: Some(self.ruff_exit), output: "ruff said".into(), timed_out: false, elapsed_s: 1 });
+                    let output = if inner.contains("git show") { self.ruff_base_out.clone() } else { self.ruff_out.clone() };
+                    return Ok(RunOutput { exit: Some(self.ruff_exit), output, timed_out: false, elapsed_s: 1 });
                 }
                 return Err(format!("unexpected in the sandbox: {inner}"));
             }
@@ -1072,6 +1146,8 @@ mod tests {
             head: RefCell::new(vec!["aaa".into()]),
             accept_exit: 0,
             ruff_exit: 0,
+            ruff_out: "ruff said".into(),
+            ruff_base_out: String::new(),
             ragon_exit: 0,
             log: RefCell::new(vec![]),
             status_after: " M src/a.py\0".into(),
@@ -1275,6 +1351,29 @@ mod tests {
         let mut w = world(&wt);
         w.status_after = String::new();
         assert_eq!(execute(&request(&wt, "T3"), &w, &env).unwrap().reason, "empty");
+    }
+
+    #[test]
+    fn the_ruff_gate_fails_only_on_findings_the_edit_introduced() {
+        let old = "src/a.py:3:90: E501 Line too long (95 > 88)";
+        // A pre-existing E501 that moved lines with a clean edit passes.
+        let (wt, env) = setup("ruffold");
+        let mut w = world(&wt);
+        w.ruff_exit = 1;
+        w.ruff_out = "src/a.py:5:90: E501 Line too long (95 > 88)\nFound 1 error.".into();
+        w.ruff_base_out = format!("{old}\nFound 1 error.");
+        let r = execute(&request(&wt, "T1"), &w, &env).unwrap();
+        assert_eq!((r.pass, r.reason.as_str()), (true, "ok"), "{:?}", r.gates);
+        // A new finding beside it still fails, and the gate names only the new one.
+        let (wt, env) = setup("ruffnew");
+        let mut w = world(&wt);
+        w.ruff_exit = 1;
+        w.ruff_out = format!("{old}\nsrc/a.py:4:1: F401 `os` imported but unused");
+        w.ruff_base_out = old.into();
+        let r = execute(&request(&wt, "T1"), &w, &env).unwrap();
+        assert_eq!(r.reason, "gate");
+        let tail = &r.gates.iter().find(|g| !g.ok).unwrap().tail;
+        assert!(tail.contains("F401") && !tail.contains("E501"), "{tail}");
     }
 
     #[test]
