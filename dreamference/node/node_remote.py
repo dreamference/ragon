@@ -6,6 +6,7 @@ model port. Changing a node (its model, starting or stopping its server) goes ov
 pairing, and is carried out by that node's own `ragon-admin`.
 """
 
+import sys
 from typing import Any, Final
 
 from dreamference.node.node_browser import NodeBrowser
@@ -139,7 +140,9 @@ class NodeRemote:
         """
         record: dict[str, Any] | None = NodePairing.find(name)
         if record is None:
-            print(f"❌ {name} is not a paired node. Pair once with: ragon-admin node add {name}")
+            sys.stdout.write(
+                f"❌ {name} is not a paired node. Pair once with: ragon-admin node add {name}\n"
+            )
             return 1
         return NodePairing.run(record, request, capture=False).returncode
 
