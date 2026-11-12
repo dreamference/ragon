@@ -6,6 +6,7 @@ and launches the OpenHands web UI.
 """
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import Final
 
@@ -19,6 +20,11 @@ OPENHANDS_HOST_PORT: Final[int] = 3001
 
 # `docker run -v source:target` splits on this, so a workspace path holding it cannot be mounted.
 DOCKER_VOLUME_SEPARATOR: Final[str] = ":"
+
+
+def _say(text: str) -> None:
+    """Writes one line for the person launching OpenHands."""
+    sys.stdout.write(text + "\n")
 
 
 class OpenHandsRunner:
@@ -44,8 +50,8 @@ class OpenHandsRunner:
         Returns:
             int: 1, the session's exit code.
         """
-        print(f"❌ {problem}")
-        print(f"💡 {hint}")
+        _say(f"❌ {problem}")
+        _say(f"💡 {hint}")
         return 1
 
     def run_session(self, prompt: str | None = None, debug: bool = False) -> int:
@@ -126,14 +132,14 @@ class OpenHandsRunner:
             OPENHANDS_IMAGE,
         ]
 
-        print(
+        _say(
             f"\n🚀 Launching OpenHands Autonomous Agent Web UI on http://localhost:{OPENHANDS_HOST_PORT}..."
         )
-        print(f"   Local LLM Model: openai/{hf_model} ({self.config.vllm_host})")
-        print(f"   Workspace Dir:   {cwd}\n")
+        _say(f"   Local LLM Model: openai/{hf_model} ({self.config.vllm_host})")
+        _say(f"   Workspace Dir:   {cwd}\n")
 
         try:
             return subprocess.call(cmd)
         except OSError as e:
-            print(f"❌ Failed to launch OpenHands: {e}")
+            _say(f"❌ Failed to launch OpenHands: {e}")
             return 1
