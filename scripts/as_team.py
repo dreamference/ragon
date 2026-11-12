@@ -10,7 +10,7 @@ same guard before it leaves the machine.
     owners <path>... [--author TEAM]           the teams that own (or must review) these paths
     register [TEAM...]                         the phone's page on the LAN that registers the Apps
     whoami <team>                              the bot's login and the commit email GitHub links
-    commit <team> -m MSG                       a local commit as the bot, dated in UTC
+    commit <team> -m MSG [--made-with ragon]   a local commit as the bot, dated in UTC (the trailer marks a Ragon task's change)
     publish <team> --branch B [--base REF]     replays REF..HEAD as GitHub-signed bot commits
     publish <team> --branch B --via git        pushes REF..HEAD re-authored as the team bot
     pr <team> --branch B --title T [--body-file F]   opens a pull request as the bot
@@ -247,6 +247,10 @@ class TeamRegistry:
         if not required and author:
             required = {self.teams[author]["peer"]}
         return required
+
+
+MADE_WITH = "ragon"
+MADE_WITH_TRAILER = f"Made-with: {MADE_WITH}"
 
 
 class MessageGuard:
@@ -768,13 +772,25 @@ class Publisher:
             )
         return expected
 
-    def commit(self, team: str, message: str, now: datetime | None = None) -> str:
+    def commit(
+        self, team: str, message: str, now: datetime | None = None, made_with: str | None = None
+    ) -> str:
         """Commit what is staged, as the bot, dated in UTC, with the guarded message.
+
+        Args:
+            team: The bot's team.
+            message: The commit message.
+            now: The commit time (default: now).
+            made_with: `ragon` appends the `Made-with: ragon` trailer, once, last; any other value is refused.
 
         Returns:
             The new commit's id.
         """
+        if made_with is not None and made_with != MADE_WITH:
+            raise Refusal(f"--made-with takes only {MADE_WITH!r}, not {made_with!r}")
         cleaned = self.guard.clean(message)
+        if made_with and cleaned.splitlines()[-1:] != [MADE_WITH_TRAILER]:
+            cleaned = f"{cleaned}\n\n{MADE_WITH_TRAILER}"
         login, email = self.github.identity(team)
         stamp = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%S+0000")
         identity = {
@@ -1269,6 +1285,7 @@ def parser() -> argparse.ArgumentParser:
     commit = commands.add_parser("commit", help="commit what is staged, as the bot")
     commit.add_argument("team")
     commit.add_argument("-m", "--message", required=True)
+    commit.add_argument("--made-with", help="`ragon`: add the trailer for a change that came from a Ragon task")
     publish = commands.add_parser("publish", help="put base..HEAD on a GitHub branch as the bot")
     publish.add_argument("team")
     publish.add_argument("--branch", required=True)
@@ -1441,7 +1458,7 @@ def run_whoami(run: Run) -> None:
 
 def run_commit(run: Run) -> None:
     """Commit what is staged, as the bot."""
-    print(f"✅ {run.publisher().commit(run.team, run.args.message)}")
+    print(f"✅ {run.publisher().commit(run.team, run.args.message, made_with=run.args.made_with)}")
 
 
 def run_publish(run: Run) -> None:

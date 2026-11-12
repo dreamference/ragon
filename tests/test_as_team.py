@@ -509,6 +509,34 @@ def test_a_bot_commit_carries_the_bots_identity_in_utc(keys: Path, repo: Path):
     )
 
 
+def trailer_publisher(repo: Path) -> as_team.Publisher:
+    (repo / "a.txt").write_text("trailer\n")
+    git(repo, "add", "a.txt")
+    client, _session = github({("GET", "/users/dreamference-engine%5Bbot%5D"): (200, {"id": 9})})
+    return as_team.Publisher(client, as_team.Git(repo), as_team.MessageGuard())
+
+
+def test_made_with_adds_the_trailer_once_and_last(keys: Path, repo: Path):
+    publisher = trailer_publisher(repo)
+    publisher.commit("engine", "Tune\n\nBody\n\nMade-with: ragon\n", made_with="ragon")
+    assert git(repo, "log", "-1", "--format=%B").strip() == "Tune\n\nBody\n\nMade-with: ragon"
+
+
+def test_made_with_goes_after_the_body_with_one_blank_line(keys: Path, repo: Path):
+    trailer_publisher(repo).commit("engine", "Tune\n\nBody", made_with="ragon")
+    assert git(repo, "log", "-1", "--format=%B").strip() == "Tune\n\nBody\n\nMade-with: ragon"
+
+
+def test_made_with_refuses_other_values(keys: Path, repo: Path):
+    with pytest.raises(as_team.Refusal):
+        trailer_publisher(repo).commit("engine", "Tune", made_with="other")
+
+
+def test_no_trailer_by_default(keys: Path, repo: Path):
+    trailer_publisher(repo).commit("engine", "Tune")
+    assert "Made-with" not in git(repo, "log", "-1", "--format=%B")
+
+
 BOT_EMAIL = "9+dreamference-engine[bot]@users.noreply.github.com"
 
 
