@@ -15,7 +15,8 @@ GLOBAL_DREAMFERENCE_CONFIG_PATH: Final[Path] = (
 
 
 class ConfigPathResolver:
-    """Resolver utility determining the active configuration file path according to 4-tier precedence:
+    """Resolves the active configuration file path by a 4-tier precedence.
+
     1. Explicit `--config <path>` CLI parameter
     2. `DREAMFERENCE_CONFIG_PATH` environment variable
     3. Project local `dreamference.toml` or `dreamference.json`
