@@ -19,6 +19,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Final
 
@@ -125,7 +126,9 @@ class SweBenchRuntime:
                 )
         except (OSError, subprocess.CalledProcessError, ValueError) as error:
             shutil.rmtree(staging, ignore_errors=True)
-            print(f"❌ Could not build the ragon runtime for the instance images: {error}")
+            sys.stdout.write(
+                f"❌ Could not build the ragon runtime for the instance images: {error}\n"
+            )
             return None
         (staging / STAMP_NAME).write_text(wanted + "\n")
         shutil.rmtree(target, ignore_errors=True)
