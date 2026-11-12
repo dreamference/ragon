@@ -1,0 +1,17 @@
+{
+  "name": "Ragon-Builds-Ragon benchmark",
+  "unit": "generated tokens",
+  "points": [
+    {
+      "week": "2026-W46",
+      "from": "2026-11-09",
+      "to": "2026-11-12",
+      "ragon_generated_tokens": 9599,
+      "other_generated_tokens": 980000,
+      "rbrb_share": 0.0097,
+      "notes": "Partial week (2026-11-09 to 2026-11-12 09:40 UTC), hand-measured. ragon_generated_tokens: the node's model-server counter generation_tokens_total on the development node, 86 requests, counter window from the server's last restart at 2026-11-10 14:24 UTC; interactive use, the local helpers and QA smoke included; benchmark nights run on other nodes and are excluded. other_generated_tokens: the coordinator's usage ledger, output tokens, 2026-11-10 to 2026-11-12: coordinator 0.59 + 0.22 + 0.07 M, tracked agents 0.10 M; worker accounts are not yet in the ledger, so this is a lower bound and the share an upper bound.",
+      "method_version": 0
+    }
+  ],
+  "quality": []
+}
