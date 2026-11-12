@@ -5,6 +5,7 @@ to parse code files and extract class and function definitions.
 """
 
 import ast
+import contextlib
 from pathlib import Path
 
 from dreamference.context_engine.code_symbol import CodeSymbol
@@ -26,7 +27,8 @@ class ASTSymbolExtractor:
             List[CodeSymbol]: Extracted CodeSymbol objects.
         """
         symbols: list[CodeSymbol] = []
-        try:
+        # Syntax errors in partial or malformed code files are skipped silently.
+        with contextlib.suppress(Exception):
             tree = ast.parse(content, filename=str(file_path))
             for node in ast.walk(tree):
                 # Extract Class Definitions
@@ -59,7 +61,4 @@ class ASTSymbolExtractor:
                             docstring=doc,
                         )
                     )
-        except Exception:
-            # Silently pass syntax errors for partial/malformed code files
-            pass
         return symbols
