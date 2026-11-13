@@ -19,6 +19,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Final
 
@@ -72,6 +73,12 @@ PACKAGER_ARCH: Final[dict] = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "x
 WEBVIEW_CACHE_DIR_NAME: Final[str] = "Cache"
 
 
+def _say(text: str) -> None:
+    """Writes one line for the person building or opening the desktop app."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
+
+
 class DesktopRunner:
     """Builds and runs the Ragon desktop app."""
 
@@ -109,7 +116,7 @@ class DesktopRunner:
     def _npm(cls, args: list[str], cwd: Path) -> bool:
         npm = shutil.which("npm")
         if npm is None:
-            print("❌ npm is needed to build the desktop app: install Node.js 22.13 or later.")
+            _say("❌ npm is needed to build the desktop app: install Node.js 22.13 or later.")
             return False
         return subprocess.call([npm, *args], cwd=cwd, env=cls._environment()) == 0
 
@@ -168,7 +175,7 @@ class DesktopRunner:
         ):
             if cls.packages_current(directory):
                 continue
-            print(f"📦 Installing {what}...")
+            _say(f"📦 Installing {what}...")
             if not cls._npm(["ci", "--no-audit", "--no-fund"], directory):
                 return False
             cls.mark_installed(directory)
@@ -190,15 +197,15 @@ class DesktopRunner:
         Returns:
             int: 1.
         """
-        print(
+        _say(
             "❌ The desktop app is built from the repository's desktop/ project, which a release "
             "install does not have."
         )
-        print(
+        _say(
             "💡 Install the app from the release instead: the Ragon .deb on the release page "
             "puts `ragon-app` in your launcher."
         )
-        print(
+        _say(
             "💡 Running an unpacked build (a zip) instead: run `./install-sandbox-profile.sh` beside its "
             'binary once, or Chromium\'s sandbox is refused ("No usable sandbox!").'
         )
@@ -214,7 +221,7 @@ class DesktopRunner:
         installed = shutil.which("ragon-app")
         if installed is None:
             return cls._no_source()
-        print("🚀 Opening the Ragon desktop window...")
+        _say("🚀 Opening the Ragon desktop window...")
         return subprocess.call([installed], env=cls._environment())
 
     @classmethod
@@ -234,7 +241,7 @@ class DesktopRunner:
         for name in BUNDLED_BINARIES:
             source = bin_dir / name
             if not source.is_file():
-                print(f"❌ {source} is not built: run `ragon-admin codex build` first.")
+                _say(f"❌ {source} is not built: run `ragon-admin codex build` first.")
                 return False
             shutil.copy2(source, RESOURCES_DIR / name)
         rg = shutil.which("rg")
@@ -260,18 +267,18 @@ class DesktopRunner:
             return 1
         if not cls.copy_bundled_binaries():
             return 1
-        print("🔨 Building the desktop app (Vite, then Forge's package)...")
+        _say("🔨 Building the desktop app (Vite, then Forge's package)...")
         if not cls._npm(["run", "package"], ELECTRON_DIR):
             return 1
         binary = cls.binary_path()
         if binary is None:
-            print(f"❌ The package step wrote no app under {ELECTRON_DIR / 'out'}.")
+            _say(f"❌ The package step wrote no app under {ELECTRON_DIR / 'out'}.")
             return 1
         cls.install_desktop_entry()
         cls.warn_uncovered([binary])
 
         cls.clear_webview_cache()
-        print("🚀 Opening the Ragon desktop window...")
+        _say("🚀 Opening the Ragon desktop window...")
         return subprocess.call([binary], env=cls._environment())
 
     @classmethod
@@ -291,12 +298,12 @@ class DesktopRunner:
         if not cls.copy_bundled_binaries():
             return 1
 
-        print("🔨 Building the Ragon desktop app (Vite, then Forge's .deb)...")
+        _say("🔨 Building the Ragon desktop app (Vite, then Forge's .deb)...")
         if not cls._npm(["run", "make"], ELECTRON_DIR):
             return 1
         cls.install_desktop_entry()
         bundle = ELECTRON_DIR / "out" / "make"
-        print(f"✅ Bundles written to {bundle}")
+        _say(f"✅ Bundles written to {bundle}")
         return 0
 
     @classmethod
@@ -407,14 +414,14 @@ class DesktopRunner:
         missing = DesktopInstaller.uncovered(binaries)
         if not missing:
             return True
-        print(
+        _say(
             "⚠️  Chromium's sandbox needs a user namespace, which this machine refuses to a program without an"
         )
-        print(
+        _say(
             f"   AppArmor profile, and none names {', '.join(missing)}: from the launcher or a plain"
         )
-        print('   terminal the app would abort at start with "No usable sandbox!".')
-        print("💡 `ragon-admin desktop install` writes the profile (sudo once).")
+        _say('   terminal the app would abort at start with "No usable sandbox!".')
+        _say("💡 `ragon-admin desktop install` writes the profile (sudo once).")
         return False
 
     @classmethod
@@ -447,7 +454,7 @@ class DesktopRunner:
         """
         binary = cls.binary_path()
         if not binary:
-            print("❌ The desktop app has not been built yet — nothing to register.")
+            _say("❌ The desktop app has not been built yet — nothing to register.")
             return False
 
         icon = str(Path(ICON_DIR) / f"{ICON_NAME}.png")
@@ -455,13 +462,13 @@ class DesktopRunner:
             Path(DESKTOP_ENTRY_DIR).mkdir(parents=True, exist_ok=True)
             Path(ICON_DIR).mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            print(f"⚠️  Could not create the XDG directories: {exc}")
+            _say(f"⚠️  Could not create the XDG directories: {exc}")
             return False
 
         try:
             shutil.copyfile(APP_ICON_SOURCE, icon)
         except OSError as exc:
-            print(f"⚠️  Could not install the app icon: {exc}")
+            _say(f"⚠️  Could not install the app icon: {exc}")
 
         config = cls._app_config()
         # `ragon://` links (DESKTOP_PARITY §2.20).
@@ -483,7 +490,7 @@ class DesktopRunner:
             with (Path(DESKTOP_ENTRY_DIR) / DESKTOP_ENTRY_NAME).open("w") as handle:
                 handle.write(entry)
         except OSError as exc:
-            print(f"⚠️  Could not write the desktop entry: {exc}")
+            _say(f"⚠️  Could not write the desktop entry: {exc}")
             return False
 
         subprocess.run(
@@ -492,7 +499,7 @@ class DesktopRunner:
             timeout=60,
             check=False,
         )
-        print(f"🖥️  Registered Ragon with the desktop environment ({DESKTOP_ENTRY_NAME}).")
+        _say(f"🖥️  Registered Ragon with the desktop environment ({DESKTOP_ENTRY_NAME}).")
         return True
 
     @classmethod
@@ -537,7 +544,7 @@ class DesktopRunner:
 
         ragon = CodexBrandedBuilder.executable_path()
         built = Path(ragon).is_file()
-        print(
+        _say(
             f"{'✅' if built else '❌'} ragon, which the app bundles for Work and Ask"
             f"{f' ({ragon})' if built else ' — build it with: ragon-admin codex build'}"
         )
