@@ -21,12 +21,12 @@ RUN_DIR is a run directory such as ~/.local/share/dreamference/swe-bench/runs/id
 """
 
 import collections
-import glob
 import json
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Dict, Final, Iterator, List, Optional, Tuple
+from typing import Final
 
 # Prefill rate of Qwen3.8-27B on SGLang measured by the cache probe of §1.7 (idle server).
 PREFILL_TOKENS_PER_S: Final[int] = 1450
@@ -41,19 +41,20 @@ KEEP_RECENT: Final[int] = 10
 MIN_MASKABLE_CHARS: Final[int] = 600
 MIN_STEP_TOKENS: Final[int] = 8000
 # (high, low, step): the default of §4.1 first, then v1's policy, its comparison arm.
-POLICIES: Final[Tuple[Tuple[float, float, int], ...]] = ((0.85, 0.50, 16000), (0.82, 0.55, 8000))
-LIMITS: Final[Tuple[int, ...]] = (44000, 49152, 65536, 94144)
+POLICIES: Final[tuple[tuple[float, float, int], ...]] = ((0.85, 0.50, 16000), (0.82, 0.55, 8000))
+LIMITS: Final[tuple[int, ...]] = (44000, 49152, 65536, 94144)
 
 
-def rollouts(run_dir: str) -> List[str]:
+def rollouts(run_dir: str) -> list[str]:
     """Returns the rollout files of every instance in a run, sorted."""
-    pattern = f"{run_dir}/scratch/*/codex-home/sessions/**/rollout*.jsonl"
-    return sorted(glob.glob(pattern, recursive=True))
+    return sorted(
+        str(p) for p in Path(run_dir).glob("scratch/*/codex-home/sessions/**/rollout*.jsonl")
+    )
 
 
 def records(path: str) -> Iterator[dict]:
     """Yields each JSON record of a rollout file."""
-    with open(path) as handle:
+    with Path(path).open(encoding="utf-8") as handle:
         for line in handle:
             yield json.loads(line)
 
@@ -97,7 +98,7 @@ def kinds(run_dir: str) -> None:
     calls: collections.Counter = collections.Counter()
     compactions = 0
     for path in rollouts(run_dir):
-        names: Dict[str, str] = {}
+        names: dict[str, str] = {}
         for record in records(path):
             if record.get("type") == "compacted":
                 compactions += 1
@@ -116,7 +117,7 @@ def kinds(run_dir: str) -> None:
         print(f"   {kind:30s} {calls[kind]:5d} calls {count:9d} chars {100 * count / total:5.1f}%")
 
 
-def regions(name: str, arguments: str, output: str) -> List[Tuple[str, int, int]]:
+def regions(name: str, arguments: str, output: str) -> list[tuple[str, int, int]]:
     """Returns the (file, first line, last line) regions a read call showed."""
     found = []
     if name == "code_show":
@@ -139,7 +140,9 @@ def written_files(name: str, arguments: str) -> set:
     if name in ("apply_patch", "edit_file"):
         files |= set(re.findall(r"(?:Update|Add) File: (\S+)", arguments))
         files |= set(re.findall(r'"path":\s*"([^"]+)"', arguments))
-    elif name == "exec_command" and re.search(r"open\([^)]*['\"]w['\"]|write_text|sed -i|cat >|> \S+\.py|tee ", arguments):
+    elif name == "exec_command" and re.search(
+        r"open\([^)]*['\"]w['\"]|write_text|sed -i|cat >|> \S+\.py|tee ", arguments
+    ):
         files |= set(re.findall(r"([\w./-]+\.py)", arguments))
     return {path.split("/testbed/")[-1] for path in files}
 
@@ -148,10 +151,10 @@ def rereads(run_dir: str) -> None:
     """Prints re-read characters, split as in §1.4, for one run."""
     read_chars = same = after_write = across = recent_hits = total = 0
     for path in rollouts(run_dir):
-        names: Dict[str, Tuple[str, str]] = {}
-        seen: List[Tuple[str, int, int, int, int]] = []
-        recent: List[Tuple[str, int, int, int]] = []
-        versions: Dict[str, int] = {}
+        names: dict[str, tuple[str, str]] = {}
+        seen: list[tuple[str, int, int, int, int]] = []
+        recent: list[tuple[str, int, int, int]] = []
+        versions: dict[str, int] = {}
         segment = 0
         for record in records(path):
             if record.get("type") == "compacted":
@@ -177,7 +180,12 @@ def rereads(run_dir: str) -> None:
                 recent.append(("", 0, 0, -1))
                 continue
             read_chars += len(output)
-            hits = [old for new in shown for old in seen if old[0] == new[0] and old[1] <= new[2] and old[2] >= new[1]]
+            hits = [
+                old
+                for new in shown
+                for old in seen
+                if old[0] == new[0] and old[1] <= new[2] and old[2] >= new[1]
+            ]
             if hits:
                 if all(old[3] != segment for old in hits):
                     across += len(output)
@@ -185,25 +193,36 @@ def rereads(run_dir: str) -> None:
                     after_write += len(output)
                 else:
                     same += len(output)
-            if all(any(old[0] == new[0] and old[1] <= new[1] and old[2] >= new[2] and old[3] == versions.get(new[0], 0)
-                       for old in recent[-KEEP_RECENT:]) for new in shown):
+            if all(
+                any(
+                    old[0] == new[0]
+                    and old[1] <= new[1]
+                    and old[2] >= new[2]
+                    and old[3] == versions.get(new[0], 0)
+                    for old in recent[-KEEP_RECENT:]
+                )
+                for new in shown
+            ):
                 recent_hits += len(output)
             seen += [(new[0], new[1], new[2], segment, versions.get(new[0], 0)) for new in shown]
             recent.append((shown[0][0], shown[0][1], shown[0][2], versions.get(shown[0][0], 0)))
-    print(f"== {run_dir}: file-read chars {read_chars}; re-read in the same segment, no write {same}; "
-          f"after a write {after_write}; across a compaction {across}; "
-          f"fully inside one of the last {KEEP_RECENT} outputs {recent_hits} ({100 * recent_hits / total:.1f}% of all output)")
+    print(
+        f"== {run_dir}: file-read chars {read_chars}; re-read in the same segment, no write {same}; "
+        f"after a write {after_write}; across a compaction {across}; "
+        f"fully inside one of the last {KEEP_RECENT} outputs {recent_hits} "
+        f"({100 * recent_hits / total:.1f}% of all output)"
+    )
 
 
-def trajectory(path: str) -> Tuple[int, List[Tuple[str, int]], float]:
+def trajectory(path: str) -> tuple[int, list[tuple[str, int]], float]:
     """Returns a rollout's first input tokens, its items and its chars-per-token ratio.
 
     The ratio is calibrated on the stretch before the first compaction: the characters
     of the items recorded there against the growth of the server's input token count.
     """
-    items: List[Tuple[str, int]] = []
-    first: Optional[int] = None
-    last: Optional[int] = None
+    items: list[tuple[str, int]] = []
+    first: int | None = None
+    last: int | None = None
     calibrated = 0
     chars = 0
     compacted = False
@@ -236,9 +255,16 @@ def trajectory(path: str) -> Tuple[int, List[Tuple[str, int]], float]:
     return first or 0, items, ratio
 
 
-def replay(first: int, items: List[Tuple[str, int]], ratio: float, limit: int,
-           high: Optional[int], low: Optional[int], mask_args: bool = False,
-           step: int = MIN_STEP_TOKENS) -> Tuple[int, int, float, float]:
+def replay(
+    first: int,
+    items: list[tuple[str, int]],
+    ratio: float,
+    limit: int,
+    high: int | None,
+    low: int | None,
+    mask_args: bool = False,
+    step: int = MIN_STEP_TOKENS,
+) -> tuple[int, int, float, float]:
     """Replays one trajectory; returns compactions, mask moves and two re-prefill estimates.
 
     The first estimate re-prefills from the oldest item a move masks. The second, which
@@ -246,12 +272,12 @@ def replay(first: int, items: List[Tuple[str, int]], ratio: float, limit: int,
     context: SGLang keeps the hybrid model's state at the branch point the first move
     made and at request ends, none of which lies between it and a later move's items.
     """
-    context: List[List] = []
+    context: list[list] = []
     compactions = moves = 0
     refill_newest = refill_first = 0.0
     next_trigger = high
 
-    def tokens(entry: List) -> float:
+    def tokens(entry: list) -> float:
         return (PLACEHOLDER_CHARS if entry[2] else entry[1]) / ratio
 
     def size() -> float:
@@ -261,19 +287,26 @@ def replay(first: int, items: List[Tuple[str, int]], ratio: float, limit: int,
     for label, chars in items:
         context.append([label, chars, False])
         if high is not None and size() > next_trigger:
-            candidates = [i for i, entry in enumerate(context)
-                          if entry[0] in maskable and not entry[2] and entry[1] >= MIN_MASKABLE_CHARS]
+            candidates = [
+                i
+                for i, entry in enumerate(context)
+                if entry[0] in maskable and not entry[2] and entry[1] >= MIN_MASKABLE_CHARS
+            ]
             oldest = None
-            for index in candidates[:max(0, len(candidates) - KEEP_RECENT)]:
+            for index in candidates[: max(0, len(candidates) - KEEP_RECENT)]:
                 if size() <= low:
                     break
                 context[index][2] = True
                 oldest = index if oldest is None else oldest
             if oldest is not None:
                 moves += 1
-                refill_newest += sum(tokens(entry) for entry in context[oldest:]) / PREFILL_TOKENS_PER_S
+                refill_newest += (
+                    sum(tokens(entry) for entry in context[oldest:]) / PREFILL_TOKENS_PER_S
+                )
                 first_masked = next(i for i, entry in enumerate(context) if entry[2])
-                refill_first += sum(tokens(entry) for entry in context[first_masked:]) / PREFILL_TOKENS_PER_S
+                refill_first += (
+                    sum(tokens(entry) for entry in context[first_masked:]) / PREFILL_TOKENS_PER_S
+                )
             next_trigger = max(high, size() + step)
         if size() > limit:
             compactions += 1
@@ -282,7 +315,7 @@ def replay(first: int, items: List[Tuple[str, int]], ratio: float, limit: int,
     return compactions, moves, refill_newest, refill_first
 
 
-def mask(run_dir: str, policies: Tuple[Tuple[float, float, int], ...] = POLICIES) -> None:
+def mask(run_dir: str, policies: tuple[tuple[float, float, int], ...] = POLICIES) -> None:
     """Prints compactions, mask moves and time per limit, unmasked and masked, for one run."""
     runs = [trajectory(path) for path in rollouts(run_dir)]
     print(f"== {run_dir}")
@@ -292,8 +325,15 @@ def mask(run_dir: str, policies: Tuple[Tuple[float, float, int], ...] = POLICIES
             name = f"masked {high_share:.2f}/{low_share:.2f}/{step // 1000}K"
             variants.append((name, int(limit * high_share), int(limit * low_share), False, step))
         first_high, first_low, first_step = policies[0]
-        variants.append((f"+ old commands {first_high:.2f}/{first_low:.2f}/{first_step // 1000}K",
-                         int(limit * first_high), int(limit * first_low), True, first_step))
+        variants.append(
+            (
+                f"+ old commands {first_high:.2f}/{first_low:.2f}/{first_step // 1000}K",
+                int(limit * first_high),
+                int(limit * first_low),
+                True,
+                first_step,
+            )
+        )
         for label, high, low, mask_args, step in variants:
             results = [replay(*run, limit, high, low, mask_args, step) for run in runs]
             compactions = sum(result[0] for result in results)
@@ -301,54 +341,67 @@ def mask(run_dir: str, policies: Tuple[Tuple[float, float, int], ...] = POLICIES
             newest = sum(result[2] for result in results) / 60
             first_masked = sum(result[3] for result in results) / 60
             compacting = compactions * COMPACTION_S / 60
-            print(f"   limit {limit:6d} {label:30s} compactions {compactions:3d} in "
-                  f"{sum(1 for r in results if r[0]):2d} instances; mask moves {moves:3d}; "
-                  f"re-prefill {newest:4.1f}-{first_masked:4.1f} min; compaction {compacting:4.1f} min; "
-                  f"total {compacting + newest:4.1f}-{compacting + first_masked:4.1f} min")
+            print(
+                f"   limit {limit:6d} {label:30s} compactions {compactions:3d} in "
+                f"{sum(1 for r in results if r[0]):2d} instances; mask moves {moves:3d}; "
+                f"re-prefill {newest:4.1f}-{first_masked:4.1f} min; compaction {compacting:4.1f} min; "
+                f"total {compacting + newest:4.1f}-{compacting + first_masked:4.1f} min"
+            )
 
 
-def instance_compactions(run_dir: str) -> Dict[str, int]:
+def instance_compactions(run_dir: str) -> dict[str, int]:
     """Compactions recorded in each instance's rollouts, by instance id (0 for none)."""
-    counts: Dict[str, int] = {}
-    for state_path in sorted(glob.glob(f"{run_dir}/instances/*.json")):
-        with open(state_path) as handle:
+    counts: dict[str, int] = {}
+    for state_path in sorted(str(p) for p in Path(run_dir).glob("instances/*.json")):
+        with Path(state_path).open(encoding="utf-8") as handle:
             instance_id = json.load(handle).get("instance_id") or Path(state_path).stem
         counts[instance_id] = 0
-        for path in glob.glob(f"{run_dir}/scratch/{instance_id}/codex-home/sessions/**/rollout*.jsonl", recursive=True):
-            for record in records(path):
+        sessions = Path(run_dir) / "scratch" / instance_id / "codex-home" / "sessions"
+        for path in sessions.glob("**/rollout*.jsonl"):
+            for record in records(str(path)):
                 if record.get("type") == "compacted":
                     counts[instance_id] += 1
     return counts
 
 
-def grading_of(run_dir: str) -> Dict[str, Optional[bool]]:
+def grading_of(run_dir: str) -> dict[str, bool | None]:
     """Each graded instance's verdict from the run's latest grading, or an empty map."""
-    results: Dict[str, Optional[bool]] = {}
-    for path in sorted(glob.glob(f"{run_dir}/eval/*/grading.json"), key=lambda p: int(Path(p).parent.name)):
-        with open(path) as handle:
-            results = {i: bool(r.get("resolved")) for i, r in (json.load(handle).get("results") or {}).items()}
+    results: dict[str, bool | None] = {}
+    for path in sorted(
+        (str(p) for p in Path(run_dir).glob("eval/*/grading.json")),
+        key=lambda p: int(Path(p).parent.name),
+    ):
+        with Path(path).open(encoding="utf-8") as handle:
+            results = {
+                i: bool(r.get("resolved"))
+                for i, r in (json.load(handle).get("results") or {}).items()
+            }
     return results
 
 
-def compactions(run_dir: str, triggers: Tuple[int, ...] = (1, 2, 3, 4)) -> None:
+def compactions(run_dir: str, triggers: tuple[int, ...] = (1, 2, 3, 4)) -> None:
     """Prints compactions per task against the grading, and what each restart trigger would stop."""
     counts = instance_compactions(run_dir)
     verdicts = grading_of(run_dir)
     graded = sum(1 for i in counts if i in verdicts)
     print(f"== {run_dir}: {len(counts)} instance(s) with a state, {graded} graded")
-    by_count: Dict[int, List[Optional[bool]]] = collections.defaultdict(list)
+    by_count: dict[int, list[bool | None]] = collections.defaultdict(list)
     for instance_id, count in counts.items():
         by_count[count].append(verdicts.get(instance_id))
     for count in sorted(by_count):
         outcomes = by_count[count]
-        print(f"   {count} compaction(s): {outcomes.count(True):3d} resolved {outcomes.count(False):3d} failed "
-              f"{outcomes.count(None):3d} ungraded")
+        print(
+            f"   {count} compaction(s): {outcomes.count(True):3d} resolved {outcomes.count(False):3d} failed "
+            f"{outcomes.count(None):3d} ungraded"
+        )
     for trigger in triggers:
         crossed = [i for i, count in counts.items() if count >= trigger]
         resolved = sum(1 for i in crossed if verdicts.get(i) is True)
         failed = sum(1 for i in crossed if verdicts.get(i) is False)
-        print(f"   restart after {trigger}: {len(crossed)} task(s) would have restarted "
-              f"({resolved} resolved, {failed} failed, {len(crossed) - resolved - failed} ungraded)")
+        print(
+            f"   restart after {trigger}: {len(crossed)} task(s) would have restarted "
+            f"({resolved} resolved, {failed} failed, {len(crossed) - resolved - failed} ungraded)"
+        )
     most = sorted(counts.items(), key=lambda item: -item[1])[:5]
     if most and most[0][1]:
         print("   most compacted: " + ", ".join(f"{i} ({n})" for i, n in most if n))
@@ -362,7 +415,7 @@ def main() -> int:
         print(__doc__)
         return 1
     command, rest = arguments[0], arguments[1:]
-    policies: List[Tuple[float, float, int]] = []
+    policies: list[tuple[float, float, int]] = []
     while command == "mask" and len(rest) >= 2 and rest[0] == "--policy":
         high, low, step = rest[1].split(",")
         policies.append((float(high), float(low), int(step)))
