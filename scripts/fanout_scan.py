@@ -29,7 +29,8 @@ import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
-from typing import Any, Final
+from pathlib import Path
+from typing import Any, Final, Protocol
 
 DEFAULT_HOST: Final[str] = "http://127.0.0.1:8000"
 REGION_LINES: Final[int] = 80
@@ -40,6 +41,17 @@ MAX_CANDIDATES: Final[int] = 25
 PROBE_TOKENS: Final[int] = 24
 BASELINE_TOKENS: Final[int] = 1500
 DEDUPE_LINES: Final[int] = 3
+
+# The languages this scanner knows, the tests directory and the words it compares against.
+LANG_PY: Final[str] = "py"
+LANG_RS: Final[str] = "rs"
+TESTS_DIR: Final[str] = "tests"
+RUST_ITEM_FN: Final[str] = "fn"
+RUST_CLOSE_BRACE: Final[str] = "}"
+RUST_TAG_INNER: Final[str] = "inner"
+RUST_TAG_ITEM: Final[str] = "item"
+VERDICT_REAL: Final[str] = "real"
+LANGUAGE_BY_SUFFIX: Final[dict[str, str]] = {".py": LANG_PY, ".rs": LANG_RS}
 
 SYSTEM: Final[str] = (
     "You review one source file of a Python and Rust project, the Ragon agent and its admin tool. "
@@ -345,7 +357,7 @@ ANSWER_RE: Final[re.Pattern[str]] = re.compile(
     r"^\W*yes\W+L?(\d+)\W*(.*)$", re.IGNORECASE | re.DOTALL
 )
 BASELINE_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\W*L(?:ines?\s*)?(\d+)(?:\s*[-–]\s*L?\d+)?\W+(.+)$"
+    r"^\W*L(?:ines?\s*)?(\d+)(?:\s*[-–]\s*L?\d+)?\W+(.+)$"  # noqa: RUF001 - answers write ranges with an en dash
 )
 VERDICT_RE: Final[re.Pattern[str]] = re.compile(
     r"\b(real|no|not)\b\W*(high|medium|low)?", re.IGNORECASE
@@ -374,9 +386,21 @@ class Finding:
     confirmed: bool | None = None
 
 
+class ScanClient(Protocol):
+    """What `scan` and `baseline` call on the model server's client."""
+
+    def chat(self, msgs: list[dict[str, str]], max_tokens: int) -> str:
+        """One completion: the request's messages and its token budget, back its text."""
+        ...
+
+    def cache_counters(self) -> dict[str, float]:
+        """The server's prefix-cache counters, or {} when it has no /metrics."""
+        ...
+
+
 def language_of(path: str) -> str:
     """Returns `py`, `rs` or `` for a path, by its extension."""
-    return {".py": "py", ".rs": "rs"}.get(os.path.splitext(path)[1], "")
+    return LANGUAGE_BY_SUFFIX.get(Path(path).suffix, "")
 
 
 def is_test_file(path: str) -> bool:
@@ -384,7 +408,7 @@ def is_test_file(path: str) -> bool:
     parts = path.replace("\\", "/").split("/")
     name = parts[-1]
     return (
-        "tests" in parts[:-1]
+        TESTS_DIR in parts[:-1]
         or name.startswith("test_")
         or name.endswith(("_test.rs", "_tests.rs", "tests.rs"))
     )
@@ -445,16 +469,20 @@ def rust_items(source: str) -> list[Region]:
         match = RUST_ITEM_RE.match(code)
         if open_item is None and depth == 0 and match:
             open_item = (index, f"{match.group(1)} {match.group(2)}".strip())
-        elif open_item is not None and depth == 1 and match and match.group(1) == "fn":
-            items.append(("inner", index, match.group(2), open_item[1]))
-        depth += code.count("{") - code.count("}")
-        if open_item is not None and depth <= 0 and ("}" in code or code.rstrip().endswith(";")):
-            items.append(("item", open_item[0], index, open_item[1]))
+        elif open_item is not None and depth == 1 and match and match.group(1) == RUST_ITEM_FN:
+            items.append((RUST_TAG_INNER, index, match.group(2), open_item[1]))
+        depth += code.count("{") - code.count(RUST_CLOSE_BRACE)
+        if (
+            open_item is not None
+            and depth <= 0
+            and (RUST_CLOSE_BRACE in code or code.rstrip().endswith(";"))
+        ):
+            items.append((RUST_TAG_ITEM, open_item[0], index, open_item[1]))
             open_item, depth = None, max(depth, 0)
     regions: list[Region] = []
-    inner = [i for i in items if i[0] == "inner"]
+    inner = [i for i in items if i[0] == RUST_TAG_INNER]
     for kind, start, end, name in items:
-        if kind != "item":
+        if kind != RUST_TAG_ITEM:
             continue
         fns = [i for i in inner if start < i[1] <= end]
         if end - start + 1 > LONG_REGION and fns:
@@ -465,6 +493,27 @@ def rust_items(source: str) -> list[Region]:
         else:
             regions.append(Region(start, end, name))
     return regions
+
+
+def items_for(source: str, lang: str) -> list[Region]:
+    """The items to cut a file along, by language; none for a language the scanner does not know."""
+    if lang == LANG_PY:
+        return python_items(source)
+    if lang == LANG_RS:
+        return rust_items(source)
+    return []
+
+
+def merge_pieces(items: list[Region]) -> list[Region]:
+    """Cuts long items into windows and keeps short ones whole, in region order."""
+    pieces: list[Region] = []
+    for item in items:
+        pieces.extend(
+            windows(item.start, item.end, item.name)
+            if item.end - item.start + 1 > LONG_REGION
+            else [item]
+        )
+    return pieces
 
 
 def split_regions(source: str, lang: str, max_regions: int = MAX_REGIONS) -> list[Region]:
@@ -488,14 +537,8 @@ def split_regions(source: str, lang: str, max_regions: int = MAX_REGIONS) -> lis
         return []
     if total <= SHORT_FILE:
         return [Region(1, total, "file")]
-    items = python_items(source) if lang == "py" else rust_items(source) if lang == "rs" else []
-    pieces: list[Region] = []
-    for item in items:
-        pieces.extend(
-            windows(item.start, item.end, item.name)
-            if item.end - item.start + 1 > LONG_REGION
-            else [item]
-        )
+    items = items_for(source, lang)
+    pieces = merge_pieces(items)
     covered: list[Region] = []
     at = 1
     for piece in sorted(pieces, key=lambda r: r.start):
@@ -571,7 +614,7 @@ def parse_verdict(answer: str) -> tuple[bool, str]:
     match = VERDICT_RE.search(answer[at:] if at >= 0 else answer)
     if not match:
         return False, ""
-    real = match.group(1).lower() == "real"
+    real = match.group(1).lower() == VERDICT_REAL
     return real, (match.group(2) or "").lower() if real else ""
 
 
@@ -638,6 +681,7 @@ class Client:
     """Sends chat requests to the model server, thinking off, and reads its prefix-cache counters."""
 
     def __init__(self, host: str, model: str | None = None, timeout: float = 600.0) -> None:
+        """Stores the host and timeout; resolves the model id when not given."""
         self.host = host.rstrip("/")
         self.timeout = timeout
         self.model = model or self.served_model()
@@ -730,7 +774,7 @@ def plan_probes(
 
 
 def scan(
-    client: Any,
+    client: ScanClient,
     path: str,
     source: str,
     concurrency: int = 4,
@@ -761,7 +805,9 @@ def scan(
     plan = plan_probes(path, source, max_regions)
     answers = fan_out(ask, [q for _, _, q in plan], PROBE_TOKENS, concurrency)
     raw = [
-        f for (kind, region, _), a in zip(plan, answers) if (f := parse_answer(a, kind.key, region))
+        f
+        for (kind, region, _), a in zip(plan, answers, strict=True)
+        if (f := parse_answer(a, kind.key, region))
     ]
     candidates = dedupe(raw, total)
     round1 = time.time() - started
@@ -794,7 +840,7 @@ def scan(
     }
 
 
-def baseline(client: Any, path: str, source: str) -> dict[str, Any]:
+def baseline(client: ScanClient, path: str, source: str) -> dict[str, Any]:
     """The one-call baseline over the same prefix: list every problem in the file."""
     numbered = number_lines(source)
     before, started = client.cache_counters(), time.time()
@@ -835,7 +881,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     with pathlib.Path(args.file).open(encoding="utf-8", errors="replace") as handle:
         source = handle.read()
-    shown = os.path.relpath(os.path.abspath(args.file), os.path.abspath(args.repo))
+    shown = os.path.relpath(args.file, args.repo)
     client = Client(args.host)
     if args.baseline:
         result = baseline(client, shown, source)
@@ -844,8 +890,8 @@ def main(argv: list[str] | None = None) -> int:
             client, shown, source, args.concurrency, not args.no_confirm, args.max_regions
         )
     for finding in result["findings"]:
-        print(json.dumps(finding))
-    print(json.dumps({"summary": result["summary"]}))
+        print(json.dumps(finding))  # noqa: T201 - findings on stdout
+    print(json.dumps({"summary": result["summary"]}))  # noqa: T201 - findings on stdout
     return 0
 
 
