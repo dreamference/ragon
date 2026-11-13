@@ -19,7 +19,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
-SEVERITIES: Final = ("bridge", "model", "info", "known")
+BRIDGE: Final = "bridge"
+MODEL: Final = "model"
+KNOWN: Final = "known"
+SEVERITIES: Final = (BRIDGE, MODEL, "info", KNOWN)
 
 # Check name -> why it fails today. Every messenger's check of that name is covered.
 KNOWN_FAILING: Final[dict[str, str]] = {
@@ -27,7 +30,10 @@ KNOWN_FAILING: Final[dict[str, str]] = {
         "Signal device not linked: owner re-links by scanning the QR (ragon signal setup); planned"
     ),
 }
-STATUSES: Final = ("pass", "fail", "skip", "observed")
+PASS: Final = "pass"
+FAIL: Final = "fail"
+SKIP: Final = "skip"
+STATUSES: Final = (PASS, FAIL, SKIP, "observed")
 
 
 @dataclass
@@ -61,23 +67,23 @@ class Run:
     def add(self, result: Result) -> Result:
         """Records a result and returns it; a known failure is recorded as severity `known`."""
         why = KNOWN_FAILING.get(result.check)
-        if why and result.severity == "bridge" and result.status == "fail":
-            result.severity = "known"
+        if why and result.severity == BRIDGE and result.status == FAIL:
+            result.severity = KNOWN
             result.detail = f"{result.detail} ({why})" if result.detail else why
         self.results.append(result)
         return result
 
     def known(self) -> list[Result]:
         """The known failures: reported, never alerting."""
-        return [r for r in self.results if r.status == "fail" and r.severity == "known"]
+        return [r for r in self.results if r.status == FAIL and r.severity == KNOWN]
 
     def recovered(self) -> list[Result]:
         """Checks listed as known failing that passed this time."""
-        return [r for r in self.results if r.status == "pass" and r.check in KNOWN_FAILING]
+        return [r for r in self.results if r.status == PASS and r.check in KNOWN_FAILING]
 
     def alerts(self) -> list[Result]:
         """The failures worth waking the owner for: bridge checks that failed."""
-        return [r for r in self.results if r.status == "fail" and r.severity == "bridge"]
+        return [r for r in self.results if r.status == FAIL and r.severity == BRIDGE]
 
     def exit_code(self) -> int:
         """0 green, 1 a bridge failure, 3 nothing failed but a messenger needs the owner."""
@@ -109,12 +115,12 @@ def _seconds(value: float | None) -> str:
 def to_markdown(run: Run) -> str:
     """The short Markdown report: a verdict line, the blocked messengers, a table per messenger."""
     alerts = run.alerts()
-    findings = [r for r in run.results if r.status == "fail" and r.severity == "model"]
+    findings = [r for r in run.results if r.status == FAIL and r.severity == MODEL]
     when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(run.started))
     verdict = "FAIL" if alerts else ("NEEDS OWNER" if run.blocked else "PASS")
     lines = [f"# Live messenger test, {when}: {verdict}", ""]
-    passed = sum(r.status == "pass" for r in run.results)
-    skipped = sum(r.status == "skip" for r in run.results)
+    passed = sum(r.status == PASS for r in run.results)
+    skipped = sum(r.status == SKIP for r in run.results)
     lines.append(
         f"{passed} passed, {len(alerts)} bridge failures, {len(run.known())} known failures, "
         f"{len(findings)} model findings, {skipped} skipped."
@@ -143,7 +149,8 @@ def to_markdown(run: Run) -> str:
             if r.messenger == messenger:
                 detail = r.detail.replace("|", "\\|").replace("\n", " ")
                 lines.append(
-                    f"| {r.check} | {r.severity} | {r.status} | {_seconds(r.seconds)} | {_seconds(r.latency)} | {detail} |"
+                    f"| {r.check} | {r.severity} | {r.status} | {_seconds(r.seconds)} | "
+                    f"{_seconds(r.latency)} | {detail} |"
                 )
     return "\n".join(lines) + "\n"
 
