@@ -73,6 +73,12 @@ HUB_SOURCE: Final[str] = "hf"
 BARE_NAME: Final[re.Pattern] = re.compile(r"[A-Za-z0-9-]+")
 
 
+def _say(text: str) -> None:
+    """Writes one line for the person provisioning the nodes, and shows it at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
+
+
 class NodeProvisioner:
     """One provisioning run over one or more machines."""
 
@@ -134,7 +140,7 @@ class NodeProvisioner:
             if self.role is None and self.results.get(host, {}).get("paired_record"):
                 self._start_and_verify(host)
         if self.options.get("mesh"):
-            print(
+            _say(
                 "⚠️  --mesh is not built yet: only this machine is paired with each node "
                 "(run `ragon-admin node add` on another node to manage the fleet from there)."
             )
@@ -149,7 +155,7 @@ class NodeProvisioner:
         if ModelMatrixRegistry.get_spec(self.model) is None or not ModelMatrixRegistry.is_offered(
             self.model
         ):
-            print(f"❌ {self.model} is not a model of the matrix (`ragon-admin model list`).")
+            _say(f"❌ {self.model} is not a model of the matrix (`ragon-admin model list`).")
             return False
         return True
 
@@ -157,7 +163,7 @@ class NodeProvisioner:
         if self.options.get("all"):
             records = NodePairing.paired()
             if not records:
-                print("❌ No paired nodes: provision new machines by name first.")
+                _say("❌ No paired nodes: provision new machines by name first.")
                 return False
             self.hosts = [record.get("name") or record["node"][:8] for record in records]
             for host, record in zip(self.hosts, records, strict=True):
@@ -224,16 +230,16 @@ class NodeProvisioner:
 
         found = NodeBrowser.unprovisioned(match=self.options.get("match"))
         if not found:
-            print(
+            _say(
                 "No unprovisioned GB10 answers on this network. Name the machines: "
                 "ragon-admin node provision <host>…"
             )
             return False
-        print("Machines on this network that look like new GB10s:")
+        _say("Machines on this network that look like new GB10s:")
         for number, entry in enumerate(found, 1):
-            print(f"  {number}. {entry['host']} ({entry['address']})")
+            _say(f"  {number}. {entry['host']} ({entry['address']})")
         if not sys.stdin.isatty():
-            print("Name the ones to provision: ragon-admin node provision <host>…")
+            _say("Name the ones to provision: ragon-admin node provision <host>…")
             return False
         answer = input("Provision which? (numbers, comma-separated; empty for none) ").strip()
         chosen = [
@@ -263,7 +269,7 @@ class NodeProvisioner:
             if self._open(session):
                 self.sessions[host] = session
                 fingerprint = session.host_key_fingerprint()
-                print(
+                _say(
                     f"🔐 {host}: host key SHA256:{fingerprint or '?'} (compare with "
                     f"`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the machine)."
                 )
@@ -381,7 +387,7 @@ class NodeProvisioner:
         password = self.passwords.get(session.host)
         if self._state(host).get("admin") == FLAG_SET:
             session.run_admin(["server", "stop"], docker=True)
-        print(f"⬆️  {host}: NVIDIA's OS and firmware update, then a reboot (§10.3).")
+        _say(f"⬆️  {host}: NVIDIA's OS and firmware update, then a reboot (§10.3).")
         update = session.sudo(
             "sh -c 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade "
             "&& { fwupdmgr refresh --force; fwupdmgr upgrade -y --no-reboot-check; true; }'",
@@ -468,7 +474,7 @@ class NodeProvisioner:
         if FleetProbe.prepared(self._state(host)) and check.returncode == 0:
             self.results[host]["host_check"] = "pass"
             return True
-        print(f"🔑 {host}: the root half, `sudo ragon-admin node prepare` (it prints each change).")
+        _say(f"🔑 {host}: the root half, `sudo ragon-admin node prepare` (it prints each change).")
         prepared = session.sudo(f"{REMOTE_ADMIN} node prepare", self.passwords.get(session.host))
         if prepared.returncode != 0:
             return self._fail(
@@ -789,12 +795,12 @@ class NodeProvisioner:
 
     def _done(self, host: str, what: str) -> None:
         self.results[host]["done"].append(what)
-        print(f"✅ {host}: {what}.")
+        _say(f"✅ {host}: {what}.")
 
     def _fail(self, host: str, step: str, reason: str, command: str) -> bool:
         result = self.results.setdefault(host, {"host": host, "done": []})
         result.update(failed=step, reason=reason, left=command, complete=False)
-        print(f"❌ {host}: {step}: {reason}")
+        _say(f"❌ {host}: {step}: {reason}")
         return False
 
     def _record_copy(self, host: str, size: int, seconds: float) -> None:
@@ -831,7 +837,7 @@ class NodeProvisioner:
                 "start the model server and verify"
                 + (" (restarted)" if self.options.get("restart") else " (unless it serves)")
             )
-        print(f"📋 {host} would change: " + "; ".join(changes))
+        _say(f"📋 {host} would change: " + "; ".join(changes))
         self.results[host].update(complete=True, left="(dry run)")
 
     def _dry_run_install(self, state: dict[str, str]) -> list[str]:
@@ -922,4 +928,4 @@ class NodeProvisioner:
                 result.get("left", "" if result.get("complete") else "re-run"),
             )
         Console().print(table)
-        print(f"📝 Logs: {LOG_DIR}/ (each command and its output; never a password).")
+        _say(f"📝 Logs: {LOG_DIR}/ (each command and its output; never a password).")
