@@ -100,6 +100,8 @@ MANIFEST: Final[dict] = {
 # The disk every build keeps free (the owner's rule, after a night failed on a full
 # disk): checked before each build and between Terminal-Bench's tasks.
 RESERVE_GB: Final[int] = 150
+VERSION_KEY: Final[str] = "version"
+POLYGLOT: Final[str] = "polyglot"
 
 
 class BuildGuard:
@@ -109,11 +111,13 @@ class BuildGuard:
     """
 
     def __init__(self, reserve_gb: int = RESERVE_GB, run=subprocess.run, usage=None) -> None:
+        """Keeps the reserve and the seams for subprocesses and disk usage."""
         self.reserve_gb = reserve_gb
         self.run = run
         self.usage = usage or (lambda path: __import__("shutil").disk_usage(path))
 
     def docker_root(self) -> str:
+        """Docker's data directory as `docker info` reports it."""
         done = self.run(
             ["docker", "info", "--format", "{{.DockerRootDir}}"],
             capture_output=True,
@@ -123,9 +127,11 @@ class BuildGuard:
         return done.stdout.strip() or "/var/lib/docker"
 
     def free_gb(self, path: str) -> float:
+        """Free space in GB on the file system that holds `path`."""
         return self.usage(path).free / 1e9
 
     def nights(self) -> list[str]:
+        """The active SWE-bench night units."""
         done = self.run(
             [
                 "systemctl",
@@ -157,6 +163,7 @@ class BuildGuard:
         return None
 
     def image_bytes(self, tag: str) -> int:
+        """The size of image `tag` in bytes, 0 when docker cannot tell."""
         done = self.run(
             ["docker", "image", "inspect", "--format", "{{.Size}}", tag],
             capture_output=True,
@@ -169,6 +176,7 @@ class BuildGuard:
             return 0
 
     def prune_build_cache(self) -> None:
+        """Drops docker's build cache."""
         self.run(["docker", "builder", "prune", "-f"], capture_output=True, text=True, check=False)
 
 
@@ -182,12 +190,12 @@ def fetch(url: str, path: Path) -> Path:
 
 def pins_from_lock(lock_text: str, names: tuple[str, ...] = SCORER_PACKAGES) -> list[str]:
     """`name==version` for each of `names`, read from a uv.lock; a name missing from it is an error."""
-    import tomllib  # noqa: PLC0415
+    import tomllib
 
     versions = {
-        p["name"]: p["version"]
+        p["name"]: p[VERSION_KEY]
         for p in tomllib.loads(lock_text).get("package", [])
-        if "version" in p
+        if VERSION_KEY in p
     }
     missing = [name for name in names if name not in versions]
     if missing:
@@ -196,6 +204,7 @@ def pins_from_lock(lock_text: str, names: tuple[str, ...] = SCORER_PACKAGES) -> 
 
 
 def venv_python(cache: Path) -> Path:
+    """The python of the scorers' own virtualenv in `cache`."""
     return cache / "venv" / "bin" / "python"
 
 
@@ -289,7 +298,13 @@ def setup_polyglot(
     return target
 
 
+def _say(text: str) -> None:
+    """Prints one line for the person running the setup."""
+    sys.stdout.write(text + "\n")
+
+
 def main(argv: list[str] | None = None) -> int:
+    """Runs one setup from the command line and returns the exit status."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("what", choices=["ifeval", "polyglot"])
     parser.add_argument(
@@ -299,15 +314,15 @@ def main(argv: list[str] | None = None) -> int:
         "--cache", default=os.environ.get("DREAMFERENCE_INDUSTRY_CACHE", str(DEFAULT_CACHE))
     )
     args = parser.parse_args(argv)
-    if args.what == "polyglot":
+    if args.what == POLYGLOT:
         target = setup_polyglot(Path(args.cache), build=not args.no_build)
-        print(
+        _say(
             f"✅ Aider Polyglot's exercises in {target}"
             + ("" if args.no_build else f", image {POLYGLOT_IMAGE}")
         )
         return 0
     manifest = setup_ifeval(Path(args.cache))
-    print(
+    _say(
         f"✅ IFEval and IFBench ready in {args.cache} ({len(manifest['packages'])} packages pinned)"
     )
     return 0
