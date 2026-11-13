@@ -1,3 +1,6 @@
+"""Container and host diagnostics for the vLLM server's periodic status line."""
+
+import contextlib
 import os
 import shutil
 import subprocess
@@ -21,14 +24,26 @@ class ContainerDiagnostics:
     """
 
     def __init__(self, host: str):
+        """Remember the server URL; the I/O wait baseline starts empty."""
         self.host = host
         self._last_iowait_ticks: int = 0
         self._last_total_ticks: int = 0
 
     @staticmethod
+    def _swap_counters(memory_stat: str) -> dict[str, str]:
+        """Pick pgmajfault, pswpin and pswpout out of a cgroup memory.stat text; a missing one stays '?'."""
+        counters = {"pgmajfault": "?", "pswpin": "?", "pswpout": "?"}
+        for line in memory_stat.splitlines():
+            for key in counters:
+                if line.startswith(key):
+                    counters[key] = line.split()[1]
+                    break
+        return counters
+
+    @staticmethod
     def _swap_info(container_name: str) -> str:
         """Read the container's swap and major-fault counters, or an empty string."""
-        try:
+        with contextlib.suppress(Exception):
             cg_result = subprocess.run(
                 ["docker", "exec", container_name, "cat", "/sys/fs/cgroup/memory.stat"],
                 capture_output=True,
@@ -37,26 +52,17 @@ class ContainerDiagnostics:
             )
             if cg_result.returncode != 0:
                 return ""
-            counters = {"pgmajfault": "?", "pswpin": "?", "pswpout": "?"}
-            for line in cg_result.stdout.splitlines():
-                for key in counters:
-                    if line.startswith(key):
-                        counters[key] = line.split()[1]
-                        break
+            counters = ContainerDiagnostics._swap_counters(cg_result.stdout)
             return f" | SwapIO: {counters['pswpin']}in {counters['pswpout']}out | MajFaults: {counters['pgmajfault']}"
-        except Exception:
-            return ""
+        return ""
 
     @staticmethod
     def _host_ram_gb() -> float:
         """Return MemAvailable in GB, or -1.0 when it cannot be read."""
-        try:
-            with open("/proc/meminfo") as f:
-                for line in f:
-                    if line.startswith("MemAvailable:"):
-                        return int(line.split()[1]) / (1024 * 1024)
-        except Exception:
-            pass
+        with contextlib.suppress(Exception), open("/proc/meminfo") as f:  # noqa: PTH123 - the tests fake /proc through this module's open
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / (1024 * 1024)
         return -1.0
 
     @staticmethod
@@ -73,22 +79,21 @@ class ContainerDiagnostics:
     def _iowait_pct(self) -> float:
         """Return the I/O wait share since the last call, or -1.0 when unknown."""
         iowait_pct = -1.0
-        try:
-            with open("/proc/stat") as f:
+        with contextlib.suppress(Exception):
+            with open("/proc/stat") as f:  # noqa: PTH123 - the tests fake /proc through this module's open
                 cpu_line = f.readline()
             parts = cpu_line.split()
-            if len(parts) >= PROC_STAT_MIN_FIELDS:
-                total_ticks = sum(int(p) for p in parts[1:])
-                iowait_ticks = int(parts[5])
-                if self._last_total_ticks > 0:
-                    dt = total_ticks - self._last_total_ticks
-                    di = iowait_ticks - self._last_iowait_ticks
-                    if dt > 0:
-                        iowait_pct = (di / dt) * 100.0
-                self._last_total_ticks = total_ticks
-                self._last_iowait_ticks = iowait_ticks
-        except Exception:
-            pass
+            if len(parts) < PROC_STAT_MIN_FIELDS:
+                return iowait_pct
+            total_ticks = sum(int(p) for p in parts[1:])
+            iowait_ticks = int(parts[5])
+            if self._last_total_ticks > 0:
+                dt = total_ticks - self._last_total_ticks
+                di = iowait_ticks - self._last_iowait_ticks
+                if dt > 0:
+                    iowait_pct = (di / dt) * 100.0
+            self._last_total_ticks = total_ticks
+            self._last_iowait_ticks = iowait_ticks
         return iowait_pct
 
     @staticmethod
@@ -125,9 +130,10 @@ class ContainerDiagnostics:
         )
 
     def get_diagnostics_line(self) -> str | None:
+        """Return the container's memory, CPU and block I/O line with host RAM, I/O wait and swap, or None."""
         if not shutil.which("docker"):
             return None
-        try:
+        with contextlib.suppress(Exception):
             # Extract port from host for container name
             port = urlparse(self.host).port or DEFAULT_MODEL_PORT
             container_name = f"dreamference-vllm-{port}"
@@ -156,6 +162,4 @@ class ContainerDiagnostics:
 
             if result.returncode == 0:
                 return self._format_stats(result.stdout.strip(), ram_str, io_str, swap_info)
-        except Exception:
-            pass
         return None
