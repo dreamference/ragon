@@ -324,14 +324,9 @@ class SweBenchReport:
             result = results[instance_id]
             if result.get("resolved"):
                 continue
-            if result.get("empty"):
-                causes["empty"].append(instance_id)
-                continue
-            if result.get("applied") is False:
-                causes["not_applied"].append(instance_id)
-                continue
-            if result.get("test_patch_failed"):
-                causes["test_patch"].append(instance_id)
+            cause = cls._patch_cause(result)
+            if cause is not None:
+                causes[cause].append(instance_id)
                 continue
             model = str(models.get(instance_id) or manifest.get("model_name_or_path") or "")
             counts = SweBenchEvaluator.logged_test_counts(
@@ -349,6 +344,17 @@ class SweBenchReport:
             else:
                 causes["unknown"].append(instance_id)
         return causes
+
+    @staticmethod
+    def _patch_cause(result: dict[str, Any]) -> str | None:
+        """The cause read from the verdict alone: `empty`, `not_applied` or `test_patch`; None when the tests decide."""
+        if result.get("empty"):
+            return "empty"
+        if result.get("applied") is False:
+            return "not_applied"
+        if result.get("test_patch_failed"):
+            return "test_patch"
+        return None
 
     @classmethod
     def causes_lines(cls, causes: dict[str, Any], graded: int) -> list[str]:
@@ -1317,24 +1323,7 @@ class SweBenchReport:
             first, second = (m.get(field, MISSING_FIELDS.get(field)) for m in (a, b))
             if first != second:
                 lines.append(f"  differs: {field}: {first} | {second}")
-        # Timings are only comparable where the model was the run's alone (§18).
-        gates = [
-            cls.gate_lines(run, summary["states"], summary["manifest"].get("instances", []))
-            for run, summary in ((store, ours), (other, theirs))
-        ]
-        if gates[0][:1] != gates[1][:1]:
-            lines.append(
-                f"  differs: model gate: {(gates[0][:1] or ['no record'])[0].split('  ', 1)[-1].strip()} | "
-                f"{(gates[1][:1] or ['no record'])[0].split('  ', 1)[-1].strip()}"
-            )
-        for run_name, gate in zip(
-            (name, other.name), gates if other.name != store.name else gates[:1], strict=False
-        ):
-            if len(gate) > 1:
-                lines.append(
-                    f"  note: {run_name} paused its model gate; see its report for the instances "
-                    "whose times are not comparable"
-                )
+        lines += cls._gate_lines([(name, store, ours), (other.name, other, theirs)])
         lines.append(
             f"Resolved only by {name} ({len(only_ours)}): {', '.join(only_ours) or 'none'}"
         )
@@ -1354,6 +1343,31 @@ class SweBenchReport:
         lines += cls.arms(name, ours, other.name, theirs, both)
         lines += ["", CAVEATS]
         return "\n".join(lines) + "\n"
+
+    @classmethod
+    def _gate_lines(cls, runs: list[tuple[str, SweBenchRunStore, dict[str, Any]]]) -> list[str]:
+        """The lines on the two runs' model gates: whether they differ, and which run paused its gate."""
+        lines: list[str] = []
+        gates = [
+            cls.gate_lines(run, summary["states"], summary["manifest"].get("instances", []))
+            for run, summary in ((runs[0][1], runs[0][2]), (runs[1][1], runs[1][2]))
+        ]
+        if gates[0][:1] != gates[1][:1]:
+            lines.append(
+                f"  differs: model gate: {(gates[0][:1] or ['no record'])[0].split('  ', 1)[-1].strip()} | "
+                f"{(gates[1][:1] or ['no record'])[0].split('  ', 1)[-1].strip()}"
+            )
+        for run_name, gate in zip(
+            (runs[0][0], runs[1][0]),
+            gates if runs[1][1].name != runs[0][1].name else gates[:1],
+            strict=False,
+        ):
+            if len(gate) > 1:
+                lines.append(
+                    f"  note: {run_name} paused its model gate; see its report for the instances "
+                    "whose times are not comparable"
+                )
+        return lines
 
     @classmethod
     def arms(
@@ -1385,56 +1399,7 @@ class SweBenchReport:
         def row(label: str, first: object, second: object) -> str:
             return f"{label:<22}{first!s:>18}{second!s:>18}"
 
-        def column(summary: dict[str, Any]) -> dict[str, Any]:
-            stats = [summary["stats"].get(i, {}) for i in both]
-            walls = [summary["states"].get(i, {}).get("wall_s") for i in both]
-            walls = [wall for wall in walls if wall is not None]
-            index = [
-                float((summary["states"].get(i, {}).get("index") or {}).get("seconds") or 0)
-                for i in both
-            ]
-            resolved = sum(1 for i in both if summary["results"][i].get("resolved"))
-            return {
-                "code index": summary["code_index"],
-                "issue text": summary["manifest"].get("issue_text", "verbatim"),
-                "refine first": f"on ({summary['refine']['version']})"
-                if summary["refine"] is not None
-                else "off",
-                "task rules": ",".join(summary["manifest"].get("task_rules") or []) or "none",
-                "review turn": "on" if summary["review"] is not None else "off",
-                "hooks": ",".join(summary["manifest"].get("hooks") or []) or "none",
-                "guards": cls.guard_names(summary["guards"]),
-                "weakened tests": sum(1 for i in both if i in summary["weakened"]["ids"]),
-                "grading": "test files dropped"
-                if summary.get("variant") == DROP_TEST_HUNKS
-                else "plain",
-                "resolved": f"{resolved} ({100 * resolved / len(both):.1f}%)",
-                "broke a passing test": sum(1 for i in both if i in summary["causes"]["broke"]),
-                "did not fix": sum(1 for i in both if i in summary["causes"]["not_fixed"]),
-                "compactions": sum(
-                    summary["compactions"]["per_instance"].get(i, {}).get("count", 0) for i in both
-                ),
-                "compaction time": cls.duration(
-                    sum(
-                        s
-                        for i in both
-                        for s in summary["compactions"]["per_instance"]
-                        .get(i, {})
-                        .get("seconds", [])
-                        if s is not None
-                    )
-                ),
-                "median wall": cls.duration(statistics.median(walls)) if walls else "n/a",
-                "agent time": cls.duration(sum(walls)),
-                "input tokens": f"{sum(s.get('input_tokens', 0) for s in stats):,}",
-                "output tokens": f"{sum(s.get('output_tokens', 0) for s in stats):,}",
-                "commands": f"{sum(s.get('commands', 0) for s in stats):,}",
-                "ragon-code calls": sum(s.get("ragon_code_calls", 0) for s in stats),
-                "instances using it": sum(1 for s in stats if s.get("ragon_code_calls")),
-                "index time": cls.duration(sum(index)) if summary["code_index"] != _OFF else "none",
-            }
-
-        first, second = column(ours), column(theirs)
+        first, second = cls._arm_column(ours, both), cls._arm_column(theirs, both)
         lines += [row(label, first[label], second[label]) for label in first]
         outcome = {
             (True, True): "both",
@@ -1465,7 +1430,15 @@ class SweBenchReport:
                 for label in ("both", f"only {name}", f"only {other}", "neither")
             )
         )
-        for summary, run in ((ours, name), (theirs, other)):
+        lines += cls._arm_notes([(ours, name), (theirs, other)], both)
+        lines += ["", f"  {'instance':<34} {'resolved in':<16} {name:<28} {other}", *table]
+        return lines
+
+    @classmethod
+    def _arm_notes(cls, runs: list[tuple[dict[str, Any], str]], both: list[str]) -> list[str]:
+        """The per-run notes under the side-by-side table: index usage, hook runs and the guards."""
+        lines: list[str] = []
+        for summary, run in runs:
             if summary["code_index"] != _OFF:
                 users = sum(1 for i in both if summary["stats"].get(i, {}).get("ragon_code_calls"))
                 if users == 0:
@@ -1477,7 +1450,7 @@ class SweBenchReport:
                         f"In {run} the agent called ragon-code in {users} of {len(both)} instances; "
                         "the others ran as if there were no index."
                     )
-        for summary, run in ((ours, name), (theirs, other)):
+        for summary, run in runs:
             hooks = summary.get("hooks")
             if hooks is not None:
                 ran = [i for i in both if i not in hooks["never_ran"]]
@@ -1490,9 +1463,57 @@ class SweBenchReport:
                         f"In {run} the hooks ran in {len(ran)} of {len(both)} instances; "
                         "the others ran as if there were none."
                     )
-        lines += cls.guards_never_ran((ours, name), (theirs, other))
-        lines += ["", f"  {'instance':<34} {'resolved in':<16} {name:<28} {other}", *table]
+        lines += cls.guards_never_ran(*runs)
         return lines
+
+    @classmethod
+    def _arm_column(cls, summary: dict[str, Any], both: list[str]) -> dict[str, Any]:
+        """One run's column of the side-by-side table, label to value."""
+        stats = [summary["stats"].get(i, {}) for i in both]
+        walls = [summary["states"].get(i, {}).get("wall_s") for i in both]
+        walls = [wall for wall in walls if wall is not None]
+        index = [
+            float((summary["states"].get(i, {}).get("index") or {}).get("seconds") or 0)
+            for i in both
+        ]
+        resolved = sum(1 for i in both if summary["results"][i].get("resolved"))
+        return {
+            "code index": summary["code_index"],
+            "issue text": summary["manifest"].get("issue_text", "verbatim"),
+            "refine first": f"on ({summary['refine']['version']})"
+            if summary["refine"] is not None
+            else "off",
+            "task rules": ",".join(summary["manifest"].get("task_rules") or []) or "none",
+            "review turn": "on" if summary["review"] is not None else "off",
+            "hooks": ",".join(summary["manifest"].get("hooks") or []) or "none",
+            "guards": cls.guard_names(summary["guards"]),
+            "weakened tests": sum(1 for i in both if i in summary["weakened"]["ids"]),
+            "grading": "test files dropped"
+            if summary.get("variant") == DROP_TEST_HUNKS
+            else "plain",
+            "resolved": f"{resolved} ({100 * resolved / len(both):.1f}%)",
+            "broke a passing test": sum(1 for i in both if i in summary["causes"]["broke"]),
+            "did not fix": sum(1 for i in both if i in summary["causes"]["not_fixed"]),
+            "compactions": sum(
+                summary["compactions"]["per_instance"].get(i, {}).get("count", 0) for i in both
+            ),
+            "compaction time": cls.duration(
+                sum(
+                    s
+                    for i in both
+                    for s in summary["compactions"]["per_instance"].get(i, {}).get("seconds", [])
+                    if s is not None
+                )
+            ),
+            "median wall": cls.duration(statistics.median(walls)) if walls else "n/a",
+            "agent time": cls.duration(sum(walls)),
+            "input tokens": f"{sum(s.get('input_tokens', 0) for s in stats):,}",
+            "output tokens": f"{sum(s.get('output_tokens', 0) for s in stats):,}",
+            "commands": f"{sum(s.get('commands', 0) for s in stats):,}",
+            "ragon-code calls": sum(s.get("ragon_code_calls", 0) for s in stats),
+            "instances using it": sum(1 for s in stats if s.get("ragon_code_calls")),
+            "index time": cls.duration(sum(index)) if summary["code_index"] != _OFF else "none",
+        }
 
     @classmethod
     def mcnemar(cls, only_first: int, only_second: int) -> float:
