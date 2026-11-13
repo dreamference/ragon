@@ -24,7 +24,7 @@ import json
 import pathlib
 import re
 import subprocess
-from typing import Any
+from typing import Any, Final
 
 # Bytes per element for the KV cache dtypes this project serves.
 KV_DTYPE_BYTES: dict[str, int] = {
@@ -50,6 +50,15 @@ WORKLOAD_PROBES: tuple[tuple[str, str], ...] = (
 # returns. Used only to suggest a window size, never to change one.
 SLOT_USEFUL_THRESHOLD: float = 0.5
 
+# What /metrics answers when the server is up.
+HTTP_OK: Final[int] = 200
+
+# The entry of config.json's `layer_types` for a layer that keeps a full KV cache.
+FULL_ATTENTION: Final[str] = "full_attention"
+
+# The server flag that carries the chat template's keyword arguments.
+CHAT_TEMPLATE_KWARGS_FLAG: Final[str] = "--default-chat-template-kwargs"
+
 
 class ModelDeepInspector:
     """Reports how the served model is actually implemented and parameterised.
@@ -72,7 +81,7 @@ class ModelDeepInspector:
 
         try:
             snapshot = ModelDownloader.get_model_snapshot_dir(model_alias)
-        except Exception:
+        except Exception:  # noqa: BLE001 - an alias the downloader cannot resolve has no snapshot
             return None
         if not snapshot:
             return None
@@ -101,7 +110,7 @@ class ModelDeepInspector:
                 return None
             with pathlib.Path(snapshot / filename).open() as handle:
                 return json.load(handle)
-        except (OSError, ValueError, Exception):
+        except Exception:  # noqa: BLE001 - a missing or unreadable file reads as absent
             return None
 
     @classmethod
@@ -136,10 +145,10 @@ class ModelDeepInspector:
             import requests
 
             response = requests.get(f"{vllm_host}/metrics", timeout=5)
-            if response.status_code != 200:
+            if response.status_code != HTTP_OK:
                 return None
             text = response.text
-        except Exception:
+        except Exception:  # noqa: BLE001 - no metrics means no reading
             return None
 
         def counter(name: str, label: str = "") -> float | None:
@@ -204,7 +213,7 @@ class ModelDeepInspector:
                     },
                     timeout=120,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - a probe that fails is skipped
                 continue
             after = cls._spec_counters(vllm_host)
             if after is None:
@@ -216,7 +225,9 @@ class ModelDeepInspector:
             if drafts <= 0 or drafted <= 0:
                 continue
 
-            slots = [(a - b) / drafts for a, b in zip(after["per_pos"], before["per_pos"])]
+            slots = [
+                (a - b) / drafts for a, b in zip(after["per_pos"], before["per_pos"], strict=False)
+            ]
             useful = sum(1 for rate in slots if rate >= SLOT_USEFUL_THRESHOLD)
             rows.append(
                 {
@@ -334,7 +345,7 @@ class ModelDeepInspector:
         if not layer_types:
             return {}
 
-        full = sum(1 for t in layer_types if t == "full_attention")
+        full = sum(1 for t in layer_types if t == FULL_ATTENTION)
         linear = len(layer_types) - full
         kv_heads = text.get("num_key_value_heads") or 0
         head_dim = text.get("head_dim") or 0
@@ -413,8 +424,8 @@ class ModelDeepInspector:
         rows["Server overrides"] = ", ".join(overrides) if overrides else "None (client decides)"
 
         template_kwargs = None
-        if "--default-chat-template-kwargs" in running_cmd:
-            index = running_cmd.index("--default-chat-template-kwargs")
+        if CHAT_TEMPLATE_KWARGS_FLAG in running_cmd:
+            index = running_cmd.index(CHAT_TEMPLATE_KWARGS_FLAG)
             if index + 1 < len(running_cmd):
                 template_kwargs = running_cmd[index + 1]
         rows["Template kwargs"] = template_kwargs or "None"
