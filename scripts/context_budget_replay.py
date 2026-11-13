@@ -43,6 +43,24 @@ MIN_STEP_TOKENS: Final[int] = 8000
 # (high, low, step): the default of §4.1 first, then v1's policy, its comparison arm.
 POLICIES: Final[tuple[tuple[float, float, int], ...]] = ((0.85, 0.50, 16000), (0.82, 0.55, 8000))
 LIMITS: Final[tuple[int, ...]] = (44000, 49152, 65536, 94144)
+# Codex rollout fields, as recorded under a run's scratch directory.
+RECORD_COMPACTED: Final[str] = "compacted"
+RECORD_RESPONSE_ITEM: Final[str] = "response_item"
+RECORD_EVENT_MSG: Final[str] = "event_msg"
+ITEM_FUNCTION_CALL: Final[str] = "function_call"
+ITEM_FUNCTION_CALL_OUTPUT: Final[str] = "function_call_output"
+ITEM_MESSAGE: Final[str] = "message"
+EVENT_TOKEN_COUNT: Final[str] = "token_count"
+ROLE_ASSISTANT: Final[str] = "assistant"
+TOOL_EXEC_COMMAND: Final[str] = "exec_command"
+TOOL_CODE_SHOW: Final[str] = "code_show"
+# the command line: its subcommands, the mask policy flag, the fewest arguments
+CMD_KINDS: Final[str] = "kinds"
+CMD_REREADS: Final[str] = "rereads"
+CMD_MASK: Final[str] = "mask"
+CMD_COMPACTIONS: Final[str] = "compactions"
+POLICY_FLAG: Final[str] = "--policy"
+MIN_ARGS: Final[int] = 2
 
 
 def rollouts(run_dir: str) -> list[str]:
@@ -76,7 +94,7 @@ def command_of(arguments: str) -> str:
 
 def kind_of(name: str, arguments: str) -> str:
     """Classifies a call into the kinds of §1.1."""
-    if name != "exec_command":
+    if name != TOOL_EXEC_COMMAND:
         return f"index: {name}" if name.startswith("code_") else name
     command = re.sub(r"^\s*(cd \S+\s*(&&|;)\s*)+", "", command_of(arguments))
     if re.search(r"pytest|runtests\.py|sympy\.test\(|bin/test|unittest|tox|doctest", command):
@@ -100,31 +118,31 @@ def kinds(run_dir: str) -> None:
     for path in rollouts(run_dir):
         names: dict[str, str] = {}
         for record in records(path):
-            if record.get("type") == "compacted":
+            if record.get("type") == RECORD_COMPACTED:
                 compactions += 1
-            if record.get("type") != "response_item":
+            if record.get("type") != RECORD_RESPONSE_ITEM:
                 continue
             payload = record["payload"]
-            if payload.get("type") == "function_call":
+            if payload.get("type") == ITEM_FUNCTION_CALL:
                 names[payload["call_id"]] = kind_of(payload["name"], payload.get("arguments") or "")
-            elif payload.get("type") == "function_call_output":
+            elif payload.get("type") == ITEM_FUNCTION_CALL_OUTPUT:
                 kind = names.get(payload["call_id"], "?")
                 chars[kind] += len(output_text(payload))
                 calls[kind] += 1
     total = sum(chars.values())
-    print(f"== {run_dir}: {sum(calls.values())} calls, {total} chars, {compactions} compactions")
+    print(f"== {run_dir}: {sum(calls.values())} calls, {total} chars, {compactions} compactions")  # noqa: T201 - the run totals line
     for kind, count in chars.most_common():
-        print(f"   {kind:30s} {calls[kind]:5d} calls {count:9d} chars {100 * count / total:5.1f}%")
+        print(f"   {kind:30s} {calls[kind]:5d} calls {count:9d} chars {100 * count / total:5.1f}%")  # noqa: T201 - one row of the per-kind table
 
 
 def regions(name: str, arguments: str, output: str) -> list[tuple[str, int, int]]:
     """Returns the (file, first line, last line) regions a read call showed."""
     found = []
-    if name == "code_show":
+    if name == TOOL_CODE_SHOW:
         match = re.search(r"\(([^:()]+\.\w+):(\d+)-(\d+)\)", output)
         if match:
             found.append((match.group(1), int(match.group(2)), int(match.group(3))))
-    elif name == "exec_command":
+    elif name == TOOL_EXEC_COMMAND:
         for match in re.finditer(r"sed -n ['\"]?(\d+),(\d+)p['\"]? (\S+)", arguments):
             path = re.sub(r"[\"'\\}]+$", "", match.group(3)).split("/testbed/")[-1]
             found.append((path, int(match.group(1)), int(match.group(2))))
@@ -140,7 +158,7 @@ def written_files(name: str, arguments: str) -> set:
     if name in ("apply_patch", "edit_file"):
         files |= set(re.findall(r"(?:Update|Add) File: (\S+)", arguments))
         files |= set(re.findall(r'"path":\s*"([^"]+)"', arguments))
-    elif name == "exec_command" and re.search(
+    elif name == TOOL_EXEC_COMMAND and re.search(
         r"open\([^)]*['\"]w['\"]|write_text|sed -i|cat >|> \S+\.py|tee ", arguments
     ):
         files |= set(re.findall(r"([\w./-]+\.py)", arguments))
@@ -157,20 +175,20 @@ def rereads(run_dir: str) -> None:
         versions: dict[str, int] = {}
         segment = 0
         for record in records(path):
-            if record.get("type") == "compacted":
+            if record.get("type") == RECORD_COMPACTED:
                 segment += 1
                 recent = []
                 continue
-            if record.get("type") != "response_item":
+            if record.get("type") != RECORD_RESPONSE_ITEM:
                 continue
             payload = record["payload"]
-            if payload.get("type") == "function_call":
+            if payload.get("type") == ITEM_FUNCTION_CALL:
                 arguments = payload.get("arguments") or ""
                 names[payload["call_id"]] = (payload["name"], arguments)
                 for written in written_files(payload["name"], arguments):
                     versions[written] = versions.get(written, 0) + 1
                 continue
-            if payload.get("type") != "function_call_output":
+            if payload.get("type") != ITEM_FUNCTION_CALL_OUTPUT:
                 continue
             output = output_text(payload)
             total += len(output)
@@ -206,7 +224,7 @@ def rereads(run_dir: str) -> None:
                 recent_hits += len(output)
             seen += [(new[0], new[1], new[2], segment, versions.get(new[0], 0)) for new in shown]
             recent.append((shown[0][0], shown[0][1], shown[0][2], versions.get(shown[0][0], 0)))
-    print(
+    print(  # noqa: T201 - the re-read totals
         f"== {run_dir}: file-read chars {read_chars}; re-read in the same segment, no write {same}; "
         f"after a write {after_write}; across a compaction {across}; "
         f"fully inside one of the last {KEEP_RECENT} outputs {recent_hits} "
@@ -229,22 +247,22 @@ def trajectory(path: str) -> tuple[int, list[tuple[str, int]], float]:
     for record in records(path):
         kind = record.get("type")
         payload = record.get("payload") or {}
-        if kind == "compacted":
+        if kind == RECORD_COMPACTED:
             compacted = True
-        if kind == "event_msg" and payload.get("type") == "token_count":
+        if kind == RECORD_EVENT_MSG and payload.get("type") == EVENT_TOKEN_COUNT:
             tokens = ((payload.get("info") or {}).get("last_token_usage") or {}).get("input_tokens")
             if tokens:
                 first = first or tokens
                 if not compacted:
                     last, calibrated = tokens, chars
-        if kind != "response_item":
+        if kind != RECORD_RESPONSE_ITEM:
             continue
         item_type = payload.get("type")
-        if item_type == "function_call_output":
+        if item_type == ITEM_FUNCTION_CALL_OUTPUT:
             size, label = len(output_text(payload)), "out"
-        elif item_type == "function_call":
+        elif item_type == ITEM_FUNCTION_CALL:
             size, label = len(payload.get("arguments") or "") + 40, "args"
-        elif item_type == "message" and payload.get("role") == "assistant":
+        elif item_type == ITEM_MESSAGE and payload.get("role") == ROLE_ASSISTANT:
             size, label = len(json.dumps(payload.get("content"))), "msg"
         else:
             continue
@@ -318,7 +336,7 @@ def replay(
 def mask(run_dir: str, policies: tuple[tuple[float, float, int], ...] = POLICIES) -> None:
     """Prints compactions, mask moves and time per limit, unmasked and masked, for one run."""
     runs = [trajectory(path) for path in rollouts(run_dir)]
-    print(f"== {run_dir}")
+    print(f"== {run_dir}")  # noqa: T201 - the run header
     for limit in LIMITS:
         variants = [("unmasked", None, None, False, MIN_STEP_TOKENS)]
         for high_share, low_share, step in policies:
@@ -341,7 +359,7 @@ def mask(run_dir: str, policies: tuple[tuple[float, float, int], ...] = POLICIES
             newest = sum(result[2] for result in results) / 60
             first_masked = sum(result[3] for result in results) / 60
             compacting = compactions * COMPACTION_S / 60
-            print(
+            print(  # noqa: T201 - one limit/variant line
                 f"   limit {limit:6d} {label:30s} compactions {compactions:3d} in "
                 f"{sum(1 for r in results if r[0]):2d} instances; mask moves {moves:3d}; "
                 f"re-prefill {newest:4.1f}-{first_masked:4.1f} min; compaction {compacting:4.1f} min; "
@@ -359,7 +377,7 @@ def instance_compactions(run_dir: str) -> dict[str, int]:
         sessions = Path(run_dir) / "scratch" / instance_id / "codex-home" / "sessions"
         for path in sessions.glob("**/rollout*.jsonl"):
             for record in records(str(path)):
-                if record.get("type") == "compacted":
+                if record.get("type") == RECORD_COMPACTED:
                     counts[instance_id] += 1
     return counts
 
@@ -384,13 +402,13 @@ def compactions(run_dir: str, triggers: tuple[int, ...] = (1, 2, 3, 4)) -> None:
     counts = instance_compactions(run_dir)
     verdicts = grading_of(run_dir)
     graded = sum(1 for i in counts if i in verdicts)
-    print(f"== {run_dir}: {len(counts)} instance(s) with a state, {graded} graded")
+    print(f"== {run_dir}: {len(counts)} instance(s) with a state, {graded} graded")  # noqa: T201 - the graded-instances header
     by_count: dict[int, list[bool | None]] = collections.defaultdict(list)
     for instance_id, count in counts.items():
         by_count[count].append(verdicts.get(instance_id))
     for count in sorted(by_count):
         outcomes = by_count[count]
-        print(
+        print(  # noqa: T201 - one count's outcomes
             f"   {count} compaction(s): {outcomes.count(True):3d} resolved {outcomes.count(False):3d} failed "
             f"{outcomes.count(None):3d} ungraded"
         )
@@ -398,25 +416,30 @@ def compactions(run_dir: str, triggers: tuple[int, ...] = (1, 2, 3, 4)) -> None:
         crossed = [i for i, count in counts.items() if count >= trigger]
         resolved = sum(1 for i in crossed if verdicts.get(i) is True)
         failed = sum(1 for i in crossed if verdicts.get(i) is False)
-        print(
+        print(  # noqa: T201 - one restart trigger
             f"   restart after {trigger}: {len(crossed)} task(s) would have restarted "
             f"({resolved} resolved, {failed} failed, {len(crossed) - resolved - failed} ungraded)"
         )
     most = sorted(counts.items(), key=lambda item: -item[1])[:5]
     if most and most[0][1]:
-        print("   most compacted: " + ", ".join(f"{i} ({n})" for i, n in most if n))
+        print("   most compacted: " + ", ".join(f"{i} ({n})" for i, n in most if n))  # noqa: T201 - the most-compacted instances
 
 
 def main() -> int:
     """Runs one of the reports over the run directories given."""
-    commands = {"kinds": kinds, "rereads": rereads, "mask": mask, "compactions": compactions}
+    commands = {
+        CMD_KINDS: kinds,
+        CMD_REREADS: rereads,
+        CMD_MASK: mask,
+        CMD_COMPACTIONS: compactions,
+    }
     arguments = sys.argv[1:]
-    if len(arguments) < 2 or arguments[0] not in commands:
-        print(__doc__)
+    if len(arguments) < MIN_ARGS or arguments[0] not in commands:
+        print(__doc__)  # noqa: T201 - the usage help on a bad command line
         return 1
     command, rest = arguments[0], arguments[1:]
     policies: list[tuple[float, float, int]] = []
-    while command == "mask" and len(rest) >= 2 and rest[0] == "--policy":
+    while command == CMD_MASK and len(rest) >= MIN_ARGS and rest[0] == POLICY_FLAG:
         high, low, step = rest[1].split(",")
         policies.append((float(high), float(low), int(step)))
         rest = rest[2:]
