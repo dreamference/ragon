@@ -13,10 +13,7 @@
    "PLR0912": 1,
    "PLR0913": 2,
    "PLR0915": 2,
-   "PLR1702": 2,
-   "RUF001": 3,
-   "SIM115": 1,
-   "T201": 26
+   "PLR1702": 2
   },
   "dreamference/audit/egress_verdict.py": {
    "D205": 1

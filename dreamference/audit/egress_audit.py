@@ -60,6 +60,34 @@ TRACED_SYSCALLS: Final[str] = "connect,sendto,sendmsg,sendmmsg,execve,write,writ
 
 SESSION_TIMEOUT_S: Final[int] = 300
 
+# The information-source sign (U+2139) and its emoji selector (U+FE0F), named so the verdict lines keep their text.
+INFO: Final[str] = "\u2139\ufe0f"
+
+
+def _has_text(path: str) -> bool:
+    """Say whether the file exists and holds more than whitespace.
+
+    Args:
+        path: The file to read.
+
+    Returns:
+        True when the file has text.
+    """
+    if not Path(path).is_file():
+        return False
+    with Path(path).open(errors="replace") as handle:
+        return bool(handle.read().strip())
+
+
+def _say(text: str = "") -> None:
+    """Write one line to stdout: the audit's verdict lines go here, not through ``print``.
+
+    Args:
+        text: The line to write.
+    """
+    sys.stdout.write(text + "\n")
+
+
 URL_SCHEME_SEPARATOR: Final[str] = "://"
 HTTPS_SCHEME: Final[str] = "https"
 HTTPS_DEFAULT_PORT: Final[int] = 443
@@ -422,9 +450,7 @@ class EgressAudit:
             pass
         if session == APP:
             return cls._read_trace(trace_path), exited == 0, trace_path
-        replied = Path(reply_path).is_file() and bool(
-            Path(reply_path).open(errors="replace").read().strip()
-        )
+        replied = _has_text(reply_path)
         return cls._read_trace(trace_path), replied, trace_path
 
     @classmethod
@@ -1030,33 +1056,33 @@ class EgressAudit:
         from dreamference.runner.codex_installer import CodexInstaller
 
         if shutil.which("strace") is None:
-            print("⚠️  Egress audit: trace failed")
-            print("   - strace is not installed: sudo apt-get install strace")
+            _say("⚠️  Egress audit: trace failed")
+            _say("   - strace is not installed: sudo apt-get install strace")
             return 2
         ragon_bin = ragon_bin or CodexInstaller.get_codex_executable()
         if not ragon_bin:
-            print("⚠️  Egress audit: trace failed")
-            print("   - ragon is not built: run `ragon-admin codex build` first.")
+            _say("⚠️  Egress audit: trace failed")
+            _say("   - ragon is not built: run `ragon-admin codex build` first.")
             return 2
         session = APP if app else WEB if web else TUI if tui else CLAUDE if compat else EXEC
         if app:
             app_bin = app_bin or cls.app_executable()
             if not app_bin:
-                print("⚠️  Egress audit: trace failed")
-                print(
+                _say("⚠️  Egress audit: trace failed")
+                _say(
                     "   - the desktop app is not built: run `ragon-admin desktop build`, or install its .deb."
                 )
                 return 2
             if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-                print("⚠️  Egress audit: trace failed")
-                print(
+                _say("⚠️  Egress audit: trace failed")
+                _say(
                     "   - the desktop app needs a display: set DISPLAY, or run this under xvfb-run."
                 )
                 return 2
         missing = TuiSession.missing_modules() if tui else []
         if missing:
-            print("⚠️  Egress audit: trace failed")
-            print(
+            _say("⚠️  Egress audit: trace failed")
+            _say(
                 f"   - --tui drives the interface with {' and '.join(missing)}, which this environment lacks: "
                 f"{sys.executable} -m pip install {' '.join(missing)}"
             )
@@ -1066,7 +1092,7 @@ class EgressAudit:
 
             vllm_host = DreamferenceConfig().vllm_host
         allowed = cls.allowed_ports(vllm_host, session)
-        print(
+        _say(
             f"🚀 Tracing one {SESSION_NAMES[session]} against {vllm_host} (throwaway repository and CODEX_HOME)..."
         )
         work_dir = tempfile.mkdtemp(prefix="ragon-audit-")
@@ -1089,30 +1115,30 @@ class EgressAudit:
                     ],
                 )
             if page:
-                print(
-                    f"ℹ️  Preview tab: the audit's page {'loaded and ran' if page.loaded() else 'did not load'}; "
+                _say(
+                    f"{INFO}  Preview tab: the audit's page {'loaded and ran' if page.loaded() else 'did not load'}; "
                     "it reached for example.com, .org and .net by picture, script, stylesheet, fetch, "
                     "prefetch hints and a link"
                 )
             for line in cls.render(trace, verdict, allowed):
-                print(line)
+                _say(line)
             for exception in cls.declared_exceptions():
-                print(f"ℹ️  Declared exception: {exception}")
+                _say(f"{INFO}  Declared exception: {exception}")
             if web:
-                print(f"ℹ️  Image search turn: {cls.image_turn}")
+                _say(f"{INFO}  Image search turn: {cls.image_turn}")
             if verdict.status == TRACE_FAILED:
                 if tui and cls.tui_stage == TUI_STAGE_COMPOSER:
-                    print("💡 The interface opened and took the prompt, but no reply was recorded.")
+                    _say("💡 The interface opened and took the prompt, but no reply was recorded.")
                 if app:
-                    print(
+                    _say(
                         "💡 The app did not run its audit session to the end: start it by hand on this "
                         "display to see why."
                     )
-                print(
+                _say(
                     f"💡 The session needs the model server at {vllm_host}: `ragon-admin server start`."
                 )
             if write_json:
-                print(
+                _say(
                     f"💡 Full result: "
                     f"{cls.write_result(trace, verdict, allowed, cls.build_identity(ragon_bin), session)}"
                 )
@@ -1151,22 +1177,22 @@ class EgressAudit:
 
                 vllm_host = DreamferenceConfig().vllm_host
             if shutil.which("strace") is None:
-                print(
+                _say(
                     f"💡 Egress audit skipped: strace is not installed (sudo apt-get install strace); then {later}."
                 )
                 return None
             from dreamference.night_shift import NightShiftHost
 
             if NightShiftHost.served_model(vllm_host, timeout=3.0) is None:
-                print(
+                _say(
                     f"💡 Egress audit skipped: the model server at {vllm_host} is not answering. "
                     f"After `ragon-admin server start`, {later}."
                 )
                 return None
-            print("🔎 Auditing what the new build does on the network...")
+            _say("🔎 Auditing what the new build does on the network...")
             codes = [cls.run(write_json=True, ragon_bin=ragon_bin, vllm_host=vllm_host)]
             if TuiSession.missing_modules():
-                print(
+                _say(
                     "💡 The full-screen interface was not traced (pexpect and pyte are not installed): "
                     "`ragon-admin audit egress --tui` says how to add them."
                 )
@@ -1182,17 +1208,17 @@ class EgressAudit:
             )
             worst = 1 if 1 in codes else max(codes)
             if worst == 1:
-                print(
+                _say(
                     "❌ This build reaches something it should not: see the destinations above. "
                     "The build is installed; do not use it for private work until that is explained."
                 )
             elif worst == VERDICT_UNPROVEN:
-                print(f"⚠️  The audit could not show what this build does; {later}.")
+                _say(f"⚠️  The audit could not show what this build does; {later}.")
             return worst
         except (
             Exception
         ) as error:  # An audit that breaks must not turn a good build into a failed one.
-            print(f"⚠️  Egress audit did not run ({error}); {later}.")
+            _say(f"⚠️  Egress audit did not run ({error}); {later}.")
             return None
 
     @classmethod
