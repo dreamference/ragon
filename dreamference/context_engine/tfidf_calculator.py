@@ -51,6 +51,10 @@ class TFIDFCalculator:
         idf_table: dict[str, float] = {}
         tf_idf_index: dict[str, dict[str, float]] = {token: {} for token in all_tokens_set}
 
+        # No documents: nothing to weigh.
+        if doc_count == 0:
+            return idf_table, tf_idf_index
+
         # One pass per document. Scanning every document's token list once per token (`in` and
         # `.count` on lists) was quadratic, and took minutes on a workspace of a few thousand files.
         counts = {rel_path: Counter(tokens) for rel_path, tokens in doc_tokens.items()}
@@ -58,14 +62,13 @@ class TFIDFCalculator:
         for counter in counts.values():
             document_frequency.update(counter.keys())
 
-        if doc_count > 0:
-            for token in all_tokens_set:
-                # Smoothed inverse document frequency
-                idf_table[token] = math.log((doc_count + 1) / (document_frequency[token] + 1)) + 1
-            for rel_path, counter in counts.items():
-                length = len(doc_tokens[rel_path]) or 1
-                for token, count in counter.items():
-                    if token in tf_idf_index:
-                        tf_idf_index[token][rel_path] = (count / length) * idf_table[token]
+        for token in all_tokens_set:
+            # Smoothed inverse document frequency
+            idf_table[token] = math.log((doc_count + 1) / (document_frequency[token] + 1)) + 1
+        for rel_path, counter in counts.items():
+            length = len(doc_tokens[rel_path]) or 1
+            for token, count in counter.items():
+                if token in tf_idf_index:
+                    tf_idf_index[token][rel_path] = (count / length) * idf_table[token]
 
         return idf_table, tf_idf_index
