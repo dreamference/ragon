@@ -12,9 +12,11 @@ answer, or when it serves another model: a run measures one configuration.
 """
 
 import json
+from collections.abc import Callable
 from typing import Any, Final
 
 from dreamference.config.ports import DEFAULT_MODEL_PORT
+from dreamference.node.lane_probes import LaneProbes
 from dreamference.node.node_identity import NodeIdentity
 from dreamference.node.node_pairing import NodePairing
 
@@ -22,12 +24,15 @@ from dreamference.node.node_pairing import NodePairing
 NODES_PAIRED: Final[str] = "paired"
 NODES_NONE: Final[tuple] = ("none", "off", "false", "")
 
+# Only an IPv6 address carries a colon in its own text.
+IPV6_MARK: Final[str] = ":"
+
 
 class NodeLanes:
     """Builds the lanes of a night or benchmark run."""
 
     @classmethod
-    def wanted(cls, setting: Any) -> list[str] | None:
+    def wanted(cls, setting: object) -> list[str] | None:
         """Reads the `nodes` setting.
 
         Args:
@@ -77,11 +82,16 @@ class NodeLanes:
         Returns:
             str: The address as it goes in a URL (IPv6 in brackets).
         """
-        return f"[{address}]" if ":" in address and not address.startswith("[") else address
+        return f"[{address}]" if IPV6_MARK in address and not address.startswith("[") else address
 
     @classmethod
     def lanes(
-        cls, local_host: str, served: tuple[str, int], setting: Any, host: Any, budget: Any
+        cls,
+        local_host: str,
+        served: tuple[str, int],
+        setting: object,
+        host: LaneProbes,
+        budget: Callable[[float], tuple[int, int | None]],
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """This machine's lane and every usable replica's.
 
@@ -131,54 +141,74 @@ class NodeLanes:
         for record in paired:
             if mine and record.get("node") == mine:
                 continue
-            name = record.get("name") or record["node"]
-            # Where the node is now, never where it was: its lease may have moved (NodePairing.resolve).
-            address = NodePairing.resolve(record)
-            if address is None:
-                notes.append(
-                    f"{name}: is not on the network (no node answering a browse carries its id), "
-                    f"so its model server was not used."
-                )
-                continue
-            info = cls.info(record)
-            if info is None:
-                notes.append(
-                    f"{name}: did not answer over the pairing, so its model server was not used."
-                )
-                continue
-            if info.get("runner"):
-                notes.append(
-                    f"{name}: {info['runner']} is in progress there, so its model server was not used."
-                )
-                continue
-            port = info.get("model_port") or DEFAULT_MODEL_PORT
-            url = f"http://{cls.url_host(address)}:{port}"
-            theirs = host.served_model(url)
-            if theirs is None:
-                notes.append(
-                    f"{name}: its model server at {url} is not answering, so it was not used."
-                )
-                continue
-            if theirs[0] != served[0]:
-                notes.append(
-                    f"{name}: serves {theirs[0]}, not {served[0]}; a run measures one model, "
-                    f"so it was not used."
-                )
-                continue
-            their_metrics = host.metrics(url) or {}
-            their_pool = their_metrics.get("kv_pool", 0.0)
-            their_parallel, their_limit = budget(their_pool)
-            lanes.append(
-                {
-                    "name": name,
-                    "node": record["node"],
-                    "host": url,
-                    "kv_pool": their_pool,
-                    "parallel": their_parallel,
-                    "budget": their_limit,
-                }
-            )
+            lane, note = cls._replica(record, served, host, budget)
+            if lane is not None:
+                lanes.append(lane)
+            elif note is not None:
+                notes.append(note)
         return lanes, notes
+
+    @classmethod
+    def _replica(
+        cls,
+        record: dict[str, Any],
+        served: tuple[str, int],
+        host: LaneProbes,
+        budget: Callable[[float], tuple[int, int | None]],
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Checks one paired record: the lane it gives, or the note saying it was left out.
+
+        Args:
+            record: The paired node's record.
+            served: What this machine's server serves: `(model id, context)`.
+            host: The probes (`NightShiftHost` or a test's stand-in).
+            budget: `(kv_pool) -> (parallel, context limit or None)` for one server.
+
+        Returns:
+            Tuple[Optional[Dict[str, Any]], Optional[str]]: The lane when the node counts as a
+            replica, else the note saying why it was left out.
+        """
+        name = record.get("name") or record["node"]
+        # Where the node is now, never where it was: its lease may have moved (NodePairing.resolve).
+        address = NodePairing.resolve(record)
+        if address is None:
+            return None, (
+                f"{name}: is not on the network (no node answering a browse carries its id), "
+                f"so its model server was not used."
+            )
+        info = cls.info(record)
+        if info is None:
+            return None, (
+                f"{name}: did not answer over the pairing, so its model server was not used."
+            )
+        if info.get("runner"):
+            return None, (
+                f"{name}: {info['runner']} is in progress there, so its model server was not used."
+            )
+        port = info.get("model_port") or DEFAULT_MODEL_PORT
+        url = f"http://{cls.url_host(address)}:{port}"
+        theirs = host.served_model(url)
+        if theirs is None:
+            return None, f"{name}: its model server at {url} is not answering, so it was not used."
+        if theirs[0] != served[0]:
+            return None, (
+                f"{name}: serves {theirs[0]}, not {served[0]}; a run measures one model, "
+                f"so it was not used."
+            )
+        their_metrics = host.metrics(url) or {}
+        their_pool = their_metrics.get("kv_pool", 0.0)
+        their_parallel, their_limit = budget(their_pool)
+        return (
+            {
+                "name": name,
+                "node": record["node"],
+                "host": url,
+                "kv_pool": their_pool,
+                "parallel": their_parallel,
+                "budget": their_limit,
+            },
+            None,
+        )
 
     @classmethod
     def describe(cls, lane: dict[str, Any]) -> str:
