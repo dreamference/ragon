@@ -52,6 +52,12 @@ MAX_FILE_BYTES: Final[int] = 1024 * 1024
 
 # A NUL byte in this many leading bytes marks a file as binary.
 BINARY_SNIFF_BYTES: Final[int] = 8192
+# A NUL byte in the first bytes marks a binary file.
+NUL_BYTE: Final[bytes] = b"\0"
+# Files whose symbols come from Python's AST.
+PYTHON_SUFFIX: Final[str] = ".py"
+# The cached index's key for the TF-IDF tables; an index without it is rebuilt.
+TF_IDF_KEY: Final[str] = "tf_idf_index"
 
 # Binary and non-source extensions ignored during indexing
 IGNORE_EXTENSIONS: Final[set[str]] = {
@@ -82,7 +88,8 @@ class ContextEngine:
         """Initializes ContextEngine for specified workspace root directory.
 
         Args:
-            workspace_root (Optional[str]): Root directory path of target workspace. Defaults to current working directory.
+            workspace_root (Optional[str]): Root directory path of target workspace.
+                Defaults to current working directory.
         """
         self.workspace_root: Path = Path(workspace_root or str(Path.cwd())).resolve()
         self.dreamference_dir: Path = self.workspace_root / ".dreamference"
@@ -173,13 +180,13 @@ class ContextEngine:
                 return None
             with Path(abs_path).open("rb") as f:
                 raw = f.read()
-            if b"\0" in raw[:BINARY_SNIFF_BYTES]:
+            if NUL_BYTE in raw[:BINARY_SNIFF_BYTES]:
                 return None
             content = raw.decode("utf-8", errors="ignore")
 
             tokens = self.tokenize(content)
             file_symbols: list[CodeSymbol] = []
-            if abs_path.suffix == ".py":
+            if abs_path.suffix == PYTHON_SUFFIX:
                 file_symbols = self.extract_python_ast(abs_path, rel_path, content)
 
             idx_file = IndexedFile(
@@ -190,12 +197,14 @@ class ContextEngine:
                 tokens=tokens,
             )
             return idx_file, content
-        except Exception:
+        except Exception:  # noqa: BLE001 - an unreadable or unparsable file is skipped, never fatal to the index
             return None
 
     def index_workspace(self, force_reindex: bool = False) -> dict[str, Any]:
-        """Indexes all source files in workspace in parallel using ProcessPoolExecutor and persists
-        results to `.dreamference/context_index.json` and `.dreamference/context.db`.
+        """Indexes all source files of the workspace in parallel and persists the results.
+
+        Uses a ProcessPoolExecutor and writes `.dreamference/context_index.json` and
+        `.dreamference/context.db`.
 
         Args:
             force_reindex (bool): If True, reindexes workspace regardless of existing cached files.
@@ -353,7 +362,7 @@ class ContextEngine:
             # Token lists are not kept, so TF-IDF cannot be recomputed from this file; without the
             # tables themselves, search after a restart lost its TF-IDF component.
             "idf_table": self.idf_table,
-            "tf_idf_index": self.tf_idf_index,
+            TF_IDF_KEY: self.tf_idf_index,
         }
         with Path(self.index_file).open("w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -365,7 +374,7 @@ class ContextEngine:
         try:
             with Path(self.index_file).open("r", encoding="utf-8") as f:
                 data = json.load(f)
-            if "tf_idf_index" not in data:
+            if TF_IDF_KEY not in data:
                 return False  # written before the TF-IDF tables were saved: rebuild once
             self.symbols = [CodeSymbol(**s) for s in data.get("symbols", [])]
             self.indexed_files = {}
@@ -383,9 +392,9 @@ class ContextEngine:
             # process that computed them.
             self.file_embeddings = self.sqlite_storage.load_embeddings()
             self.idf_table = data.get("idf_table", {})
-            self.tf_idf_index = data.get("tf_idf_index", {})
+            self.tf_idf_index = data.get(TF_IDF_KEY, {})
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 - a damaged cache only means a rebuild
             return False
 
     def get_summary(self) -> dict[str, Any]:
