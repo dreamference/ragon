@@ -141,7 +141,9 @@ class SweBenchHarness:
         if not Path(cls.tool("python")).exists():
             created = cls.execute([sys.executable, "-m", "venv", str(cls.venv_dir())])
             if created.returncode != 0:
-                print(f"❌ Could not create {cls.venv_dir()}: {created.stderr.strip()[-300:]}")
+                sys.stdout.write(
+                    f"❌ Could not create {cls.venv_dir()}: {created.stderr.strip()[-300:]}\n"
+                )
                 return False
         installed = cls.execute(
             [
@@ -156,7 +158,9 @@ class SweBenchHarness:
             ]
         )
         if installed.returncode != 0:
-            print(f"❌ pip install swebench=={wanted} failed: {installed.stderr.strip()[-400:]}")
+            sys.stdout.write(
+                f"❌ pip install swebench=={wanted} failed: {installed.stderr.strip()[-400:]}\n"
+            )
             return False
         return cls.installed_version() == wanted
 
@@ -212,7 +216,7 @@ class SweBenchHarness:
         )
         lines = result.stdout.splitlines()
         if result.returncode != 0 or len(lines) < COUNT_2:
-            print(f"❌ Could not download {dataset}: {result.stderr.strip()[-400:]}")
+            sys.stdout.write(f"❌ Could not download {dataset}: {result.stderr.strip()[-400:]}\n")
             return None
         meta = json.loads(lines[0])
         meta["dataset"] = swe_bench_settings.SweBenchSettings.dataset_id(dataset)
@@ -326,7 +330,7 @@ class SweBenchHarness:
     # -- grading -------------------------------------------------------------------------------
 
     @classmethod
-    def evaluate(
+    def evaluate(  # noqa: PLR0913 - every input of one swebench eval call, named
         cls,
         work_dir: Path,
         dataset_file: Path,
@@ -391,8 +395,8 @@ class SweBenchHarness:
             (result.stdout or "") + (result.stderr or "")
         )
         if result.returncode != 0:
-            print(
-                f"⚠️  swebench eval exited {result.returncode}; see {work_dir / f'harness-{run_id}.log'}"
+            sys.stdout.write(
+                f"⚠️  swebench eval exited {result.returncode}; see {work_dir / f'harness-{run_id}.log'}\n"
             )
         return result.returncode == 0
 
