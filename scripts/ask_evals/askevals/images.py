@@ -1,5 +1,7 @@
-"""Images the harness draws for itself (spec §5.3): never photographed, so each check knows what
-is in its image. Pillow is the only dependency, and the font is DejaVu Sans when the system has it.
+"""The images the harness draws for its own checks (spec §5.3), which know what is in them.
+
+Images are never photographed, so each check knows exactly what its image contains. Pillow is
+the only dependency, and the font is DejaVu Sans when the system has it.
 
 Kinds:
 - `blank`: one flat colour, nothing to read.
@@ -14,6 +16,7 @@ Kinds:
 from __future__ import annotations
 
 import random
+from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
@@ -24,6 +27,8 @@ FONT_PATHS: Final[tuple[str, ...]] = (
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
 )
 SIZE: Final[tuple[int, int]] = (900, 600)
+
+Drawer = Callable[[Path, dict, int], None]
 
 
 def _font(size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
@@ -46,41 +51,69 @@ def _page(spec: dict, ink: tuple[int, int, int], paper: tuple[int, int, int]) ->
     return image
 
 
+def _draw_blank(path: Path, spec: dict, seed: int) -> None:
+    Image.new("RGB", SIZE, tuple(spec.get("colour", (245, 245, 245)))).save(path)
+
+
+def _draw_noise(path: Path, spec: dict, seed: int) -> None:
+    rng = random.Random(seed)
+    image = Image.new("L", SIZE)
+    image.putdata([rng.randrange(256) for _ in range(SIZE[0] * SIZE[1])])
+    image.save(path)
+
+
+def _draw_page(path: Path, spec: dict, seed: int) -> None:
+    _page(spec, (20, 20, 20), (255, 255, 255)).save(path)
+
+
+def _draw_faint(path: Path, spec: dict, seed: int) -> None:
+    _page(spec, (250, 250, 250), (255, 255, 255)).save(path)
+
+
+def _draw_chart(path: Path, spec: dict, seed: int) -> None:
+    image = Image.new("RGB", SIZE, (255, 255, 255))
+    d = ImageDraw.Draw(image)
+    d.text((40, 20), spec.get("title", "Chart"), fill=(0, 0, 0), font=_font(30))
+    bars = spec.get("bars", {"A": 3, "B": 5})
+    top = max(bars.values()) or 1
+    width = (SIZE[0] - 120) // max(1, len(bars))
+    for i, (label, value) in enumerate(bars.items()):
+        x = 60 + i * width
+        height = int(400 * value / top)
+        d.rectangle((x, 520 - height, x + width - 30, 520), fill=(60, 110, 180))
+        d.text((x, 530), f"{label}: {value}", fill=(0, 0, 0), font=_font(22))
+    image.save(path)
+
+
+def _draw_tiny(path: Path, spec: dict, seed: int) -> None:
+    Image.new("RGB", (1, 1), (255, 255, 255)).save(path)
+
+
+def _draw_truncated(path: Path, spec: dict, seed: int) -> None:
+    full = path.with_suffix(".full.png")
+    _page({"name": "x", "price": "y"}, (0, 0, 0), (255, 255, 255)).save(full)
+    path.write_bytes(full.read_bytes()[:64])
+    full.unlink()
+
+
+DRAWERS: Final[dict[str, Drawer]] = {
+    "blank": _draw_blank,
+    "noise": _draw_noise,
+    "page": _draw_page,
+    "faint": _draw_faint,
+    "chart": _draw_chart,
+    "tiny": _draw_tiny,
+    "truncated": _draw_truncated,
+}
+
+
 def draw(kind: str, path: Path, spec: dict | None = None, seed: int = 0) -> Path:
     """Draws one image of `kind` to `path` (PNG) and returns the path."""
     spec = spec or {}
     path.parent.mkdir(parents=True, exist_ok=True)
-    if kind == "blank":
-        Image.new("RGB", SIZE, tuple(spec.get("colour", (245, 245, 245)))).save(path)
-    elif kind == "noise":
-        rng = random.Random(seed)
-        image = Image.new("L", SIZE)
-        image.putdata([rng.randrange(256) for _ in range(SIZE[0] * SIZE[1])])
-        image.save(path)
-    elif kind == "page":
-        _page(spec, (20, 20, 20), (255, 255, 255)).save(path)
-    elif kind == "faint":
-        _page(spec, (250, 250, 250), (255, 255, 255)).save(path)
-    elif kind == "chart":
-        image = Image.new("RGB", SIZE, (255, 255, 255))
-        d = ImageDraw.Draw(image)
-        d.text((40, 20), spec.get("title", "Chart"), fill=(0, 0, 0), font=_font(30))
-        bars = spec.get("bars", {"A": 3, "B": 5})
-        top = max(bars.values()) or 1
-        width = (SIZE[0] - 120) // max(1, len(bars))
-        for i, (label, value) in enumerate(bars.items()):
-            x = 60 + i * width
-            height = int(400 * value / top)
-            d.rectangle((x, 520 - height, x + width - 30, 520), fill=(60, 110, 180))
-            d.text((x, 530), f"{label}: {value}", fill=(0, 0, 0), font=_font(22))
-        image.save(path)
-    elif kind == "tiny":
-        Image.new("RGB", (1, 1), (255, 255, 255)).save(path)
-    elif kind == "truncated":
-        full = path.with_suffix(".full.png")
-        _page({"name": "x", "price": "y"}, (0, 0, 0), (255, 255, 255)).save(full)
-        path.write_bytes(full.read_bytes()[:64])
-        full.unlink()
-    else:
-        raise ValueError(f"unknown image kind {kind!r}")
+    try:
+        drawer = DRAWERS[kind]
+    except KeyError:
+        raise ValueError(f"unknown image kind {kind!r}") from None
+    drawer(path, spec, seed)
     return path
