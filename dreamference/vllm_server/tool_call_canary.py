@@ -231,42 +231,56 @@ class ToolCallCanary:
         reasoning = cls.text_of(items, events, "reasoning", "response.reasoning")
         parsers = cls.parsers(model_key, engine)
         if not calls:
-            if any(mark in text for mark in CALL_MARKUP):
-                return False, (
-                    f"the model wrote the call as text and the server did not read it: "
-                    f"the tool-call parser ({parsers['tool']}) does not match this model's call format"
-                )
-            if any(mark in reasoning for mark in CALL_MARKUP):
-                return False, (
-                    f"the call came inside the reasoning: the reasoning parser ({parsers['reasoning']}) "
-                    f"or the chat template's thinking switch is at fault"
-                )
-            said = (text or reasoning).strip().replace("\n", " ")[:80]
-            return False, (
-                f"no tool call, only prose ({said!r}): check the tool-call parser ({parsers['tool']}) "
-                f"and that the chat template renders tools{parsers['template']}"
-            )
+            return False, cls._no_call_reason(text, reasoning, parsers)
         call = calls[0]
+        problem = cls._call_problem(call, parsers)
+        if problem is not None:
+            return False, problem
+        arguments = json.loads(call.get("arguments") or "")
+        return True, f"{TOOL_NAME} {json.dumps(arguments)[:60]} in {elapsed:.1f} s"
+
+    @staticmethod
+    def _no_call_reason(text: str, reasoning: str, parsers: dict[str, str]) -> str:
+        """Explains why no function call came back: as text, inside the reasoning, or prose only."""
+        if any(mark in text for mark in CALL_MARKUP):
+            return (
+                f"the model wrote the call as text and the server did not read it: "
+                f"the tool-call parser ({parsers['tool']}) does not match this model's call format"
+            )
+        if any(mark in reasoning for mark in CALL_MARKUP):
+            return (
+                f"the call came inside the reasoning: the reasoning parser ({parsers['reasoning']}) "
+                f"or the chat template's thinking switch is at fault"
+            )
+        said = (text or reasoning).strip().replace("\n", " ")[:80]
+        return (
+            f"no tool call, only prose ({said!r}): check the tool-call parser ({parsers['tool']}) "
+            f"and that the chat template renders tools{parsers['template']}"
+        )
+
+    @staticmethod
+    def _call_problem(call: dict[str, Any], parsers: dict[str, str]) -> str | None:
+        """Says what is wrong with the call's name, call id or arguments; None when it is well formed."""
         if call.get("name") != TOOL_NAME:
-            return False, (
+            return (
                 f"a call to {call.get('name')!r}, not {TOOL_NAME!r}: the tool-call parser "
                 f"({parsers['tool']}) misread the name"
             )
         if not call.get("call_id"):
-            return False, "the call has no call_id, which ragon needs to pair its output with it"
+            return "the call has no call_id, which ragon needs to pair its output with it"
         try:
             arguments = json.loads(call.get("arguments") or "")
         except (TypeError, ValueError):
-            return False, (
+            return (
                 f"the call's arguments are not JSON ({str(call.get('arguments'))[:60]!r}): "
                 f"the tool-call parser ({parsers['tool']}) is at fault"
             )
         if not isinstance(arguments, dict) or not isinstance(arguments.get(REQUIRED_ARGUMENT), str):
-            return False, (
+            return (
                 f"the call's arguments lack {REQUIRED_ARGUMENT!r} ({json.dumps(arguments)[:60]}): "
                 f"the tool-call parser ({parsers['tool']}) or the template's tool rendering is at fault"
             )
-        return True, f"{TOOL_NAME} {json.dumps(arguments)[:60]} in {elapsed:.1f} s"
+        return None
 
     @classmethod
     def refusal(
@@ -372,7 +386,7 @@ class ToolCallCanary:
 
             try:
                 overrides = get_model_launch_overrides(model_key, engine) or {}
-            except Exception:
+            except Exception:  # noqa: BLE001 - an unknown or broken model entry only loses the parser names
                 overrides = {}
         tool = overrides.get("tool_call_parser")
         reasoning = overrides.get("reasoning_parser")
