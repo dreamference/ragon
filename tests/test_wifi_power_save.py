@@ -21,7 +21,11 @@ from dreamference.vllm_server.wifi_power_save import STEP_NAME
 WIFI_ONLY = "wlP9s9:wifi:connected:TP-Link_DA74\np2p-dev-wlP9s9:wifi-p2p:disconnected:\nenP7s7:ethernet:unavailable:\n"
 # The real reader, taken before conftest stubs it for each test.
 REAL_READ = WifiPowerSave.__dict__["_read"]
-ETHERNET_ONLY = "enP7s7:ethernet:connected:Wired connection 1\nwlP9s9:wifi:disconnected:\nlo:loopback:connected (externally):lo\n"
+ETHERNET_ONLY = (
+    "enP7s7:ethernet:connected:Wired connection 1\n"
+    "wlP9s9:wifi:disconnected:\n"
+    "lo:loopback:connected (externally):lo\n"
+)
 
 
 @pytest.fixture

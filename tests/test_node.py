@@ -738,10 +738,22 @@ def test_the_browse_output_is_read_and_docker_interfaces_are_left_out():
     output = "\n".join(
         [
             "+;wlP9s9;IPv4;gx10-1a2b;_ragon-node._tcp;local",
-            '=;br-8544a6cf391a;IPv4;gx10-1a2b;_ragon-node._tcp;local;gx10-1a2b.local;172.20.0.1;8000;"main=1" "state=ready" "version=0.9.0" "node=abc" "proto=1"',
-            '=;vethb68d363;IPv6;gx10-1a2b;_ragon-node._tcp;local;gx10-1a2b.local;fe80::1;8000;"state=ready" "node=abc" "proto=1"',
-            '=;wlP9s9;IPv4;gx10-1a2b;_ragon-node._tcp;local;gx10-1a2b.local;192.168.50.105;8000;"main=1" "state=ready" "version=0.9.0" "node=abc" "proto=1"',
-            '=;wlP9s9;IPv4;gx10-1a2b;_ragon-node._tcp;local;gx10-1a2b.local;192.168.50.105;8000;"main=1" "state=ready" "version=0.9.0" "node=abc" "proto=1"',
+            (
+                "=;br-8544a6cf391a;IPv4;gx10-1a2b;_ragon-node._tcp;local;gx10-1a2b.local;172.20.0.1;8000;"
+                '"main=1" "state=ready" "version=0.9.0" "node=abc" "proto=1"'
+            ),
+            (
+                "=;vethb68d363;IPv6;gx10-1a2b;_ragon-node._tcp;local;gx10-1a2b.local;fe80::1;8000;"
+                '"state=ready" "node=abc" "proto=1"'
+            ),
+            (
+                "=;wlP9s9;IPv4;gx10-1a2b;_ragon-node._tcp;local;gx10-1a2b.local;192.168.50.105;8000;"
+                '"main=1" "state=ready" "version=0.9.0" "node=abc" "proto=1"'
+            ),
+            (
+                "=;wlP9s9;IPv4;gx10-1a2b;_ragon-node._tcp;local;gx10-1a2b.local;192.168.50.105;8000;"
+                '"main=1" "state=ready" "version=0.9.0" "node=abc" "proto=1"'
+            ),
             '=;wlP9s9;IPv4;other;_ssh._tcp;local;other.local;192.168.50.9;22;""',
         ]
     )
@@ -3261,7 +3273,10 @@ def test_a_model_is_copied_to_a_paired_node_and_lands_whole(tmp_path, monkeypatc
 
 
 # What a receiver sees in place of the real disk: 2 TiB free, whatever the machine running the suite has.
-PLENTY_OF_DISK = "import shutil, types; shutil.disk_usage = lambda path: types.SimpleNamespace(total=4 << 40, used=2 << 40, free=2 << 40); "
+PLENTY_OF_DISK = (
+    "import shutil, types; "
+    "shutil.disk_usage = lambda path: types.SimpleNamespace(total=4 << 40, used=2 << 40, free=2 << 40); "
+)
 
 
 def receive(monkeypatch, hub, members, size=None):
