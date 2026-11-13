@@ -17,6 +17,7 @@ Nothing here is installed from the network: the agent brings its own binary.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 from pathlib import Path
@@ -46,10 +47,10 @@ def ragon_command(instruction: str, model_host: str) -> str:
 
 def output_tokens(sessions: Path) -> int:
     """The output tokens of every turn under a downloaded `sessions` folder."""
-    import sys  # noqa: PLC0415
+    import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ask_evals"))
-    from askevals import rollout  # noqa: PLC0415
+    from askevals import rollout
 
     turns = rollout.read_home(sessions.parent)
     return sum(t.output_tokens or 0 for t in turns)
@@ -60,12 +61,15 @@ class RagonAgent(BaseAgent):
 
     @staticmethod
     def name() -> str:
+        """The agent's name in Harbor's results."""
         return "ragon-ragon"
 
     def version(self) -> str | None:
+        """The ragon version under test, from RAGON_VERSION."""
         return os.environ.get("RAGON_VERSION")
 
     async def setup(self, environment: BaseEnvironment) -> None:
+        """Uploads the runtime copy of ragon into the task's container."""
         runtime = os.environ.get("RAGON_RUNTIME_DIR")
         if not runtime or not (Path(runtime) / "bin" / "ragon").exists():
             raise RuntimeError("RAGON_RUNTIME_DIR must name SWE-bench's runtime copy of ragon")
@@ -76,19 +80,17 @@ class RagonAgent(BaseAgent):
     async def run(
         self, instruction: str, environment: BaseEnvironment, context: AgentContext
     ) -> None:
+        """Runs ragon on the instruction and brings its rollout and output tokens back."""
         model_host = os.environ.get("RAGON_MODEL_HOST")
         if not model_host:
-            raise RuntimeError(
-                "RAGON_MODEL_HOST must name the model server as the task sees it"
-            )
+            raise RuntimeError("RAGON_MODEL_HOST must name the model server as the task sees it")
         result: Any = await environment.exec(
             command=ragon_command(instruction, model_host), timeout_sec=AGENT_LIMIT_S + 60
         )
         logs = Path(self.logs_dir)
         logs.mkdir(parents=True, exist_ok=True)
-        try:
+        # A missing rollout must not hide the task's own result.
+        with contextlib.suppress(Exception):
             await environment.download_dir(REMOTE_HOME, logs / "ragon-home")
             context.n_output_tokens = output_tokens(logs / "ragon-home" / "sessions")
-        except Exception:  # noqa: BLE001 - a missing rollout must not hide the task's own result
-            pass
         (logs / "ragon-exit.txt").write_text(f"{getattr(result, 'return_code', None)}\n")
