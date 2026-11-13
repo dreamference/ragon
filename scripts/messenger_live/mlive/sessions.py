@@ -11,7 +11,20 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
+
+# Rollout record and payload types and roles the reader looks at.
+RESPONSE_ITEM: Final = "response_item"
+EVENT_MSG: Final = "event_msg"
+MESSAGE: Final = "message"
+USER: Final = "user"
+ASSISTANT: Final = "assistant"
+FUNCTION_CALL: Final = "function_call"
+CUSTOM_TOOL_CALL: Final = "custom_tool_call"
+TURN_ABORTED: Final = "turn_aborted"
+TASK_COMPLETE: Final = "task_complete"
+# A user message as it appears in a raw line once spaces are removed.
+USER_ROLE: Final = '"role":"user"'
 
 
 @dataclass
@@ -30,7 +43,12 @@ class Session:
 
 def user_text(payload: dict[str, Any]) -> str | None:
     """The text of a `response_item` user message, or None for anything else."""
-    if payload.get("type") != "message" or payload.get("role") != "user":
+    return message_text(payload, USER)
+
+
+def message_text(payload: dict[str, Any], role: str) -> str | None:
+    """The text of a `response_item` message of `role`, or None for anything else."""
+    if payload.get("type") != MESSAGE or payload.get("role") != role:
         return None
     parts = payload.get("content") or []
     return "".join(part.get("text", "") for part in parts if isinstance(part, dict))
@@ -39,7 +57,7 @@ def user_text(payload: dict[str, Any]) -> str | None:
 def call_command(payload: dict[str, Any]) -> tuple[str, str] | None:
     """A tool call's name and the command (or input) it ran, or None for anything else."""
     kind = payload.get("type")
-    if kind == "function_call":
+    if kind == FUNCTION_CALL:
         arguments = payload.get("arguments") or ""
         try:
             value = json.loads(arguments)
@@ -52,9 +70,41 @@ def call_command(payload: dict[str, Any]) -> tuple[str, str] | None:
             if isinstance(cmd, str):
                 return payload.get("name", ""), cmd
         return payload.get("name", ""), arguments
-    if kind == "custom_tool_call":
+    if kind == CUSTOM_TOOL_CALL:
         return payload.get("name", ""), payload.get("input") or ""
     return None
+
+
+def take_item(session: Session, payload: dict[str, Any], marker: str) -> bool:
+    """Files one `response_item` payload into `session`.
+
+    False when it is the first real user message and lacks `marker`.
+    """
+    text = user_text(payload)
+    if text is not None and not text.lstrip().startswith("<"):
+        if not session.first_user:
+            if marker not in text:
+                return False
+            session.first_user = text
+        session.users.append(text)
+        return True
+    text = message_text(payload, ASSISTANT)
+    if text is not None:
+        session.answers.append(text)
+        return True
+    call = call_command(payload)
+    if call is not None:
+        session.tools.append(call[0])
+        session.commands.append(call[1])
+    return True
+
+
+def take_event(session: Session, payload: dict[str, Any]) -> None:
+    """Counts an `event_msg` payload's aborted and completed turns into `session`."""
+    if payload.get("type") == TURN_ABORTED:
+        session.aborted += 1
+    elif payload.get("type") == TASK_COMPLETE:
+        session.completed += 1
 
 
 def read_session(lines: list[str], marker: str, path: Path) -> Session | None:
@@ -71,34 +121,23 @@ def read_session(lines: list[str], marker: str, path: Path) -> Session | None:
             continue
         payload = record.get("payload") or {}
         kind = record.get("type")
-        if kind == "response_item":
-            text = user_text(payload)
-            if text is not None and not text.lstrip().startswith("<"):
-                if not session.first_user:
-                    if marker not in text:
-                        return None
-                    session.first_user = text
-                session.users.append(text)
-                continue
-            if payload.get("type") == "message" and payload.get("role") == "assistant":
-                session.answers.append(
-                    "".join(
-                        part.get("text", "")
-                        for part in payload.get("content") or []
-                        if isinstance(part, dict)
-                    )
-                )
-                continue
-            call = call_command(payload)
-            if call is not None:
-                session.tools.append(call[0])
-                session.commands.append(call[1])
-        elif kind == "event_msg":
-            if payload.get("type") == "turn_aborted":
-                session.aborted += 1
-            elif payload.get("type") == "task_complete":
-                session.completed += 1
+        if kind == RESPONSE_ITEM:
+            if not take_item(session, payload, marker):
+                return None
+        elif kind == EVENT_MSG:
+            take_event(session, payload)
     return session if session.first_user else None
+
+
+def head_lines(path: Path, marker: str) -> list[str]:
+    """A rollout's lines, read up to the user message that shows its first real question lacks `marker`."""
+    with path.open(errors="replace") as handle:
+        lines = []
+        for line in handle:
+            lines.append(line)
+            if USER_ROLE in line.replace(" ", "") and not read_partial_has_marker(lines, marker):
+                break
+    return lines
 
 
 def recent_sessions(root: Path, since: float, marker: str) -> list[Session]:
@@ -108,14 +147,7 @@ def recent_sessions(root: Path, since: float, marker: str) -> list[Session]:
         try:
             if path.stat().st_mtime < since:
                 continue
-            with path.open(errors="replace") as handle:
-                lines = []
-                for line in handle:
-                    lines.append(line)
-                    if '"role":"user"' in line.replace(" ", "") and not read_partial_has_marker(
-                        lines, marker
-                    ):
-                        break
+            lines = head_lines(path, marker)
         except OSError:
             continue
         session = read_session(lines, marker, path)
