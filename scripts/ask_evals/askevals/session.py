@@ -1,13 +1,16 @@
-"""One scenario's session, run inside the jail (spec §5.2, §9): the stand-ins up, the model's
-port joined to the socket outside, then each turn through `ragon exec` (the first) or
-`ragon exec … resume --last` (the rest), with the harness's own bound on every turn.
+"""One scenario's session, run inside the jail (spec §5.2, §9).
+
+The stand-ins up, the model's port joined to the socket outside, then each turn through
+`ragon exec` (the first) or `ragon exec … resume --last` (the rest), with the harness's own
+bound on every turn. Standard library only, so it runs with the system Python.
+
+Usage:
 
     python3 -I session.py SCENARIO.json OUT_DIR --home CODEX_HOME --workspace DIR
                           [--model-socket PATH] [--ragon ragon]
 
 Writes into OUT_DIR: `turns.jsonl` (one record per turn: exit status, seconds, why it was cut),
-`events-<n>.jsonl` (each turn's `--json` stream), `web.jsonl` (the stand-ins' log). Standard
-library only, so it runs with the system Python.
+`events-<n>.jsonl` (each turn's `--json` stream), `web.jsonl` (the stand-ins' log).
 """
 
 from __future__ import annotations
@@ -22,12 +25,12 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Final, Optional
+from typing import Final
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from askevals.forward import serve_tcp  # noqa: E402
-from askevals.standins import StandIns  # noqa: E402
+from askevals.forward import serve_tcp
+from askevals.standins import StandIns
 
 # The model server's address inside the jail.
 MODEL_PORT: Final[int] = 8000
@@ -117,7 +120,29 @@ def run_turn(argv: list[str], env: dict, events: Path, limit_s: float, silence_s
     return {"rc": process.returncode, "seconds": round(time.time() - start, 1), "cut": cut}
 
 
+def play_turns(out, scenario, args, env, faketime_missing, assets):
+    """Runs the scenario's turns, one record per turn; its status is main's."""
+    workspace = Path(args.workspace)
+    with (out / "turns.jsonl").open("w") as log:
+        for index, turn in enumerate(scenario["turns"]):
+            if turn.get("faketime") and faketime_missing:
+                record = {"turn": index, "skipped": "faketime is not installed"}
+                log.write(json.dumps(record) + "\n")
+                return 3
+            images = [assets / name for name in turn.get("images", [])]
+            argv_ = command(args.ragon, workspace, turn, index == 0, images)
+            limit = float(turn.get("limit_s", scenario.get("turn_limit_s", TURN_LIMIT_S)))
+            record = run_turn(argv_, env, out / f"events-{index}.jsonl", limit, args.silence_s)
+            record["turn"] = index
+            log.write(json.dumps(record) + "\n")
+            log.flush()
+            if record["rc"] not in (0, None) and record["cut"] is None:
+                break
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    """Run one scenario's session; returns the status its turns leave."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("scenario")
     parser.add_argument("out")
@@ -146,23 +171,14 @@ def main(argv: list[str] | None = None) -> int:
             "DREAMFERENCE_RAGON_PROMPT": scenario.get("prompt", "ask"),
             "DREAMFERENCE_VLLM_HOST": f"http://127.0.0.1:{MODEL_PORT}",
         }
-        assets = Path(args.scenario).parent
-        with (out / "turns.jsonl").open("w") as log:
-            for index, turn in enumerate(scenario["turns"]):
-                if turn.get("faketime") and faketime_missing:
-                    record = {"turn": index, "skipped": "faketime is not installed"}
-                    log.write(json.dumps(record) + "\n")
-                    return 3
-                images = [assets / name for name in turn.get("images", [])]
-                argv_ = command(args.ragon, workspace, turn, index == 0, images)
-                limit = float(turn.get("limit_s", scenario.get("turn_limit_s", TURN_LIMIT_S)))
-                record = run_turn(argv_, env, out / f"events-{index}.jsonl", limit, args.silence_s)
-                record["turn"] = index
-                log.write(json.dumps(record) + "\n")
-                log.flush()
-                if record["rc"] not in (0, None) and record["cut"] is None:
-                    break
-    return 0
+        return play_turns(
+            out,
+            scenario,
+            args,
+            env,
+            faketime_missing,
+            Path(args.scenario).parent,
+        )
 
 
 if __name__ == "__main__":
