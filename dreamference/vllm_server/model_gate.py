@@ -26,11 +26,12 @@ from dreamference.vllm_server.model_gate_service import (
     PAUSE_FILE,
     PROBE_PATH,
     RUN_FILE,
+    STATE_CLOSED,
     ModelGateService,
 )
 
 # Where the gate's state lives on the host; mounted read-only into its container.
-GATE_DIR: Final[Path] = Path(os.path.expanduser("~/.local/state/dreamference/model-gate"))
+GATE_DIR: Final[Path] = Path("~/.local/state/dreamference/model-gate").expanduser()
 CONTAINER_STATE_DIR: Final[str] = "/ragon-gate"
 SERVICE_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_service.py")
 SERVICE_COPY: Final[str] = "model_gate_service.py"
@@ -51,6 +52,12 @@ START_WAIT_S: Final[float] = 10.0
 
 HTTP_NOT_FOUND: Final[int] = 404
 DOCKER_RUNNING: Final[str] = "true"
+# The highest TCP port.
+MAX_PORT: Final[int] = 65535
+# What a current gate's probe answer names in `gate`.
+GATE_NAME: Final[str] = "ragon"
+# `state()`'s record when a pause is in force.
+STATE_PAUSED: Final[str] = "paused"
 
 
 class ModelGate:
@@ -71,7 +78,7 @@ class ModelGate:
         """
         return (
             port + ENGINE_PORT_OFFSET
-            if port + ENGINE_PORT_OFFSET <= 65535
+            if port + ENGINE_PORT_OFFSET <= MAX_PORT
             else port - ENGINE_PORT_OFFSET
         )
 
@@ -162,7 +169,7 @@ class ModelGate:
         )
         if result is None or result.returncode != 0:
             detail = (getattr(result, "stderr", "") or "").strip()[:300]
-            print(f"⚠️  The model gate did not start{': ' + detail if detail else ''}")
+            print(f"⚠️  The model gate did not start{': ' + detail if detail else ''}")  # noqa: T201 - console output of server start
             return False
         # A container that started is not a gate that answers (the port may be held, the copy
         # unreadable): one that crash-looped would leave the engine, on loopback, unreachable.
@@ -179,7 +186,7 @@ class ModelGate:
         detail = " ".join(
             ((getattr(logs, "stdout", "") or "") + (getattr(logs, "stderr", "") or "")).split()
         )[-300:]
-        print(
+        print(  # noqa: T201 - console output of server start
             f"⚠️  The model gate started but did not answer on port {port}{': ' + detail if detail else ''}"
         )
         cls.remove(port)
@@ -225,7 +232,7 @@ class ModelGate:
         except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException):
             # HTTPException: whatever holds the port does not speak HTTP, or its answer broke off.
             return None
-        return record if isinstance(record, dict) and record.get("gate") == "ragon" else None
+        return record if isinstance(record, dict) and record.get("gate") == GATE_NAME else None
 
     @classmethod
     def is_stale(cls, host: str, timeout: float = 2.0) -> bool:
@@ -390,9 +397,9 @@ class ModelGate:
         live = cls.probe(host)
         state = live if live is not None else cls.state()
         lines = []
-        if state.get("state") == "closed":
+        if state.get("state") == STATE_CLOSED:
             lines.append(f"Model gate: closed: {state.get('message')}")
-        elif state.get("state") == "paused":
+        elif state.get("state") == STATE_PAUSED:
             lines.append(
                 f"Model gate: paused until {time.strftime('%H:%M', time.localtime(state['paused_until']))}; "
                 f"run {state.get('run')} waits while others use the model "
