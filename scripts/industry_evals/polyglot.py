@@ -61,7 +61,7 @@ ADDENDUM: Final[str] = """
 Use the above instructions to modify the supplied files: {file_list}
 Don't change the names of existing functions or classes, as they may be referenced from other code like unit tests, etc.
 Only use standard libraries, don't suggest installing any packages.
-"""  # noqa: E501
+"""
 TEST_FAILURES: Final[str] = """
 ####
 
@@ -70,12 +70,16 @@ The tests are correct, don't try and change them.
 Fix the code in {file_list} to resolve the errors.
 """
 ALWAYS_IGNORED: Final[frozenset[str]] = frozenset({"CMakeLists.txt", "Cargo.toml"})
+JAVA: Final[str] = "java"  # the language whose `@Disabled` tests are switched on for grading
+TIMED_OUT: Final[int] = 124  # the exit status `timeout` returns when it cuts the child
+ERROR_KEY: Final[str] = "error"  # a record's failure key, counted as an error in the summary
 
 
 class Docker:
     """The Docker calls the runner makes; tests replace it, so the suite never runs Docker."""
 
     def run(self, args: list[str], timeout: float | None = None) -> subprocess.CompletedProcess:
+        """One `docker` command; its result, with no check of its exit status."""
         return subprocess.run(
             ["docker", *args], capture_output=True, text=True, timeout=timeout, check=False
         )
@@ -129,7 +133,7 @@ def install_tests(exercise: Path, work: Path, tests: list[str], language: str) -
         target = work / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(exercise / name, target)
-        if language == "java":
+        if language == JAVA:
             target.write_text(re.sub(r"@Disabled\([^)]*\)\s*\n", "", target.read_text()))
 
 
@@ -149,7 +153,7 @@ def grade(docker: Docker, container: str, language: str) -> tuple[bool, str]:
     except subprocess.TimeoutExpired:
         return False, "Tests timed out!"
     output = (done.stdout or "") + (done.stderr or "")
-    if done.returncode == 124:
+    if done.returncode == TIMED_OUT:
         return False, "Tests timed out!"
     return done.returncode == 0, output[-8000:]
 
@@ -184,7 +188,7 @@ def agent(
     try:
         return docker.run(command, timeout=ATTEMPT_LIMIT_S + 60).returncode
     except subprocess.TimeoutExpired:
-        return 124
+        return TIMED_OUT
 
 
 def run_exercise(
@@ -230,7 +234,10 @@ def run_exercise(
         ]
     )
     if created.returncode != 0:
-        return {**record, "error": f"container did not start: {created.stderr.strip()[:300]}"}
+        return {
+            **record,
+            ERROR_KEY: f"container did not start: {created.stderr.strip()[:300]}",
+        }
     try:
         text = instructions(exercise, files["solution"])
         for attempt in range(args.tries):
@@ -275,7 +282,7 @@ def summary(records: list[dict]) -> dict:
             "cases": len(rows),
             "pass_rate_1": round(100 * sum(r.get("pass_1", False) for r in rows) / n, 1),
             "pass_rate_2": round(100 * sum(r.get("pass_2", False) for r in rows) / n, 1),
-            "errors": sum(1 for r in rows if "error" in r),
+            "errors": sum(1 for r in rows if ERROR_KEY in r),
         }
 
     by_language = {
@@ -285,7 +292,8 @@ def summary(records: list[dict]) -> dict:
     return {"all": rates(records), "by_language": by_language}
 
 
-def main(argv: list[str] | None = None, docker: Docker | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
+    """The runner's arguments, with the cache, image and runtime defaults."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--languages", default=",".join(LANGUAGES))
     parser.add_argument("--limit", type=int, help="the first N exercises of each language")
@@ -308,39 +316,69 @@ def main(argv: list[str] | None = None, docker: Docker | None = None) -> int:
     parser.add_argument(
         "--hold-gate", metavar="LABEL", help="close the model gate to all but this run"
     )
-    args = parser.parse_args(argv)
-    docker = docker or Docker()
-    cache, runs = Path(args.cache), Path(args.runs)
-    root = cache / "polyglot-benchmark"
-    if not root.exists():
-        print(f"❌ No exercises in {root}: run setup_cache.py polyglot first.", file=sys.stderr)
-        return 2
+    return parser
+
+
+def _runtime_and_model_host(args: argparse.Namespace) -> tuple[str, str, str | None, int]:
+    """The resolved runtime folder, model host and subnet, or the exit status to stop with.
+
+    Returns:
+        (runtime, model_host, subnet, status); when status is not 0 the others are unusable.
+    """
     if not args.runtime:
-        from dreamference.swe_bench.swe_bench_runtime import SweBenchRuntime  # noqa: PLC0415
+        from dreamference.swe_bench.swe_bench_runtime import SweBenchRuntime
 
         args.runtime = str(SweBenchRuntime.directory())
     if not (Path(args.runtime) / "bin" / "ragon").exists():
         # Built by SWE-bench (`ragon-admin swe-bench smoke` or a run), never rebuilt here: a night's
         # SWE-bench containers mount the same folder.
-        print(
+        print(  # noqa: T201 - error on stderr
             f"❌ No runtime copy of ragon in {args.runtime}: run `ragon-admin swe-bench smoke` once.",
             file=sys.stderr,
         )
-        return 2
+        return args.runtime, "", None, 2
     model_host, subnet = args.model_host, None
     if not model_host:
-        from dreamference.swe_bench.swe_bench_docker import SweBenchDocker  # noqa: PLC0415
+        model_host, subnet, status = _model_host_and_subnet()
+        if status:
+            return args.runtime, "", None, status
+    return args.runtime, model_host, subnet, 0
 
-        gateway = SweBenchDocker.ensure_network(NETWORK)
-        if not gateway:
-            print(f"❌ Could not make the internal network {NETWORK}.", file=sys.stderr)
-            return 2
-        model_host, subnet = f"http://{gateway}:8000", SweBenchDocker.subnet(NETWORK)
+
+def _model_host_and_subnet() -> tuple[str, str | None, int]:
+    """The gateway model host and the network's subnet, or the exit status to stop with.
+
+    Returns:
+        (model_host, subnet, status); when status is not 0 the others are unusable.
+    """
+    from dreamference.swe_bench.swe_bench_docker import SweBenchDocker
+
+    gateway = SweBenchDocker.ensure_network(NETWORK)
+    if not gateway:
+        print(  # noqa: T201 - error on stderr
+            f"❌ Could not make the internal network {NETWORK}.", file=sys.stderr
+        )
+        return "", None, 2
+    return f"http://{gateway}:8000", SweBenchDocker.subnet(NETWORK), 0
+
+
+def main(argv: list[str] | None = None, docker: Docker | None = None) -> int:
+    """One run: grade `--tries` attempts at each exercise and write the results and summary."""
+    args = _parser().parse_args(argv)
+    docker = docker or Docker()
+    cache, runs = Path(args.cache), Path(args.runs)
+    root = cache / "polyglot-benchmark"
+    if not root.exists():
+        print(f"❌ No exercises in {root}: run setup_cache.py polyglot first.", file=sys.stderr)  # noqa: T201 - error on stderr
+        return 2
+    _, model_host, subnet, status = _runtime_and_model_host(args)
+    if status:
+        return status
     todo = exercises(root, args.languages.split(","), args.limit)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     hold = None
     if args.hold_gate and subnet:
-        from askevals.gate import GateHold  # noqa: PLC0415
+        from askevals.gate import GateHold
 
         hold = GateHold(args.hold_gate, total=len(todo), networks=[subnet]).__enter__()
     out = runs / "results.jsonl"
@@ -357,7 +395,7 @@ def main(argv: list[str] | None = None, docker: Docker | None = None) -> int:
                 hold.advance()
             with out.open("a") as log:
                 log.write(json.dumps(record) + "\n")
-            print(json.dumps(record), flush=True)
+            print(json.dumps(record), flush=True)  # noqa: T201 - results on stdout
             return record
 
         with ThreadPoolExecutor(max(1, args.parallel)) as pool:
@@ -376,7 +414,7 @@ def main(argv: list[str] | None = None, docker: Docker | None = None) -> int:
         "tries": args.tries,
     }
     (runs / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
-    print(json.dumps(result["summary"]["all"]))
+    print(json.dumps(result["summary"]["all"]))  # noqa: T201 - results on stdout
     return 0
 
 
