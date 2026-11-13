@@ -35,7 +35,6 @@ import contextlib
 import importlib
 import ipaddress
 import json
-import os
 import re
 import sys
 import time
@@ -167,7 +166,7 @@ class ModelGateService:
     # -- the rules -----------------------------------------------------------------------------
 
     @classmethod
-    def read_json(cls, path: str) -> dict[str, Any] | None:
+    def read_json(cls, path: str | Path) -> dict[str, Any] | None:
         """Read a JSON file.
 
         Args:
@@ -184,7 +183,7 @@ class ModelGateService:
         return record if isinstance(record, dict) else None
 
     @classmethod
-    def describe_eta(cls, seconds: Any) -> str | None:
+    def describe_eta(cls, seconds: object) -> str | None:
         """Describe a time left as text.
 
         Args:
@@ -195,13 +194,13 @@ class ModelGateService:
         """
         if not isinstance(seconds, (int, float)) or seconds < 0:
             return None
-        minutes = max(1, int(round(seconds / 60)))
+        minutes = max(1, round(seconds / 60))
         if minutes < SECONDS_PER_MINUTE:
             return f"about {minutes} min left"
         hours, rest = divmod(minutes, SECONDS_PER_MINUTE)
         if hours < SHORT_ETA_MAX_HOURS and rest >= SHORT_ETA_MIN_MINUTES:
             return f"about {hours} h {rest} min left"
-        return f"about {int(round(minutes / SECONDS_PER_MINUTE))} h left"
+        return f"about {round(minutes / SECONDS_PER_MINUTE)} h left"
 
     @classmethod
     def message(cls, run: dict[str, Any]) -> str:
@@ -247,11 +246,11 @@ class ModelGateService:
             "state": "open",
             "loop_guard": gate_guard.VERSION,
         }
-        pause = cls.read_json(os.path.join(state_dir, PAUSE_FILE)) or {}
+        pause = cls.read_json(Path(state_dir) / PAUSE_FILE) or {}
         until = pause.get("until")
         if isinstance(until, (int, float)) and until > now:
             result["paused_until"] = until
-        run = cls.read_json(os.path.join(state_dir, RUN_FILE))
+        run = cls.read_json(Path(state_dir) / RUN_FILE)
         if run is None:
             return result
         heartbeat = run.get("heartbeat")
@@ -957,7 +956,9 @@ class ModelGateService:
     def log(cls, line: str) -> None:
         """One line to the container's log."""
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        print(f"{stamp} model gate: {line}", file=sys.stderr, flush=True)
+        print(  # noqa: T201 - the container's log on stderr
+            f"{stamp} model gate: {line}", file=sys.stderr, flush=True
+        )
 
     async def start(self) -> int:
         """Starts serving.
