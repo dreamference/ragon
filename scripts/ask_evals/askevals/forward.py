@@ -1,5 +1,6 @@
-"""The model server's one way into the jail (spec §9.2): a byte pipe between a TCP port and a
-Unix socket, run once on each side of the network namespace.
+"""Byte pipe between a TCP port and a Unix socket: the model server's one way into the jail.
+
+The forwarder runs once on each side of the network namespace (spec §9.2):
 
     outside:  python3 forward.py unix SOCKET HOST PORT     (the socket, joined to the engine)
     inside:   python3 forward.py tcp PORT SOCKET           (loopback PORT, joined to the socket)
@@ -10,9 +11,14 @@ A Unix socket path must stay under 108 bytes, so the runner puts it in `$XDG_RUN
 from __future__ import annotations
 
 import asyncio
-import os
 import pathlib
 import sys
+from typing import Final
+
+UNIX_MODE: Final = "unix"
+TCP_MODE: Final = "tcp"
+UNIX_ARG_COUNT: Final = 4
+TCP_ARG_COUNT: Final = 3
 
 
 async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -63,12 +69,13 @@ async def serve_tcp(port: int, path: str, ready: asyncio.Event | None = None) ->
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) == 4 and argv[0] == "unix":
+    """Dispatch on the mode: `unix` joins to the engine, `tcp` joins to the socket."""
+    if len(argv) == UNIX_ARG_COUNT and argv[0] == UNIX_MODE:
         asyncio.run(serve_unix(argv[1], argv[2], int(argv[3])))
-    elif len(argv) == 3 and argv[0] == "tcp":
+    elif len(argv) == TCP_ARG_COUNT and argv[0] == TCP_MODE:
         asyncio.run(serve_tcp(int(argv[1]), argv[2]))
     else:
-        print(__doc__, file=sys.stderr)
+        print(__doc__, file=sys.stderr)  # noqa: T201 - usage on stderr
         return 2
     return 0
 
