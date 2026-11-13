@@ -506,21 +506,35 @@ class VLLMServerManager:
                 timeout=120,
             )
             if res.returncode == 0:
-                for line in res.stdout.splitlines():
-                    if line.startswith("vllm="):
-                        # Strip local/build suffixes such as '0.12.1+cu129' or '0.11.0rc1'
-                        parts = line.split("=", 1)[1].strip().split("+")[0].split(".")
-                        result["vllm_version"] = (
-                            int(parts[0]),
-                            int(re.sub(r"\D.*$", "", parts[1])),
-                        )
-                    elif line.startswith("tensorizer="):
-                        result["has_tensorizer"] = line.split("=", 1)[1].strip() == TENSORIZER_TRUE
+                self._read_image_probe_output(res.stdout, result)
         except (OSError, ValueError, IndexError, subprocess.SubprocessError):
             pass
 
         self._image_probe_cache[docker_image] = result
         return result
+
+    @staticmethod
+    def _read_image_probe_output(stdout: str, result: dict) -> None:
+        """Fills `result` from the probe script's `vllm=` and `tensorizer=` lines.
+
+        Args:
+            stdout (str): What the probe script printed inside the image.
+            result (dict): The probe result to update in place.
+
+        Raises:
+            ValueError: A `vllm=` line whose version does not parse.
+            IndexError: A `vllm=` line with no minor version.
+        """
+        for line in stdout.splitlines():
+            if line.startswith("vllm="):
+                # Strip local/build suffixes such as '0.12.1+cu129' or '0.11.0rc1'
+                parts = line.split("=", 1)[1].strip().split("+")[0].split(".")
+                result["vllm_version"] = (
+                    int(parts[0]),
+                    int(re.sub(r"\D.*$", "", parts[1])),
+                )
+            elif line.startswith("tensorizer="):
+                result["has_tensorizer"] = line.split("=", 1)[1].strip() == TENSORIZER_TRUE
 
     def detect_image_vllm_version(self, docker_image: str) -> tuple | None:
         """Returns the (major, minor) vLLM version inside the target image, or None if undetectable.
@@ -603,6 +617,44 @@ class VLLMServerManager:
         if MISTRAL_MARKER in model_lower:
             return "mistral"
         return "hermes"
+
+    def _tensorizer_uri(self, model: str, docker_image: str, is_docker_launch: bool) -> str | None:
+        """Where the engine reads the model's tensorized weights, or None when it cannot.
+
+        Prints a notice when the image (or the local environment) has no `tensorizer` package.
+
+        Args:
+            model (str): Model key or alias with a tensorized copy.
+            docker_image (str): The image the engine runs in.
+            is_docker_launch (bool): True when the engine runs in Docker, where the host cache
+                directory is mounted at /root/.cache/dreamference.
+
+        Returns:
+            str | None: The tensorizer URI as the engine sees it; None without tensorizer support
+            or without a tensorized file.
+        """
+        if not self.image_has_tensorizer(docker_image):
+            if is_docker_launch:
+                print(
+                    f"⚠️  Notice: Running vLLM via Docker container ({docker_image}) which "
+                    f"does not include the 'tensorizer' package."
+                )
+            else:
+                print(
+                    "⚠️  Notice: 'tensorizer' package is not installed in vLLM "
+                    "environment. (Install via: pip install 'vllm[tensorizer]')"
+                )
+            return None
+        from dreamference.hardware import get_tensorized_path
+
+        tpath = get_tensorized_path(model)
+        if not tpath:
+            return None
+        t_uri = str(tpath)
+        dgx_cache_host = str(Path("~/.cache/dreamference").expanduser())
+        if is_docker_launch and t_uri.startswith(dgx_cache_host):
+            t_uri = t_uri.replace(dgx_cache_host, "/root/.cache/dreamference", 1)
+        return t_uri
 
     def build_launch_command(
         self,
@@ -699,7 +751,6 @@ class VLLMServerManager:
 
         from dreamference.hardware import (
             get_model_launch_overrides,
-            get_tensorized_path,
             is_model_tensorized,
             model_declares_own_quantization,
             resolve_model_hf_repo,
@@ -923,34 +974,17 @@ class VLLMServerManager:
         load_format = resolved(None, "load_format", DEFAULT_LOAD_FORMAT)
 
         # Ask the image whether it can import tensorizer. The image name says nothing about this.
+        t_uri = None
         if use_tensorizer and is_model_tensorized(model):
-            has_tensorizer = self.image_has_tensorizer(docker_image)
-            if not has_tensorizer:
-                if is_docker_launch:
-                    print(
-                        f"⚠️  Notice: Running vLLM via Docker container ({docker_image}) which "
-                        f"does not include the 'tensorizer' package."
-                    )
-                else:
-                    print(
-                        "⚠️  Notice: 'tensorizer' package is not installed in vLLM "
-                        "environment. (Install via: pip install 'vllm[tensorizer]')"
-                    )
-            else:
-                tpath = get_tensorized_path(model)
-                if tpath:
-                    t_uri = str(tpath)
-                    if is_docker_launch:
-                        dgx_cache_host = str(Path("~/.cache/dreamference").expanduser())
-                        if t_uri.startswith(dgx_cache_host):
-                            t_uri = t_uri.replace(dgx_cache_host, "/root/.cache/dreamference", 1)
-                    load_format = "tensorizer"
-                    base_args.extend(
-                        [
-                            "--model-loader-extra-config",
-                            json.dumps({"tensorizer_uri": t_uri, "tensorizer_dir": None}),
-                        ]
-                    )
+            t_uri = self._tensorizer_uri(model, docker_image, is_docker_launch)
+        if t_uri:
+            load_format = "tensorizer"
+            base_args.extend(
+                [
+                    "--model-loader-extra-config",
+                    json.dumps({"tensorizer_uri": t_uri, "tensorizer_dir": None}),
+                ]
+            )
 
         # 'auto' is vLLM's own default, so passing it explicitly only adds noise to the command
         # line and to any future diff of it.
@@ -1429,9 +1463,9 @@ class VLLMServerManager:
             pass
         try:
             with Path("/proc/meminfo").open() as f:
-                for line in f:
-                    if line.startswith("SwapTotal:"):
-                        return int(line.split()[1]) / (1024**2)
+                swap_line = next((line for line in f if line.startswith("SwapTotal:")), "")
+            if swap_line:
+                return int(swap_line.split()[1]) / (1024**2)
         except (OSError, ValueError, IndexError):
             pass
         return 0.0
@@ -1486,6 +1520,28 @@ class VLLMServerManager:
         return evicted_bytes / (1024**3)
 
     @staticmethod
+    def _snapshot_size_bytes(snapshot_dir: Path) -> int:
+        """Adds up the size of every file in a model snapshot.
+
+        Snapshots are trees of symlinks into the blob store; they are followed so the shards are
+        counted at full size rather than as zero-byte links.
+
+        Args:
+            snapshot_dir (Path): The HuggingFace snapshot directory.
+
+        Returns:
+            int: Total bytes; a file that cannot be read counts as zero.
+        """
+        total_bytes = 0
+        for path in snapshot_dir.rglob("*"):
+            try:
+                if path.is_file():
+                    total_bytes += path.stat().st_size
+            except OSError:
+                continue
+        return total_bytes
+
+    @staticmethod
     def _estimate_model_weights_gb(model: str) -> float:
         """Estimates the resident weight footprint of a model in GB.
 
@@ -1507,18 +1563,9 @@ class VLLMServerManager:
         except (OSError, ValueError, KeyError):
             snapshot_dir = None
 
-        if snapshot_dir:
-            total_bytes = 0
-            # Snapshots are trees of symlinks into the blob store; follow them so the shards are
-            # counted at full size rather than as zero-byte links.
-            for path in snapshot_dir.rglob("*"):
-                try:
-                    if path.is_file():
-                        total_bytes += path.stat().st_size
-                except OSError:
-                    continue
-            if total_bytes:
-                return total_bytes / (1024**3)
+        total_bytes = VLLMServerManager._snapshot_size_bytes(snapshot_dir) if snapshot_dir else 0
+        if total_bytes:
+            return total_bytes / (1024**3)
 
         try:
             spec = ModelMatrixRegistry.get_spec(model)
@@ -2455,6 +2502,56 @@ class VLLMServerManager:
         """
         return self.streamer.pop_logs()
 
+    @staticmethod
+    def _container_loading_status(container_name: str) -> str | None:
+        """Reads what a running but not yet healthy container is doing from its last log lines.
+
+        Args:
+            container_name (str): The model server's container.
+
+        Returns:
+            str | None: A loading status; None when the container is not running or docker
+            cannot be asked.
+        """
+        try:
+            res = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
+                capture_output=True,
+                text=True,
+            )
+            if res.stdout.strip() != DOCKER_TRUE:
+                return None
+            log_res = subprocess.run(
+                ["docker", "logs", "--tail", "100", container_name],
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+        return VLLMServerManager._loading_status_from_logs(log_res.stdout + "\n" + log_res.stderr)
+
+    @staticmethod
+    def _loading_status_from_logs(logs: str) -> str:
+        """Names the loading stage the newest recognised log line belongs to.
+
+        Args:
+            logs (str): The container's recent stdout and stderr.
+
+        Returns:
+            str: The stage, or "Initializing container..." when no line says.
+        """
+        for line in reversed(logs.splitlines()):
+            line_lower = line.lower()
+            if LOG_LOADING_SHARDS in line_lower:
+                return line.strip()
+            if LOG_WARM_UP in line_lower or LOG_WARMING_UP in line_lower:
+                return "Warming up model (CUDA graphs)..."
+            if LOG_LOADING_MODEL in line_lower or LOG_LOAD_MODEL in line_lower:
+                return "Loading model weights into GPU memory..."
+            if LOG_DOWNLOADING in line_lower or LOG_HF_DOWNLOAD in line_lower:
+                return "Downloading model components..."
+        return "Initializing container..."
+
     def get_server_status(self) -> dict[str, Any]:
         """Gathers complete server status report.
 
@@ -2466,42 +2563,10 @@ class VLLMServerManager:
 
         loading_status = None
         if not healthy:
-            import subprocess
             from urllib.parse import urlparse
 
             port = urlparse(self.host).port or DEFAULT_MODEL_PORT
-            container_name = f"dreamference-vllm-{port}"
-            try:
-                res = subprocess.run(
-                    ["docker", "inspect", "-f", "{{.State.Running}}", container_name],
-                    capture_output=True,
-                    text=True,
-                )
-                if res.stdout.strip() == DOCKER_TRUE:
-                    log_res = subprocess.run(
-                        ["docker", "logs", "--tail", "100", container_name],
-                        capture_output=True,
-                        text=True,
-                    )
-                    logs = log_res.stdout + "\n" + log_res.stderr
-                    for line in reversed(logs.splitlines()):
-                        line_lower = line.lower()
-                        if LOG_LOADING_SHARDS in line_lower:
-                            loading_status = line.strip()
-                            break
-                        elif LOG_WARM_UP in line_lower or LOG_WARMING_UP in line_lower:
-                            loading_status = "Warming up model (CUDA graphs)..."
-                            break
-                        elif LOG_LOADING_MODEL in line_lower or LOG_LOAD_MODEL in line_lower:
-                            loading_status = "Loading model weights into GPU memory..."
-                            break
-                        elif LOG_DOWNLOADING in line_lower or LOG_HF_DOWNLOAD in line_lower:
-                            loading_status = "Downloading model components..."
-                            break
-                    if not loading_status:
-                        loading_status = "Initializing container..."
-            except (OSError, ValueError, subprocess.SubprocessError):
-                pass
+            loading_status = self._container_loading_status(f"dreamference-vllm-{port}")
 
         status = VLLMServerStatus(
             host=self.host,
