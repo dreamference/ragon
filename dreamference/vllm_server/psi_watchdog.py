@@ -33,6 +33,7 @@ import pathlib
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -86,6 +87,22 @@ DOCKER_KILL_TIMEOUT_S: Final[float] = 10.0
 MAX_CGROUP_RESOLVE_ATTEMPTS: Final[int] = 30
 
 
+def _full_line_averages(line: str) -> tuple[float, float] | None:
+    """Returns (avg10, avg60) from a PSI `full` line; None for any other line or one missing either average."""
+    if not line.startswith("full"):
+        return None
+    avg10: float | None = None
+    avg60: float | None = None
+    for field in line.split():
+        if field.startswith("avg10="):
+            avg10 = float(field.split("=", 1)[1])
+        elif field.startswith("avg60="):
+            avg60 = float(field.split("=", 1)[1])
+    if avg10 is not None and avg60 is not None:
+        return avg10, avg60
+    return None
+
+
 def read_memory_pressure_full() -> tuple[float, float] | None:
     """Reads the `full` line from the kernel's memory pressure accounting.
 
@@ -94,22 +111,11 @@ def read_memory_pressure_full() -> tuple[float, float] | None:
         seconds during which all tasks were stalled on memory — or None if PSI is unavailable
         (kernel built without CONFIG_PSI).
     """
-    try:
-        with pathlib.Path(PSI_MEMORY_PATH).open() as f:
-            for line in f:
-                if not line.startswith("full"):
-                    continue
-                avg10: float | None = None
-                avg60: float | None = None
-                for field in line.split():
-                    if field.startswith("avg10="):
-                        avg10 = float(field.split("=", 1)[1])
-                    elif field.startswith("avg60="):
-                        avg60 = float(field.split("=", 1)[1])
-                if avg10 is not None and avg60 is not None:
-                    return avg10, avg60
-    except (OSError, ValueError):
-        pass
+    with contextlib.suppress(OSError, ValueError), pathlib.Path(PSI_MEMORY_PATH).open() as f:
+        for line in f:
+            averages = _full_line_averages(line)
+            if averages is not None:
+                return averages
     return None
 
 
@@ -203,7 +209,7 @@ class MemoryPressureWatchdog:
         while not self._stop.is_set():
             try:
                 breach_started_at = self._sample(breach_started_at)
-            except Exception:
+            except Exception:  # noqa: BLE001 - any error must not end the watchdog thread; see the docstring
                 breach_started_at = None
             if self.tripped:
                 return
@@ -346,11 +352,12 @@ class MemoryPressureWatchdog:
             # given back, and acting on that when the container is still running is worse than the
             # silence — it sends the operator looking for a different cause while the host freezes.
             with contextlib.suppress(Exception):
-                print(
+                sys.stdout.write(
                     f"\n🛑 Memory stalled {pressure:.0f}% of the last {held_for_s:.0f}s ({reason}) "
                     f"and every path to kill '{self.container_name}' failed.\n"
                     f"   The container is still running and the host is still at risk. Kill it now:\n"
                     f"     docker kill {self.container_name}\n"
+                    "\n"
                 )
 
     def _kill(self) -> bool:
