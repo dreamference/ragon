@@ -68,7 +68,17 @@ MANIFEST: Final[dict] = {
 }
 
 
+# built.json records a task as built when its state is this, and failed otherwise.
+STATUS_OK: Final[str] = "ok"
+# The --step values main dispatches on.
+STEP_SETUP: Final[str] = "setup"
+STEP_BUILD: Final[str] = "build"
+STEP_PREPARE: Final[str] = "prepare"
+STEP_SUBSET: Final[str] = "subset"
+
+
 def paths(cache: Path) -> dict[str, Path]:
+    """The cache subfolders this step reads and writes; returns them by name."""
     root = cache / "tbench"
     return {
         "root": root,
@@ -82,10 +92,12 @@ def paths(cache: Path) -> dict[str, Path]:
 
 
 def task_names(tasks: Path) -> list[str]:
+    """The task names under the tasks directory; returns them sorted."""
     return sorted(p.name for p in tasks.iterdir() if (p / "task.toml").exists())
 
 
 def setup(cache: Path, run=subprocess.run, download=fetch) -> None:
+    """Fetches Terminal-Bench at the pinned commit and Harbor in its own virtualenv."""
     p = paths(cache)
     p["root"].mkdir(parents=True, exist_ok=True)
     tarball = download(TB_TARBALL, p["root"] / "tb21.tar.gz")
@@ -114,6 +126,7 @@ def setup(cache: Path, run=subprocess.run, download=fetch) -> None:
 
 
 def docker_image_of(toml_text: str) -> str | None:
+    """The task's docker_image value, or None when the task builds its image itself."""
     match = re.search(r'^docker_image\s*=\s*"([^"]+)"', toml_text, re.M)
     return match.group(1) if match else None
 
@@ -137,11 +150,11 @@ def build(
     sizes_path = p["root"] / "sizes.json"
     sizes = json.loads(sizes_path.read_text()) if sizes_path.exists() else {}
     for name in only or task_names(p["tasks"]):
-        if results.get(name) == "ok" and not only:
+        if results.get(name) == STATUS_OK and not only:
             continue
         refusal = guard.refusal(cache, need_gb=PER_TASK_GB)
         if refusal:
-            print(f"⚠️ Build stopped before {name}: {refusal}.")
+            print(f"⚠️ Build stopped before {name}: {refusal}.")  # noqa: T201 - progress for the operator
             break
         task = p["tasks"] / name
         env_tag, offline_tag = f"{IMAGE_PREFIX}/{name}:env", f"{IMAGE_PREFIX}/{name}:offline"
@@ -164,11 +177,11 @@ def build(
                 check=False,
             )
             results[name] = (
-                "ok"
+                STATUS_OK
                 if second.returncode == 0
                 else "verifier layer: " + (second.stderr or "")[-300:]
             )
-            if results[name] == "ok":
+            if results[name] == STATUS_OK:
                 sizes[name] = guard.image_bytes(offline_tag)
         guard.prune_build_cache()
         p["built"].write_text(json.dumps(results, indent=2) + "\n")
@@ -211,7 +224,7 @@ def prepare(cache: Path, model_address: str) -> list[str]:
     shutil.rmtree(p["offline"], ignore_errors=True)
     ready = []
     for name in task_names(p["tasks"]):
-        if built.get(name) != "ok":
+        if built.get(name) != STATUS_OK:
             continue
         target = p["offline"] / name
         shutil.copytree(p["tasks"] / name, target)
@@ -229,7 +242,7 @@ def draw_subset(cache: Path) -> list[str]:
     if p["subset"].exists():
         return p["subset"].read_text().split()
     built = json.loads(p["built"].read_text())
-    ok = sorted(name for name, state in built.items() if state == "ok")
+    ok = sorted(name for name, state in built.items() if state == STATUS_OK)
     chosen = sorted(random.Random(SUBSET_SEED).sample(ok, min(SUBSET_SIZE, len(ok))))
     p["subset"].write_text("\n".join(chosen) + "\n")
     return chosen
@@ -295,6 +308,7 @@ def bridge_address(run=subprocess.run) -> str:
 def harbor_command(
     cache: Path, args: argparse.Namespace, names: list[str], model_address: str
 ) -> list[str]:
+    """Harbor's run command line for the offline task set; returns it with agent and model wiring."""
     p = paths(cache)
     command = [
         str(p["venv"] / "bin" / "harbor"),
@@ -319,9 +333,10 @@ def harbor_command(
     return command
 
 
-def main(argv: list[str] | None = None, run=subprocess.run) -> int:
+def main(argv: list[str] | None = None, run=subprocess.run) -> int:  # noqa: PLR0915
+    """Runs one --step and its operator-facing summary; returns 0 when it does."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("step", choices=["setup", "build", "prepare", "subset", "run"])
+    parser.add_argument("step", choices=[STEP_SETUP, STEP_BUILD, STEP_PREPARE, STEP_SUBSET, "run"])
     parser.add_argument(
         "--cache", default=os.environ.get("DREAMFERENCE_INDUSTRY_CACHE", str(DEFAULT_CACHE))
     )
@@ -339,31 +354,31 @@ def main(argv: list[str] | None = None, run=subprocess.run) -> int:
     args = parser.parse_args(argv)
     cache = Path(args.cache)
     p = paths(cache)
-    if args.step == "setup":
+    if args.step == STEP_SETUP:
         setup(cache, run=run)
-        print(
+        print(  # noqa: T201 - progress for the operator
             f"✅ Terminal-Bench 2.1 at {TB_COMMIT[:8]} and Harbor {HARBOR_VERSION} in {p['root']}"
         )
         return 0
-    if args.step == "build":
+    if args.step == STEP_BUILD:
         results = build(cache, args.only.split(",") if args.only else None, run=run)
-        failed = {k: v for k, v in results.items() if v != "ok"}
+        failed = {k: v for k, v in results.items() if v != STATUS_OK}
         sizes_path = p["root"] / "sizes.json"
         total = sum(json.loads(sizes_path.read_text()).values()) if sizes_path.exists() else 0
-        print(
+        print(  # noqa: T201 - progress for the operator
             f"✅ {len(results) - len(failed)} built, ❌ {len(failed)} failed (see {p['built']}); "
             f"images {total / 1e9:.1f} GB"
         )
         return 0
-    if args.step == "prepare":
+    if args.step == STEP_PREPARE:
         ready = prepare(cache, bridge_address(run))
-        print(f"✅ {len(ready)} tasks ready offline in {p['offline']}")
+        print(f"✅ {len(ready)} tasks ready offline in {p['offline']}")  # noqa: T201 - progress for the operator
         return 0
-    if args.step == "subset":
-        print("\n".join(draw_subset(cache)))
+    if args.step == STEP_SUBSET:
+        print("\n".join(draw_subset(cache)))  # noqa: T201 - results on stdout
         return 0
     if not args.runtime:
-        from dreamference.swe_bench.swe_bench_runtime import SweBenchRuntime  # noqa: PLC0415
+        from dreamference.swe_bench.swe_bench_runtime import SweBenchRuntime
 
         args.runtime = str(SweBenchRuntime.directory())
     names = draw_subset(cache) if args.subset else (args.include.split(",") if args.include else [])
@@ -371,7 +386,7 @@ def main(argv: list[str] | None = None, run=subprocess.run) -> int:
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     hold = None
     if args.hold_gate:
-        from askevals.gate import GateHold  # noqa: PLC0415
+        from askevals.gate import GateHold
 
         hold = GateHold(
             args.hold_gate,
@@ -389,7 +404,7 @@ def main(argv: list[str] | None = None, run=subprocess.run) -> int:
     result["manifest"] = MANIFEST
     Path(args.runs).mkdir(parents=True, exist_ok=True)
     (Path(args.runs) / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
-    print(json.dumps({k: result[k] for k in ("all", "offline_solvable", "needs_internet")}))
+    print(json.dumps({k: result[k] for k in ("all", "offline_solvable", "needs_internet")}))  # noqa: T201 - results on stdout
     return 0
 
 
