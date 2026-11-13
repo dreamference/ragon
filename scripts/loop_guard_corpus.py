@@ -12,9 +12,9 @@ JSON line per distinct text, `{"source", "kind", "text"}`, for the detector's co
 import argparse
 import hashlib
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Final
+from typing import Final, TextIO
 
 # Shorter texts cannot hold a loop the detector would see.
 MIN_LENGTH: Final[int] = 40
@@ -23,6 +23,8 @@ ROLLOUT_MARK: Final[str] = '"response_item"'
 MESSAGE: Final[str] = "message"
 ASSISTANT: Final[str] = "assistant"
 REASONING: Final[str] = "reasoning"
+# The `ragon exec --json` event type that carries a finished item.
+EVENT_ITEM_COMPLETED: Final[str] = "item.completed"
 # The field of each tool-call item that holds what the model wrote.
 TOOL_INPUT_FIELDS: Final[dict[str, str]] = {
     "function_call": "arguments",
@@ -74,7 +76,7 @@ def exec_log_texts(path: Path) -> Iterator[tuple[str, str]]:
             except ValueError:
                 continue
             item = record.get("item") or {}
-            if record.get("type") == "item.completed" and item.get("type") in kinds:
+            if record.get("type") == EVENT_ITEM_COMPLETED and item.get("type") in kinds:
                 kind, field = kinds[item["type"]]
                 yield kind, item.get(field) or ""
 
@@ -87,25 +89,35 @@ def main() -> int:
     home = Path.home()
     runs = home / SWE_BENCH_RUNS
     sources = [
-        (path, rollout_texts)
-        for path in sorted((home / ".ragon" / "sessions").rglob("*.jsonl"))
+        (path, rollout_texts) for path in sorted((home / ".ragon" / "sessions").rglob("*.jsonl"))
     ]
     sources += [
         (path, rollout_texts)
         for path in sorted(runs.glob("*/scratch/*/codex-home/sessions/**/*.jsonl"))
     ]
     sources += [(path, exec_log_texts) for path in sorted(runs.glob("*/logs/*.jsonl"))]
-    seen: set[str] = set()
     with args.output.open("w") as out:
-        for path, reader in sources:
-            for kind, text in reader(path):
-                digest = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
-                if len(text) < MIN_LENGTH or digest in seen:
-                    continue
-                seen.add(digest)
-                out.write(json.dumps({"source": str(path), "kind": kind, "text": text}) + "\n")
-    print(f"{len(seen)} texts from {len(sources)} files")
+        seen = write_corpus(out, sources)
+    print(  # noqa: T201 - the corpus size
+        f"{len(seen)} texts from {len(sources)} files"
+    )
     return 0
+
+
+Reader = Callable[[Path], Iterator[tuple[str, str]]]
+
+
+def write_corpus(out: TextIO, sources: Sequence[tuple[Path, Reader]]) -> set[str]:
+    """Writes each source's texts as JSON lines, skipping short and repeated ones; their digests."""
+    seen: set[str] = set()
+    for path, reader in sources:
+        for kind, text in reader(path):
+            digest = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
+            if len(text) < MIN_LENGTH or digest in seen:
+                continue
+            seen.add(digest)
+            out.write(json.dumps({"source": str(path), "kind": kind, "text": text}) + "\n")
+    return seen
 
 
 if __name__ == "__main__":
