@@ -212,26 +212,26 @@ class SweBenchRunStore:
                 continue  # the first line of every log is not JSON
             if not isinstance(event, dict):
                 continue
-            item = event.get("item") or {}
-            if (
-                event.get("type") == ITEM_COMPLETED_TEXT
-                and item.get("type") == COMMAND_EXECUTION_TEXT
-            ):
-                stats["commands"] += 1
-                if RAGON_CODE_QUERY.search(str(item.get("command", ""))):
-                    stats["ragon_code_calls"] += 1
-            elif (
-                event.get("type") == ITEM_COMPLETED_TEXT and item.get("type") == MCP_TOOL_CALL_TEXT
-            ):
-                # A tool call is something the agent did, like a command, and counts as one.
-                stats["commands"] += 1
-                if RAGON_CODE_TOOL.match(str(item.get("tool", ""))):
-                    stats["ragon_code_calls"] += 1
-            elif event.get("type") == TURN_COMPLETED_TEXT:
-                usage = event.get("usage") or {}
-                for key in ("input_tokens", "cached_input_tokens", "output_tokens"):
-                    stats[key] += int(usage.get(key) or 0)
+            self._count_event(stats, event)
         return stats
+
+    @staticmethod
+    def _count_event(stats: dict[str, int], event: dict[str, Any]) -> None:
+        """Adds one `ragon exec` event to the counts: a command, a tool call or a finished turn's tokens."""
+        item = event.get("item") or {}
+        if event.get("type") == ITEM_COMPLETED_TEXT and item.get("type") == COMMAND_EXECUTION_TEXT:
+            stats["commands"] += 1
+            if RAGON_CODE_QUERY.search(str(item.get("command", ""))):
+                stats["ragon_code_calls"] += 1
+        elif event.get("type") == ITEM_COMPLETED_TEXT and item.get("type") == MCP_TOOL_CALL_TEXT:
+            # A tool call is something the agent did, like a command, and counts as one.
+            stats["commands"] += 1
+            if RAGON_CODE_TOOL.match(str(item.get("tool", ""))):
+                stats["ragon_code_calls"] += 1
+        elif event.get("type") == TURN_COMPLETED_TEXT:
+            usage = event.get("usage") or {}
+            for key in ("input_tokens", "cached_input_tokens", "output_tokens"):
+                stats[key] += int(usage.get(key) or 0)
 
     def compactions(self, instance_id: str) -> dict[str, Any] | None:
         """The compactions of an instance's sessions.
