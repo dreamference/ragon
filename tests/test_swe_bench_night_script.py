@@ -287,8 +287,9 @@ def start(
     """Runs `start` with stand-ins for everything it reaches.
 
     No unit is active (systemctl), git succeeds and changes nothing, systemd-run records its
-    arguments, and the venv's Python names a fake `ragon` and a fake install folder, records every `ragon-admin` call and every smoke verdict,
-    and fails the verdict of the arm named in `smoke_fails`. With `free_gb`, `df` says that much is
+    arguments, and the venv's Python names a fake `ragon` and a fake install folder, records every
+    `ragon-admin` call and every smoke verdict, and fails the verdict of the arm named in
+    `smoke_fails`. With `free_gb`, `df` says that much is
     free. git answers `rev-parse HEAD` with REF and records its calls in git.txt. Returns (result, admin
     calls, verdicts, systemd-run calls, D). `ragon_bytes` (in `extra`) is the fake `ragon`'s content.
     """
