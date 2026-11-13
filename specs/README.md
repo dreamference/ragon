@@ -138,12 +138,6 @@ The specs were ranked by the commits on the paths each one cites since its own l
 
 | Where | Defect | Spec |
 |---|---|---|
-| `ragon-admin audit egress --docs` (`dreamference_cli_controller.py`, the `audit` branch of `run_cli`) | `--prompt` and `--json` are accepted with `--docs` and silently ignored | [RAGON_EGRESS §2](./DREAMFERENCE_RAGON_EGRESS.md) |
-| `audit egress --json` help and `EgressAudit.run`'s docstring (`dreamference/audit/egress_audit.py`) | Say `$CODEX_HOME/audit/<timestamp>.json`; the file written is `<timestamp>-<exec\|tui\|app\|web>.json` | [RAGON_EGRESS §3.2](./DREAMFERENCE_RAGON_EGRESS.md) |
-| `ragon-rs/src/compaction.rs`, module header | Says turn-end compaction is "off until measured"; `TURN_END_DEFAULT` has been `true` | [RAGON_COMPACTION](./DREAMFERENCE_RAGON_COMPACTION.md), [RAGON_CODEX](./DREAMFERENCE_RAGON_CODEX.md) |
-| `ragon-rs/src/docs_index.rs`, `FORWARDED_ENV` | `DREAMFERENCE_RAGON_DOCS_{SCAN_INTERVAL_MIN,MAX_INDEX_GB,EXTRACT_TIMEOUT_S,EMBEDDING_MODEL}` are not passed to `ragon-docs mcp`, so a value set only in the environment is not seen by the query process (low impact) | [RAGON_LOCAL_INDEX §11](./DREAMFERENCE_RAGON_LOCAL_INDEX.md) |
-| `docs/dev/node.md` | Names `desktop/electron/src/node_locator.ts`, which does not exist (`tests/test_node.py` asserts it must not) | [RAGON_NODE](./DREAMFERENCE_RAGON_NODE.md) |
-| `AGENTS.md`, the `ragon-admin` subcommand list | `audit {egress}` lists `--tui`, `--app` and `--docs` but not `--web` | [CLI](./DREAMFERENCE_CLI.md) |
 
 **Given a dated banner instead of a rewrite** (the prose the code contradicts stays as the design record, with a pointer to the current source):
 
@@ -194,3 +188,9 @@ The specs were ranked by the commits on the paths each one cites since its own l
 | `ragon` /pets and the TUI update check | /pets fetched art from the upstream vendor's CDN; a `true` in config.toml re-enabled the update check to api.github.com | /pets hidden (patch 0010), the launcher forces the update check off and drops `tui.pet` |
 | `ragon-admin model list` | `UnboundLocalError` on `Table`: a local import elsewhere in `run_cli` made the name local to the whole function | Local re-imports of module-level names removed |
 | `ragon-admin server` / `clear` / `model` / `main-model` / `diffusion-model` without a subcommand | Printed nothing and exited 0 | Print the group's help and exit 1, like `desktop` and `ragon` |
+| `ragon-rs/src/compaction.rs`, module header | Said turn-end compaction is "off until measured" | Turn-end compaction is on by default (`TURN_END_DEFAULT = true`); only drop-first compaction waits for a measurement. Text already on main at `6b699af` (no later fixing commit) |
+| `ragon-rs/src/docs_index.rs`, `FORWARDED_ENV` | The `DREAMFERENCE_RAGON_DOCS_*` settings (scan interval, index size, extract timeout, embedding model) were not passed to `ragon-docs mcp` | Forwarded, with the BM25, OCR and index-tuning settings (`6b699af`) |
+| `docs/dev/node.md` | Named `desktop/electron/src/node_locator.ts`, which does not exist | Names the byte-identical copies `ragon-rs/node-locator/` and `ragon-web-rs/src/node_locator.rs` (`6b699af`) |
+| `ragon-admin audit egress --docs` (`dreamference_cli_controller.py`) | `--prompt` was accepted with `--docs` and silently ignored | `--prompt` with `--docs` exits 2 with an error; `--json` is honoured (`6b699af`) |
+| `audit egress --json` help and `EgressAudit.run` docstring (`dreamference/audit/egress_audit.py`) | Said `$CODEX_HOME/audit/<timestamp>.json` | Says `<timestamp>-<session>.json`, the session being `exec`, `tui`, `app`, `web`, `docs` or `sync` (`6b699af`) |
+| `AGENTS.md` / `docs/dev/cli.md`, the `audit {egress}` flags | Listed `--tui`, `--app` and `--docs` but not `--web` | `docs/dev/cli.md` lists `--web` with the others; `AGENTS.md` no longer carries a flag list (`6b699af`) |
