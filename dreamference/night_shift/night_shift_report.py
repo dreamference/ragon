@@ -11,6 +11,14 @@ from pathlib import Path
 from typing import Any, Final
 
 LAST_MESSAGE_STATUSES: Final[tuple] = ("stalled", "failed", "interrupted")
+# A task handed to another node that has not come back yet.
+SENT: Final[str] = "sent"
+# A task still running when the report is written.
+RUNNING: Final[str] = "running"
+# The refine version the report does not name.
+FIRST_REFINE: Final[str] = "v1"
+# Seconds in a minute, for wall times.
+MINUTE_S: Final[int] = 60
 # C0 controls but tab and newline, DEL and C1: the agent writes the last message, the judge its
 # reason, and `ragon night report` prints the file to a terminal, where ESC starts a sequence that
 # can set the clipboard (OSC 52), hide text or retitle the window.
@@ -84,16 +92,8 @@ class NightShiftReport:
         result = task.get("result") or {}
         first = (task.get("task", "").strip().splitlines() or [""])[0]
         lines = [f"### {task.get('id')} — {task.get('status')}", "", f"- Task: {first}"]
-        if task.get("on"):
-            target = (task.get("sent_to") or {}).get("name") or task["on"]
-            lines.append(
-                f"- Ran on: {target}, by that node's own runner and model server"
-                if result.get("node")
-                else f"- Sent to: {target}"
-            )
-        elif result.get("model_node"):
-            lines.append(f"- Model server: {result['model_node']}'s (the task ran on this machine)")
-        if task.get("status") == "sent":
+        lines += cls._where_lines(task, result)
+        if task.get("status") == SENT:
             lines.append("- Not finished there yet: its branch comes back with a later run.")
         if result.get("branch"):
             lines.append(
@@ -118,24 +118,43 @@ class NightShiftReport:
             lines += cls._best_of_lines(best)
         refine = result.get("refine")
         if isinstance(refine, dict):
-            edited = (
-                "; it changed the worktree, which was put back"
-                if refine.get("study_edited")
-                else ""
-            )
-            version = (
-                f" (refine-{refine['version']})" if refine.get("version", "v1") != "v1" else ""
-            )
-            lines.append(
-                f"- Refine: studied first for {cls._minutes(refine.get('study_s'))}, "
-                f"a {refine.get('refined_chars', 0)}-character description{edited}{version}"
-            )
+            lines.append(cls._refine_line(refine))
         if task.get("status") in LAST_MESSAGE_STATUSES and result.get("last_message"):
             message = result["last_message"].strip().replace("\n", " ")
             lines.append(f"- Last message: {message[:400]}")
-        if task.get("status") == "running":
+        if task.get("status") == RUNNING:
             lines.append("- Still running when the report was written.")
         return lines
+
+    @classmethod
+    def _where_lines(cls, task: dict[str, Any], result: dict[str, Any]) -> list[str]:
+        """The report's line on where a task ran, or none when it ran here on the local model server."""
+        if task.get("on"):
+            target = (task.get("sent_to") or {}).get("name") or task["on"]
+            return [
+                f"- Ran on: {target}, by that node's own runner and model server"
+                if result.get("node")
+                else f"- Sent to: {target}"
+            ]
+        if result.get("model_node"):
+            return [f"- Model server: {result['model_node']}'s (the task ran on this machine)"]
+        return []
+
+    @classmethod
+    def _refine_line(cls, refine: dict[str, Any]) -> str:
+        """The report's line on a task's refine step: how long it studied and what it wrote."""
+        edited = (
+            "; it changed the worktree, which was put back" if refine.get("study_edited") else ""
+        )
+        version = (
+            f" (refine-{refine['version']})"
+            if refine.get("version", FIRST_REFINE) != FIRST_REFINE
+            else ""
+        )
+        return (
+            f"- Refine: studied first for {cls._minutes(refine.get('study_s'))}, "
+            f"a {refine.get('refined_chars', 0)}-character description{edited}{version}"
+        )
 
     @classmethod
     def _best_of_lines(cls, best: dict[str, Any]) -> list[str]:
@@ -192,7 +211,11 @@ class NightShiftReport:
     def _minutes(cls, seconds: int | None) -> str:
         if seconds is None:
             return "—"
-        return f"{seconds // 60} min {seconds % 60} s" if seconds >= 60 else f"{seconds} s"
+        return (
+            f"{seconds // MINUTE_S} min {seconds % MINUTE_S} s"
+            if seconds >= MINUTE_S
+            else f"{seconds} s"
+        )
 
     @classmethod
     def write(cls, night_dir: Path, started: datetime, text: str) -> Path:
