@@ -15,7 +15,7 @@ import random
 import sys
 import time
 import urllib.request
-from typing import Final, Set
+from typing import Final
 
 TURNS: Final[int] = 30
 LINES_PER_TURN: Final[int] = 40
@@ -25,20 +25,29 @@ SYSTEM_LINES: Final[int] = 250
 def segment(name: str, lines: int, tag: str) -> str:
     """Returns deterministic, code-like filler text unique to this run."""
     rng = random.Random(name + tag)
-    return "".join(f"{name} line {i}: value_{rng.randint(0, 10**6)} = compute({rng.randint(0, 999)})\n"
-                   for i in range(lines))
+    return "".join(
+        f"{name} line {i}: value_{rng.randint(0, 10**6)} = compute({rng.randint(0, 999)})\n"
+        for i in range(lines)
+    )
 
 
 def send(base_url: str, model: str, label: str, prompt: str) -> None:
     """Sends one request and prints the server's input and cached token counts."""
-    body = json.dumps({"model": model, "input": prompt, "max_output_tokens": 2, "temperature": 0}).encode()
-    request = urllib.request.Request(f"{base_url}/v1/responses", body, {"Content-Type": "application/json"})
+    body = json.dumps(
+        {"model": model, "input": prompt, "max_output_tokens": 2, "temperature": 0}
+    ).encode()
+    request = urllib.request.Request(
+        f"{base_url}/v1/responses", body, {"Content-Type": "application/json"}
+    )
     started = time.time()
     with urllib.request.urlopen(request) as response:
         usage = json.load(response)["usage"]
     cached = usage["input_tokens_details"]["cached_tokens"]
-    print(f"{label:24s} input {usage['input_tokens']:6d}  cached {cached:6d}  "
-          f"prefilled {usage['input_tokens'] - cached:6d}  {time.time() - started:5.2f} s", flush=True)
+    print(  # noqa: T201 - the per-request token counts
+        f"{label:24s} input {usage['input_tokens']:6d}  cached {cached:6d}  "
+        f"prefilled {usage['input_tokens'] - cached:6d}  {time.time() - started:5.2f} s",
+        flush=True,
+    )
 
 
 def main() -> int:
@@ -50,9 +59,10 @@ def main() -> int:
     system = f"SYSTEM {tag}\n" + segment("sys", SYSTEM_LINES, tag)
     turns = [segment(f"turn{k}", LINES_PER_TURN, tag) for k in range(TURNS)]
 
-    def view(count: int, masked: Set[int]) -> str:
-        return system + "".join(f"[output of turn{i} removed]\n" if i in masked else turns[i]
-                                for i in range(count))
+    def view(count: int, masked: set[int]) -> str:
+        return system + "".join(
+            f"[output of turn{i} removed]\n" if i in masked else turns[i] for i in range(count)
+        )
 
     for count in range(1, 21):
         send(base_url, model, f"turn {count}", view(count, set()))
