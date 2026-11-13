@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 MEMORY_RESERVE: Final[int] = 8 * GIB
 
 POLL_S: Final[float] = 5.0
+# A code index refresh is skipped when less than this many seconds of its budget remain.
+MIN_INDEX_BUDGET_S: Final[float] = 60.0
 IDLE_POLL_S: Final[float] = 30.0
 METRICS_MISS_GRACE_S: Final[float] = 120.0
 
@@ -97,7 +99,7 @@ class NightShiftRunner:
                 os.environ.get("RAGON_NIGHT_RAGON_BIN") or CodexInstaller.get_codex_executable()
             )
         if not ragon_bin:
-            print("❌ ragon is not built: run `ragon-admin codex build` first.")
+            print("❌ ragon is not built: run `ragon-admin codex build` first.")  # noqa: T201 - CLI output
             return 1
         if vllm_host is None:
             from dreamference.config import DreamferenceConfig
@@ -106,7 +108,7 @@ class NightShiftRunner:
 
         with NightShiftQueue.runner_lock(night_dir) as held:
             if not held:
-                print("⚠️  Another night run holds the runner lock.")
+                print("⚠️  Another night run holds the runner lock.")  # noqa: T201 - CLI output
                 return 1
             cls.compactions = cls.audit_compactions(night_dir, settings)
             # Repeating tasks due tonight become ordinary queued tasks first (night_shift_recurring.py);
@@ -119,11 +121,11 @@ class NightShiftRunner:
             pending = cls.pending_tasks(night_dir)
             sent = cls.remote.sent_tasks(night_dir)
             if not pending and not sent:
-                print(
+                print(  # noqa: T201 - CLI output
                     f"✅ Night Shift: nothing queued.{cls._audit_only_report(night_dir, started, repeating)}"
                 )
                 return 0
-            print(f"🌙 Night Shift: {len(pending)} task(s) queued; window ends {end:%H:%M}.")
+            print(f"🌙 Night Shift: {len(pending)} task(s) queued; window ends {end:%H:%M}.")  # noqa: T201 - CLI output
             notes: list[str] = list(repeating)
             # A task queued for another node is handed over whatever this machine's own state: that
             # node's runner admits it by that node's checks.
@@ -139,7 +141,7 @@ class NightShiftRunner:
                 if reason:
                     # The tasks on other nodes are still waited for below.
                     notes.append(f"Not run: {reason}. The tasks stay queued for the next night.")
-                    print(f"⚠️  {reason}")
+                    print(f"⚠️  {reason}")  # noqa: T201 - CLI output
                 else:
                     lanes, lane_notes = cls.lanes(vllm_host, settings)
                     local = lanes[0]
@@ -172,7 +174,7 @@ class NightShiftRunner:
         for task in final:
             counts[task.get("status", "?")] = counts.get(task.get("status", "?"), 0) + 1
         summary = ", ".join(f"{count} {status}" for status, count in counts.items())
-        print(
+        print(  # noqa: T201 - CLI output
             f"✅ Night Shift finished: {summary}. Report: {path or f'not written, see {night_dir / "tasks"}'}"
         )
         return 0 if path else 1
@@ -329,7 +331,7 @@ class NightShiftRunner:
         for repo in repos:
             # Never more than half of what is left of the window: the tasks are what it is for.
             budget = min(settings.index_timeout_s, (end.timestamp() - time.time()) / 2)
-            if budget < 60:
+            if budget < MIN_INDEX_BUDGET_S:
                 notes.append(f"Code index of {repo}: not refreshed, the window is nearly over.")
                 continue
             if not Path(repo).is_dir():
@@ -423,25 +425,7 @@ class NightShiftRunner:
                 < lane["parallel"]
             ]
             if queue and free:
-                reason, lane = None, None
-                for candidate in free:
-                    # This machine's lane is asked exactly as before lanes existed; a replica's
-                    # says it is not this machine's, so a session open here does not hold it up.
-                    blocked = (
-                        cls.start_blocker(candidate["host"], ragon_bin, active, settings)
-                        if candidate.get("node") is None
-                        else cls.start_blocker(
-                            candidate["host"], ragon_bin, active, settings, local=False
-                        )
-                    )
-                    if blocked is None:
-                        reason, lane = None, candidate
-                        break
-                    reason = reason or (
-                        blocked
-                        if candidate.get("node") is None
-                        else f"{candidate['name']}: {blocked}"
-                    )
+                lane, reason = cls._pick_lane(free, ragon_bin, active, settings)
                 if lane is not None:
                     task = queue.pop(0)
                     deadline = min(end_ts, time.time() + settings.task_timeout_s)
@@ -477,6 +461,42 @@ class NightShiftRunner:
             cls.sleep(POLL_S)
 
     @classmethod
+    def _pick_lane(
+        cls,
+        free: list[dict[str, Any]],
+        ragon_bin: str,
+        active: list[tuple],
+        settings: NightShiftSettings,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """The first lane with nothing in its way, or the first blocker's reason.
+
+        Args:
+            free: The lanes with room for one more task.
+            ragon_bin: The `ragon` executable.
+            active: The running tasks.
+            settings: Night Shift settings.
+
+        Returns:
+            Tuple[Optional[Dict[str, Any]], Optional[str]]: The chosen lane and None, or
+            None and the first lane's blocker reason.
+        """
+        reason: str | None = None
+        for candidate in free:
+            # This machine's lane is asked exactly as before lanes existed; a replica's
+            # says it is not this machine's, so a session open here does not hold it up.
+            blocked = (
+                cls.start_blocker(candidate["host"], ragon_bin, active, settings)
+                if candidate.get("node") is None
+                else cls.start_blocker(candidate["host"], ragon_bin, active, settings, local=False)
+            )
+            if blocked is None:
+                return candidate, None
+            reason = reason or (
+                blocked if candidate.get("node") is None else f"{candidate['name']}: {blocked}"
+            )
+        return None, reason
+
+    @classmethod
     def reason_kind(cls, reason: str) -> str:
         """A start blocker's reason with its figures removed, so one wait is noted once.
 
@@ -489,7 +509,7 @@ class NightShiftRunner:
         return re.sub(r"\d+(?:\.\d+)?", "#", reason)
 
     @classmethod
-    def lane_of(cls, run: Any, default: str) -> str:
+    def lane_of(cls, run: object, default: str) -> str:
         """Args: run: A running task (or benchmark instance). default: The run's own model server.
 
         Returns:
