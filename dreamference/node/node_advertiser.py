@@ -19,6 +19,7 @@ import pathlib
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import urllib.request
 from urllib.parse import urlparse
@@ -49,6 +50,12 @@ WEB_NOTICE = (
 )
 
 
+def _say(text: str) -> None:
+    """Writes one line for the person enabling or disabling the node, and shows it at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
+
+
 class NodeAdvertiser:
     """Enables, disables and reports the node's advertisement."""
 
@@ -66,7 +73,7 @@ class NodeAdvertiser:
             nothing published, when the file could not be installed.
         """
         if not cls.is_gb10():
-            print(
+            _say(
                 "⚠️  This machine does not look like a GB10 (DGX Spark); a node on anything else is "
                 "untested."
             )
@@ -77,7 +84,7 @@ class NodeAdvertiser:
             "install Avahi, which publishes the advertisement",
             yes=yes,
         ):
-            print(
+            _say(
                 "❌ Avahi is not installed, so this node cannot be advertised: `sudo apt install avahi-daemon`, "
                 "then run this again. Until then a client reaches it with RAGON_NODE=<this machine's address>."
             )
@@ -100,17 +107,17 @@ class NodeAdvertiser:
         # the LAN but which nobody can find is the worst of both states.
         if not cls.install_service_file(text, yes=yes):
             NodeSettings.save(advertise=before["advertise"], web=before["web"])
-            print(
+            _say(
                 "⚠️  Nothing was published. Run `ragon-admin node enable` from a terminal, where sudo "
                 "can ask for the password once."
             )
             return False
         cls.warn_wifi_power_save()
-        print(SHARING_NOTICE)
+        _say(SHARING_NOTICE)
         if not no_web:
-            print(WEB_NOTICE)
+            _say(WEB_NOTICE)
         cls.apply_binds()
-        print(
+        _say(
             f"✅ This node is advertised as {socket.gethostname()} (_ragon-node._tcp, port {port}, "
             f"id {node_id[:8]}…). Clients find it with no address typed."
         )
@@ -127,7 +134,7 @@ class NodeAdvertiser:
 
         warning = WifiPowerSave.warning()
         if warning:
-            print(warning)
+            _say(warning)
 
     @classmethod
     def disable(cls) -> bool:
@@ -140,10 +147,10 @@ class NodeAdvertiser:
         cls.apply_binds()
         path = NodeServiceFile.service_path
         if not path.exists():
-            print("✅ This node is not advertised.")
+            _say("✅ This node is not advertised.")
             return True
         if cls.run_privileged(["rm", "-f", str(path)], "remove the advertisement"):
-            print(
+            _say(
                 "✅ The node is no longer advertised; the web UI and SearXNG are on this machine only."
             )
             return True
@@ -151,12 +158,12 @@ class NodeAdvertiser:
         # nothing from a file that is not a service group.
         try:
             path.write_text("")
-            print(
+            _say(
                 f"⚠️  {path} was emptied, which stops the advertisement; remove it with the command above."
             )
             return True
         except OSError:
-            print(f"❌ {path} is still in place and still advertises this node.")
+            _say(f"❌ {path} is still in place and still advertises this node.")
             return False
 
     @classmethod
@@ -300,18 +307,18 @@ class NodeAdvertiser:
                 command, capture_output=True, text=True, timeout=120, check=False
             )
         except (OSError, subprocess.TimeoutExpired) as error:
-            print(f"⚠️  Could not run `ragon {' '.join(command[1:])}`: {error}")
+            _say(f"⚠️  Could not run `ragon {' '.join(command[1:])}`: {error}")
             return False
         if result.returncode != 0:
             reason = (result.stderr or result.stdout).strip()
-            print(f"⚠️  `ragon {' '.join(command[1:])}` failed{': ' + reason if reason else ''}")
+            _say(f"⚠️  `ragon {' '.join(command[1:])}` failed{': ' + reason if reason else ''}")
             return False
         return True
 
     @classmethod
     def _report(cls, outcome: bool | None) -> None:
         if outcome is False:
-            print(
+            _say(
                 f"⚠️  Could not update {NodeServiceFile.service_path}; clients may see a stale state. "
                 "Run `ragon-admin node enable` again."
             )
@@ -375,10 +382,10 @@ class NodeAdvertiser:
                 return True
         finally:
             pathlib.Path(staged.name).unlink()
-        print(
+        _say(
             f"💡 To advertise the node, save the following as {path}, owned by {getpass.getuser()}:\n"
         )
-        print(text)
+        _say(text)
         return False
 
     @classmethod
@@ -400,11 +407,11 @@ class NodeAdvertiser:
         line = "sudo " + " ".join(command)
         mode = HostSafetySetup.root_mode(yes)
         if mode is None:
-            print(f"💡 Run this to {purpose}:\n   {line}")
+            _say(f"💡 Run this to {purpose}:\n   {line}")
             if yes:
-                print("   (sudo needs a password, and --yes never waits for one)")
+                _say("   (sudo needs a password, and --yes never waits for one)")
             return False
-        print(f"🔑 Needs root once, to {purpose}:\n   {line}")
+        _say(f"🔑 Needs root once, to {purpose}:\n   {line}")
         try:
             return (
                 subprocess.run(
