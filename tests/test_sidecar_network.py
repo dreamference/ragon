@@ -15,6 +15,16 @@ from dreamference.chat.searxng_sidecar import SEARXNG_CONTAINER_NAME, SearxngSid
 from dreamference.chat.sidecar_network import SIDECAR_NETWORK, SidecarNetwork
 
 
+def _ok(out=""):
+    """A docker command that succeeded, printing `out`."""
+    return SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+
+def _fail():
+    """A docker command that failed: the object does not exist."""
+    return SimpleNamespace(returncode=1, stdout="", stderr="no such object")
+
+
 class FakeDocker:
     """Stands in for `subprocess.run`: answers inspections from `modes`/`networks`, records all."""
 
@@ -28,38 +38,41 @@ class FakeDocker:
 
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
-
-        def ok(out=""):
-            return SimpleNamespace(returncode=0, stdout=out, stderr="")
-
-        fail = SimpleNamespace(returncode=1, stdout="", stderr="no such object")
         failed = [
             stderr for prefix, stderr in self.failing.items() if argv[: len(prefix)] == list(prefix)
         ]
         if failed:
             return SimpleNamespace(returncode=1, stdout="", stderr=failed[0])
-        if argv[:3] == ["docker", "network", "inspect"]:
-            return ok(argv[3]) if argv[3] in self.existing_networks else fail
-        if argv[:3] == ["docker", "network", "create"]:
-            self.existing_networks.add(argv[3])
-            return ok()
+        if argv[:2] == ["docker", "network"]:
+            return self._network(argv)
         if argv[:2] == ["docker", "inspect"]:
-            name = argv[2]
-            if name not in self.modes:
-                return fail
-            if "NetworkMode" in argv[-1]:
-                return ok(self.modes[name] + "\n")
-            ports = "PortBindings" in argv[-1]
-            return ok(
-                (self.ports.get(name, "") if ports else " ".join(self.networks.get(name, [])))
-                + " \n"
-            )
+            return self._inspect(argv)
         if argv[:3] == ["docker", "rm", "-f"]:
             self.modes.pop(argv[3], None)
-            return ok()
+            return _ok()
         if argv[:2] == ["docker", "ps"]:
-            return ok("\n".join(self.modes) + "\n")
-        return ok()
+            return _ok("\n".join(self.modes) + "\n")
+        return _ok()
+
+    def _network(self, argv):
+        """Answers `docker network inspect` and `docker network create`; any other one succeeds."""
+        if argv[2:3] == ["inspect"]:
+            return _ok(argv[3]) if argv[3] in self.existing_networks else _fail()
+        if argv[2:3] == ["create"]:
+            self.existing_networks.add(argv[3])
+        return _ok()
+
+    def _inspect(self, argv):
+        """Answers `docker inspect`: a container's network mode, its networks or its published port."""
+        name = argv[2]
+        if name not in self.modes:
+            return _fail()
+        if "NetworkMode" in argv[-1]:
+            return _ok(self.modes[name] + "\n")
+        ports = "PortBindings" in argv[-1]
+        return _ok(
+            (self.ports.get(name, "") if ports else " ".join(self.networks.get(name, []))) + " \n"
+        )
 
     def commands(self, *prefix):
         return [call for call in self.calls if call[: len(prefix)] == list(prefix)]
