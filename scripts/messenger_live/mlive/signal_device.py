@@ -24,6 +24,8 @@ JAVA_VERSION: Final = "25.0.4.1+1"
 OPT_DIR: Final = Path("/opt/ragon")
 DEVICE_NAME: Final = "ragon test"
 PREFIX: Final = "[ragon test]"
+# The machine name on which signal-cli needs its bundled native library.
+ARM64: Final = "aarch64"
 
 
 def signal_cli_program() -> Path:
@@ -35,7 +37,7 @@ def signal_cli_env(arch: str | None = None) -> dict[str, str]:
     """signal-cli's environment, as the bridge's `setup::signal_cli_env` builds it."""
     env = dict(os.environ)
     env["JAVA_HOME"] = str(OPT_DIR / f"jdk-{JAVA_VERSION}-jre")
-    if (arch or platform.machine()) == "aarch64":
+    if (arch or platform.machine()) == ARM64:
         env["JAVA_OPTS"] = (
             f"-Djava.library.path={OPT_DIR / f'signal-cli-{SIGNAL_CLI_VERSION}' / 'lib' / 'native'}"
         )

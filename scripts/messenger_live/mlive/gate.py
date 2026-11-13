@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -24,6 +25,14 @@ from typing import Any, Final
 
 WATCHED: Final = ("ragon-rs/chat", "ragon-rs/signal")
 SUITE_UNIT: Final = "ragon-messenger-live.service"
+# The decision that starts the suite (see decide()).
+RUN: Final = "run"
+
+
+def _say(text: str) -> None:
+    """Writes one line to the timer unit's journal, at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
 
 
 def state_dir() -> Path:
@@ -104,7 +113,10 @@ def decide(
     if not stamp or installed.get("key") != stamp:
         return "wait", "the installed ragon was not built from a commit of this checkout yet"
     if not is_ancestor(changed[0], installed["commit"]):
-        return "wait", f"the installed ragon ({installed['commit'][:12]}) predates {changed[0][:12]}"
+        return (
+            "wait",
+            f"the installed ragon ({installed['commit'][:12]}) predates {changed[0][:12]}",
+        )
     return "run", f"{len(changed)} bridge commit(s) up to {changed[0][:12]} are installed"
 
 
@@ -173,7 +185,7 @@ class AfterMerge:
             int: 0, or the suite's status when it ran.
         """
         if self.git("fetch", "--quiet", "origin", "main", check=False).returncode != 0:
-            print("⚠️ git fetch failed; trying again at the next check")
+            _say("⚠️ git fetch failed; trying again at the next check")
             return 0
         target = self.git("rev-parse", "origin/main").stdout.strip()
         state = self.load()
@@ -188,10 +200,10 @@ class AfterMerge:
             else []
         )
         action, why = decide(state, changed, stamp, self.is_ancestor)
-        print(f"after-merge: {action}: {why}")
+        _say(f"after-merge: {action}: {why}")
         if action in ("init", "idle"):
             state["last_tested"] = target
-        elif action == "run":
+        elif action == RUN:
             status = start_suite()
             state["last_tested"] = target
             state["last_run"] = {
@@ -201,4 +213,4 @@ class AfterMerge:
             }
         state["checked"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self.save(state)
-        return 0 if action != "run" else state["last_run"]["status"]
+        return 0 if action != RUN else state["last_run"]["status"]
