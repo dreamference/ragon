@@ -23,7 +23,7 @@ from dreamference.night_shift import (
 from dreamference.night_shift.night_shift_host import LAUNCHER_POOL_SHARE_PERCENT, NIGHT_POOL_SHARE
 
 
-def exec_calls(setup, monkeypatch, table):
+def exec_calls(setup, monkeypatch, table):  # noqa: F811 - the imported fixture
     monkeypatch.setenv("FAKE_RAGON_MODE", "stall_then_act")
     record = queue(setup["night"], setup["repo"])
     run = NightShiftTaskRun(
@@ -33,7 +33,7 @@ def exec_calls(setup, monkeypatch, table):
     return calls(setup)
 
 
-def test_every_exec_of_a_task_carries_a_configured_limit(setup, monkeypatch):
+def test_every_exec_of_a_task_carries_a_configured_limit(setup, monkeypatch):  # noqa: F811 - the imported fixture
     first, nudge = exec_calls(setup, monkeypatch, {"compact_at": 64000})[:2]
     for call in (first, nudge):
         assert call[call.index("-c") + 1] == "model_auto_compact_token_limit=64000"
@@ -41,7 +41,7 @@ def test_every_exec_of_a_task_carries_a_configured_limit(setup, monkeypatch):
     assert nudge.index("-c") < nudge.index("resume")
 
 
-def test_a_task_run_alone_passes_no_limit_unless_given_one(setup, monkeypatch):
+def test_a_task_run_alone_passes_no_limit_unless_given_one(setup, monkeypatch):  # noqa: F811 - the imported fixture
     # The budget comes from the runner, which knows the pool; a task run built without one, and with
     # no compact_at, leaves the launcher's own limit in place.
     assert NightShiftSettings({}).compact_at is None
@@ -91,7 +91,7 @@ def test_the_launchers_pool_share_is_mirrored():
     assert int(match.group(1)) == LAUNCHER_POOL_SHARE_PERCENT
 
 
-def test_a_night_run_holds_every_task_to_its_share(setup, fake_host, monkeypatch):
+def test_a_night_run_holds_every_task_to_its_share(setup, fake_host, monkeypatch):  # noqa: F811 - the imported fixture
     monkeypatch.setenv("FAKE_RAGON_MODE", "stall_then_act")
     monkeypatch.setattr(FakeHost, "samples", [{"running": 0.0, "served": 1.0, "kv_pool": 156907.0}])
     for index in range(3):
@@ -121,7 +121,7 @@ def test_a_night_run_holds_every_task_to_its_share(setup, fake_host, monkeypatch
     assert "Up to 2 task(s) at once" in report and "compacts at 70608 tokens" in report
 
 
-def test_compact_at_zero_passes_no_limit_and_says_so(setup, fake_host, monkeypatch):
+def test_compact_at_zero_passes_no_limit_and_says_so(setup, fake_host, monkeypatch):  # noqa: F811 - the imported fixture
     monkeypatch.setenv("FAKE_RAGON_MODE", "change")
     monkeypatch.setattr(FakeHost, "samples", [{"running": 0.0, "served": 1.0, "kv_pool": 156907.0}])
     queue(setup["night"], setup["repo"], test="test -f hello.txt")

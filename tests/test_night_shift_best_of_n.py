@@ -78,7 +78,7 @@ TEST = "grep -q hi hello.txt"
 
 
 @pytest.fixture
-def bon(setup, monkeypatch):
+def bon(setup, monkeypatch):  # noqa: F811 - the imported fixture
     """`setup` with the per-attempt stand-in for `ragon` and a stand-in judge that prefers GOOD."""
     ragon = Path(setup["ragon"])
     ragon.write_text(FAKE_BON.format(python=sys.executable))
@@ -811,7 +811,7 @@ def test_the_judge_counts_as_a_model_request_while_it_runs(bon, monkeypatch):
     assert seen == [True] and run.in_model is False
 
 
-def test_a_whole_night_runs_best_of_three_through_the_scheduler(bon, fake_host, monkeypatch):
+def test_a_whole_night_runs_best_of_three_through_the_scheduler(bon, fake_host, monkeypatch):  # noqa: F811 - the imported fixture
     monkeypatch.setenv("FAKE_BON_PLAN", json.dumps(["bad", "GOOD", "fine"]))
     for index in range(2):
         queue(
