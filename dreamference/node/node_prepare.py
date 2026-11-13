@@ -29,6 +29,7 @@ import grp
 import os
 import pwd
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Final
 
@@ -61,6 +62,12 @@ FORBIDDEN: Final[tuple] = (
     "visudo",
     "sudoers",
 )
+
+
+def _say(text: str) -> None:
+    """Writes one line for the person preparing the machine, and shows it at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
 
 
 class NodePrepare:
@@ -108,36 +115,36 @@ class NodePrepare:
             bool: True when nothing is left to do afterwards.
         """
         if os.geteuid() != 0:
-            print(
+            _say(
                 "❌ node prepare changes the machine outside your home folder; run it as "
                 "`sudo ragon-admin node prepare`."
             )
             return False
         user = cls.user()
         if user is None:
-            print(
+            _say(
                 "❌ node prepare acts for the user who ran sudo, and SUDO_USER is not set "
                 "(run it with sudo from your own account, not from a root shell)."
             )
             return False
         steps = cls.steps(user)
         if not steps:
-            print(f"✅ node prepare: nothing to do; this machine is ready for {user}.")
+            _say(f"✅ node prepare: nothing to do; this machine is ready for {user}.")
             return True
         for number, step in enumerate(steps, 1):
-            print(f"{number}. {step['name']}: {step['why']}.")
+            _say(f"{number}. {step['name']}: {step['why']}.")
             if step.get("manual"):
-                print(f"   {step['manual']}")
+                _say(f"   {step['manual']}")
                 continue
             for command in step["commands"]:
                 if not cls._execute(command):
-                    print(f'❌ That command failed; the rest of "{step["name"]}" was skipped.')
+                    _say(f'❌ That command failed; the rest of "{step["name"]}" was skipped.')
                     break
         remaining = [step["name"] for step in cls.steps(user)]
         if remaining:
-            print(f"⚠️  Still to do: {'; '.join(remaining)}.")
+            _say(f"⚠️  Still to do: {'; '.join(remaining)}.")
             return False
-        print(f"✅ node prepare: this machine is ready for {user}.")
+        _say(f"✅ node prepare: this machine is ready for {user}.")
         return True
 
     # -- the steps ------------------------------------------------------------------------------
@@ -289,11 +296,11 @@ class NodePrepare:
     @classmethod
     def _execute(cls, command: list[str]) -> bool:
         if not cls.allowed(command):
-            print(f"❌ Refused, node prepare never runs this: {' '.join(command)}")
+            _say(f"❌ Refused, node prepare never runs this: {' '.join(command)}")
             return False
-        print(f"🔑 {' '.join(command)}")
+        _say(f"🔑 {' '.join(command)}")
         try:
             return subprocess.run(command, check=False).returncode == 0
         except OSError as error:
-            print(f"❌ {error}")
+            _say(f"❌ {error}")
             return False
