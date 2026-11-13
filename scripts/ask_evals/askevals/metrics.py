@@ -15,16 +15,16 @@ punctuation, which is enough to see a loop.
 
 from __future__ import annotations
 
-import glob
 import os
 import re
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from typing import Final, Optional
+from typing import Final
 
 TOKENIZER_PATTERN: Final[str] = "models--RadixArk--Qwen3.8-27B-NVFP4/snapshots/*/tokenizer.json"
-
+# The ASK_EVALS_TOKENIZER value that falls back to word tokens instead of the model's tokenizer.
+TOKENIZER_WORDS: Final[str] = "words"
 # A loop by the most-repeated n-gram: a 30-gram seen 20 times (arXiv 2512.12895).
 LOOP_NGRAM: Final[int] = 30
 LOOP_NGRAM_REPEATS: Final[int] = 20
@@ -35,6 +35,13 @@ SEQ_REP_LIMIT: Final[float] = 0.5
 TIGHT_MIN_PERIOD: Final[int] = 5
 TIGHT_MAX_PERIOD: Final[int] = 40
 TIGHT_REPEATS: Final[int] = 3
+# `language` gives up on texts with fewer letters than this.
+LANGUAGE_MIN_LETTERS: Final[int] = 12
+# The Cyrillic block the letter check spans, in its whole range.
+CYRILLIC_FIRST: Final[str] = "Ѐ"
+CYRILLIC_LAST: Final[str] = "ӿ"
+# The question mark `honesty` looks for in an answer that asks back.
+QUESTION_MARK: Final[str] = "?"
 
 _WORDS = re.compile(r"\w+|[^\w\s]", re.UNICODE)
 
@@ -46,11 +53,12 @@ def _word_tokens(text: str) -> list[str]:
 def _load_tokenizer() -> Callable[[str], list[int]] | None:
     explicit = os.environ.get("ASK_EVALS_TOKENIZER")
     hub = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
-    found = [explicit] if explicit else sorted(glob.glob(str(hub / TOKENIZER_PATTERN)))
-    if not found or explicit == "words":
+    found = [explicit] if explicit else sorted(str(p) for p in hub.glob(TOKENIZER_PATTERN))
+    if not found or explicit == TOKENIZER_WORDS:
         return None
     try:
-        from tokenizers import Tokenizer  # noqa: PLC0415 - optional dependency
+        # An optional dependency: the word-token fallback below covers its absence.
+        from tokenizers import Tokenizer
     except ImportError:
         return None
     tokenizer = Tokenizer.from_file(found[-1])
@@ -63,7 +71,7 @@ _TOKENIZER_LOADED = False
 
 def tokens(text: str) -> list:
     """The text as the served model's tokens when its tokenizer is at hand, else as words."""
-    global _TOKENIZE, _TOKENIZER_LOADED  # noqa: PLW0603 - a lazily loaded module-level cache
+    global _TOKENIZE, _TOKENIZER_LOADED  # a lazily loaded module-level cache
     if not _TOKENIZER_LOADED:
         _TOKENIZE = _load_tokenizer()
         _TOKENIZER_LOADED = True
@@ -123,12 +131,87 @@ def loop_report(text: str) -> dict:
 _UK_ONLY = set("іїєґІЇЄҐ")
 _RU_ONLY = set("ыэъёЫЭЪЁ")
 _FR_WORDS = frozenset(
-    "le la les des un une est et à au aux du de que qui pour pas avec sur dans ce cette ces sont "
-    "vous nous il elle je tu mais ou où plus très être avoir fait comme aussi".split()
+    [
+        "le",
+        "la",
+        "les",
+        "des",
+        "un",
+        "une",
+        "est",
+        "et",
+        "à",
+        "au",
+        "aux",
+        "du",
+        "de",
+        "que",
+        "qui",
+        "pour",
+        "pas",
+        "avec",
+        "sur",
+        "dans",
+        "ce",
+        "cette",
+        "ces",
+        "sont",
+        "vous",
+        "nous",
+        "il",
+        "elle",
+        "je",
+        "tu",
+        "mais",
+        "ou",
+        "où",
+        "plus",
+        "très",
+        "être",
+        "avoir",
+        "fait",
+        "comme",
+        "aussi",
+    ]
 )
 _EN_WORDS = frozenset(
-    "the a an is are and to of in for that with on this it you we they be was were have has but "
-    "or not as at by from which what can will would".split()
+    [
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "and",
+        "to",
+        "of",
+        "in",
+        "for",
+        "that",
+        "with",
+        "on",
+        "this",
+        "it",
+        "you",
+        "we",
+        "they",
+        "be",
+        "was",
+        "were",
+        "have",
+        "has",
+        "but",
+        "or",
+        "not",
+        "as",
+        "at",
+        "by",
+        "from",
+        "which",
+        "what",
+        "can",
+        "will",
+        "would",
+    ]
 )
 _FR_ACCENTS = set("éèêëàâçùûôîïœ")
 
@@ -143,9 +226,9 @@ def language(text: str) -> str:
     """`en`, `fr`, `ru`, `uk`, or `other` (also for text too short to tell)."""
     prose = _strip_code(text)
     letters = [c for c in prose if c.isalpha()]
-    if len(letters) < 12:
+    if len(letters) < LANGUAGE_MIN_LETTERS:
         return "other"
-    cyrillic = sum("Ѐ" <= c <= "ӿ" for c in letters)
+    cyrillic = sum(CYRILLIC_FIRST <= c <= CYRILLIC_LAST for c in letters)
     if cyrillic > len(letters) / 2:
         uk = sum(c in _UK_ONLY for c in prose)
         ru = sum(c in _RU_ONLY for c in prose)
@@ -155,7 +238,10 @@ def language(text: str) -> str:
             return "ru"
         words = re.findall(r"\w+", prose.lower())
         # Without a telling letter, the commonest short words decide.
-        uk_words = sum(w in {"що", "як", "це", "та", "і", "на", "для", "чи", "або"} for w in words)
+        uk_words = sum(
+            w in {"що", "як", "це", "та", "і", "на", "для", "чи", "або"}  # noqa: RUF001 - Cyrillic on purpose
+            for w in words
+        )
         ru_words = sum(
             w in {"что", "как", "это", "и", "на", "для", "или", "не", "он"} for w in words
         )
@@ -189,7 +275,7 @@ _ASK = re.compile(
 
 def honesty(text: str) -> str:
     """`asked` (a question back), `abstained` (says it cannot), or `answered`."""
-    if _ASK.search(text) and "?" in text:
+    if _ASK.search(text) and QUESTION_MARK in text:
         return "asked"
     if _ABSTAIN.search(text):
         return "abstained"
