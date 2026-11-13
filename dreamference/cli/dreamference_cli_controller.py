@@ -51,6 +51,7 @@ from dreamference.vllm_server.model_loading_monitor import create_model_loading_
 
 if TYPE_CHECKING:
     from rich.console import Console
+    from rich.table import Table
 
 
 @functools.cache
@@ -256,8 +257,6 @@ class DreamferenceCLIController:
             api_base (str): Chat-completions endpoint.
             model_name (str): Model ID as the server advertises it.
         """
-        import json
-        import subprocess
         from urllib.parse import urlparse
 
         from dreamference.cli.model_deep_inspector import ModelDeepInspector
@@ -266,24 +265,7 @@ class DreamferenceCLIController:
         port = urlparse(api_base).port or DEFAULT_MODEL_PORT
         container = f"dreamference-vllm-{port}"
 
-        running_cmd: list[str] = []
-        try:
-            insp = subprocess.run(
-                ["docker", "inspect", container], capture_output=True, text=True, timeout=15
-            )
-            if insp.returncode == 0:
-                data = json.loads(insp.stdout)
-                if data:
-                    running_cmd = data[0].get("Config", {}).get("Cmd", []) or []
-        except (subprocess.SubprocessError, OSError, ValueError):
-            pass
-
-        def flag(name: str) -> str | None:
-            if name in running_cmd:
-                i = running_cmd.index(name)
-                if i + 1 < len(running_cmd):
-                    return running_cmd[i + 1]
-            return None
+        running_cmd: list[str] = cls._container_config(container).get("Cmd", []) or []
 
         def render(title: str, rows: "dict[str, str]") -> None:
             if not rows:
@@ -303,7 +285,7 @@ class DreamferenceCLIController:
         render(
             "🧠 KV Geometry",
             ModelDeepInspector.kv_geometry(
-                config.model, container, flag("--kv-cache-dtype") or "auto"
+                config.model, container, cls._flag_value(running_cmd, "--kv-cache-dtype") or "auto"
             ),
         )
         render(
@@ -312,8 +294,35 @@ class DreamferenceCLIController:
         )
         render(
             "⚙️  Compile & Graph Coverage",
-            ModelDeepInspector.graph_coverage(container, flag("--max-num-seqs")),
+            ModelDeepInspector.graph_coverage(
+                container, cls._flag_value(running_cmd, "--max-num-seqs")
+            ),
         )
+
+        cls._render_workload_acceptance(
+            out_console,
+            vllm_host,
+            api_base,
+            model_name,
+            cls._flag_value(running_cmd, "--speculative-config"),
+        )
+
+    @classmethod
+    def _render_workload_acceptance(
+        cls, out_console, vllm_host: str, api_base: str, model_name: str, spec_raw: str | None
+    ) -> None:
+        """Render the acceptance per workload, which sends live probe requests.
+
+        Args:
+            out_console: Rich console to render into.
+            vllm_host (str): Base URL of the running server.
+            api_base (str): Chat-completions endpoint.
+            model_name (str): Model ID as the server advertises it.
+            spec_raw (str | None): The running value of `--speculative-config`, if any.
+        """
+        import json
+
+        from dreamference.cli.model_deep_inspector import ModelDeepInspector
 
         out_console.print("")
         out_console.print("[bold yellow]📊 Acceptance by Workload[/bold yellow]")
@@ -326,7 +335,6 @@ class DreamferenceCLIController:
             return
 
         current_n = None
-        spec_raw = flag("--speculative-config")
         if spec_raw:
             with contextlib.suppress(ValueError):
                 current_n = json.loads(spec_raw).get("num_speculative_tokens")
@@ -884,6 +892,123 @@ class DreamferenceCLIController:
         }
 
     @classmethod
+    def _container_config(cls, container: str) -> "dict[str, Any]":
+        """Return the `Config` block of `docker inspect`, empty when it cannot be read.
+
+        Args:
+            container (str): The container's name.
+
+        Returns:
+            dict[str, Any]: The block; empty when the container is not running.
+        """
+        import json
+        import subprocess
+
+        try:
+            insp = subprocess.run(
+                ["docker", "inspect", container], capture_output=True, text=True, timeout=15
+            )
+            if insp.returncode == 0:
+                data = json.loads(insp.stdout)
+                if data:
+                    return data[0].get("Config", {})
+        except (subprocess.SubprocessError, OSError, ValueError):
+            pass
+        return {}
+
+    @classmethod
+    def _flag_value(cls, cmd: list[str], name: str) -> str | None:
+        """Return the value following `name` on a container's actual command line, if present.
+
+        Args:
+            cmd (list[str]): The container's command line.
+            name (str): The flag.
+
+        Returns:
+            str | None: The value; None when the flag or its value is missing.
+        """
+        if name in cmd:
+            i = cmd.index(name)
+            if i + 1 < len(cmd):
+                return cmd[i + 1]
+        return None
+
+    @classmethod
+    def _image_fact(cls, image: str) -> str:
+        """Return the `Image` fact: the image and the vLLM version inside it.
+
+        Args:
+            image (str): The container's image; empty when it is not running.
+
+        Returns:
+            str: The fact, formatted for display.
+        """
+        if not image:
+            return "Unknown (container not running)"
+        version = VLLMServerManager().detect_image_vllm_version(image)
+        version_str = f" (vLLM {version[0]}.{version[1]})" if version else ""
+        return f"{image}{version_str}"
+
+    @classmethod
+    def _prefix_caching_fact(cls, cmd: list[str]) -> str:
+        """Return the `Prefix Caching` fact.
+
+        Args:
+            cmd (list[str]): The container's command line.
+
+        Returns:
+            str: The fact, formatted for display.
+        """
+        if _ARG_NO_ENABLE_PREFIX_CACHING in cmd:
+            return "Off (recipe)"
+        if _ARG_ENABLE_PREFIX_CACHING in cmd:
+            return "On"
+        return "vLLM default"
+
+    @classmethod
+    def _speculative_fact(cls, spec_raw: str | None) -> str:
+        """Return the `Speculative` fact.
+
+        Args:
+            spec_raw (str | None): The value of `--speculative-config`, if the flag is there.
+
+        Returns:
+            str: The fact, formatted for display.
+        """
+        import json
+
+        if not spec_raw:
+            return "Disabled"
+        try:
+            spec = json.loads(spec_raw)
+        except ValueError:
+            return spec_raw
+        drafter = spec.get("model") or "self (in-checkpoint head)"
+        return (
+            f"{spec.get('method', '?')} n={spec.get('num_speculative_tokens', '?')} via {drafter}"
+        )
+
+    @classmethod
+    def _compile_cache_fact(cls) -> str:
+        """Return the `Compile Cache` fact.
+
+        A cold compile is 8-12 minutes, so whether the cache survived the last restart is worth
+        knowing before deciding a slow startup is a problem.
+
+        Returns:
+            str: The fact, formatted for display.
+        """
+        try:
+            from dreamference.vllm_server.vllm_server_manager import VLLM_CACHE_HOME
+
+            compiled = VLLM_CACHE_HOME / "torch_compile_cache"
+            if compiled.is_dir() and any(compiled.iterdir()):
+                return f"Warm ({sum(1 for _ in compiled.iterdir())} graph(s))"
+            return "Cold — next start recompiles (8-12 min)"
+        except OSError:
+            return "Unknown"
+
+    @classmethod
     def _collect_engine_facts(cls, port: int, vllm_host: str, model_alias: str) -> "dict[str, str]":
         """Reports what the running vLLM engine actually chose, rather than which features are absent.
 
@@ -905,27 +1030,12 @@ class DreamferenceCLIController:
             dict[str, str]: Ordered label -> value pairs, already formatted for display. Anything
                 that could not be determined is reported as such rather than as "No".
         """
-        import json
-        import subprocess
-
         facts: dict[str, str] = {}
         container = f"dreamference-vllm-{port}"
-
-        cmd: list[str] = []
-        image = ""
-        labels: dict[str, str] = {}
-        try:
-            insp = subprocess.run(
-                ["docker", "inspect", container], capture_output=True, text=True, timeout=15
-            )
-            if insp.returncode == 0:
-                data = json.loads(insp.stdout)
-                if data:
-                    cmd = data[0].get("Config", {}).get("Cmd", []) or []
-                    image = data[0].get("Config", {}).get("Image", "") or ""
-                    labels = data[0].get("Config", {}).get("Labels") or {}
-        except (subprocess.SubprocessError, OSError, ValueError):
-            pass
+        inspected = cls._container_config(container)
+        cmd: list[str] = inspected.get("Cmd", []) or []
+        image: str = inspected.get("Image", "") or ""
+        labels: dict[str, str] = inspected.get("Labels") or {}
 
         from dreamference.vllm_server.ragon_serve_launch_builder import RagonServeLaunchBuilder
 
@@ -937,47 +1047,15 @@ class DreamferenceCLIController:
             facts.update(cls._detect_recipe_drift(served_key, port, cmd))
             return facts
 
-        def flag(name: str) -> str | None:
-            """Value following `name` on the container's actual command line, if present."""
-            if name in cmd:
-                i = cmd.index(name)
-                if i + 1 < len(cmd):
-                    return cmd[i + 1]
-            return None
+        facts["Image"] = cls._image_fact(image)
+        facts["Attention"] = cls._flag_value(cmd, "--attention-backend") or "vLLM default"
+        facts["MoE Backend"] = cls._flag_value(cmd, "--moe-backend") or "vLLM default"
+        facts["Quantization"] = cls._flag_value(cmd, "--quantization") or "from checkpoint config"
+        facts["KV Cache Dtype"] = cls._flag_value(cmd, "--kv-cache-dtype") or "auto"
+        facts["Max Model Len"] = cls._flag_value(cmd, "--max-model-len") or "Unknown"
 
-        if image:
-            version = VLLMServerManager().detect_image_vllm_version(image)
-            version_str = f" (vLLM {version[0]}.{version[1]})" if version else ""
-            facts["Image"] = f"{image}{version_str}"
-        else:
-            facts["Image"] = "Unknown (container not running)"
-
-        facts["Attention"] = flag("--attention-backend") or "vLLM default"
-        facts["MoE Backend"] = flag("--moe-backend") or "vLLM default"
-        facts["Quantization"] = flag("--quantization") or "from checkpoint config"
-        facts["KV Cache Dtype"] = flag("--kv-cache-dtype") or "auto"
-        facts["Max Model Len"] = flag("--max-model-len") or "Unknown"
-
-        if _ARG_NO_ENABLE_PREFIX_CACHING in cmd:
-            facts["Prefix Caching"] = "Off (recipe)"
-        elif _ARG_ENABLE_PREFIX_CACHING in cmd:
-            facts["Prefix Caching"] = "On"
-        else:
-            facts["Prefix Caching"] = "vLLM default"
-
-        spec_raw = flag("--speculative-config")
-        if spec_raw:
-            try:
-                spec = json.loads(spec_raw)
-                drafter = spec.get("model") or "self (in-checkpoint head)"
-                facts["Speculative"] = (
-                    f"{spec.get('method', '?')} n={spec.get('num_speculative_tokens', '?')} "
-                    f"via {drafter}"
-                )
-            except ValueError:
-                facts["Speculative"] = spec_raw
-        else:
-            facts["Speculative"] = "Disabled"
+        facts["Prefix Caching"] = cls._prefix_caching_fact(cmd)
+        facts["Speculative"] = cls._speculative_fact(cls._flag_value(cmd, "--speculative-config"))
 
         # Acceptance is deliberately NOT reported here. vLLM's counters are cumulative from server
         # start, so a single figure blends every workload the server has ever seen — the same box
@@ -986,21 +1064,10 @@ class DreamferenceCLIController:
         # around each request in the sample table below, where the workload is known.
         facts.update(cls._read_kv_pool_facts(container, facts.get("Max Model Len")))
 
-        load_format = flag("--load-format")
+        load_format = cls._flag_value(cmd, "--load-format")
         facts["Tensorizer"] = "Active" if load_format == _ARG_TENSORIZER else "Not used"
 
-        # A cold compile is 8-12 minutes, so whether the cache survived the last restart is worth
-        # knowing before deciding a slow startup is a problem.
-        try:
-            from dreamference.vllm_server.vllm_server_manager import VLLM_CACHE_HOME
-
-            compiled = VLLM_CACHE_HOME / "torch_compile_cache"
-            if compiled.is_dir() and any(compiled.iterdir()):
-                facts["Compile Cache"] = f"Warm ({sum(1 for _ in compiled.iterdir())} graph(s))"
-            else:
-                facts["Compile Cache"] = "Cold — next start recompiles (8-12 min)"
-        except OSError:
-            facts["Compile Cache"] = "Unknown"
+        facts["Compile Cache"] = cls._compile_cache_fact()
 
         if cmd:
             # Against the recipe of the model actually running, not the configured one: `server
@@ -1384,33 +1451,26 @@ class DreamferenceCLIController:
             sys.exit(1)
 
     @classmethod
-    def handle_status(cls) -> None:
-        """Execute `ragon-admin status`, showing hardware, server health, agent config and index telemetry.
-
-        Codex/Cline/Continue/OpenHands config and context engine index telemetry are shown
-        in formatted Rich panels.
-        """
-        from rich.panel import Panel
+    def _status_table(cls) -> "Table":
+        """Return an empty two-column table for one `status` panel."""
         from rich.table import Table
 
-        console = rich_console()
-        cls.display_header()
-        hw = detect_gb10_hardware()
-        config = DreamferenceConfig()
-        vllm_mgr = VLLMServerManager(host=config.vllm_host)
-        vllm_status = vllm_mgr.get_server_status()
-        # Imported here, not at module scope: the context engine pulls in torch, which
-        # costs ~2.1s and 0.7 GB. `ragon-admin mcp` never needs it, and Codex starts one of
-        # those per session on a box that is already tight on memory.
-        from dreamference.context_engine import ContextEngine
+        table = Table(show_header=False, box=None)
+        table.add_column("Property", style="bold cyan")
+        table.add_column("Value", style="white")
+        return table
 
-        ctx_engine = ContextEngine()
-        ctx_summary = ctx_engine.get_summary() if ctx_engine.load_index() else None
+    @classmethod
+    def _hardware_status_table(cls, hw: "dict[str, Any]") -> "Table":
+        """Return the hardware panel's table of `ragon-admin status`.
 
-        # 1. NVIDIA GB10 Hardware Telemetry Panel
-        hw_table = Table(show_header=False, box=None)
-        hw_table.add_column("Property", style="bold cyan")
-        hw_table.add_column("Value", style="white")
+        Args:
+            hw: What `detect_gb10_hardware` found.
+
+        Returns:
+            The filled table.
+        """
+        hw_table = cls._status_table()
 
         is_gb10_str = (
             "[bold green]✅ Qualified (GB10 128GB Unified Memory Target)[/bold green]"
@@ -1428,15 +1488,22 @@ class DreamferenceCLIController:
         hw_table.add_row("Used Memory", f"{hw['used_memory_gb']} GB")
         hw_table.add_row("Available Memory", f"{hw['available_memory_gb']} GB")
         hw_table.add_row("Architecture", str(hw["arch"]))
+        return hw_table
 
-        console.print(
-            Panel(hw_table, title="[bold]🖥️ NVIDIA GB10 Hardware Status[/bold]", border_style="blue")
-        )
+    @classmethod
+    def _agent_status_table(
+        cls, config: DreamferenceConfig, vllm_status: "dict[str, Any]"
+    ) -> "Table":
+        """Return the model server and agents panel's table of `ragon-admin status`.
 
-        # 2. vLLM Server & Agent Status Panel
-        agent_table = Table(show_header=False, box=None)
-        agent_table.add_column("Property", style="bold cyan")
-        agent_table.add_column("Value", style="white")
+        Args:
+            config: Active DreamferenceConfig.
+            vllm_status: What the server manager reports.
+
+        Returns:
+            The filled table.
+        """
+        agent_table = cls._status_table()
 
         if vllm_status["healthy"]:
             vllm_str = f"[green]Online ({config.vllm_host})[/green]"
@@ -1520,24 +1587,72 @@ class DreamferenceCLIController:
         if not config.config_file_path.exists():
             config_path += " (not present; built-in defaults)"
         agent_table.add_row("Ragon Config Path", config_path)
+        return agent_table
 
+    @classmethod
+    def _context_index_table(cls, ctx_summary: "dict[str, Any]") -> "Table":
+        """Return the context engine panel's table of `ragon-admin status`.
+
+        Args:
+            ctx_summary: What the context engine's index reports.
+
+        Returns:
+            The filled table.
+        """
+        ctx_table = cls._status_table()
+        ctx_table.add_row("Indexed Workspace Files", str(ctx_summary["total_indexed_files"]))
+        ctx_table.add_row("Total AST Symbols", str(ctx_summary["total_ast_symbols"]))
+        ctx_table.add_row("Index Path", str(ctx_summary["index_file"]))
+        if ctx_summary.get("sqlite_file"):
+            ctx_table.add_row("SQLite Context Store", str(ctx_summary["sqlite_file"]))
+        return ctx_table
+
+    @classmethod
+    def handle_status(cls) -> None:
+        """Execute `ragon-admin status`, showing hardware, server health, agent config and index telemetry.
+
+        Codex/Cline/Continue/OpenHands config and context engine index telemetry are shown
+        in formatted Rich panels.
+        """
+        from rich.panel import Panel
+
+        console = rich_console()
+        cls.display_header()
+        hw = detect_gb10_hardware()
+        config = DreamferenceConfig()
+        vllm_mgr = VLLMServerManager(host=config.vllm_host)
+        vllm_status = vllm_mgr.get_server_status()
+        # Imported here, not at module scope: the context engine pulls in torch, which
+        # costs ~2.1s and 0.7 GB. `ragon-admin mcp` never needs it, and Codex starts one of
+        # those per session on a box that is already tight on memory.
+        from dreamference.context_engine import ContextEngine
+
+        ctx_engine = ContextEngine()
+        ctx_summary = ctx_engine.get_summary() if ctx_engine.load_index() else None
+
+        # 1. NVIDIA GB10 Hardware Telemetry Panel
         console.print(
-            Panel(agent_table, title="[bold]🤖 vLLM & Agent Status[/bold]", border_style="magenta")
+            Panel(
+                cls._hardware_status_table(hw),
+                title="[bold]🖥️ NVIDIA GB10 Hardware Status[/bold]",
+                border_style="blue",
+            )
+        )
+
+        # 2. vLLM Server & Agent Status Panel
+        console.print(
+            Panel(
+                cls._agent_status_table(config, vllm_status),
+                title="[bold]🤖 vLLM & Agent Status[/bold]",
+                border_style="magenta",
+            )
         )
 
         # 3. Context Engine Index Panel
         if ctx_summary:
-            ctx_table = Table(show_header=False, box=None)
-            ctx_table.add_column("Property", style="bold cyan")
-            ctx_table.add_column("Value", style="white")
-            ctx_table.add_row("Indexed Workspace Files", str(ctx_summary["total_indexed_files"]))
-            ctx_table.add_row("Total AST Symbols", str(ctx_summary["total_ast_symbols"]))
-            ctx_table.add_row("Index Path", str(ctx_summary["index_file"]))
-            if ctx_summary.get("sqlite_file"):
-                ctx_table.add_row("SQLite Context Store", str(ctx_summary["sqlite_file"]))
             console.print(
                 Panel(
-                    ctx_table,
+                    cls._context_index_table(ctx_summary),
                     title="[bold]📚 Context Engine Index Status[/bold]",
                     border_style="green",
                 )
@@ -3942,6 +4057,452 @@ class DreamferenceCLIController:
         sys.exit(0)
 
     @classmethod
+    def _ensure_node_sidecars(cls, config: DreamferenceConfig, model: str) -> None:
+        """Start the sidecars a node runs by default; a failure warns and never blocks the model.
+
+        Args:
+            config: Active DreamferenceConfig, used for the model server's host.
+            model (str): The model about to be served.
+        """
+        # On a node the Google service runs by default, so /apps can connect accounts
+        # (specs/DREAMFERENCE_RAGON_APPS.md §5.1); its failure never blocks the model.
+        from dreamference.chat.google_service import GoogleService
+
+        if GoogleService.ensure_on_node() is False:
+            print(f"⚠️  {GoogleService.problem}")
+        # Image search and speech-to-text the same way (decided; ASK §19.6):
+        # started when absent, a failure a warning that names the command to retry.
+        from dreamference.chat.image_search_sidecar import ImageSearchSidecar
+        from dreamference.chat.speech_sidecar import SpeechSidecar
+
+        if ImageSearchSidecar.ensure_on_node(config.vllm_host, model) is False:
+            print(
+                f"⚠️  {ImageSearchSidecar.problem} The model starts anyway; "
+                "retry with `ragon-admin images start`."
+            )
+        if SpeechSidecar.ensure_on_node() is False:
+            print(
+                f"⚠️  {SpeechSidecar.problem} The model starts anyway; "
+                "retry with `ragon-admin voice start`."
+            )
+
+    @classmethod
+    def _start_diffusion_sidecar(cls, args: argparse.Namespace, config: DreamferenceConfig):
+        """Start the diffusion sidecar when it is switched on, and remove a leftover when it is not.
+
+        Args:
+            args: The parsed `server start` command line.
+            config: Active DreamferenceConfig, used for the sidecar's model and the HF token.
+
+        Returns:
+            The sidecar's manager, or None when no sidecar was started.
+        """
+        # The diffusion sidecar starts *before* the vLLM launch on purpose: vLLM's
+        # pre-flight reads current free memory, so a sidecar already resident is
+        # accounted for — the reverse order lets a marginal KV check pass and then lose
+        # the sidecar's memory mid-load. Its failure never blocks the main model.
+        diffusion_mgr = None
+        if not ModelMatrixRegistry.diffusion_enabled():
+            # Switched off: a sidecar an older Ragon left running (it restarts at boot)
+            # goes before the pre-flight reads free memory, and nothing is said.
+            DiffusionServerManager.remove_leftover(args.diffusion_port)
+        elif not args.no_diffusion:
+            diffusion_model = args.diffusion_model or config.diffusion_model
+            diffusion_mgr = DiffusionServerManager(host=f"http://localhost:{args.diffusion_port}")
+            try:
+                # A False return is a docker failure already reported by the manager;
+                # nulling the handle here is what keeps the post-launch health poll from
+                # spending 30 seconds on a container that never existed.
+                if not diffusion_mgr.start_server(
+                    model=diffusion_model,
+                    main_model=args.model,
+                    port=args.diffusion_port,
+                    hf_token=config.hf_token,
+                ):
+                    diffusion_mgr = None
+            except Exception as exc:  # noqa: BLE001
+                print(f"⚠️  Diffusion sidecar failed to start: {exc}")
+                diffusion_mgr = None
+        return diffusion_mgr
+
+    @classmethod
+    def _launch_model_server(
+        cls, vllm_mgr, args: argparse.Namespace, config: DreamferenceConfig, engine: str | None
+    ) -> None:
+        """Launch the model server in the background, so its progress can be monitored.
+
+        Args:
+            vllm_mgr: The server's manager.
+            args: The parsed `server start` command line.
+            config: Active DreamferenceConfig, whose resolved values fill what the flags left out.
+            engine (str | None): The engine to serve with.
+        """
+        vllm_mgr.start_server(
+            model=args.model,
+            port=args.port,
+            quantization=args.quantization,
+            draft_model=args.draft_model,
+            # The config has resolved flag > env > file > default; the raw flag is None
+            # when omitted, which used to reach the command line as "None".
+            num_speculative_tokens=config.num_speculative_tokens,
+            hf_token=config.hf_token,
+            enable_prefix_caching=config.enable_prefix_caching,
+            enable_chunked_prefill=config.enable_chunked_prefill,
+            num_scheduler_steps=config.num_scheduler_steps,
+            attention_backend=config.attention_backend,
+            kv_cache_dtype=config.kv_cache_dtype,
+            api_key=args.api_key,
+            enable_auto_tool_choice=args.enable_auto_tool_choice,
+            tool_call_parser=args.tool_call_parser or config.tool_call_parser,
+            reasoning_parser=getattr(args, "reasoning_parser", None),
+            moe_backend=getattr(args, "moe_backend", None),
+            max_num_batched_tokens=(
+                args.max_num_batched_tokens
+                if args.max_num_batched_tokens is not None
+                else config.max_num_batched_tokens
+            ),
+            guided_decoding_backend=args.guided_decoding_backend or config.guided_decoding_backend,
+            use_tensorizer=getattr(args, "tensorize", None),
+            background=True,
+            docker_image=getattr(args, "docker_image", None),
+            gate=not getattr(args, "no_gate", False),
+            engine=engine,
+        )
+
+    @classmethod
+    def _wait_for_model_server(cls, monitor, vllm_mgr) -> None:
+        """Print the loading progress until the server is ready, the load is fatal or it stopped.
+
+        Args:
+            monitor: The running model loading monitor.
+            vllm_mgr: The server's manager.
+        """
+        last_status = None
+        while (
+            not monitor.server_ready
+            and not monitor.fatal
+            and vllm_mgr.process
+            and vllm_mgr.process.poll() is None
+        ):
+            current_status = monitor.get_status()
+            # Only print if status changed to avoid spam
+            if current_status["stages_reached"] != last_status:
+                monitor.print_progress()
+                last_status = current_status["stages_reached"]
+            time.sleep(1)
+
+    @classmethod
+    def _run_nvfp4_canary(cls, vllm_mgr, model: str, engine: str | None) -> None:
+        """Send one completion to catch the wrong NVFP4 kernel backend, which corrupts output silently.
+
+        Args:
+            vllm_mgr: The server's manager.
+            model (str): The model being served.
+            engine (str | None): The engine serving it, named if another should be tried.
+        """
+        print("🧪 Running NVFP4 kernel backend canary test...")
+        try:
+            import requests
+
+            from dreamference.hardware import resolve_model_hf_repo
+
+            served_model = resolve_model_hf_repo(model)
+            # Default sampling on purpose: once this canary caught
+            # SGLang's untruncated-sampling kernel emitting token 0 ('!') on
+            # the completions path, which greedy decoding never reaches. The
+            # first completions request after a boot can take well over 10 s.
+            resp = requests.post(
+                f"{vllm_mgr.host}/v1/completions",
+                json={
+                    "model": served_model,
+                    "prompt": "Hello",
+                    "max_tokens": 10,
+                },
+                timeout=60,
+            )
+            if resp.status_code == _HTTP_OK:
+                text = resp.json()["choices"][0]["text"].strip()
+                if text and all(c == _ARG_BANG for c in text if c.strip()):
+                    print("❌ NVFP4 Canary Failed: Output corrupted (all '!'). Wrong SM12x CUTLASS backend selected.")  # fmt: skip  # noqa: E501
+                    cls._suggest_engine_fallback(model, engine, "the NVFP4 canary")
+                else:
+                    print("✅ NVFP4 Canary Passed: Output is healthy.")
+            else:
+                print(f"⚠️  NVFP4 Canary skipped: API returned {resp.status_code}")
+                cls._suggest_engine_fallback(model, engine, "the NVFP4 canary")
+        except Exception as e:  # noqa: BLE001
+            print(f"⚠️  NVFP4 Canary failed to execute: {e}")
+            cls._suggest_engine_fallback(model, engine, "the NVFP4 canary")
+
+    @classmethod
+    def _report_diffusion_state(cls, diffusion_mgr, diffusion_port: int) -> None:
+        """Poll the diffusion sidecar briefly and say what state it is in.
+
+        Args:
+            diffusion_mgr: The sidecar's manager.
+            diffusion_port (int): The sidecar's port, which names its container.
+        """
+        import time as _time
+
+        deadline = _time.time() + 30
+        while _time.time() < deadline and not diffusion_mgr.check_health():
+            _time.sleep(2)
+        state = diffusion_mgr.get_load_state()
+        if state == _ARG_OK:
+            print(f"🌫️  Diffusion model ready at {diffusion_mgr.host}/v1")
+        elif state not in ("loading", None):
+            # The load failed and will not recover by waiting; this used to
+            # be reported as "still loading" beside the error text.
+            print(
+                f"⚠️  Diffusion sidecar at {diffusion_mgr.host}/v1 failed to load: {state}\n"
+                f"   The main model is unaffected. Details: docker logs "
+                f"dreamference-diffusion-{diffusion_port}"
+            )
+        else:
+            print(
+                f"🌫️  Diffusion sidecar at {diffusion_mgr.host}/v1 — "
+                f"still loading in background (state: {state})"
+            )
+
+    @classmethod
+    def _after_server_ready(
+        cls, vllm_mgr, monitor, args: argparse.Namespace, engine: str | None, diffusion_mgr
+    ) -> None:
+        """Warm the server up, run its canaries and report the diffusion sidecar.
+
+        Args:
+            vllm_mgr: The server's manager.
+            monitor: The model loading monitor, which holds the load time.
+            args: The parsed `server start` command line.
+            engine (str | None): The engine serving the model.
+            diffusion_mgr: The diffusion sidecar's manager, None when none was started.
+        """
+        from dreamference.node import NodeAdvertiser
+
+        NodeAdvertiser.on_server_ready()
+        # One discarded request first: a fresh engine serves its first batch at
+        # about two-thirds speed, and that should not be the user's request.
+        print("🔥 Warming up with one throwaway request...")
+        warm_up_seconds = vllm_mgr.warm_up()
+        if warm_up_seconds is None:
+            print("⚠️  Warm-up request failed; the first real request may be slower.")
+        else:
+            print(f"   Warm-up done in {warm_up_seconds:.1f}s")
+        print(f"\n✅ Server Ready! API running at {vllm_mgr.host}")
+        print(f"   Model: {args.model}")
+        print(f"   Loaded in: {monitor.get_status()['elapsed_seconds']:.1f} seconds\n")
+
+        if _ARG_NVFP4 in args.model.lower():
+            cls._run_nvfp4_canary(vllm_mgr, args.model, engine)
+
+        cls._run_tool_call_canary(vllm_mgr, args.model, engine)
+
+        # By now the sidecar's 0.6B load has usually finished under the main
+        # model's. A brief poll reports its state either way — its /health is the
+        # only place a transformers-version mismatch with the checkpoint's remote
+        # code surfaces — but never fails the start: the model keeps loading in
+        # the background and the endpoint comes up when it does.
+        if diffusion_mgr is not None:
+            cls._report_diffusion_state(diffusion_mgr, args.diffusion_port)
+
+    @classmethod
+    def _terminate_server_process(cls, vllm_mgr) -> None:
+        """Terminate the server process after a Ctrl-C, killing it if it does not leave in time.
+
+        Args:
+            vllm_mgr: The server's manager.
+        """
+        import subprocess
+
+        if vllm_mgr.process:
+            vllm_mgr.process.terminate()
+            try:
+                vllm_mgr.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                vllm_mgr.process.kill()
+
+    @classmethod
+    def _handle_server_start(
+        cls, args: argparse.Namespace, config: DreamferenceConfig, raw_argv: list[str]
+    ) -> None:
+        """Execute `ragon-admin server start`: the sidecars, the model server and its canaries.
+
+        Args:
+            args: The parsed `server start` command line.
+            config: Active DreamferenceConfig.
+            raw_argv (list[str]): The command line given, for the hand-over to SGLang.
+        """
+        cls._refuse_during_night_run("server start")
+        cls.display_header()
+        # An explicit --model wins; otherwise the configured main model serves, so
+        # `main-model set` and `server start` can never disagree again.
+        args.model = args.model or config.model
+        # The engine: --engine for this start, else the configured one, else the model's own.
+        engine = cls._server_engine(
+            args.model, args.engine or config.server_engine, from_flag=bool(args.engine)
+        )
+        engine = cls._engine_for_adapters(args.model, engine, from_flag=bool(args.engine))
+        # Only the default engine (no flag, environment variable or config key chose one)
+        # hands over to SGLang when it cannot start.
+        fall_back = cls._may_fall_back(
+            args.model, engine, bool(args.engine or config.server_engine)
+        )
+        fallback_reason = None
+        vllm_mgr = VLLMServerManager(host=f"http://localhost:{args.port}")
+        # A machine that loads a model is a node; an advertised one says `loading`.
+        from dreamference.node import NodeAdvertiser
+
+        NodeAdvertiser.on_server_starting(args.model, args.port)
+        cls._ensure_node_sidecars(config, args.model)
+
+        diffusion_mgr = cls._start_diffusion_sidecar(args, config)
+
+        # Start monitoring thread before server launch
+        from dreamference.hardware import get_model_launch_overrides
+
+        recipe_env_keys = set(get_model_launch_overrides(args.model, engine).get("env", {}).keys())
+        monitor = create_model_loading_monitor(vllm_mgr, recipe_env_keys=recipe_env_keys)
+        monitor.start()
+
+        print(f"📊 Model Loading Monitor: Tracking initialization progress for '{args.model}'...\n")
+
+        try:
+            cls._launch_model_server(vllm_mgr, args, config, engine)
+            cls._wait_for_model_server(monitor, vllm_mgr)
+
+            if monitor.server_ready:
+                cls._after_server_ready(vllm_mgr, monitor, args, engine, diffusion_mgr)
+            elif monitor.fatal:
+                # The log showed a load that cannot succeed: stop it rather than wait.
+                print(f"\n❌ {monitor.fatal}")
+                vllm_mgr.stop_server(port=args.port)
+                fallback_reason = cls._exit_unless_fall_back(fall_back, monitor.fatal)
+            else:
+                # The container stopped before the server answered (`docker logs -f` ended).
+                print(
+                    f"\n❌ The model server stopped before it answered. Its log: "
+                    f"docker logs dreamference-vllm-{args.port}"
+                )
+                fallback_reason = cls._exit_unless_fall_back(
+                    fall_back, "it stopped before it answered", args.model, engine
+                )
+
+            # Do not block: exit after health check passes (server keeps running)
+
+        except RuntimeError as exc:
+            # Before the container ran (the image, Docker, the hardware): the default engine
+            # hands over to SGLang; otherwise SGLang is named and the error reported as before.
+            fallback_reason = cls._raise_unless_fall_back(fall_back, exc, args.model, engine)
+        except KeyboardInterrupt:
+            print("\n⏹️  Shutting down server...")
+            cls._terminate_server_process(vllm_mgr)
+        finally:
+            monitor.stop()
+            # Whatever ended the start without a ready server (a refused pre-flight, a
+            # docker failure, Ctrl-C): an advertised node must not go on saying `loading`,
+            # or clients wait ten minutes for a model that is not coming.
+            if not monitor.server_ready:
+                NodeAdvertiser.on_server_stopped()
+        if fallback_reason:
+            cls._fall_back_to_sglang(vllm_mgr, args, fallback_reason, raw_argv)
+
+    @classmethod
+    def _handle_model_list(cls, console: "Console") -> None:
+        """Print the table of the models Ragon offers and exit 0.
+
+        Args:
+            console: The rich console the table is printed to.
+        """
+        from rich.table import Table
+
+        cls.display_header()
+
+        table = Table(title="Available Ragon Models")
+        table.add_column("Model Name", style="cyan", no_wrap=True)
+        table.add_column("HuggingFace Repo ID", style="magenta")
+
+        for key, spec in ModelMatrixRegistry.MATRIX.items():
+            if ModelMatrixRegistry.is_offered(key):
+                table.add_row(key, spec.hf_repo_id)
+
+        console.print(table)
+        sys.exit(0)
+
+    @classmethod
+    def _handle_model_download(cls, args: argparse.Namespace, config: DreamferenceConfig) -> None:
+        """Download one offered model with its drafter, or every model with `--all`, and exit.
+
+        Args:
+            args: The parsed `model download` arguments.
+            config: The resolved configuration (token, default model, draft model).
+        """
+        cls.display_header()
+        auto_t = getattr(args, "tensorize", False)
+        if getattr(args, "all", False):
+            download_all_models(hf_token=config.hf_token, auto_tensorize=auto_t)
+        else:
+            target_model = args.model or config.model
+            if target_model and not ModelMatrixRegistry.is_offered(target_model):
+                print(f"❌ '{target_model}' is not a model Ragon offers.")
+                sys.exit(1)
+            if target_model:
+                # At the registry's pinned commits, the recipe's drafter included: what
+                # `server start` serves, so it fetches nothing more.
+                download_model_with_drafter(
+                    target_model, hf_token=config.hf_token, auto_tensorize=auto_t
+                )
+                if config.draft_model:
+                    download_model(
+                        config.draft_model, hf_token=config.hf_token, auto_tensorize=auto_t
+                    )
+            else:
+                print(
+                    "⚠️  No model specified. Use --model <model_name> or initialize config "
+                    "with 'ragon-admin init "
+                    "--model <model_name>'"
+                )
+        sys.exit(0)
+
+    @classmethod
+    def _handle_audit(cls, args: argparse.Namespace) -> None:
+        """Run `audit egress` (the session, `--docs` or `--sync` trace) and exit with its code.
+
+        Args:
+            args: The parsed `audit` arguments.
+        """
+        from dreamference.audit import EgressAudit
+
+        if args.audit_command == _ARG_EGRESS:
+            if args.docs:
+                from dreamference.audit import DocsEgressAudit
+
+                if args.prompt is not None:
+                    # `--docs` traces `ragon-docs index` and a fixed search: no session takes a prompt.
+                    print(
+                        "❌ --prompt has no effect with --docs: it traces `ragon-docs index` and a fixed "
+                        "search over a fixture folder, with no ragon session to prompt."
+                    )
+                    sys.exit(2)
+                sys.exit(DocsEgressAudit.run(ragon_docs=args.ragon_docs_bin, write_json=args.json))
+            if args.sync:
+                from dreamference.audit import SyncEgressAudit
+
+                sys.exit(SyncEgressAudit.from_cli(prompt=args.prompt, write_json=args.json))
+            # 0 on a pass, 1 on an unexpected destination, 2 when the trace itself failed.
+            sys.exit(
+                EgressAudit.run(
+                    prompt=args.prompt,
+                    write_json=args.json,
+                    tui=args.tui,
+                    app=args.app,
+                    web=args.web,
+                    compat=args.compat is not None,
+                )
+            )
+        print("usage: ragon-admin audit {egress}")
+        sys.exit(2)
+
+    @classmethod
     def run_cli(cls, argv: list[str] | None = None) -> None:
         """Main execution entrypoint for CLI command parsing and subcommand dispatching.
 
@@ -4040,46 +4601,10 @@ class DreamferenceCLIController:
         # Dispatch subcommand logic
         if args.command == _ARG_MODEL:
             if args.model_command == _ARG_LIST:
-                cls.display_header()
-
-                table = Table(title="Available Ragon Models")
-                table.add_column("Model Name", style="cyan", no_wrap=True)
-                table.add_column("HuggingFace Repo ID", style="magenta")
-
-                for key, spec in ModelMatrixRegistry.MATRIX.items():
-                    if ModelMatrixRegistry.is_offered(key):
-                        table.add_row(key, spec.hf_repo_id)
-
-                console.print(table)
-                sys.exit(0)
+                cls._handle_model_list(console)
 
             elif args.model_command == _ARG_DOWNLOAD:
-                cls.display_header()
-                auto_t = getattr(args, "tensorize", False)
-                if getattr(args, "all", False):
-                    download_all_models(hf_token=config.hf_token, auto_tensorize=auto_t)
-                else:
-                    target_model = args.model or config.model
-                    if target_model and not ModelMatrixRegistry.is_offered(target_model):
-                        print(f"❌ '{target_model}' is not a model Ragon offers.")
-                        sys.exit(1)
-                    if target_model:
-                        # At the registry's pinned commits, the recipe's drafter included: what
-                        # `server start` serves, so it fetches nothing more.
-                        download_model_with_drafter(
-                            target_model, hf_token=config.hf_token, auto_tensorize=auto_t
-                        )
-                        if config.draft_model:
-                            download_model(
-                                config.draft_model, hf_token=config.hf_token, auto_tensorize=auto_t
-                            )
-                    else:
-                        print(
-                            "⚠️  No model specified. Use --model <model_name> or initialize config "
-                            "with 'ragon-admin init "
-                            "--model <model_name>'"
-                        )
-                sys.exit(0)
+                cls._handle_model_download(args, config)
 
         elif args.command == _ARG_DIFFUSION_MODEL:
             if args.diffusion_model_command == _ARG_SET:
@@ -4350,274 +4875,7 @@ class DreamferenceCLIController:
 
         elif args.command == _ARG_SERVER:
             if args.server_command == _ARG_START:
-                cls._refuse_during_night_run("server start")
-                cls.display_header()
-                # An explicit --model wins; otherwise the configured main model serves, so
-                # `main-model set` and `server start` can never disagree again.
-                args.model = args.model or config.model
-                # The engine: --engine for this start, else the configured one, else the model's own.
-                engine = cls._server_engine(
-                    args.model, args.engine or config.server_engine, from_flag=bool(args.engine)
-                )
-                engine = cls._engine_for_adapters(args.model, engine, from_flag=bool(args.engine))
-                # Only the default engine (no flag, environment variable or config key chose one)
-                # hands over to SGLang when it cannot start.
-                fall_back = cls._may_fall_back(
-                    args.model, engine, bool(args.engine or config.server_engine)
-                )
-                fallback_reason = None
-                vllm_mgr = VLLMServerManager(host=f"http://localhost:{args.port}")
-                # A machine that loads a model is a node; an advertised one says `loading`.
-                from dreamference.node import NodeAdvertiser
-
-                NodeAdvertiser.on_server_starting(args.model, args.port)
-                # On a node the Google service runs by default, so /apps can connect accounts
-                # (specs/DREAMFERENCE_RAGON_APPS.md §5.1); its failure never blocks the model.
-                from dreamference.chat.google_service import GoogleService
-
-                if GoogleService.ensure_on_node() is False:
-                    print(f"⚠️  {GoogleService.problem}")
-                # Image search and speech-to-text the same way (decided; ASK §19.6):
-                # started when absent, a failure a warning that names the command to retry.
-                from dreamference.chat.image_search_sidecar import ImageSearchSidecar
-                from dreamference.chat.speech_sidecar import SpeechSidecar
-
-                if ImageSearchSidecar.ensure_on_node(config.vllm_host, args.model) is False:
-                    print(
-                        f"⚠️  {ImageSearchSidecar.problem} The model starts anyway; "
-                        "retry with `ragon-admin images start`."
-                    )
-                if SpeechSidecar.ensure_on_node() is False:
-                    print(
-                        f"⚠️  {SpeechSidecar.problem} The model starts anyway; "
-                        "retry with `ragon-admin voice start`."
-                    )
-
-                # The diffusion sidecar starts *before* the vLLM launch on purpose: vLLM's
-                # pre-flight reads current free memory, so a sidecar already resident is
-                # accounted for — the reverse order lets a marginal KV check pass and then lose
-                # the sidecar's memory mid-load. Its failure never blocks the main model.
-                diffusion_mgr = None
-                if not ModelMatrixRegistry.diffusion_enabled():
-                    # Switched off: a sidecar an older Ragon left running (it restarts at boot)
-                    # goes before the pre-flight reads free memory, and nothing is said.
-                    DiffusionServerManager.remove_leftover(args.diffusion_port)
-                elif not args.no_diffusion:
-                    diffusion_model = args.diffusion_model or config.diffusion_model
-                    diffusion_mgr = DiffusionServerManager(
-                        host=f"http://localhost:{args.diffusion_port}"
-                    )
-                    try:
-                        # A False return is a docker failure already reported by the manager;
-                        # nulling the handle here is what keeps the post-launch health poll from
-                        # spending 30 seconds on a container that never existed.
-                        if not diffusion_mgr.start_server(
-                            model=diffusion_model,
-                            main_model=args.model,
-                            port=args.diffusion_port,
-                            hf_token=config.hf_token,
-                        ):
-                            diffusion_mgr = None
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"⚠️  Diffusion sidecar failed to start: {exc}")
-                        diffusion_mgr = None
-
-                # Start monitoring thread before server launch
-                from dreamference.hardware import get_model_launch_overrides
-
-                recipe_env_keys = set(
-                    get_model_launch_overrides(args.model, engine).get("env", {}).keys()
-                )
-                monitor = create_model_loading_monitor(vllm_mgr, recipe_env_keys=recipe_env_keys)
-                monitor.start()
-
-                print(
-                    f"📊 Model Loading Monitor: Tracking initialization progress for '{args.model}'...\n"
-                )
-
-                try:
-                    # Start vLLM server in background to allow progress monitoring
-                    vllm_mgr.start_server(
-                        model=args.model,
-                        port=args.port,
-                        quantization=args.quantization,
-                        draft_model=args.draft_model,
-                        # The config has resolved flag > env > file > default; the raw flag is None
-                        # when omitted, which used to reach the command line as "None".
-                        num_speculative_tokens=config.num_speculative_tokens,
-                        hf_token=config.hf_token,
-                        enable_prefix_caching=config.enable_prefix_caching,
-                        enable_chunked_prefill=config.enable_chunked_prefill,
-                        num_scheduler_steps=config.num_scheduler_steps,
-                        attention_backend=config.attention_backend,
-                        kv_cache_dtype=config.kv_cache_dtype,
-                        api_key=args.api_key,
-                        enable_auto_tool_choice=args.enable_auto_tool_choice,
-                        tool_call_parser=args.tool_call_parser or config.tool_call_parser,
-                        reasoning_parser=getattr(args, "reasoning_parser", None),
-                        moe_backend=getattr(args, "moe_backend", None),
-                        max_num_batched_tokens=(
-                            args.max_num_batched_tokens
-                            if args.max_num_batched_tokens is not None
-                            else config.max_num_batched_tokens
-                        ),
-                        guided_decoding_backend=args.guided_decoding_backend
-                        or config.guided_decoding_backend,
-                        use_tensorizer=getattr(args, "tensorize", None),
-                        background=True,
-                        docker_image=getattr(args, "docker_image", None),
-                        gate=not getattr(args, "no_gate", False),
-                        engine=engine,
-                    )
-
-                    # Print progress while server is initializing
-                    last_status = None
-                    while (
-                        not monitor.server_ready
-                        and not monitor.fatal
-                        and vllm_mgr.process
-                        and vllm_mgr.process.poll() is None
-                    ):
-                        current_status = monitor.get_status()
-                        # Only print if status changed to avoid spam
-                        if current_status["stages_reached"] != last_status:
-                            monitor.print_progress()
-                            last_status = current_status["stages_reached"]
-                        time.sleep(1)
-
-                    # Server is ready
-                    if monitor.server_ready:
-                        NodeAdvertiser.on_server_ready()
-                        # One discarded request first: a fresh engine serves its first batch at
-                        # about two-thirds speed, and that should not be the user's request.
-                        print("🔥 Warming up with one throwaway request...")
-                        warm_up_seconds = vllm_mgr.warm_up()
-                        if warm_up_seconds is None:
-                            print(
-                                "⚠️  Warm-up request failed; the first real request may be slower."
-                            )
-                        else:
-                            print(f"   Warm-up done in {warm_up_seconds:.1f}s")
-                        print(f"\n✅ Server Ready! API running at {vllm_mgr.host}")
-                        print(f"   Model: {args.model}")
-                        print(
-                            f"   Loaded in: {monitor.get_status()['elapsed_seconds']:.1f} seconds\n"
-                        )
-
-                        if _ARG_NVFP4 in args.model.lower():
-                            print("🧪 Running NVFP4 kernel backend canary test...")
-                            try:
-                                import requests
-
-                                from dreamference.hardware import resolve_model_hf_repo
-
-                                served_model = resolve_model_hf_repo(args.model)
-                                # Default sampling on purpose: once this canary caught
-                                # SGLang's untruncated-sampling kernel emitting token 0 ('!') on
-                                # the completions path, which greedy decoding never reaches. The
-                                # first completions request after a boot can take well over 10 s.
-                                resp = requests.post(
-                                    f"{vllm_mgr.host}/v1/completions",
-                                    json={
-                                        "model": served_model,
-                                        "prompt": "Hello",
-                                        "max_tokens": 10,
-                                    },
-                                    timeout=60,
-                                )
-                                if resp.status_code == _HTTP_OK:
-                                    text = resp.json()["choices"][0]["text"].strip()
-                                    if text and all(c == _ARG_BANG for c in text if c.strip()):
-                                        print("❌ NVFP4 Canary Failed: Output corrupted (all '!'). Wrong SM12x CUTLASS backend selected.")  # fmt: skip  # noqa: E501
-                                        cls._suggest_engine_fallback(
-                                            args.model, engine, "the NVFP4 canary"
-                                        )
-                                    else:
-                                        print("✅ NVFP4 Canary Passed: Output is healthy.")
-                                else:
-                                    print(
-                                        f"⚠️  NVFP4 Canary skipped: API returned {resp.status_code}"
-                                    )
-                                    cls._suggest_engine_fallback(
-                                        args.model, engine, "the NVFP4 canary"
-                                    )
-                            except Exception as e:  # noqa: BLE001
-                                print(f"⚠️  NVFP4 Canary failed to execute: {e}")
-                                cls._suggest_engine_fallback(args.model, engine, "the NVFP4 canary")
-
-                        cls._run_tool_call_canary(vllm_mgr, args.model, engine)
-
-                        # By now the sidecar's 0.6B load has usually finished under the main
-                        # model's. A brief poll reports its state either way — its /health is the
-                        # only place a transformers-version mismatch with the checkpoint's remote
-                        # code surfaces — but never fails the start: the model keeps loading in
-                        # the background and the endpoint comes up when it does.
-                        if diffusion_mgr is not None:
-                            import time as _time
-
-                            deadline = _time.time() + 30
-                            while _time.time() < deadline and not diffusion_mgr.check_health():
-                                _time.sleep(2)
-                            state = diffusion_mgr.get_load_state()
-                            if state == _ARG_OK:
-                                print(f"🌫️  Diffusion model ready at {diffusion_mgr.host}/v1")
-                            elif state not in ("loading", None):
-                                # The load failed and will not recover by waiting; this used to
-                                # be reported as "still loading" beside the error text.
-                                print(
-                                    f"⚠️  Diffusion sidecar at {diffusion_mgr.host}/v1 failed to load: {state}\n"
-                                    f"   The main model is unaffected. Details: docker logs "
-                                    f"dreamference-diffusion-{args.diffusion_port}"
-                                )
-                            else:
-                                print(
-                                    f"🌫️  Diffusion sidecar at {diffusion_mgr.host}/v1 — "
-                                    f"still loading in background (state: {state})"
-                                )
-
-                    elif monitor.fatal:
-                        # The log showed a load that cannot succeed: stop it rather than wait.
-                        print(f"\n❌ {monitor.fatal}")
-                        vllm_mgr.stop_server(port=args.port)
-                        fallback_reason = cls._exit_unless_fall_back(fall_back, monitor.fatal)
-                    else:
-                        # The container stopped before the server answered (`docker logs -f` ended).
-                        print(
-                            f"\n❌ The model server stopped before it answered. Its log: "
-                            f"docker logs dreamference-vllm-{args.port}"
-                        )
-                        fallback_reason = cls._exit_unless_fall_back(
-                            fall_back, "it stopped before it answered", args.model, engine
-                        )
-
-                    # Do not block: exit after health check passes (server keeps running)
-
-                except RuntimeError as exc:
-                    # Before the container ran (the image, Docker, the hardware): the default engine
-                    # hands over to SGLang; otherwise SGLang is named and the error reported as before.
-                    fallback_reason = cls._raise_unless_fall_back(
-                        fall_back, exc, args.model, engine
-                    )
-                except KeyboardInterrupt:
-                    print("\n⏹️  Shutting down server...")
-                    import subprocess
-
-                    if vllm_mgr.process:
-                        vllm_mgr.process.terminate()
-                        try:
-                            vllm_mgr.process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            vllm_mgr.process.kill()
-                finally:
-                    monitor.stop()
-                    # Whatever ended the start without a ready server (a refused pre-flight, a
-                    # docker failure, Ctrl-C): an advertised node must not go on saying `loading`,
-                    # or clients wait ten minutes for a model that is not coming.
-                    if not monitor.server_ready:
-                        NodeAdvertiser.on_server_stopped()
-                if fallback_reason:
-                    cls._fall_back_to_sglang(vllm_mgr, args, fallback_reason, raw_argv)
-                    return
+                cls._handle_server_start(args, config, raw_argv)
             if args.server_command == _ARG_STOP:
                 cls.display_header()
                 vllm_mgr = VLLMServerManager(host=f"http://localhost:{args.port}")
@@ -4653,39 +4911,7 @@ class DreamferenceCLIController:
                     print("\nStopped tailing logs.")
 
         elif args.command == _ARG_AUDIT:
-            from dreamference.audit import EgressAudit
-
-            if args.audit_command == _ARG_EGRESS:
-                if args.docs:
-                    from dreamference.audit import DocsEgressAudit
-
-                    if args.prompt is not None:
-                        # `--docs` traces `ragon-docs index` and a fixed search: no session takes a prompt.
-                        print(
-                            "❌ --prompt has no effect with --docs: it traces `ragon-docs index` and a fixed "
-                            "search over a fixture folder, with no ragon session to prompt."
-                        )
-                        sys.exit(2)
-                    sys.exit(
-                        DocsEgressAudit.run(ragon_docs=args.ragon_docs_bin, write_json=args.json)
-                    )
-                if args.sync:
-                    from dreamference.audit import SyncEgressAudit
-
-                    sys.exit(SyncEgressAudit.from_cli(prompt=args.prompt, write_json=args.json))
-                # 0 on a pass, 1 on an unexpected destination, 2 when the trace itself failed.
-                sys.exit(
-                    EgressAudit.run(
-                        prompt=args.prompt,
-                        write_json=args.json,
-                        tui=args.tui,
-                        app=args.app,
-                        web=args.web,
-                        compat=args.compat is not None,
-                    )
-                )
-            print("usage: ragon-admin audit {egress}")
-            sys.exit(2)
+            cls._handle_audit(args)
 
         elif args.command == _ARG_SWE_BENCH_CMD:
             from dreamference.swe_bench.swe_bench_command import SweBenchCommand

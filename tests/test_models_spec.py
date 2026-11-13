@@ -146,18 +146,14 @@ def test_nothing_reads_the_gb10_override_variable():
 
 
 def _nvfp4_canary_source() -> str:
-    """`server start`'s NVFP4 canary: from its condition up to the tool-call check that follows it."""
-    from dreamference.cli import dreamference_cli_controller as controller
-
-    source = inspect.getsource(controller)
-    start = source.index("if _ARG_NVFP4 in args.model.lower():")
-    return source[
-        start : source.index("cls._run_tool_call_canary(vllm_mgr, args.model, engine)", start)
-    ]
+    """`server start`'s NVFP4 canary."""
+    return inspect.getsource(DreamferenceCLIController._run_nvfp4_canary)
 
 
 def test_the_nvfp4_canary_sends_hello_for_ten_tokens_and_prints_the_spec_s_verdicts():
     # §2.1 "Post-launch canary": one completion ("Hello", 10 tokens), only for an nvfp4 alias.
+    ready = inspect.getsource(DreamferenceCLIController._after_server_ready)
+    assert "if _ARG_NVFP4 in args.model.lower():" in ready
     block = _nvfp4_canary_source()
     assert '/v1/completions"' in block
     assert '"prompt": "Hello"' in block and '"max_tokens": 10' in block
@@ -171,6 +167,6 @@ def test_the_nvfp4_canary_never_switches_models_or_relaunches():
     for call in ("start_server(", "stop_server(", "main-model", "set_main_model", "--model"):
         assert call not in block, call
     # The only follow-up it has prints the command for the user to run.
-    assert "cls._suggest_engine_fallback(args.model, engine" in block
+    assert "cls._suggest_engine_fallback(model, engine" in block
     fallback = inspect.getsource(DreamferenceCLIController._suggest_engine_fallback)
     assert "start_server(" not in fallback and "stop_server(" not in fallback

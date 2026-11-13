@@ -63,10 +63,9 @@
    "RET504": 1
   },
   "dreamference/cli/dreamference_cli_controller.py": {
-   "C901": 6,
-   "PLR0912": 3,
-   "PLR0915": 5,
-   "PLR1702": 12
+   "C901": 4,
+   "PLR0912": 2,
+   "PLR0915": 2
   },
   "dreamference/cli/model_deep_inspector.py": {
    "B905": 1,
