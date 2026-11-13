@@ -43,22 +43,29 @@ class HardwareManager:
         Returns:
             MemoryMetrics: Dataclass containing total_gb, available_gb, and used_gb.
         """
-        total_gb, avail_gb, used_gb = 0.0, 0.0, 0.0
         meminfo_path = MEMINFO_PATH
-        if Path(meminfo_path).exists():
-            with contextlib.suppress(Exception):
-                with Path(meminfo_path).open(encoding="utf-8") as f:
-                    content = f.read()
-                total_kb, avail_kb = 0, 0
-                for line in content.splitlines():
-                    if line.startswith("MemTotal:"):
-                        total_kb = int(line.split()[1])
-                    elif line.startswith("MemAvailable:"):
-                        avail_kb = int(line.split()[1])
-                total_gb = round(total_kb / (1024 * 1024), 2)
-                avail_gb = round(avail_kb / (1024 * 1024), 2)
-                used_gb = round((total_kb - avail_kb) / (1024 * 1024), 2)
+        if not Path(meminfo_path).exists():
+            return MemoryMetrics(total_gb=0.0, available_gb=0.0, used_gb=0.0)
+        total_kb, avail_kb = 0, 0
+        with contextlib.suppress(Exception):
+            with Path(meminfo_path).open(encoding="utf-8") as f:
+                content = f.read()
+            total_kb, avail_kb = cls._meminfo_kb(content)
+        total_gb = round(total_kb / (1024 * 1024), 2)
+        avail_gb = round(avail_kb / (1024 * 1024), 2)
+        used_gb = round((total_kb - avail_kb) / (1024 * 1024), 2)
         return MemoryMetrics(total_gb=total_gb, available_gb=avail_gb, used_gb=used_gb)
+
+    @staticmethod
+    def _meminfo_kb(content: str) -> tuple[int, int]:
+        """Returns MemTotal and MemAvailable in kB from the text of /proc/meminfo; 0 when absent."""
+        total_kb, avail_kb = 0, 0
+        for line in content.splitlines():
+            if line.startswith("MemTotal:"):
+                total_kb = int(line.split()[1])
+            elif line.startswith("MemAvailable:"):
+                avail_kb = int(line.split()[1])
+        return total_kb, avail_kb
 
     @classmethod
     def detect_gb10_hardware(cls) -> HardwareTelemetry:
@@ -67,34 +74,8 @@ class HardwareManager:
         Returns:
             HardwareTelemetry: Dataclass containing GPU name, unified memory size, driver version, and architecture.
         """
-        gpu_name = NOT_AVAILABLE
+        gpu_name, driver_version, vram_gb = cls._query_nvidia_smi()
         is_gb10 = False
-        driver_version = NOT_AVAILABLE
-        vram_gb = 0.0
-
-        if shutil.which("nvidia-smi"):
-            with contextlib.suppress(Exception):
-                res = subprocess.run(
-                    [
-                        "nvidia-smi",
-                        "--query-gpu=name,driver_version,memory.total",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=3,
-                )
-                if res.returncode == 0 and res.stdout.strip():
-                    lines = res.stdout.strip().splitlines()
-                    first_line = lines[0].split(",")
-                    gpu_name = first_line[0].strip()
-                    if len(first_line) > 1:
-                        driver_version = first_line[1].strip()
-                    if len(first_line) > MEMORY_FIELD_INDEX:
-                        with contextlib.suppress(ValueError):
-                            vram_gb = round(
-                                float(first_line[MEMORY_FIELD_INDEX].strip()) / 1024.0, 2
-                            )
 
         sys_mem = cls.get_system_memory()
         total_mem_gb = sys_mem.total_gb
@@ -121,6 +102,39 @@ class HardwareManager:
             machine=cls.machine_name(),
             os_name=cls.os_name(),
         )
+
+    @staticmethod
+    def _parse_smi_line(line: str) -> tuple[str, str, float]:
+        """Splits one nvidia-smi CSV line into GPU name, driver version and memory in GB."""
+        fields = line.split(",")
+        name = fields[0].strip()
+        driver_version = fields[1].strip() if len(fields) > 1 else NOT_AVAILABLE
+        vram_gb = 0.0
+        if len(fields) > MEMORY_FIELD_INDEX:
+            with contextlib.suppress(ValueError):
+                vram_gb = round(float(fields[MEMORY_FIELD_INDEX].strip()) / 1024.0, 2)
+        return name, driver_version, vram_gb
+
+    @staticmethod
+    def _query_nvidia_smi() -> tuple[str, str, float]:
+        """Asks nvidia-smi for the first GPU's name, driver and memory; unknown values when it cannot answer."""
+        unknown = (NOT_AVAILABLE, NOT_AVAILABLE, 0.0)
+        if not shutil.which("nvidia-smi"):
+            return unknown
+        with contextlib.suppress(Exception):
+            res = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=name,driver_version,memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return HardwareManager._parse_smi_line(res.stdout.strip().splitlines()[0])
+        return unknown
 
     @classmethod
     def gb10_on_pci(cls) -> bool:
@@ -189,14 +203,14 @@ class HardwareManager:
     def _key_values(path: str) -> dict[str, str]:
         """Reads a shell-style `KEY="value"` file such as /etc/os-release; empty if unreadable."""
         values: dict[str, str] = {}
-        try:
-            with Path(path).open(encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    key, sep, value = line.strip().partition("=")
-                    if sep and key and not key.startswith("#"):
-                        values[key] = value.strip().strip('"').strip("'")
-        except OSError:
-            pass
+        with (
+            contextlib.suppress(OSError),
+            Path(path).open(encoding="utf-8", errors="replace") as handle,
+        ):
+            for line in handle:
+                key, sep, value = line.strip().partition("=")
+                if sep and key and not key.startswith("#"):
+                    values[key] = value.strip().strip('"').strip("'")
         return values
 
     @classmethod
