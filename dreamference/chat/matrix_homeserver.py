@@ -87,6 +87,12 @@ NETWORK_OVERLAY: Final[str] = "overlay"
 NETWORK_TAILSCALE: Final[str] = "tailscale"
 
 
+def _say(text: str) -> None:
+    """Writes one line for the person setting up or checking the homeserver, shown at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
+
+
 class MatrixHomeserver:
     """`ragon-admin matrix start|stop|status|add-user|push|remove`."""
 
@@ -524,7 +530,7 @@ class MatrixHomeserver:
             env={TOKEN_ENV: admin["registration_token"]},
         )
         if created.returncode != 0:
-            print(f"❌ The homeserver did not start: {created.stderr.strip()[:500]}")
+            _say(f"❌ The homeserver did not start: {created.stderr.strip()[:500]}")
             return False
         return True
 
@@ -549,7 +555,7 @@ class MatrixHomeserver:
                 BOT_LOCALPART, cls.password() + cls.password(), admin["registration_token"]
             )
             if not answer or not answer.get("access_token"):
-                print("❌ Could not create the bot account @ragon.")
+                _say("❌ Could not create the bot account @ragon.")
                 return False
             config.update({"user_id": answer["user_id"], "access_token": answer["access_token"]})
         return True
@@ -630,7 +636,7 @@ class MatrixHomeserver:
             return f"https://{name}:{TLS_PORT}" if cls.serve_on_overlay(name) else None
         served = cls._run(["tailscale", "serve", "--bg", "--https=443", PROXY_URL], timeout=60)
         if served.returncode != 0:
-            print(
+            _say(
                 "⚠️  `tailscale serve` refused; if HTTPS is off for your tailnet, turn it on once in the Tailscale "
                 f"admin console (DNS → HTTPS Certificates), then run this again. ({served.stderr.strip()[:300]})"
             )
@@ -647,7 +653,7 @@ class MatrixHomeserver:
         from dreamference.node.node_identity import NodeIdentity
 
         if not NodeIdentity.read():
-            print(
+            _say(
                 "❌ The homeserver belongs on a node, which is always on: run this on the machine that serves "
                 "the model (`ragon-admin node enable`)."
             )
@@ -656,10 +662,10 @@ class MatrixHomeserver:
         name = cls._chosen_name(admin, network)
         if not name:
             if not (network == NETWORK_OVERLAY or (admin and network)):
-                print(f"❌ {TAILSCALE_INSTALL}")
+                _say(f"❌ {TAILSCALE_INSTALL}")
             return None
         if admin.get("server_name") and admin["server_name"] != name:
-            print(
+            _say(
                 f"❌ This homeserver is {admin['server_name']}, but Tailscale now names this machine {name}.\n"
                 "   A Matrix server name cannot change: every account's id ends in it. Rename the machine back in "
                 "Tailscale, or delete the homeserver and its accounts with `ragon-admin matrix remove --yes` and "
@@ -675,7 +681,7 @@ class MatrixHomeserver:
             cls._save("matrix-admin.json", admin)
         push = bool(admin.get("push"))
         if not push and not cls.ensure_network():
-            print(f"❌ Could not create the internal Docker network {MATRIX_NETWORK}.")
+            _say(f"❌ Could not create the internal Docker network {MATRIX_NETWORK}.")
             return None
         return name, admin, push
 
@@ -690,10 +696,10 @@ class MatrixHomeserver:
             return False
         address = cls.container_address() or MATRIX_ADDRESS
         if not cls.install_proxy(f"{address}:{MATRIX_PORT}"):
-            print("❌ Could not start the loopback proxy (systemd user units).")
+            _say("❌ Could not start the loopback proxy (systemd user units).")
             return False
         if not cls.wait_until_answering():
-            print(
+            _say(
                 f"❌ The homeserver is not answering on {PROXY_URL}; `docker logs {MATRIX_CONTAINER}` says why."
             )
             return False
@@ -724,9 +730,9 @@ class MatrixHomeserver:
         url = cls._offer(name)
         if url is None:
             return 1
-        print(f"✅ The Matrix homeserver is running as {url} (no route out of this machine).")
+        _say(f"✅ The Matrix homeserver is running as {url} (no route out of this machine).")
         if not config["allowed"]:
-            print(
+            _say(
                 "   Next: `ragon-admin matrix add-user <name>` for your account, then `ragon chat start`."
             )
         return 0
@@ -735,16 +741,16 @@ class MatrixHomeserver:
     def add_user(cls, localpart: str) -> int:
         """Creates a user account, prints its password once, and allows it to talk to the bot."""
         if not LOCALPART.match(localpart):
-            print("❌ A user name is lowercase letters, digits and . _ = - only.")
+            _say("❌ A user name is lowercase letters, digits and . _ = - only.")
             return 2
         admin = cls._load("matrix-admin.json")
         if not admin:
-            print("❌ No homeserver yet: run `ragon-admin matrix start` first.")
+            _say("❌ No homeserver yet: run `ragon-admin matrix start` first.")
             return 1
         password = cls.password()
         answer = cls.register(localpart, password, admin["registration_token"])
         if not answer or not answer.get("user_id"):
-            print(
+            _say(
                 f"❌ Could not create {localpart} (is the name taken, or the homeserver stopped?)."
             )
             return 1
@@ -757,7 +763,7 @@ class MatrixHomeserver:
             where = f"with the overlay on): sign in to https://{admin['server_name']}:{TLS_PORT}"
         else:
             where = f"with Tailscale on): sign in to https://{admin['server_name']}"
-        print(
+        _say(
             f"✅ Created {answer['user_id']}. Its password, shown this once and stored nowhere:\n\n"
             f"    {password}\n\n"
             f"In Element X on your phone ({where} as "
@@ -791,7 +797,7 @@ class MatrixHomeserver:
         cls._run(["systemctl", "--user", "disable", "--now", PROXY_SOCKET_UNIT], timeout=60)
         cls._run(["systemctl", "--user", "stop", PROXY_SERVICE_UNIT], timeout=60)
         cls._run(["docker", "stop", MATRIX_CONTAINER], timeout=660)
-        print("✅ The Matrix homeserver is stopped; its accounts and messages are kept.")
+        _say("✅ The Matrix homeserver is stopped; its accounts and messages are kept.")
         return 0
 
     @classmethod
@@ -800,10 +806,10 @@ class MatrixHomeserver:
         admin = cls._load("matrix-admin.json")
         config = cls._load("matrix.json")
         if not admin:
-            print("Matrix: not set up (`ragon-admin matrix start`).")
+            _say("Matrix: not set up (`ragon-admin matrix start`).")
             return 0
-        print(f"Server name: {admin['server_name']}")
-        print(
+        _say(f"Server name: {admin['server_name']}")
+        _say(
             f"Container:   {'running' if cls.container_running() else 'stopped'} ({MATRIX_CONTAINER})"
         )
         network = (
@@ -811,16 +817,16 @@ class MatrixHomeserver:
             if admin.get("push")
             else "internal, no route out"
         )
-        print(f"Network:     {network}")
+        _say(f"Network:     {network}")
         if admin["server_name"] == cls.overlay_name():
             running = cls._run(["systemctl", "--user", "is-active", TLS_SERVICE_UNIT], timeout=30)
             serving = "serving" if running.stdout.strip() == UNIT_ACTIVE else "not serving"
             front = f"Overlay:     https://{admin['server_name']}:{TLS_PORT} ({serving})"
         else:
             front = f"Tailscale:   {cls.tailscale_name() or 'not running'}"
-        print(front)
-        print(f"Bot:         {config.get('user_id', 'not created')}")
-        print(
+        _say(front)
+        _say(f"Bot:         {config.get('user_id', 'not created')}")
+        _say(
             f"Allowed:     {', '.join(config.get('allowed', [])) or 'nobody yet (`ragon-admin matrix add-user <name>`)'}"  # noqa: E501
         )
         return 0
@@ -830,13 +836,13 @@ class MatrixHomeserver:
         """Moves the container between the internal network and the sidecar network."""
         admin = cls._load("matrix-admin.json")
         if not admin:
-            print("❌ No homeserver yet: run `ragon-admin matrix start` first.")
+            _say("❌ No homeserver yet: run `ragon-admin matrix start` first.")
             return 1
         admin["push"] = on
         cls._save("matrix-admin.json", admin)
         cls._run(["docker", "rm", "-f", MATRIX_CONTAINER], timeout=660)
         if on:
-            print(
+            _say(
                 "⚠️  Push on: the homeserver can now reach Element's push gateway. A push carries an event id, "
                 "not the message, but it does say that a message arrived, and when."
             )
@@ -846,7 +852,7 @@ class MatrixHomeserver:
     def remove(cls, confirmed: bool) -> int:
         """Deletes the homeserver, its volume (every account and message) and the bridge's Matrix files."""
         if not confirmed:
-            print(
+            _say(
                 "This deletes the homeserver, every account on it and every message. Run it again with --yes."
             )
             return 1
@@ -862,5 +868,5 @@ class MatrixHomeserver:
         for name in (PROXY_SOCKET_UNIT, PROXY_SERVICE_UNIT, TLS_SERVICE_UNIT):
             with contextlib.suppress(FileNotFoundError):
                 (pathlib.Path(cls.unit_dir()) / name).unlink()
-        print("✅ The Matrix homeserver and its accounts are deleted.")
+        _say("✅ The Matrix homeserver and its accounts are deleted.")
         return 0
