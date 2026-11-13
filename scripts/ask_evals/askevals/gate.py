@@ -10,22 +10,38 @@ whose process dies goes stale after the gate's `STALE_S` and the gate opens by i
 
 from __future__ import annotations
 
+import contextlib
 import os
 import secrets
 import threading
 import time
-from typing import Any, Final
+from typing import Final, Protocol
 
 HEARTBEAT_S: Final[float] = 15.0
 NO_CLIENT_NETWORK: Final[str] = "192.0.2.0/24"
 
 
+class _GateLike(Protocol):
+    """What `GateHold` asks of the gate: refresh and remove the run's record."""
+
+    def write_run(self, record: dict) -> None: ...
+
+    def clear_run(self, hold_id: str) -> None: ...
+
+
 class GateHold:
     """Closes the gate for a `with` block; `gate` is the `ModelGate` class (a seam for tests)."""
 
-    def __init__(self, label: str, total: int, gate: Any = None, networks: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        label: str,
+        total: int,
+        gate: _GateLike | None = None,
+        networks: list[str] | None = None,
+    ) -> None:
+        """Remembers the hold's shape; the gate is the real `ModelGate` unless a seam takes it."""
         if gate is None:
-            from dreamference.vllm_server.model_gate import ModelGate  # noqa: PLC0415
+            from dreamference.vllm_server.model_gate import ModelGate
 
             gate = ModelGate
         self.gate = gate
@@ -41,6 +57,7 @@ class GateHold:
         self._thread = threading.Thread(target=self._beat, name="ask-evals-gate", daemon=True)
 
     def record(self) -> dict:
+        """Builds the run record the gate writes, with a live done/eta count."""
         elapsed = time.time() - self.started
         eta = int(elapsed / self.done * (self.total - self.done)) if self.done else None
         return {
@@ -57,21 +74,23 @@ class GateHold:
         }
 
     def _beat(self) -> None:
+        """Keeps the gate's record fresh until the hold is released."""
         while not self._stop.wait(HEARTBEAT_S):
-            try:
+            with contextlib.suppress(Exception):  # a heartbeat never takes the suite down
                 self.gate.write_run(self.record())
-            except Exception:  # noqa: BLE001 - a heartbeat never takes the suite down
-                pass
 
     def advance(self) -> None:
+        """Counts one finished case toward the eta."""
         self.done += 1
 
     def __enter__(self) -> GateHold:
+        """Writes the first record and starts the heartbeat thread."""
         self.gate.write_run(self.record())
         self._thread.start()
         return self
 
     def __exit__(self, *_: object) -> None:
+        """Stops the heartbeat and opens the gate by clearing this hold's record."""
         self._stop.set()
         self._thread.join(HEARTBEAT_S + 5)
         self.gate.clear_run(self.id)
