@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Best-of-N against a single run, from N runs of one arm and chooser v1's summary.
+r"""Best-of-N against a single run, from N runs of one arm and chooser v1's summary.
 
 Backlog item 6's acceptance run: `scripts/swe_bench_ab.sh` with `BEST_OF=3`
 runs one arm three times on the same list (`<prefix>-<arm>-1..3`), each graded, then
@@ -16,7 +16,7 @@ three. This script reads both and prints, per task and in total:
 
 It reads the runs and the summary only; nothing is written but `--json`. Usage::
 
-    .venv/bin/python scripts/swe_bench_best_of.py --runs n11-default-1,n11-default-2,n11-default-3 \\
+    .venv/bin/python scripts/swe_bench_best_of.py --runs n11-default-1,n11-default-2,n11-default-3 \
         --chooser ~/.local/share/dreamference/swe-bench/best-of/chooser-v1/summary.json
 """
 
@@ -27,18 +27,24 @@ import importlib.util
 import itertools
 import json
 import sys
+import types
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Final
 
 SCRIPTS = Path(__file__).resolve().parent
+# The tolerance for "not zero": a credit difference below it carries no sign-flip information.
+EPSILON: Final = 1e-9
 
 
-def chooser_module() -> Any:
+def chooser_module() -> types.ModuleType:
     """The chooser test's module, beside this one: its run loading is reused."""
     name = "swe_bench_chooser_test"
     if name in sys.modules:
         return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, SCRIPTS / "swe_bench_chooser_test.py")
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load {name} from {SCRIPTS / 'swe_bench_chooser_test.py'}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module  # its dataclasses look their module up while they are built
     spec.loader.exec_module(module)
@@ -46,62 +52,81 @@ def chooser_module() -> Any:
 
 
 def sign_flip_p(differences: Sequence[float]) -> float:
-    """
-    The exact two-sided sign-flip p-value of the differences' sum (zeros carry no information).
+    """The exact two-sided sign-flip p-value of the differences' sum (zeros carry no information).
 
     Returns:
         float: The share of the 2^k sign assignments of the k non-zero differences whose |sum| is
         at least the observed |sum|; 1.0 with none.
     """
-    nonzero = [d for d in differences if abs(d) > 1e-9]
+    nonzero = [d for d in differences if abs(d) > EPSILON]
     if not nonzero:
         return 1.0
-    observed = abs(sum(nonzero)) - 1e-9
-    hits = sum(1 for signs in itertools.product((1, -1), repeat=len(nonzero))
-               if abs(sum(s * d for s, d in zip(signs, nonzero))) >= observed)
+    observed = abs(sum(nonzero)) - EPSILON
+    hits = sum(
+        1
+        for signs in itertools.product((1, -1), repeat=len(nonzero))
+        if abs(sum(s * d for s, d in zip(signs, nonzero, strict=True))) >= observed
+    )
     return hits / 2 ** len(nonzero)
 
 
-def compare(runs: List[Dict[str, Any]], summary: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Per-task credits and totals.
+def compare(runs: list[dict[str, Any]], summary: dict[str, Any]) -> dict[str, Any]:
+    """Per-task credits and totals.
 
     Args:
         runs: The loaded runs (`swe_bench_chooser_test.load_run`), the single run first.
         summary: chooser v1's `summary.json`.
 
     Returns:
-        Dict[str, Any]: `tasks` (id to single, chooser, mean and oracle credit), the totals, the
+        dict[str, Any]: `tasks` (id to single, chooser, mean and oracle credit), the totals, the
         discordant counts and the sign-flip p-value.
     """
     listed = sorted(set(runs[0]["instances"]))
     graded = [i for i in listed if all(i in run["resolved"] for run in runs)]
     per_task = summary.get("per_task") or {}
-    tasks: Dict[str, Dict[str, float]] = {}
+    tasks: dict[str, dict[str, float]] = {}
     for instance_id in graded:
         verdicts = [bool(run["resolved"][instance_id]) for run in runs]
         judged = per_task.get(instance_id)
         chosen = float(judged["chooser"]) if judged else float(all(verdicts))
-        tasks[instance_id] = {"single": float(verdicts[0]), "chooser": chosen,
-                              "mean": sum(verdicts) / len(verdicts), "oracle": float(any(verdicts))}
+        tasks[instance_id] = {
+            "single": float(verdicts[0]),
+            "chooser": chosen,
+            "mean": sum(verdicts) / len(verdicts),
+            "oracle": float(any(verdicts)),
+        }
     differences = [t["chooser"] - t["single"] for t in tasks.values()]
-    total = lambda key: round(sum(t[key] for t in tasks.values()), 2)
+
+    def total(key: str) -> float:
+        """The mean of one credit's column, rounded to two places."""
+        return round(sum(t[key] for t in tasks.values()), 2)
+
     return {
-        "runs": [run["name"] for run in runs], "listed": len(listed), "graded": len(graded),
-        "tasks": tasks, "single": total("single"), "chooser": total("chooser"), "mean": total("mean"),
-        "oracle": total("oracle"), "single_runs": {run["name"]: sum(1 for i in graded if run["resolved"][i])
-                                                   for run in runs},
+        "runs": [run["name"] for run in runs],
+        "listed": len(listed),
+        "graded": len(graded),
+        "tasks": tasks,
+        "single": total("single"),
+        "chooser": total("chooser"),
+        "mean": total("mean"),
+        "oracle": total("oracle"),
+        "single_runs": {run["name"]: sum(1 for i in graded if run["resolved"][i]) for run in runs},
         "only_chooser": round(sum(d for d in differences if d > 0), 2),
         "only_single": round(-sum(d for d in differences if d < 0), 2),
-        "p": sign_flip_p(differences), "stages": summary.get("stages") or {},
+        "p": sign_flip_p(differences),
+        "stages": summary.get("stages") or {},
     }
 
 
-def render(result: Dict[str, Any]) -> str:
+def render(result: dict[str, Any]) -> str:
     """The report's text."""
     n, first = len(result["runs"]), result["runs"][0]
     graded = result["graded"] or 1
-    share = lambda value: f"{value} ({100 * value / graded:.1f}%)"
+
+    def share(value: float) -> str:
+        """The credit with its share of the graded tasks."""
+        return f"{value} ({100 * value / graded:.1f}%)"
+
     lines = [
         f"Best-of-{n} (chooser v1) against a single run ({first}), on {result['graded']} graded task(s)"
         f" of {result['listed']}.",
@@ -115,23 +140,33 @@ def render(result: Dict[str, Any]) -> str:
         f"Paired against the single run: only best-of-{n} resolved {result['only_chooser']}, "
         f"only the single run {result['only_single']}; exact sign-flip test p = {result['p']:.3f}"
         " (the exact McNemar test when no credit is fractional).",
-        "Chosen by: " + (", ".join(f"{stage} {count}" for stage, count in sorted(result["stages"].items()))
-                         or "nothing to choose (every run agreed on every task)"),
+        "Chosen by: "
+        + (
+            ", ".join(f"{stage} {count}" for stage, count in sorted(result["stages"].items()))
+            or "nothing to choose (every run agreed on every task)"
+        ),
         "",
         "Tasks where the runs disagree (single / chooser / mean):",
     ]
     for instance_id, credit in result["tasks"].items():
         if 0 < credit["mean"] < 1:
-            lines.append(f"  {instance_id:<36} {credit['single']:.0f} / {credit['chooser']:.2f} / {credit['mean']:.2f}")
+            lines.append(
+                f"  {instance_id:<36} {credit['single']:.0f} / "
+                f"{credit['chooser']:.2f} / {credit['mean']:.2f}"
+            )
     return "\n".join(lines) + "\n"
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """Prints the report."""
     chooser = chooser_module()
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--runs", required=True, help="the N runs, comma-separated, the single run first")
-    parser.add_argument("--chooser", type=Path, required=True, help="chooser v1's summary.json over those runs")
+    parser.add_argument(
+        "--runs", required=True, help="the N runs, comma-separated, the single run first"
+    )
+    parser.add_argument(
+        "--chooser", type=Path, required=True, help="chooser v1's summary.json over those runs"
+    )
     parser.add_argument("--runs-dir", type=Path, default=chooser.DEFAULT_RUNS_DIR)
     parser.add_argument("--json", type=Path, help="also write the figures here")
     args = parser.parse_args(argv)
@@ -140,7 +175,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if summary.get("runs") and summary["runs"] != [run["name"] for run in runs]:
         raise SystemExit(f"❌ {args.chooser} was made over {summary['runs']}, not {args.runs}")
     result = compare(runs, summary)
-    print(render(result), end="")
+    print(render(result), end="")  # noqa: T201 - the report on stdout
     if args.json:
         args.json.write_text(json.dumps(result, indent=2) + "\n")
     return 0
