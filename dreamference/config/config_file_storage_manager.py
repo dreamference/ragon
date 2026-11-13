@@ -8,11 +8,15 @@ import functools
 import importlib
 import json
 import os
+import sys
 import tomllib
 from collections.abc import Iterable
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Final
+
+# A config file with this suffix is read and written as TOML.
+TOML_SUFFIX: Final[str] = ".toml"
 
 
 @functools.cache
@@ -26,6 +30,12 @@ def optional_module(name: str) -> ModuleType | None:
         return importlib.import_module(name)
     except ImportError:
         return None
+
+
+def _say(text: str) -> None:
+    """Writes one line about the config file for the person running Ragon, shown at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
 
 
 class ConfigFileStorageManager:
@@ -45,8 +55,8 @@ class ConfigFileStorageManager:
             return {}
         try:
             return cls.parse_config_file(path)
-        except Exception as e:
-            print(f"⚠️ Error reading Ragon config file ({path}): {e}")
+        except Exception as e:  # noqa: BLE001 - a broken config file falls back to the defaults
+            _say(f"⚠️ Error reading Ragon config file ({path}): {e}")
             return {}
 
     @staticmethod
@@ -82,7 +92,7 @@ class ConfigFileStorageManager:
         # TOML read the first key as "\ufeffkey", so that setting, often the air-gap level, was
         # silently ignored, and make JSON refuse the whole file.
         text = path.read_text(encoding="utf-8-sig")
-        if path.suffix == ".toml":
+        if path.suffix == TOML_SUFFIX:
             loaded = cls._load_toml(text)
         elif path.suffix in (".yaml", ".yml") and (yaml := optional_module("yaml")):
             loaded = yaml.safe_load(text) or {}
@@ -139,7 +149,7 @@ class ConfigFileStorageManager:
             ) as f:
                 if mode is not None:
                     os.fchmod(f.fileno(), mode)
-                if path.suffix == ".toml" and (toml := optional_module("toml")):
+                if path.suffix == TOML_SUFFIX and (toml := optional_module("toml")):
                     toml.dump(data, f)
                 elif path.suffix in (".yaml", ".yml") and (yaml := optional_module("yaml")):
                     yaml.dump(data, f, default_flow_style=False)
