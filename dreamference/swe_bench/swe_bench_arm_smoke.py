@@ -12,6 +12,7 @@ the model is not.
 """
 
 import json
+import sys
 from typing import Any, Final
 
 from dreamference.swe_bench.swe_bench_run_store import SweBenchRunStore
@@ -34,6 +35,16 @@ MODEL_ITEMS: Final[tuple] = (
 )
 # How much of a log line or a note a refusal quotes.
 QUOTE: Final[int] = 300
+# The `ragon exec --json` event types the check reads.
+TURN_COMPLETED: Final[str] = "turn.completed"
+TURN_FAILED: Final[str] = "turn.failed"
+STREAM_ERROR: Final[str] = "error"
+
+
+def _say(text: str) -> None:
+    """Writes one line of the smoke check's verdict for the person running the night, at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
 
 
 class SweBenchArmSmoke:
@@ -41,7 +52,9 @@ class SweBenchArmSmoke:
 
     @classmethod
     def events(cls, log_text: str) -> list[dict[str, Any]]:
-        """Args:
+        """Parses an instance's log into its events.
+
+        Args:
             log_text: An instance's log (`ragon exec --json`'s events, after a first line that is
                 not JSON).
 
@@ -80,7 +93,7 @@ class SweBenchArmSmoke:
                 and item.get("type") in MODEL_ITEMS
             ):
                 return True
-            if kind == "turn.completed":
+            if kind == TURN_COMPLETED:
                 raw_usage = event.get("usage")
                 usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
                 if (usage.get("input_tokens") or 0) > 0 or (usage.get("output_tokens") or 0) > 0:
@@ -114,13 +127,13 @@ class SweBenchArmSmoke:
             )
         events = cls.events(log_text)
         for index, event in enumerate(events):
-            if event.get("type") == "turn.failed":
+            if event.get("type") == TURN_FAILED:
                 raw_error = event.get("error")
                 error: dict[str, Any] = raw_error if isinstance(raw_error, dict) else {}
                 return f"a turn failed: {str(error.get('message') or event)[:QUOTE]}"
             # A stream error the agent retried is followed by a completed turn; one it was not is fatal.
-            if event.get("type") == "error" and not any(
-                later.get("type") == "turn.completed" for later in events[index + 1 :]
+            if event.get("type") == STREAM_ERROR and not any(
+                later.get("type") == TURN_COMPLETED for later in events[index + 1 :]
             ):
                 return (
                     f"the session reported an error: {str(event.get('message') or event)[:QUOTE]}"
@@ -152,10 +165,10 @@ class SweBenchArmSmoke:
         state = store.state(instance_id)
         reason = cls.verdict(state, log_text, run_status)
         if reason or state is None:
-            print(f"❌ Smoke check of arm {arm} ({run}, {instance_id}): {reason}.")
+            _say(f"❌ Smoke check of arm {arm} ({run}, {instance_id}): {reason}.")
             return 1
         stats = store.log_stats(instance_id)
-        print(
+        _say(
             f"✅ Smoke check of arm {arm}: {instance_id} ran ({state.get('status')}, {state.get('wall_s')} s, "
             f"{stats['commands']} command(s), {stats['input_tokens']} input tokens); run {run}."
         )
