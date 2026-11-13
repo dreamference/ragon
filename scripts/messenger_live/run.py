@@ -44,11 +44,27 @@ from mlive import (
 NOTIFY = Path.home() / ".local" / "bin" / "owner-notify"
 UNIT = "ragon-messenger-live"
 AFTER_MERGE = f"{UNIT}-after-merge"
+# The subcommands (see main()).
+LINK_TELEGRAM = "link-telegram"
+LINK_SIGNAL = "link-signal"
+INSTALL_TIMER = "install-timer"
+AFTER_MERGE_COMMAND = "after-merge"
+# What gate.update_marker() answers when the release marker did not change.
+MARKER_KEPT = "kept"
+
+
+def _say(text: str) -> None:
+    """Writes one line to the terminal or the unit's journal, at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
 
 
 def unit_files(run_sh: Path, when: str = "18:00") -> dict[str, str]:
-    """The user units: the suite's oneshot service and its nightly timer (`when` is UTC), and the
-    after-merge check's service and its quarter-hourly timer, which starts the suite's service."""
+    """The user units: the suite's service and timer, and the after-merge check's pair.
+
+    The suite's oneshot service runs nightly by its timer (`when` is UTC); the after-merge check's
+    service runs from its quarter-hourly timer and starts the suite's service.
+    """
     service = f"""[Unit]
 Description=Ragon's live messenger test (Telegram and Signal; scripts/messenger_live)
 After=network-online.target
@@ -107,7 +123,7 @@ def install_timer() -> int:
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     for unit in (UNIT, AFTER_MERGE):
         subprocess.run(["systemctl", "--user", "enable", "--now", f"{unit}.timer"], check=True)
-    print(f"✅ {UNIT}.timer: nightly at 18:00 UTC; {AFTER_MERGE}.timer: every quarter hour")
+    _say(f"✅ {UNIT}.timer: nightly at 18:00 UTC; {AFTER_MERGE}.timer: every quarter hour")
     return 0
 
 
@@ -141,7 +157,7 @@ def link_telegram(qr: Path, minutes: float, password_at_terminal: bool) -> int:
     ask = None
     if password_at_terminal:
         if not sys.stdin.isatty():
-            print("❌ --password-at-terminal asks at a terminal; run it in one")
+            _say("❌ --password-at-terminal asks at a terminal; run it in one")
             return 2
 
         def ask(hint: str) -> str:
@@ -151,10 +167,10 @@ def link_telegram(qr: Path, minutes: float, password_at_terminal: bool) -> int:
     try:
         client, _me = telegram_account.open_session(qr, minutes * 60, ask)
     except telegram_account.NeedsOwner as err:
-        print(f"❌ {err}")
+        _say(f"❌ {err}")
         return 2
     client.close()
-    print("✅ Telegram: the harness's device is linked")
+    _say("✅ Telegram: the harness's device is linked")
     return 0
 
 
@@ -162,14 +178,14 @@ def link_signal(qr: Path, minutes: float) -> int:
     """Links the harness's signal-cli device to the owner's account through a QR code PNG."""
     data = paths.private_dir(paths.signal_dir())
     if signal_device.own_number(data):
-        print("✅ Signal: the harness's device is already linked")
+        _say("✅ Signal: the harness's device is already linked")
         return 0
     try:
         signal_device.link(data, qr, minutes)
     except telegram_account.NeedsOwner as err:
-        print(f"❌ {err}")
+        _say(f"❌ {err}")
         return 2
-    print("✅ Signal: the harness's device is linked")
+    _say("✅ Signal: the harness's device is linked")
     return 0
 
 
@@ -270,13 +286,13 @@ def run_suite(
     if only in (None, "signal"):
         run_signal(run, cache, queue_night, (reports / f"{stamp}-signal.jsonl") if debug else None)
     json_path, md_path = report.write(run, reports)
-    print(md_path.read_text())
-    print(f"Reports: {json_path} {md_path}")
+    _say(md_path.read_text())
+    _say(f"Reports: {json_path} {md_path}")
     code = run.exit_code()
     failed = [f"{r.messenger}: {r.check}" for r in run.alerts()]
     marker = gate.update_marker(code, md_path, failed, run.build)
-    if marker != "kept":
-        print(f"Release marker {gate.marker_path()}: {marker}")
+    if marker != MARKER_KEPT:
+        _say(f"Release marker {gate.marker_path()}: {marker}")
     if send_notice and code != 0:
         notify(run, md_path)
     return code
@@ -286,13 +302,13 @@ def main() -> int:
     """Parses the command line and runs the chosen step."""
     parser = argparse.ArgumentParser(description="The live messenger suite (Telegram and Signal).")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("link-telegram", "link-signal"):
+    for name in (LINK_TELEGRAM, LINK_SIGNAL):
         link = sub.add_parser(
             name, help=f"link the harness's device ({name.split('-')[1]}) by QR code"
         )
         link.add_argument("--qr", type=Path, required=True)
         link.add_argument("--minutes", type=float, default=30)
-        if name == "link-telegram":
+        if name == LINK_TELEGRAM:
             link.add_argument(
                 "--password-at-terminal",
                 action="store_true",
@@ -319,19 +335,20 @@ def main() -> int:
         help="keep the bridge's Note to Self messages the harness saw",
     )
     sub.add_parser(
-        "install-timer", help="install the nightly user timer (18:00 UTC) and the after-merge one"
+        INSTALL_TIMER, help="install the nightly user timer (18:00 UTC) and the after-merge one"
     )
     sub.add_parser(
-        "after-merge", help="run the suite if origin/main changed the bridges and it is installed"
+        AFTER_MERGE_COMMAND,
+        help="run the suite if origin/main changed the bridges and it is installed",
     )
     args = parser.parse_args()
-    if args.command == "install-timer":
+    if args.command == INSTALL_TIMER:
         return install_timer()
-    if args.command == "after-merge":
+    if args.command == AFTER_MERGE_COMMAND:
         return after_merge()
-    if args.command == "link-telegram":
+    if args.command == LINK_TELEGRAM:
         return link_telegram(args.qr, args.minutes, args.password_at_terminal)
-    if args.command == "link-signal":
+    if args.command == LINK_SIGNAL:
         return link_signal(args.qr, args.minutes)
     return run_suite(args.only, args.take_over, args.signal_night_queue, args.notify, args.debug)
 
