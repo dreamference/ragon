@@ -6,6 +6,7 @@ and computing cosine similarity. Designed for GB10 unified memory (loads
 """
 
 import importlib
+import sys
 from typing import TYPE_CHECKING, Any, Final, Optional
 
 import numpy as np
@@ -81,11 +82,11 @@ class EmbeddingCalculator:
                     device=EMBEDDING_DEVICE,
                 )
                 cls._model.max_seq_length = MAX_SEQUENCE_TOKENS
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - any load failure means keyword-only search
                 cls._unavailable = True
-                print(
+                sys.stdout.write(
                     f"⚠️  Embedding model {EMBEDDING_MODEL} is unavailable ({type(error).__name__}); "
-                    "searching by keyword only."
+                    "searching by keyword only.\n"
                 )
         return cls._model
 

@@ -85,27 +85,25 @@ class SQLiteContextStorage:
             Dict[str, float]: Map of relative file paths to FTS search scores.
         """
         file_scores: dict[str, float] = {}
-        if self.db_path.exists():
-            try:
-                conn = sqlite3.connect(self.db_path)
-                conn.execute("PRAGMA mmap_size = 2147483648;")
-                clean_query = " OR ".join([f'"{t}"' for t in query_tokens if t.isalnum()])
-                if clean_query:
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        "SELECT rel_path, rank FROM fts_context WHERE fts_context MATCH ? ORDER BY rank LIMIT ?",
-                        (clean_query, top_k * 2),
-                    )
-                    for row in cursor.fetchall():
-                        r_path, rank = row[0], abs(row[1])
-                        # FTS5's rank is bm25 negated, so its magnitude already grows with relevance;
-                        # mapped into [0, 2). (It was inverted, which scored the strongest match lowest.)
-                        file_scores[r_path] = (
-                            file_scores.get(r_path, 0.0) + (rank / (rank + 1.0)) * 2.0
-                        )
-                conn.close()
-            except Exception:
-                pass
+        if not self.db_path.exists():
+            return file_scores
+        # Keyword scores are best effort: a missing or damaged FTS table gives none.
+        with contextlib.suppress(Exception):
+            conn = sqlite3.connect(self.db_path)
+            conn.execute("PRAGMA mmap_size = 2147483648;")
+            clean_query = " OR ".join([f'"{t}"' for t in query_tokens if t.isalnum()])
+            if clean_query:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT rel_path, rank FROM fts_context WHERE fts_context MATCH ? ORDER BY rank LIMIT ?",
+                    (clean_query, top_k * 2),
+                )
+                for row in cursor.fetchall():
+                    r_path, rank = row[0], abs(row[1])
+                    # FTS5's rank is bm25 negated, so its magnitude already grows with relevance;
+                    # mapped into [0, 2). (It was inverted, which scored the strongest match lowest.)
+                    file_scores[r_path] = file_scores.get(r_path, 0.0) + (rank / (rank + 1.0)) * 2.0
+            conn.close()
         return file_scores
 
     def store_embeddings(self, file_to_embedding: dict[str, np.ndarray]) -> None:
