@@ -35,6 +35,17 @@ IDE_APPLY_DIFF: Final[str] = "ide_apply_diff"
 WEB_SEARCH: Final[str] = "web_search"
 WEB_FETCH: Final[str] = "web_fetch"
 WORKSPACE_SEARCH_CODE: Final[str] = "workspace_search_code"
+
+# The tools answered from the shared IDE state, without a worker thread.
+IDE_TOOLS: Final[frozenset[str]] = frozenset(
+    {
+        IDE_GET_ACTIVE_EDITOR,
+        IDE_GET_DIAGNOSTICS,
+        IDE_GET_OPEN_FILES,
+        IDE_OPEN_FILE,
+        IDE_APPLY_DIFF,
+    }
+)
 JSON_ID_KEY: Final[str] = "id"
 
 
@@ -122,16 +133,9 @@ class MCPServer:
         """Synchronous wrapper around handle_request_async for backward compatibility."""
         return asyncio.run(self.handle_request_async(request))
 
-    async def execute_tool_async(self, tool_name: str, args: dict[str, Any]) -> object:
-        """Executes requested MCP tool asynchronously.
-
-        Args:
-            tool_name (str): Tool identifier string.
-            args (Dict[str, Any]): Tool arguments dictionary.
-
-        Returns:
-            Any: Tool response data structure.
-        """
+    @staticmethod
+    def _ide_tool(tool_name: str, args: dict[str, Any]) -> object:
+        """Answers one of IDE_TOOLS from the shared IDE state."""
         if tool_name == IDE_GET_ACTIVE_EDITOR:
             return {
                 "active_file": global_ide_state.active_file or "No active file",
@@ -156,15 +160,27 @@ class MCPServer:
             global_ide_state.set_active_editor(path, line, col)
             return {"status": "success", "message": f"Opened {path} at line {line}:{col}"}
 
-        if tool_name == IDE_APPLY_DIFF:
-            diff_path: str = str(args.get("file_path", ""))
-            # Nothing here writes files, and no IDE companion applies the diff. This used to answer
-            # "success", so an agent carried on as though an edit had landed that never did.
-            return {
-                "status": "not_applied",
-                "message": f"No IDE companion is connected to apply diffs; {diff_path} is unchanged. "
-                "Edit the file directly.",
-            }
+        diff_path: str = str(args.get("file_path", ""))
+        # Nothing here writes files, and no IDE companion applies the diff. This used to answer
+        # "success", so an agent carried on as though an edit had landed that never did.
+        return {
+            "status": "not_applied",
+            "message": f"No IDE companion is connected to apply diffs; {diff_path} is unchanged. "
+            "Edit the file directly.",
+        }
+
+    async def execute_tool_async(self, tool_name: str, args: dict[str, Any]) -> object:
+        """Executes requested MCP tool asynchronously.
+
+        Args:
+            tool_name (str): Tool identifier string.
+            args (Dict[str, Any]): Tool arguments dictionary.
+
+        Returns:
+            Any: Tool response data structure.
+        """
+        if tool_name in IDE_TOOLS:
+            return self._ide_tool(tool_name, args)
 
         if tool_name == WEB_SEARCH:
             # requests is blocking, so it goes to a worker thread like the code search below;
@@ -253,7 +269,7 @@ class MCPServer:
             is_notification = isinstance(req, dict) and JSON_ID_KEY not in req
             try:
                 resp = await self.handle_request_async(req)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - any failure is answered as an internal error carrying the request's id
                 # Carries the request's id: a failing tool used to be reported as a parse error
                 # with no id, so the client waited for an answer that never came.
                 resp = {
