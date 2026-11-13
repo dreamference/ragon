@@ -14,6 +14,7 @@ import json
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -34,6 +35,22 @@ ANSWER_TIMEOUT: Final = 300.0
 QUIET: Final = 20.0
 STREAM_WINDOW: Final = 45.0
 WORKING: Final = "Working on it…"
+# JSON-RPC: the answer's fields, and the method signal-cli pushes a received message with.
+RPC_ID: Final = "id"
+RPC_ERROR: Final = "error"
+RECEIVE: Final = "receive"
+# This suite's messenger, as the report names it.
+MESSENGER: Final = "signal"
+# checks.leftover_markdown()'s name for a table rule, which Signal shows as text on purpose.
+TABLE_RULE: Final = "table rule"
+# A note longer than this, not "Working…" and never edited, is a finished answer.
+LONG_ANSWER: Final = 200
+# A streamed answer grows at least this many times.
+MIN_GROWTHS: Final = 3
+# Words the Night Shift and Unix steps look for in the bridge's messages.
+NIGHT_SHIFT: Final = "Night Shift"
+REPLY_WORD: Final = "Reply"
+UNIX_WORD: Final = "unix"
 
 
 @dataclass
@@ -97,11 +114,11 @@ class SignalRpc:
                 value = json.loads(line)
             except ValueError:
                 continue
-            if "id" in value:
+            if RPC_ID in value:
                 with self.lock:
-                    self.answers[str(value["id"])] = value
+                    self.answers[str(value[RPC_ID])] = value
                 continue
-            if value.get("method") != "receive":
+            if value.get("method") != RECEIVE:
                 continue
             envelope = (value.get("params") or {}).get("envelope") or {}
             kept = signal_device.note_to_self(envelope, self.number)
@@ -129,7 +146,8 @@ class SignalRpc:
             if note.answered_at is None and text and text != WORKING:
                 note.answered_at = now
 
-    def request(self, method: str, params: dict[str, Any], timeout: float = 60.0) -> Any:
+    # A JSON-RPC result has any shape.
+    def request(self, method: str, params: dict[str, Any], timeout: float = 60.0) -> Any:  # noqa: ANN401
         """Calls a JSON-RPC method and returns its result.
 
         Raises:
@@ -148,8 +166,10 @@ class SignalRpc:
             with self.lock:
                 answer = self.answers.pop(ident, None)
             if answer is not None:
-                if "error" in answer:
-                    raise RuntimeError(f"signal-cli {method}: {answer['error'].get('message', '')}")
+                if RPC_ERROR in answer:
+                    raise RuntimeError(
+                        f"signal-cli {method}: {answer[RPC_ERROR].get('message', '')}"
+                    )
                 return answer.get("result")
             time.sleep(0.1)
         raise RuntimeError(f"signal-cli did not answer {method}")
@@ -185,7 +205,7 @@ class SignalRpc:
         times = [max([note.at, *note.edits]) for note in self.since(after)]
         return max(times, default=after)
 
-    def wait(self, predicate: Any, timeout: float) -> bool:
+    def wait(self, predicate: Callable[[], bool], timeout: float) -> bool:
         """Waits until `predicate()` holds or `timeout` passes."""
         deadline = time.monotonic() + timeout
         while not predicate():
@@ -253,13 +273,13 @@ class SignalSuite:
         began: float,
         detail: str,
         latency: float | None = None,
-        **data: Any,
+        **data: object,
     ) -> Result:
         """Records one check (`ok` None means "observed")."""
         status = "observed" if ok is None else ("pass" if ok else "fail")
         return self.run.add(
             Result(
-                "signal",
+                MESSENGER,
                 check,
                 severity,
                 status,
@@ -307,7 +327,7 @@ class SignalSuite:
             return
         styles = set().union(*[checks.signal_styles(n.styles) for n in notes]) if notes else set()
         # Tables become monospace lines by design (format.rs); only bold and fences must not stay.
-        leftover = [mark for mark in checks.leftover_markdown(text) if mark != "table rule"]
+        leftover = [mark for mark in checks.leftover_markdown(text) if mark != TABLE_RULE]
         problems = []
         if not text:
             problems.append("no answer")
@@ -340,7 +360,7 @@ class SignalSuite:
 
         def finished() -> bool:
             return any(
-                len(n.text) > 200 and not n.text.startswith("Working") and not n.edits
+                len(n.text) > LONG_ANSWER and not n.text.startswith("Working") and not n.edits
                 for n in self.rpc.since(at)
             ) or any(
                 checks.stopped(n.text) or n.text.startswith("This is taking")
@@ -356,7 +376,7 @@ class SignalSuite:
             for n in self.rpc.since(at)
             if n.answered_at is not None and not n.text.startswith("Working")
         ]
-        streams = bool(answer_words) and grown >= 3
+        streams = bool(answer_words) and grown >= MIN_GROWTHS
         self.result(
             "long answer streams",
             "bridge",
@@ -369,7 +389,7 @@ class SignalSuite:
         if finished():
             self.run.add(
                 Result(
-                    "signal",
+                    MESSENGER,
                     "/stop ends the answer",
                     "bridge",
                     "skip",
@@ -442,9 +462,9 @@ class SignalSuite:
         """`/night add`: NO cancels; a second add queues it only when allowed (the owner's real queue)."""
         began = time.monotonic()
         at = self.rpc.send(f"/night add {PREFIX} phase 0 probe")
-        asked = self.rpc.wait(lambda: any("Night Shift" in n.text for n in self.rpc.since(at)), 90)
-        prompt = next((n.text for n in self.rpc.since(at) if "Night Shift" in n.text), "")
-        if not asked or "Reply" not in prompt:
+        asked = self.rpc.wait(lambda: any(NIGHT_SHIFT in n.text for n in self.rpc.since(at)), 90)
+        prompt = next((n.text for n in self.rpc.since(at) if NIGHT_SHIFT in n.text), "")
+        if not asked or REPLY_WORD not in prompt:
             self.result(
                 "/night add: NO cancels",
                 "bridge",
@@ -474,7 +494,7 @@ class SignalSuite:
         if not self.queue_night:
             self.run.add(
                 Result(
-                    "signal",
+                    MESSENGER,
                     "/night add: queue",
                     "info",
                     "skip",
@@ -494,7 +514,7 @@ class SignalSuite:
             problems.append("asked a clarifying question")
         if checks.mentions_attachment(text):
             problems.append("talked of an attachment")
-        if "unix" not in text.lower():
+        if UNIX_WORD not in text.lower():
             problems.append("did not read it as Unix")
         self.result(
             "typo answered on its best reading",
@@ -564,12 +584,14 @@ class SignalSuite:
                 )
         self.new_thread()
         latencies = [
-            r.latency for r in self.run.results if r.messenger == "signal" and r.latency is not None
+            r.latency
+            for r in self.run.results
+            if r.messenger == MESSENGER and r.latency is not None
         ]
         middle = checks.median(latencies)
         self.run.add(
             Result(
-                "signal",
+                MESSENGER,
                 "first-reply latency",
                 "info",
                 "observed",
