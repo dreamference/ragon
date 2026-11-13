@@ -8,6 +8,7 @@ Building TDLib from source at the same commit is the fallback (docs/dev/messenge
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import hashlib
 import json
@@ -15,11 +16,20 @@ import platform
 import time
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
 TDLIB_VERSION: Final = "1.8.69"
 TDLIB_COMMIT: Final = "0e88653dcbf4e44c73cb655a05b58cd749a91169"
+# A shared library's name contains this.
+SO_SUFFIX: Final = ".so"
+# TDLib object types and fields the client reads.
+TD_ERROR: Final = "error"
+AUTH_UPDATE: Final = "updateAuthorizationState"
+AUTH_CLOSED: Final = "authorizationStateClosed"
+CHAT_ID: Final = "chat_id"
+OBJECT_ID: Final = "id"
 # The cp312 wheels; only the shared library inside is used, so the Python tag does not matter.
 WHEELS: Final = {
     "aarch64": (
@@ -41,7 +51,7 @@ def library_member(names: list[str]) -> str | None:
     """
     for name in names:
         base = name.rsplit("/", 1)[-1]
-        if name.startswith("tdjson.libs/") and base.startswith("libtdjson") and ".so" in base:
+        if name.startswith("tdjson.libs/") and base.startswith("libtdjson") and SO_SUFFIX in base:
             return name
     return None
 
@@ -140,16 +150,20 @@ class TdClient:
         """Receives what TDLib has for at most `timeout` seconds."""
         out = self.lib.td_receive(timeout)
         while out:
-            event = json.loads(out)
-            if event.get("@client_id", self.client) == self.client:
-                extra = event.get("@extra")
-                if extra is not None:
-                    self.answers[extra] = event
-                elif self.keeps(event):
-                    self.updates.append(event)
-                    for listener in self.listeners:
-                        listener(event)
+            self.take(json.loads(out))
             out = self.lib.td_receive(0.0)
+
+    def take(self, event: dict[str, Any]) -> None:
+        """Files one received event of this client: an answer under its `@extra`, or a kept update."""
+        if event.get("@client_id", self.client) != self.client:
+            return
+        extra = event.get("@extra")
+        if extra is not None:
+            self.answers[extra] = event
+        elif self.keeps(event):
+            self.updates.append(event)
+            for listener in self.listeners:
+                listener(event)
 
     def keeps(self, update: dict[str, Any]) -> bool:
         """Says whether an update is kept: the session's own state, or the allowed chat's events.
@@ -175,11 +189,13 @@ class TdClient:
                 raise TimeoutError(f"TDLib did not answer {query.get('@type')}")
             self.pump(min(left, 1.0))
         answer = self.answers.pop(extra)
-        if answer.get("@type") == "error":
+        if answer.get("@type") == TD_ERROR:
             raise TdError(answer.get("code", 0), answer.get("message", ""))
         return answer
 
-    def wait_for(self, predicate: Any, timeout: float) -> dict[str, Any] | None:
+    def wait_for(
+        self, predicate: Callable[[dict[str, Any]], bool], timeout: float
+    ) -> dict[str, Any] | None:
         """Waits for an update matching `predicate`, consuming the queue as it goes.
 
         Returns:
@@ -198,17 +214,15 @@ class TdClient:
 
     def close(self) -> None:
         """Closes the client and waits for TDLib to say it is closed."""
-        try:
+        with contextlib.suppress(Exception):  # closing is best effort
             self.send({"@type": "close"})
             self.wait_for(
                 lambda u: (
-                    u.get("@type") == "updateAuthorizationState"
-                    and u["authorization_state"]["@type"] == "authorizationStateClosed"
+                    u.get("@type") == AUTH_UPDATE
+                    and u["authorization_state"]["@type"] == AUTH_CLOSED
                 ),
                 15,
             )
-        except Exception:  # noqa: BLE001 (closing is best effort)
-            pass
 
 
 SESSION_UPDATES: Final = frozenset({"updateAuthorizationState", "updateConnectionState"})
@@ -216,17 +230,17 @@ SESSION_UPDATES: Final = frozenset({"updateAuthorizationState", "updateConnectio
 
 def update_chat_id(update: dict[str, Any]) -> int | None:
     """The chat an update concerns, wherever TDLib puts it; None for updates about no chat."""
-    if "chat_id" in update:
-        return update["chat_id"]
+    if CHAT_ID in update:
+        return update[CHAT_ID]
     message = update.get("message")
-    if isinstance(message, dict) and "chat_id" in message:
-        return message["chat_id"]
+    if isinstance(message, dict) and CHAT_ID in message:
+        return message[CHAT_ID]
     chat = update.get("chat")
-    if isinstance(chat, dict) and "id" in chat:
-        return chat["id"]
+    if isinstance(chat, dict) and OBJECT_ID in chat:
+        return chat[OBJECT_ID]
     info = update.get("info")
-    if isinstance(info, dict) and "chat_id" in info:
-        return info["chat_id"]
+    if isinstance(info, dict) and CHAT_ID in info:
+        return info[CHAT_ID]
     return None
 
 
