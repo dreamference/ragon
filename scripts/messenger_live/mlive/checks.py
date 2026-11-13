@@ -35,6 +35,29 @@ ATTACHMENT: Final = (
     "no image",
 )
 STOPPED_MARK: Final = "(stopped)"
+# TDLib object types (the `@type` field) the judgements read.
+MESSAGE_TEXT: Final = "messageText"
+RICH_MESSAGE: Final = "messageRichMessage"
+RICH_TEXT_PLAIN: Final = "richTextPlain"
+INLINE_KEYBOARD: Final = "replyMarkupInlineKeyboard"
+BLOCK_TABLE: Final = "pageBlockTable"
+BLOCK_LIST: Final = "pageBlockList"
+BLOCK_LIST_ITEM: Final = "pageBlockListItem"
+BLOCK_PREFORMATTED: Final = "pageBlockPreformatted"
+PRE_CODE: Final = "textEntityTypePreCode"
+# Separates a link's scheme from the rest.
+SCHEME_SEPARATOR: Final = ":"
+# A reply shorter than this that ends in a question mark counts as a clarifying question.
+SHORT_QUESTION: Final = 400
+# The notice a bridge sends after Stop when the answer had no words yet.
+STOPPED_NOTICE: Final = "Stopped."
+# A Markdown code fence left in the text.
+FENCE: Final = "```"
+# Ragon's own web tools, as they appear in a command line.
+RAGON_SEARCH: Final = "ragon-search"
+RAGON_FETCH: Final = "ragon-fetch"
+# Draft lengths up to this many characters are placeholders, not text.
+PLACEHOLDER_MAX: Final = 20
 
 
 def strip_mark(text: str) -> str:
@@ -42,7 +65,7 @@ def strip_mark(text: str) -> str:
     return text.removeprefix("🐦").lstrip()
 
 
-def walk(value: Any) -> Iterator[dict[str, Any]]:
+def walk(value: object) -> Iterator[dict[str, Any]]:
     """Every TDLib object inside `value`, depth first."""
     if isinstance(value, dict):
         yield value
@@ -56,14 +79,14 @@ def walk(value: Any) -> Iterator[dict[str, Any]]:
 def plain_text(content: dict[str, Any]) -> str:
     """The readable text of a message's content: `messageText`'s text, or a rich message's words."""
     kind = content.get("@type")
-    if kind == "messageText":
+    if kind == MESSAGE_TEXT:
         return content.get("text", {}).get("text", "")
     if kind in ("messageVoiceNote", "messageDocument", "messagePhoto"):
         return content.get("caption", {}).get("text", "")
     words = [
         obj["text"]
         for obj in walk(content)
-        if obj.get("@type") == "richTextPlain" and isinstance(obj.get("text"), str)
+        if obj.get("@type") == RICH_TEXT_PLAIN and isinstance(obj.get("text"), str)
     ]
     return " ".join(words)
 
@@ -85,7 +108,9 @@ def dangerous_links(content: dict[str, Any]) -> list[str]:
     """Link targets with a scheme other than http, https, mailto or tg."""
     bad = []
     for url in links(content):
-        scheme = url.split(":", 1)[0].strip().lower() if ":" in url else ""
+        scheme = (
+            url.split(SCHEME_SEPARATOR, 1)[0].strip().lower() if SCHEME_SEPARATOR in url else ""
+        )
         if scheme not in ("http", "https", "mailto", "tg"):
             bad.append(url)
     return bad
@@ -94,7 +119,7 @@ def dangerous_links(content: dict[str, Any]) -> list[str]:
 def inline_buttons(message: dict[str, Any]) -> list[dict[str, Any]]:
     """The inline keyboard's buttons of a message (none when it has no inline keyboard)."""
     markup = message.get("reply_markup") or {}
-    if markup.get("@type") != "replyMarkupInlineKeyboard":
+    if markup.get("@type") != INLINE_KEYBOARD:
         return []
     return [button for row in markup.get("rows", []) for button in row]
 
@@ -102,12 +127,10 @@ def inline_buttons(message: dict[str, Any]) -> list[dict[str, Any]]:
 def rich_features(content: dict[str, Any]) -> dict[str, Any]:
     """What a rich message is built from: table, nested list, code languages, links, block count."""
     blocks = (
-        content.get("message", {}).get("blocks", [])
-        if content.get("@type") == "messageRichMessage"
-        else []
+        content.get("message", {}).get("blocks", []) if content.get("@type") == RICH_MESSAGE else []
     )
     features: dict[str, Any] = {
-        "rich": content.get("@type") == "messageRichMessage",
+        "rich": content.get("@type") == RICH_MESSAGE,
         "blocks": len(blocks),
         "table": False,
         "list": False,
@@ -117,20 +140,20 @@ def rich_features(content: dict[str, Any]) -> dict[str, Any]:
     }
     for obj in walk(blocks):
         kind = obj.get("@type")
-        if kind == "pageBlockTable":
+        if kind == BLOCK_TABLE:
             features["table"] = True
-        elif kind == "pageBlockList":
+        elif kind == BLOCK_LIST:
             features["list"] = True
-        elif kind == "pageBlockListItem" and any(
-            inner.get("@type") == "pageBlockList" for inner in walk(obj.get("blocks", []))
+        elif kind == BLOCK_LIST_ITEM and any(
+            inner.get("@type") == BLOCK_LIST for inner in walk(obj.get("blocks", []))
         ):
             features["nested_list"] = True
-        elif kind == "pageBlockPreformatted":
+        elif kind == BLOCK_PREFORMATTED:
             features["code"].append(obj.get("language", ""))
-    if content.get("@type") == "messageText":
+    if content.get("@type") == MESSAGE_TEXT:
         for entity in content.get("text", {}).get("entities", []):
             entity_type = entity.get("type", {})
-            if entity_type.get("@type") == "textEntityTypePreCode":
+            if entity_type.get("@type") == PRE_CODE:
                 features["code"].append(entity_type.get("language", ""))
     return features
 
@@ -141,7 +164,7 @@ def clarifying_question(text: str) -> bool:
     if any(phrase in lower for phrase in CLARIFYING):
         return True
     stripped = lower.rstrip()
-    return len(stripped) < 400 and stripped.endswith("?")
+    return len(stripped) < SHORT_QUESTION and stripped.endswith("?")
 
 
 def mentions_attachment(text: str) -> bool:
@@ -161,8 +184,10 @@ def stopped(text: str) -> bool:
 
 
 def stop_kept(texts: list[str], wrote: bool) -> tuple[bool, str]:
-    """Judges what a bridge sent after Stop: the partial marked "(stopped)" when the answer had
-    words, else the "Stopped." notice (the bridges send no empty partial).
+    """Judges what a bridge sent after Stop.
+
+    Right is the partial marked "(stopped)" when the answer had words, else the "Stopped." notice
+    (the bridges send no empty partial).
 
     Args:
         texts: The bridge's messages since the question.
@@ -175,7 +200,7 @@ def stop_kept(texts: list[str], wrote: bool) -> tuple[bool, str]:
         return True, "partial kept as (stopped)"
     if wrote:
         return False, "no message ending (stopped) although the answer had words"
-    if any(text.strip().lstrip("\N{BIRD}").strip() == "Stopped." for text in texts):
+    if any(text.strip().lstrip("\N{BIRD}").strip() == STOPPED_NOTICE for text in texts):
         return True, "nothing written before Stop: the Stopped. notice"
     return False, "no message ending (stopped) and no Stopped. notice"
 
@@ -197,8 +222,8 @@ def leftover_markdown(text: str) -> list[str]:
     found = []
     if re.search(r"\*\*[^*\n]+\*\*", text):
         found.append("**")
-    if "```" in text:
-        found.append("```")
+    if FENCE in text:
+        found.append(FENCE)
     if re.search(r"^\s*\|?\s*:?-{3,}:?\s*\|", text, re.MULTILINE):
         found.append("table rule")
     return found
@@ -211,14 +236,14 @@ def uses_curl(commands: list[str]) -> bool:
 
 def uses_ragon_search(commands: list[str]) -> bool:
     """Says whether any of the agent's commands ran `ragon-search` or `ragon-fetch`."""
-    return any("ragon-search" in command or "ragon-fetch" in command for command in commands)
+    return any(RAGON_SEARCH in command or RAGON_FETCH in command for command in commands)
 
 
 def growth(lengths: list[int]) -> list[int]:
     """The successive draft lengths at which a draft's text grew (placeholders of 20 characters or fewer left out)."""
     grown: list[int] = []
     for length in lengths:
-        if length > 20 and (not grown or length > grown[-1]):
+        if length > PLACEHOLDER_MAX and (not grown or length > grown[-1]):
             grown.append(length)
     return grown
 
