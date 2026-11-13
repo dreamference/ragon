@@ -18,12 +18,18 @@ import subprocess
 import threading
 import time
 import urllib.request
+from http import HTTPStatus
 from pathlib import Path
 from typing import Final
 
 from .paths import cache_dir, config_dir, private_dir
 
 WEB_PORT: Final = 3102
+# The argv words of a running `ragon chat serve`, the bridge this run looks for.
+CHAT_WORD: Final = b"chat"
+SERVE_WORD: Final = b"serve"
+# Splits one NAME=value entry of /proc/<pid>/environ.
+ENV_SEPARATOR: Final = "="
 RAGON: Final = Path.home() / ".local" / "bin" / "ragon"
 USER_CONFIG: Final = """[chat]
 telegram_rich = true
@@ -74,18 +80,16 @@ def bridges_with_token(token: str, own_home: Path) -> list[int]:
             continue
         try:
             argv = (entry / "cmdline").read_bytes().split(b"\0")
-            if b"chat" not in argv or b"serve" not in argv or not argv[0].endswith(b"ragon"):
+            if CHAT_WORD not in argv or SERVE_WORD not in argv or not argv[0].endswith(b"ragon"):
                 continue
             env = dict(
-                item.split("=", 1)
+                item.split(ENV_SEPARATOR, 1)
                 for item in (entry / "environ").read_bytes().decode(errors="replace").split("\0")
-                if "=" in item
+                if ENV_SEPARATOR in item
             )
         except OSError:
             continue
-        codex_home = Path(
-            env.get("CODEX_HOME") or Path(env.get("HOME", "/nonexistent")) / ".ragon"
-        )
+        codex_home = Path(env.get("CODEX_HOME") or Path(env.get("HOME", "/nonexistent")) / ".ragon")
         if codex_home == own_home / ".ragon":
             continue
         try:
@@ -192,7 +196,7 @@ class ScratchBridge:
                 f"http://127.0.0.1:{WEB_PORT}/healthz", headers={"Authorization": f"Bearer {token}"}
             )
             with urllib.request.urlopen(request, timeout=5) as response:
-                return response.status == 200
+                return response.status == HTTPStatus.OK
         except OSError:
             return False
 
