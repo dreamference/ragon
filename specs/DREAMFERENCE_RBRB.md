@@ -152,6 +152,7 @@ With fewer than 20, the band is **undecided**, and an undecided band acts as a f
 - The **control limit** is the upper 95 % limit of the rework rates of 2,000 random samples of other commits, each sample the size of Ragon's commit count in the window, drawn with a fixed seed.[^spiegelhalter]
 - Condition 4 fails when Ragon's rework rate is above the control limit. A limit at 95 % means about one false failure in twenty windows, and it is a test of the difference from the other side, not of a fixed threshold.
 - The rate counts lines that were changed, deleted or moved later by anyone; it is a signal of churn, not a verdict on any one commit. It is shown for both groups (§7.1), and the four newest weeks are provisional, as the revert rates are (§2.5).[^gitclear][^metr][^cursor]
+- **Strata (C2, adopted 2026-11-13).** The comparison is made within strata, so that Ragon's small, mechanical work is not set against everyone's large changes. A commit's stratum is its **path class** (`docs`, `tests`, `code`, `other`, by where its changed lines sit; the class of most lines wins) and its **size** (added lines: up to 20, 21 to 200, over 200). The control limit is drawn per stratum with the same seed, from other commits of that stratum, and Ragon's rate is compared to the pooled limit of its own strata mix. A stratum with no other commits is dropped from both sides.
 - It needs one blame pass per week in `scripts/rbrb.py`, uses git only, and is deterministic.
 
 ---
@@ -302,6 +303,8 @@ Every rule of this section holds only while the quality band (§2.8) is not `fai
 | `tests` | A new test or a test for a found bug, in the `task` tool's test class (`T2`, which may not delete an assertion without replacing it) | Phase 1 |
 | `code` | A change of behaviour with a named test that fails before and passes after | Phase 2 |
 | `feature` | A feature from a spec, split into tasks that each meet the bound | Phase 3 |
+
+**Every eligible row is attempted (C10, adopted 2026-11-13).** Once a kind is open in the current phase, every task of that kind that is not on the list below is tried as a Ragon task first. The coordinator may not skip an eligible row for being hard or likely to fail: a failed attempt is a fallback (§5.4) and counts as one, and choosing only easy rows would inflate the acceptance rate.
 
 **Never routed to Ragon first, in any phase:**
 - security fixes;
@@ -610,7 +613,8 @@ It is a deny-list check before review. It takes CI and test-configuration work o
    - The weekly points may jump, and the eight-week window is what the ratchet reads.
 5. **The spread.** The same change costs different numbers of tokens on different days: retries, longer contexts, a cold cache. No single week is evidence of a trend, and only a run of weeks is.
 6. **What else it leaves out.** It does not measure the design work, the briefs, or the review effort that others spend on Ragon's diffs. The review effort is counted on the other side, which is fair to Ragon.
-7. **Engine commits.** The commit and surviving-line shares count this repository only. The engine's tokens are in the token shares (open question 3).
+7. **The model's training cutoff (C15, adopted 2026-11-13).** Ragon's model knows nothing after its training cutoff, and the other models know more recent things. Work that needs newer knowledge (a library release, an API) goes with the web tools or fails more often. Each point's `notes` names the cutoff of the model that served the week, and a change of model is read like a version change (`ragon_version_changed`, §7.1).
+8. **Engine commits.** The commit and surviving-line shares count this repository only. The engine's tokens are in the token shares (open question 3).
 
 ---
 
@@ -622,7 +626,7 @@ The phases have no dates. Each phase is entered only when its criteria hold. Whe
 |---|---|---|
 | **0: instrumentation** | This spec is on `main` | Everything in §3–§7 is built: <ul><li>`--ragon-tokens`;</li><li>the land queue's refusal of a commit without it;</li><li>the job tag and the gate's usage log;</li><li>the coordinator's usage ledger covering every session;</li><li>`rbrb.jsonl`;</li><li>`scripts/rbrb.py` with its tests, the JSON, the chart, the README section and the workflow.</li></ul> From its entry, **every** landed commit carries `Ragon-Tokens`. Routing does not change yet. |
 | **1: mechanical, docs, tests** | Two consecutive weeks in which every landed commit carried `Ragon-Tokens`, and in which the job-tagged Ragon tokens on the node are at least the sum of the trailers (the counters reconcile) | `mechanical`, `docs` and `tests` work is tried as a Ragon task first (§5). |
-| **2: code with tests** | <ul><li>Each phase-1 kind meets the `task` tool's class gate: acceptance at least 95 % over at least 20 decided tasks, no revert and no shadow miss (`GATE_RATE`, `MIN_DECIDED`).</li><li>The quality band is `met` over the last eight weeks.</li></ul> | `code` work with a named failing-then-passing test goes to Ragon first. |
+| **2: code with tests** | <ul><li>Each phase-1 kind meets the `task` tool's class gate: acceptance at least 95 % over at least 20 decided tasks, no revert and no shadow miss (`GATE_RATE`, `MIN_DECIDED`).</li><li>The **Wilson lower bound** (95 %) of each kind's acceptance rate is at least 0.5 (C11, adopted 2026-11-13), so that a lucky small sample does not open the phase.</li><li>The quality band is `met` over the last eight weeks.</li></ul> | `code` work with a named failing-then-passing test goes to Ragon first. |
 | **3: features behind the same gates** | <ul><li>The band is `met` for eight weeks with at least 20 Ragon-made `code` commits in them.</li><li>The default-flip reviewer said STOP on none of them.</li></ul> | A feature from a spec is split into tasks that each meet §5.2, and goes to Ragon first. Specs and the owner's decisions stay with the owner. |
 
 ---
@@ -660,14 +664,14 @@ The land queue's refusal (§3.3) is tested in the coordinator's own tools, which
 |---|---|
 | `Made-with: ragon` and `Ragon-Tokens: <n>` | **Built**, on `main`. `scripts/as_team.py commit <team> -m MSG --ragon-tokens N --made-with ragon` adds them once, last, after one blank line, `Ragon-Tokens` first. A negative count and any other `--made-with` value are refused, and a re-run replaces instead of duplicating (`with_ragon_trailers`). `as_team.ragon_trailers(git, <range>)` reads `(sha, tokens or None, made_with)`. The tests are in `tests/test_as_team.py`; [docs/dev/testing.md](../docs/dev/testing.md) describes them ("The `Ragon-Tokens` and `Made-with: ragon` trailers"). |
 | The public curve, first cut | **Built**, on `main`. `docs/rbrb.json` holds the first point; `scripts/rbrb.py` renders `images/rbrb.svg` from it, and `--check` exits 1 when the chart is stale (`tests/test_rbrb.py`); the README section shows the chart. |
-| The land queue's refusal of a commit without `Ragon-Tokens` | Not built (phase 0, §3.3). |
+| The land queue's refusal of a commit without `Ragon-Tokens` | **Built**, on `main` (pl-ct-landq-ragon-tokens). |
 | The job tag and the gate's usage line | **Built**, on `main`, differing from §4.3's plan: an `X-Ragon-Job` header and one `usage` line per tagged request in the gate's log (`ModelGateService.usage_line`, `tests/test_model_gate_usage.py`). |
 | The `client_metadata` tag, a usage log file in the gate's state folder, and the ledger in this repository | Not built. |
 | The derived fields of §7.1 (commits, surviving lines, rework, reverts, the band, landed tokens), the weighted share, the interval and the hollow points, the extra chart lines, the README number block and `.github/workflows/rbrb.yml` | Not built. |
 
 ## 14a. The research amendments (2026-11-12)
 
-The amendments of the rbrb research are numbered C1 to C15. The eight below are **adopted by default**: they are in the spec, each at the section named.
+The amendments of the rbrb research are numbered C1 to C15. The ones in this table are **adopted**: they are in the spec, each at the section named.
 
 | Id | Amendment | Where |
 |---|---|---|
@@ -678,19 +682,19 @@ The amendments of the rbrb research are numbered C1 to C15. The eight below are 
 | C9 | Gate files off limits to Ragon | §9 |
 | C12 | Review findings by category | §9, §4.2 (`review_category`) |
 | C13 | `ragon_version` and the version-change tick | §4.2, §7.1 (`ragon_version_changed`) |
+| C2 | Strata of §2.8 by path class and size (adopted 2026-11-13) | §2.8 |
+| C10 | Attempt every eligible row (adopted 2026-11-13) | §5.1 |
+| C11 | Wilson lower bound of at least 0.5 for the phase-2 decision (adopted 2026-11-13) | §11 |
+| C15 | The training cutoff as a stated limit (adopted 2026-11-13) | §10 |
 | C14 | The `method` block and `attempts_per_landed_ragon_commit` | §7.1 |
 
-**Open, not adopted: these wait for the owner's decision.** The default in each line is what the spec does until then.
+**Open or decided-not-adopted:** C1 and C7 wait for the owner's decision; C4 was decided 2026-11-13. The default in each line is what the spec does until then.
 
 | Id | Question | State |
 |---|---|---|
 | C1 | Rework rate with a 95 % control limit as a fourth condition of the quality band (§2.8) | Open. Written into §2.8 provisionally because an earlier brief named it; revert if the owner objects. |
-| C2 | Strata (kind of work) for the rework comparison | Open, not adopted. The comparison stays unstratified. |
-| C4 | Landed tokens for the gates and S4 work as the counted measure | Open, not adopted. All Ragon spend counts; the landed share is published beside, unused by the rule. |
+| C4 | Landed tokens for the gates and S4 work as the counted measure | Decided 2026-11-13: not adopted. All Ragon spend counts; the landed share is published beside, unused by the rule. |
 | C7 | The four-week pooled share as the headline (§7.3) | Open. Written into §7.3 provisionally because an earlier brief named it; revert if the owner objects. |
-| C10 | Attempt every eligible row | Open, not adopted. |
-| C11 | A Wilson lower bound for the phase-2 decision | Open, not adopted. |
-| C15 | A training cutoff for the model's knowledge | Open, not adopted. |
 
 ---
 
