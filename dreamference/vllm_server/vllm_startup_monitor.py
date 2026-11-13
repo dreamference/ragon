@@ -6,9 +6,16 @@ memory growth, detecting stalled log output, and logging explicit diagnostic sta
 """
 
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable
+
+
+def _say(text: str) -> None:
+    """Writes one line about the server start for the person starting it, shown at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
 
 
 class VLLMStartupMonitor:
@@ -41,7 +48,7 @@ class VLLMStartupMonitor:
         self.check_interval_sec: float = check_interval_sec
         self.progress_interval_sec: float = progress_interval_sec
         self.expected_memory_gb: float | None = expected_memory_gb
-        self.log_callback: Callable[[str], None] = log_callback or (lambda msg: print(msg))
+        self.log_callback: Callable[[str], None] = log_callback or _say
 
         self.last_log_time: float = time.time()
         self.start_time: float = time.time()
@@ -63,6 +70,22 @@ class VLLMStartupMonitor:
             if match:
                 self.vllm_pid = int(match.group(1))
 
+    @staticmethod
+    def _read_process_rss_gb(pid: int) -> float | None:
+        """Reads the resident set size (VmRSS, in KB) of `pid` from /proc as GB, or None."""
+        try:
+            with open(f"/proc/{pid}/status") as f:  # noqa: PTH123 - tests replace the module's open
+                status = f.read()
+        except OSError:
+            return None
+        for line in status.splitlines():
+            if line.startswith("VmRSS:"):
+                try:
+                    return float(line.split()[1]) / (1024 * 1024)  # KB to GB
+                except ValueError:
+                    return None
+        return None
+
     def _read_used_memory_gb(self) -> float:
         """Reads current memory used by the vLLM process from /proc/<pid>/status.
 
@@ -70,22 +93,16 @@ class VLLMStartupMonitor:
         """
         # If we have the vLLM PID, measure only that process's memory
         if self.vllm_pid:
-            try:
-                with open(f"/proc/{self.vllm_pid}/status") as f:
-                    for line in f:
-                        if line.startswith("VmRSS:"):
-                            # VmRSS is resident set size in KB
-                            rss_kb = float(line.split()[1])
-                            return rss_kb / (1024 * 1024)  # Convert KB to GB
-            except (OSError, FileNotFoundError, ValueError):
-                pass
+            rss_gb = self._read_process_rss_gb(self.vllm_pid)
+            if rss_gb is not None:
+                return rss_gb
 
         # Fallback to system memory if PID not available yet
         try:
             from dreamference.hardware import get_system_memory
 
             return float(get_system_memory().get("used_gb", 0.0))
-        except Exception:
+        except Exception:  # noqa: BLE001 - no memory reading counts as 0 GB
             return 0.0
 
     def estimate_progress(self) -> tuple[int | None, float, float | None]:
