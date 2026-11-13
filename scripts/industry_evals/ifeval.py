@@ -79,6 +79,7 @@ def scenario_for(name: str, row: dict, prompt: str) -> dict:
 
 
 def answer_of(run_dir: Path) -> str:
+    """The answer of the run's last turn (its home's rollout), empty when it has no turns."""
     turns = rollout.read_home(run_dir / "home")
     return turns[-1].answer if turns else ""
 
@@ -96,7 +97,7 @@ def accuracy(results: Path) -> dict:
     }
 
 
-def score(
+def score(  # noqa: PLR0913 - run is the test seam
     cache: Path,
     name: str,
     responses: Path,
@@ -141,7 +142,8 @@ def score(
     return {kind: accuracy(paths[0]) for kind, paths in found.items()}
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
+    """The runner's arguments, with the cache, runs and model-server defaults."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--sets", default="ifeval,ifbench")
     parser.add_argument("--prompt", default="ask")
@@ -167,26 +169,82 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hold-gate", metavar="LABEL", help="close the model gate while it runs")
     parser.add_argument("--no-jail", action="store_true", help="tests only")
     parser.add_argument("--no-model", action="store_true", help="tests only")
+    return parser
+
+
+def _model_server(runner, model_port: int) -> tuple[subprocess.Popen | None, str | None, int]:
+    """The model-server check: its forwarder and socket, or the exit status to stop with.
+
+    Returns:
+        (forwarder, socket_path, status); when status is not 0 the others are unusable.
+    """
+    if not runner.model_info(model_port):
+        print(  # noqa: T201 - error on stderr
+            f"❌ No model server answers on 127.0.0.1:{model_port}.", file=sys.stderr
+        )
+        return None, None, 2
+    forwarder, socket_path = runner.start_forwarder(model_port)
+    return forwarder, socket_path, 0
+
+
+def _answer_set(  # noqa: PLR0913 - main's run state, passed explicitly
+    runner,
+    args: argparse.Namespace,
+    name: str,
+    rows: list[dict],
+    base: Path,
+    socket_path: str | None,
+    hold,
+    cache: Path,
+) -> dict:
+    """The answers and scored result of one set: every prompt answered in parallel, then scored."""
+    session_args = argparse.Namespace(no_jail=args.no_jail, ragon=args.ragon)
+
+    def one(row: dict) -> dict:
+        scenario = scenario_for(name, row, args.prompt)
+        run_dir = base / scenario["id"]
+        path = runner.prepare(scenario, run_dir, seed=0)
+        subprocess.run(
+            runner.session_command(path, run_dir, session_args, socket_path),
+            check=False,
+        )
+        if hold:
+            hold.advance()
+        return {"prompt": row["prompt"], "response": answer_of(run_dir)}
+
+    with ThreadPoolExecutor(max(1, args.parallel)) as pool:
+        answered = list(pool.map(one, rows))
+    responses = base / "responses.jsonl"
+    responses.write_text("".join(json.dumps(a, ensure_ascii=False) + "\n" for a in answered))
+    python = Path(args.scorer_python) if args.scorer_python else venv_python(cache)
+    result = score(cache, name, responses, base / "scored", python, rows=rows)
+    result["empty_answers"] = sum(1 for a in answered if not a["response"].strip())
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Runs the sets' prompts through `ragon`, scores the answers and writes `summary.json`."""
+    parser = _parser()
     args = parser.parse_args(argv)
     if args.no_jail and not args.no_model:
         parser.error("--no-jail is for tests with no model: a real run is always jailed")
     cache, runs = Path(args.cache), Path(args.runs)
     if not (cache / "manifest.json").exists():
-        print(f"❌ Nothing set up in {cache}: run setup_cache.py ifeval first.", file=sys.stderr)
+        print(  # noqa: T201 - error on stderr
+            f"❌ Nothing set up in {cache}: run setup_cache.py ifeval first.", file=sys.stderr
+        )
         return 2
     runner = _load_runner()
     forwarder, socket_path = None, None
     if not args.no_model:
-        if not runner.model_info(args.model_port):
-            print(f"❌ No model server answers on 127.0.0.1:{args.model_port}.", file=sys.stderr)
-            return 2
-        forwarder, socket_path = runner.start_forwarder(args.model_port)
-    session_args = argparse.Namespace(no_jail=args.no_jail, ragon=args.ragon)
+        forwarder, socket_path, status = _model_server(runner, args.model_port)
+        if status:
+            return status
     # A stop still opens the gate and removes the forwarder's socket (the `finally` below).
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     hold = None
     if args.hold_gate:
-        from askevals.gate import GateHold  # noqa: PLC0415 - needs the dreamference package
+        from askevals.gate import GateHold
 
         total = sum(len(prompts(cache, n, args.limit)) for n in args.sets.split(","))
         hold = GateHold(args.hold_gate, total=total).__enter__()
@@ -198,31 +256,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for name in args.sets.split(","):
             rows = prompts(cache, name, args.limit)
-            base = runs / name
-
-            def one(row: dict, base: Path = base, name: str = name) -> dict:
-                scenario = scenario_for(name, row, args.prompt)
-                run_dir = base / scenario["id"]
-                path = runner.prepare(scenario, run_dir, seed=0)
-                subprocess.run(
-                    runner.session_command(path, run_dir, session_args, socket_path),
-                    check=False,
-                )
-                if hold:
-                    hold.advance()
-                return {"prompt": row["prompt"], "response": answer_of(run_dir)}
-
-            with ThreadPoolExecutor(max(1, args.parallel)) as pool:
-                answered = list(pool.map(one, rows))
-            responses = base / "responses.jsonl"
-            responses.write_text(
-                "".join(json.dumps(a, ensure_ascii=False) + "\n" for a in answered)
-            )
-            python = Path(args.scorer_python) if args.scorer_python else venv_python(cache)
-            result = score(cache, name, responses, base / "scored", python, rows=rows)
-            result["empty_answers"] = sum(1 for a in answered if not a["response"].strip())
+            result = _answer_set(runner, args, name, rows, runs / name, socket_path, hold, cache)
             summary["results"][name] = result
-            print(json.dumps({"set": name, **result}), flush=True)
+            print(json.dumps({"set": name, **result}), flush=True)  # noqa: T201 - results on stdout
     finally:
         if hold:
             hold.__exit__()
