@@ -21,6 +21,7 @@ mid-load.
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Final
 
@@ -38,6 +39,16 @@ CONTAINER_OOM_SCORE_ADJ: Final[int] = 800
 
 # Where the serving script lands inside the container.
 CONTAINER_SERVICE_PATH: Final[str] = "/opt/dreamference/diffusion_openai_service.py"
+
+# What /health answers once the model is loaded, and the status it reports when the load failed.
+HTTP_OK: Final[int] = 200
+STATUS_ERROR: Final[str] = "error"
+
+
+def _say(text: str) -> None:
+    """Writes one line about the diffusion sidecar for the person running Ragon."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
 
 
 class DiffusionServerManager:
@@ -69,8 +80,8 @@ class DiffusionServerManager:
         import requests
 
         try:
-            return requests.get(f"{self.host}/health", timeout=timeout).status_code == 200
-        except Exception:
+            return requests.get(f"{self.host}/health", timeout=timeout).status_code == HTTP_OK
+        except requests.RequestException:
             return False
 
     def get_load_state(self, timeout: float = 2.0) -> str | None:
@@ -86,10 +97,10 @@ class DiffusionServerManager:
 
         try:
             payload = requests.get(f"{self.host}/health", timeout=timeout).json()
-        except Exception:
+        except (requests.RequestException, ValueError):
             return None
-        if payload.get("status") == "error":
-            return payload.get("error") or "error"
+        if payload.get("status") == STATUS_ERROR:
+            return payload.get("error") or STATUS_ERROR
         return payload.get("status")
 
     @classmethod
@@ -216,9 +227,9 @@ class DiffusionServerManager:
         env = {**os.environ, "HF_TOKEN": hf_token} if hf_token else None
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if result.returncode != 0:
-            print(f"⚠️  Diffusion sidecar failed to start: {result.stderr.strip()}")
+            _say(f"⚠️  Diffusion sidecar failed to start: {result.stderr.strip()}")
             return False
-        print(f"🌫️  Diffusion sidecar '{container_name}' started ({model}) at {self.host}")
+        _say(f"🌫️  Diffusion sidecar '{container_name}' started ({model}) at {self.host}")
         return True
 
     def stop_server(self, port: int = DEFAULT_DIFFUSION_PORT) -> None:
@@ -228,11 +239,11 @@ class DiffusionServerManager:
             port (int): Port the sidecar was started on.
         """
         container_name = f"dreamference-diffusion-{port}"
-        print(f"🛑 Stopping diffusion container: {container_name}")
+        _say(f"🛑 Stopping diffusion container: {container_name}")
         subprocess.run(
             ["docker", "stop", container_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        print(f"✅ Container {container_name} stopped.")
+        _say(f"✅ Container {container_name} stopped.")
 
     @classmethod
     def remove_leftover(cls, port: int = DEFAULT_DIFFUSION_PORT) -> None:
@@ -258,7 +269,7 @@ class DiffusionServerManager:
             port (int): Port the sidecar was started on.
         """
         container_name = f"dreamference-diffusion-{port}"
-        print(f"🗑️ Removing diffusion container: {container_name}")
+        _say(f"🗑️ Removing diffusion container: {container_name}")
         subprocess.run(
             ["docker", "rm", "-f", container_name],
             stdout=subprocess.DEVNULL,
