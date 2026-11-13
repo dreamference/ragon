@@ -5,6 +5,7 @@ It tracks loading stages, memory usage, and provides user-friendly status update
 """
 
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -15,6 +16,12 @@ LOG_CHECK_INTERVAL_S: Final[float] = 0.5
 UNKNOWN_ENV_MARKER: Final[str] = "Unknown vLLM environment variable detected"
 # Variables the image sets itself; their "unknown" warning is noise.
 IGNORED_ENV_VARS: Final[tuple[str, str]] = ("VLLM_VERSION", "VLLM_FLASH_ATTN_SRC_DIR")
+
+
+def _say(text: str) -> None:
+    """Writes one line about the model load for the person starting the server, shown at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
 
 
 class ModelLoadingMonitor:
@@ -103,7 +110,7 @@ class ModelLoadingMonitor:
                 mem = self.get_memory_fn()
                 if mem:
                     timestamp = datetime.now().strftime("%H:%M:%S")
-                    print(f"[{timestamp}] 📊 Reserved memory (Docker): {mem}")
+                    _say(f"[{timestamp}] 📊 Reserved memory (Docker): {mem}")
                 last_memory_print = current_time
 
             time.sleep(0.2)
@@ -119,9 +126,9 @@ class ModelLoadingMonitor:
                 ):
                     self._process_log_line(log_line)
                     continue
-                print(log_line.rstrip())
+                _say(log_line.rstrip())
                 self._process_log_line(log_line)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - a failed log read must not end the monitor thread
             pass
 
     def _process_log_line(self, line: str) -> None:
@@ -148,7 +155,7 @@ class ModelLoadingMonitor:
                     f"vLLM rejected recipe-supplied environment variable '{var_name}'. This usually "
                     "indicates a typo or a change in vLLM version that breaks the required kernel pin."
                 )
-                print(f"\nFATAL ERROR: {self.fatal}")
+                _say(f"\nFATAL ERROR: {self.fatal}")
                 self.running = False
 
         for stage_name, pattern in self.LOADING_STAGES:
@@ -163,7 +170,7 @@ class ModelLoadingMonitor:
             if is_healthy:
                 self.server_ready = True
             return is_healthy
-        except Exception:
+        except Exception:  # noqa: BLE001 - any fault in the health check means not ready yet
             return False
 
     def get_status(self) -> dict:
@@ -199,7 +206,7 @@ class ModelLoadingMonitor:
         progress = " → ".join(f"{status_symbols.get(s, '•')} {s.replace('_', ' ')}" for s in stages)
 
         ready_indicator = "✅ READY" if ready else "⏳ Loading"
-        print(f"[{timestamp}] {ready_indicator} ({elapsed:.1f}s) {progress}")
+        _say(f"[{timestamp}] {ready_indicator} ({elapsed:.1f}s) {progress}")
 
 
 def create_model_loading_monitor(
