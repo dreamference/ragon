@@ -1,11 +1,20 @@
+"""The local Ragon Web Canvas: a loopback page with the hardware, model server and code index status."""
+
 import http.server
 import json
 import socketserver
+import sys
 import threading
+from typing import Final
 
 from dreamference.context_engine import ContextEngine
 from dreamference.hardware import detect_gb10_hardware
 from dreamference.vllm_server import VLLMServerManager
+
+# The paths that serve the canvas page.
+INDEX_PATHS: Final[tuple[str, ...]] = ("/", "/index.html")
+# The JSON status the page polls.
+STATUS_PATH: Final[str] = "/api/status"
 
 CANVAS_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -15,7 +24,8 @@ CANVAS_HTML = """<!DOCTYPE html>
   <title>Ragon Canvas - Pair Programming & Hardware Monitor</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <style>
     :root {
@@ -34,7 +44,7 @@ CANVAS_HTML = """<!DOCTYPE html>
       font-family: 'Inter', sans-serif;
       background-color: var(--bg-dark);
       color: var(--text-main);
-      background-image: 
+      background-image:
         radial-gradient(circle at 15% 15%, rgba(118, 185, 0, 0.08) 0%, transparent 40%),
         radial-gradient(circle at 85% 85%, rgba(0, 229, 255, 0.08) 0%, transparent 40%);
       min-height: 100vh;
@@ -220,7 +230,9 @@ CANVAS_HTML = """<!DOCTYPE html>
             <span>vLLM KV-Cache Alloc</span>
             <span id="kvVal">0%</span>
           </div>
-          <div class="gauge-bar"><div class="gauge-fill" id="kvFill" style="background: linear-gradient(90deg, var(--accent-purple), var(--accent-teal));"></div></div>
+          <div class="gauge-bar"><div class="gauge-fill" id="kvFill"
+              style="background: linear-gradient(90deg, var(--accent-purple), var(--accent-teal));">
+          </div></div>
         </div>
 
         <div style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.6; margin-top: 1rem;">
@@ -240,7 +252,7 @@ CANVAS_HTML = """<!DOCTYPE html>
       try {
         const res = await fetch('/api/status');
         const data = await res.json();
-        
+
         const total = data.hardware.total_unified_memory_gb || 128;
         const used = data.hardware.used_memory_gb || 0;
         const pct = Math.min(100, Math.round((used / total) * 100));
@@ -268,17 +280,20 @@ CANVAS_HTML = """<!DOCTYPE html>
 
 
 class CanvasHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass  # Suppress default server logs
+    """Serves the canvas page and its status JSON; every other path is a 404."""
+
+    def log_message(self, format, *args):  # noqa: A002 - the base class names it format
+        """Keeps the default per-request log lines off the terminal."""
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        """Answers the page, the status JSON or a 404."""
+        if self.path in INDEX_PATHS:
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(CANVAS_HTML.encode("utf-8"))
 
-        elif self.path == "/api/status":
+        elif self.path == STATUS_PATH:
             hw = detect_gb10_hardware()
             vllm_mgr = VLLMServerManager()
             vllm_stat = vllm_mgr.get_server_status()
@@ -303,5 +318,5 @@ def start_web_canvas_server(port: int = 8501, daemon: bool = True) -> threading.
     server = socketserver.TCPServer(("127.0.0.1", port), CanvasHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=daemon)
     thread.start()
-    print(f"🌐 Ragon Web Canvas UI running at: http://localhost:{port}")
+    sys.stdout.write(f"🌐 Ragon Web Canvas UI running at: http://localhost:{port}\n")
     return thread
