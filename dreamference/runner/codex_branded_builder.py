@@ -28,6 +28,7 @@ binaries count as current, since there is nothing here they could be rebuilt fro
 """
 
 import hashlib
+import importlib
 import os
 import re
 import shutil
@@ -441,8 +442,11 @@ class CodexBrandedBuilder:
             ],
             stdout=subprocess.PIPE,
         )
-        extracted = cls.extract_archive(archive.stdout, source_dir)
-        archive.stdout.close()
+        archive_stream = archive.stdout
+        if archive_stream is None:
+            raise RuntimeError("git archive was started with a pipe but has no stdout")
+        extracted = cls.extract_archive(archive_stream, source_dir)
+        archive_stream.close()
         if archive.wait() != 0 or not extracted:
             print(f"❌ Could not export codex {commit[:12]} from the submodule.")
             return False
@@ -808,7 +812,8 @@ class CodexBrandedBuilder:
             handle: The open lock file. The lock is released when it is closed.
         """
         if IS_WINDOWS:
-            import msvcrt
+            # By name: the module exists on Windows only, and type checking elsewhere cannot see it.
+            msvcrt = importlib.import_module("msvcrt")
             import time
 
             waited = False

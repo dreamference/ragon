@@ -427,7 +427,9 @@ class DreamferenceConfig:
             os.getenv("DREAMFERENCE_RAGON_REFINE_VERSION"),
             self.file_data.get("ragon_refine_version"),
         ):
-            version = candidate.strip().lower() if isinstance(candidate, str) else None
+            if not isinstance(candidate, str):
+                continue
+            version = candidate.strip().lower()
             if version in RAGON_REFINE_VERSIONS:
                 self.ragon_refine_version = version
                 break

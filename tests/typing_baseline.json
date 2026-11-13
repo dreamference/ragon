@@ -1,13 +1,5 @@
 {
- "counts": {
-  "dreamference/config/dreamference_config.py": {
-   "assignment": 1
-  },
-  "dreamference/runner/codex_branded_builder.py": {
-   "attr-defined": 2,
-   "union-attr": 1
-  }
- },
+ "counts": {},
  "mypy": "2.4.0",
- "total": 9
+ "total": 0
 }
