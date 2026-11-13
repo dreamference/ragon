@@ -21,6 +21,9 @@ CONTAINER_SGLANG_INDUCTOR_DIR: Final[str] = "/root/.cache/dreamference/sglang/in
 # The module SGLang's server runs as (`python3 -m sglang.launch_server`), which marks its launch.
 SGLANG_ENTRY_POINT: Final[str] = "sglang.launch_server"
 
+# The recipe engine value that selects SGLang.
+SGLANG_ENGINE: Final[str] = "sglang"
+
 # The host's HuggingFace hub as the container sees it, wherever HF_HOME puts it on the host
 # (the docker prefix mounts it here).
 CONTAINER_HF_HUB_DIR: Final[str] = ModelDownloader.CONTAINER_HF_HUB_DIR
@@ -39,7 +42,7 @@ class SGLangLaunchBuilder:
         Returns:
             bool: True for `engine: sglang`.
         """
-        return str(recipe.get("engine", "vllm")).lower() == "sglang"
+        return str(recipe.get("engine", "vllm")).lower() == SGLANG_ENGINE
 
     @classmethod
     def snapshot_path(cls, repo_id: str, revision: str | None) -> str:
@@ -78,7 +81,7 @@ class SGLangLaunchBuilder:
         }
 
     @classmethod
-    def server_args(
+    def server_args(  # noqa: PLR0913 - each launch setting of the server, named
         cls,
         hf_model: str,
         recipe: dict[str, Any],
