@@ -56,9 +56,13 @@ NO_CANDIDATE_ORDER = ("stalled", "no-change", "timed-out", "failed")
 # at all once it has.
 MIN_JUDGE_TIMEOUT_S: Final[float] = 60.0
 
-# An attempt's ends the coordinator tells apart, and chooser v1's stages the report explains.
+# An attempt's ends the coordinator tells apart, and the test verdict that counts as passed;
+# chooser v1's stages the report explains.
 CANDIDATE: Final[str] = "candidate"
 INTERRUPTED: Final[str] = "interrupted"
+CANCELLED: Final[str] = "cancelled"
+TIMED_OUT: Final[str] = "timed-out"
+PASSED: Final[str] = "passed"
 ONLY_CANDIDATE: Final[str] = "only candidate"
 REGRESSION_FILTER: Final[str] = "regression filter"
 ALL_BROKE: Final[str] = "judge, all broke"
@@ -73,7 +77,7 @@ class NightShiftBestOfN:
     # suite may reach a model server.
     JUDGE: Callable[..., Compare] | None = None
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the task run's inputs plus best_of, each named
         self,
         night_dir: Path,
         task: dict[str, Any],
@@ -86,19 +90,22 @@ class NightShiftBestOfN:
         model_node: str | None = None,
         window_end: float | None = None,
     ) -> None:
-        """Args:
-        night_dir: The queue directory.
-        task: The task record as queued.
-        settings: Night Shift settings.
-        ragon_bin: The `ragon` executable.
-        deadline: `time.time()` by which the first attempt must stop.
-        best_of: How many attempts.
-        model_host: The model server the night run was admitted against; the attempts and the
-            judge use it.
-        context_budget: The task's share of the KV pool (each attempt's compaction limit).
-        model_node: The paired node whose server `model_host` is, when it is not this machine's.
-        window_end: `time.time()` at which the night's window closes; no attempt starts after
-            it, and none runs past it.
+        """Sets up a best-of-n run of one queued task.
+
+        Args:
+            night_dir: The queue directory.
+            task: The task record as queued.
+            settings: Night Shift settings.
+            ragon_bin: The `ragon` executable.
+            deadline: `time.time()` by which the first attempt must stop.
+            best_of: How many attempts.
+            model_host: The model server the night run was admitted against; the attempts and
+                the judge use it.
+            context_budget: The task's share of the KV pool (each attempt's compaction limit).
+            model_node: The paired node whose server `model_host` is, when it is not this
+                machine's.
+            window_end: `time.time()` at which the night's window closes; no attempt starts
+                after it, and none runs past it.
         """
         self.night_dir = night_dir
         self.task = dict(task)
@@ -190,8 +197,8 @@ class NightShiftBestOfN:
         settings: NightShiftSettings,
         ragon_bin: str,
         deadline: float,
-        **kwargs: Any,
-    ) -> Any:
+        **kwargs: Any,  # noqa: ANN401 - passed through to the task run's keywords
+    ) -> "NightShiftTaskRun | NightShiftBestOfN":
         """The run the scheduler starts for a task.
 
         a plain `NightShiftTaskRun` for one attempt, this class for more.
@@ -205,7 +212,8 @@ class NightShiftBestOfN:
             **kwargs: `model_host`, `context_budget`, `model_node`, `window_end`.
 
         Returns:
-            Any: An object with `run()`, `stop_event`, `in_model`, `current_unit` and `lane_host`.
+            NightShiftTaskRun | NightShiftBestOfN: A run with `run()`, `stop_event`, `in_model`,
+                `current_unit` and `lane_host`.
         """
         n = cls.attempts_for(task, settings, night_dir)
         if n <= 1:
@@ -227,7 +235,7 @@ class NightShiftBestOfN:
         outcomes: list[dict[str, Any]] = []
         try:
             return self._run(outcomes)
-        except Exception as error:  # A runner bug must not leave the task `running` forever.
+        except Exception as error:  # noqa: BLE001 - a runner bug must not leave the task running forever
             self._discard(outcomes)
             return self._finish(
                 "failed",
@@ -288,16 +296,16 @@ class NightShiftBestOfN:
             if attempt.test_log_path.exists():
                 outcome["test_log"] = str(attempt.test_log_path)
             outcomes.append(outcome)
-            if status == "cancelled":
+            if status == CANCELLED:
                 self._discard(outcomes)
-                return self._finish("cancelled", result=self._timing(outcomes))
+                return self._finish(CANCELLED, result=self._timing(outcomes))
             if status == INTERRUPTED:
                 self.short = f"the window closed during attempt {number}, which was discarded"
                 break
 
-        candidates = [o for o in outcomes if o["status"] == "candidate"]
+        candidates = [o for o in outcomes if o["status"] == CANDIDATE]
         # What the window cut off is never resumed.
-        self._discard([o for o in outcomes if o["status"] == "interrupted"])
+        self._discard([o for o in outcomes if o["status"] == INTERRUPTED])
         if not candidates:
             return self._no_candidate(outcomes)
         chosen, choice = self._choose(candidates)
@@ -341,20 +349,20 @@ class NightShiftBestOfN:
             ),
             None,
         )
-        if any(o["status"] == "interrupted" for o in outcomes) or not outcomes:
+        if any(o["status"] == INTERRUPTED for o in outcomes) or not outcomes:
             if last:
                 result["last_message"] = last
             result["note"] = (
                 "the window closed before any attempt finished; the task starts over next night"
             )
-            return self._finish("interrupted", result=result)
+            return self._finish(INTERRUPTED, result=result)
         statuses = {o["status"] for o in outcomes}
         status = (
             "failed"
             if statuses == {"failed"}
             else next((s for s in NO_CANDIDATE_ORDER if s in statuses), "failed")
         )
-        status = "no-change" if status == "timed-out" else status
+        status = "no-change" if status == TIMED_OUT else status
         if last and status in ("stalled", "failed"):
             result["last_message"] = last
         return self._finish(status, result=result)
@@ -448,13 +456,15 @@ class NightShiftBestOfN:
 
     @classmethod
     def regression(cls, result: dict[str, Any]) -> int | None:
-        """The regression filter's input from an attempt's result: 0 when its tests passed, 1 when
-        they failed or timed out or the attempt ran out of time, None when it was not tested.
+        """The regression filter's input from an attempt's result.
+
+        0 when its tests passed, 1 when they failed or timed out or the attempt ran out of time, None
+        when it was not tested.
         """
         if result.get("timed_out"):
             return 1
         verdict = str(result.get("test_result") or "untested")
-        if verdict == "passed":
+        if verdict == PASSED:
             return 0
         if verdict.startswith(("failed", "timed out")):
             return 1
