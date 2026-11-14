@@ -518,21 +518,19 @@ pub async fn resolve_host(interactive: bool) -> anyhow::Result<String> {
             let chosen = choose(&adverts, gone.as_deref(), interactive)?;
             (chosen.node, chosen.state, true, None)
         }
-        Resolution::Least { adverts } => {
-            let timings = answer_times(&adverts).await;
-            match pick_least_loaded(&adverts, &timings) {
-                Some(advert) => {
-                    let note = least_loaded_note(&advert.node, adverts.len());
-                    let _ = SESSION_NODE.set(advert.node.clone());
-                    (advert.node, advert.state, false, Some(note))
-                }
-                // None answered in time: ask, as before the pick, and remember the answer.
-                None => {
-                    let chosen = choose(&adverts, None, interactive)?;
-                    (chosen.node, chosen.state, true, None)
-                }
+        // Resolved once per process (`lib.rs`, or `compat_print.rs`, which hands the host on), so
+        // the pick holds for the whole session.
+        Resolution::Least { adverts } => match session_pick(&adverts, &answer_times(&adverts).await) {
+            Some(Resolution::Found { advert, remember, note }) => {
+                let _ = SESSION_NODE.set(advert.node.clone());
+                (advert.node, advert.state, remember, note)
             }
-        }
+            // None answered in time: ask, as before the pick, and remember the answer.
+            _ => {
+                let chosen = choose(&adverts, None, interactive)?;
+                (chosen.node, chosen.state, true, None)
+            }
+        },
         Resolution::Found { advert, remember, note } => (advert.node, advert.state, remember, note),
         Resolution::LastAddress { node, note } => (node, String::new(), false, note),
         Resolution::Overlay { node } => {
@@ -633,6 +631,14 @@ pub fn pick_least_loaded(adverts: &[Advert], timings: &[Option<Duration>]) -> Op
     locator::least_loaded(&answers).map(|index| adverts[index].clone())
 }
 
+/// What the session uses of `adverts` given their answer times: the least loaded, for this
+/// session only (never remembered), with the line that says so; `None` when none answered.
+fn session_pick(adverts: &[Advert], timings: &[Option<Duration>]) -> Option<Resolution> {
+    let advert = pick_least_loaded(adverts, timings)?;
+    let note = least_loaded_note(&advert.node, adverts.len());
+    Some(Resolution::Found { advert, remember: false, note: Some(note) })
+}
+
 fn least_loaded_note(node: &Node, of: usize) -> String {
     format!(
         "Using Ragon node {} at {} for this session, the least loaded of {of} (`ragon node use <name>` keeps one).",
@@ -646,21 +652,31 @@ fn least_loaded_note(node: &Node, of: usize) -> String {
 /// Added after the program name, so the user's own `-c` still wins. Unchanged when the session
 /// did not pick one.
 pub fn with_session_node(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
-    with_node_override(args, SESSION_NODE.get())
-}
-
-fn with_node_override(args: Vec<std::ffi::OsString>, node: Option<&Node>) -> Vec<std::ffi::OsString> {
-    let Some(node) = node else { return args };
-    let setting = format!(
-        "shell_environment_policy.set.{}={}",
-        locator::SESSION_ENV,
-        toml::Value::String(node.render_line())
-    );
+    let Some(node) = SESSION_NODE.get() else { return args };
+    let settings = session_settings(node, std::env::var("NO_PROXY").ok().as_deref(), std::env::var("no_proxy").ok().as_deref());
     let mut args = args.into_iter();
     let mut out: Vec<std::ffi::OsString> = args.next().into_iter().collect();
-    out.extend(["-c".into(), setting.into()]);
+    for setting in settings {
+        out.extend(["-c".into(), setting.into()]);
+    }
     out.extend(args);
     out
+}
+
+/// The session's node for a child `ragon` started by this one (`compat_print.rs`), which gets the
+/// host itself in `DREAMFERENCE_VLLM_HOST` and passes this on to its commands. Empty when the
+/// session did not pick one.
+pub fn session_env() -> Vec<(&'static str, String)> {
+    SESSION_NODE.get().map(|node| vec![(locator::SESSION_ENV, node.render_line())]).unwrap_or_default()
+}
+
+/// The `-c` settings that hand `node` to the session's commands: [`locator::SESSION_ENV`], and
+/// both spellings of `NO_PROXY` with the node added (`proxy.rs`), since `proxy::export` ran before
+/// the node was picked and only a remembered node is exempt there.
+fn session_settings(node: &Node, upper: Option<&str>, lower: Option<&str>) -> Vec<String> {
+    let set = |key: &str, value: String| format!("shell_environment_policy.set.{key}={}", toml::Value::String(value));
+    let no_proxy = crate::proxy::merged(upper, lower, &[node.model_url()]);
+    vec![set(locator::SESSION_ENV, node.render_line()), set("NO_PROXY", no_proxy.clone()), set("no_proxy", no_proxy)]
 }
 
 /// Writes `node.json`, unless it already says the same apart from when the node was last seen
@@ -1521,26 +1537,36 @@ mod tests {
             resolve(&inputs, &Fixed::new(vec![spark2(), spark1()])),
             Resolution::Found { advert, remember: true, .. } if advert == spark1()
         ));
-        // The pick carries no `remember`: `resolve_host` uses it for the session only.
-        let note = least_loaded_note(&spark2().node, 2);
+        // The pick is used for the session only, never remembered, and says so.
+        let ms = |n| Some(Duration::from_millis(n));
+        let Some(Resolution::Found { advert, remember, note: Some(note) }) = session_pick(&[spark1(), spark2()], &[ms(30), ms(5)]) else {
+            panic!("no pick")
+        };
+        assert_eq!((advert, remember), (spark2(), false));
         assert!(note.contains("spark-2") && note.contains("for this session") && note.contains("ragon node use"));
+        assert_eq!(session_pick(&[spark1(), spark2()], &[None, None]), None);
     }
 
     #[test]
-    fn the_sessions_node_reaches_its_commands_after_the_program_name_and_reads_back() {
-        let args: Vec<std::ffi::OsString> = vec!["codex".into(), "--oss".into()];
-        assert_eq!(with_node_override(args.clone(), None), args);
+    fn the_sessions_node_reaches_its_commands_and_is_exempt_from_a_proxy() {
         let node = spark2().node;
-        let out = with_node_override(args, Some(&node));
-        assert_eq!(out[0], "codex");
-        assert_eq!(out[1], "-c");
-        assert_eq!(out[3], "--oss");
-        let setting = out[2].to_str().unwrap();
-        let (key, value) = setting.split_once('=').unwrap();
-        assert_eq!(key, format!("shell_environment_policy.set.{}", locator::SESSION_ENV));
-        let value: toml::Value = toml::from_str(&format!("v = {value}")).unwrap();
-        let text = value["v"].as_str().unwrap();
-        assert_eq!(locator::session_node_from(Some(text)), Some(node));
+        let read = |setting: &str| {
+            let (key, value) = setting.split_once('=').unwrap();
+            let value: toml::Value = toml::from_str(&format!("v = {value}")).unwrap();
+            (key.trim_start_matches("shell_environment_policy.set.").to_string(), value["v"].as_str().unwrap().to_string())
+        };
+        let settings: Vec<(String, String)> = session_settings(&node, Some("corp.example"), None).iter().map(|s| read(s)).collect();
+        assert_eq!(settings[0].0, locator::SESSION_ENV);
+        assert_eq!(locator::session_node_from(Some(&settings[0].1)), Some(node.clone()));
+        for (index, key) in [(1, "NO_PROXY"), (2, "no_proxy")] {
+            assert_eq!(settings[index].0, key);
+            let entries: Vec<&str> = settings[index].1.split(',').collect();
+            assert!(entries.contains(&"corp.example") && entries.contains(&node.address.as_str()), "{entries:?}");
+        }
+        // Nothing picked: nothing added, before or after the program name.
+        let args: Vec<std::ffi::OsString> = vec!["codex".into(), "--oss".into()];
+        assert_eq!(with_session_node(args.clone()), args);
+        assert!(session_env().is_empty());
     }
 
     #[test]

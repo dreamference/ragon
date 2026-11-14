@@ -751,6 +751,7 @@ async fn run_inner(user_args: &[String]) -> anyhow::Result<i32> {
         .args(args.iter().map(OsString::from))
         .env(crate::compat::ENV, "claude")
         .env("DREAMFERENCE_VLLM_HOST", &host)
+        .envs(crate::node::session_env())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped());
     if request.debug {
