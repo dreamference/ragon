@@ -1,5 +1,6 @@
-"""`ask-evals`: runs the phone-chat scenarios against the real `ragon` and scores them
-(specs/DREAMFERENCE_RAGON_ASSISTANT_EVALS.md §5, §9).
+"""`ask-evals`: runs the phone-chat scenarios against the real `ragon` and scores them.
+
+See specs/DREAMFERENCE_RAGON_ASSISTANT_EVALS.md §5, §9.
 
     python run.py --reps 1,2,3 [--only s6-,s7-] [--out results/new.jsonl] [--model-port 8000]
     python run.py --plan                 the scenarios and what each run would do; runs nothing
@@ -24,13 +25,16 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 HERE: Final[Path] = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from askevals import checks, images, rollout  # noqa: E402
 from askevals.standins import read_log  # noqa: E402
+
+if TYPE_CHECKING:
+    from askevals.gate import GateHold
 
 SCENARIOS: Final[Path] = HERE / "scenarios"
 DEFAULT_RUNS: Final[Path] = Path.home() / ".cache" / "dreamference" / "ask-evals" / "runs"
@@ -116,8 +120,9 @@ def score_run(scenario: dict, run_dir: Path) -> dict:
 
 
 def start_forwarder(port: int) -> tuple[subprocess.Popen, str]:
+    """Starts the Unix-socket forwarder to the model port; returns the process and its socket path."""
     runtime = os.environ.get("XDG_RUNTIME_DIR") or str(Path.home() / ".cache")
-    path = os.path.join(runtime, f"ask-evals-{os.getpid()}.sock")
+    path = str(Path(runtime) / f"ask-evals-{os.getpid()}.sock")
     process = subprocess.Popen(
         [
             sys.executable,
@@ -167,7 +172,8 @@ def citation_rate(records: list[dict]) -> list[str]:
     ]
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parse(argv: list[str] | None) -> argparse.Namespace:
+    """Builds the argument parser and parses argv."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--reps", default="1")
     parser.add_argument("--only", help="comma-separated scenario id prefixes")
@@ -192,45 +198,131 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.no_jail and not args.no_model:
         parser.error("--no-jail is for tests with no model: a real run is always jailed")
+    return args
+
+
+def _scenarios(args: argparse.Namespace) -> list[dict]:
+    """The scenarios to run, with a named prompt forced onto each when given."""
     scenarios = load(args.only)
     if args.prompt:
         for scenario in scenarios:
             scenario["prompt"] = args.prompt
+    return scenarios
+
+
+def _print_plan(scenarios: list[dict], reps: list[int]) -> int:
+    """Prints the scenarios and the repetition count; runs nothing."""
+    for s in scenarios:
+        print(  # noqa: T201 - CLI output
+            f"{s['id']:32} {s['family']:4} turns {len(s['turns'])}  failures {s['failure']}"
+            f"{'  vision' if s.get('requires_vision') else ''}"
+        )
+    print(f"{len(scenarios)} scenarios x {len(reps)} repetitions")  # noqa: T201 - CLI output
+    return 0
+
+
+def _rescore(scenarios: list[dict], rescore: str, out: Path) -> int:
+    """Scores the runs under `rescore` again and writes the records to `out`."""
+    by_id = {s["id"]: s for s in scenarios}
+    records = []
+    for run_dir in sorted(Path(rescore).glob("*-r*")):
+        sid = run_dir.name.rsplit("-r", 1)[0]
+        if sid in by_id:
+            records.append(
+                {**score_run(by_id[sid], run_dir), "rep": int(run_dir.name.rsplit("-r", 1)[1])}
+            )
+    out.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
+    print("\n".join(summary(records)))  # noqa: T201 - CLI output
+    return 0
+
+
+def _start_model(port: int) -> tuple[bool, subprocess.Popen, str] | None:
+    """Probes the model server and starts the forwarder; None when no server answers."""
+    info = model_info(port)
+    if not info:
+        print(  # noqa: T201 - CLI output
+            f"❌ No model server answers on 127.0.0.1:{port}.", file=sys.stderr
+        )
+        return None
+    return (bool(info.get("has_image_understanding", True)), *start_forwarder(port))
+
+
+def _scenario_record(
+    scenario: dict,
+    rep: int,
+    runs: Path,
+    args: argparse.Namespace,
+    socket_path: str | None,
+    vision: bool,
+) -> dict:
+    """Runs one scenario's one repetition and returns its scored record."""
+    run_dir = runs / f"{scenario['id']}-r{rep}"
+    if scenario.get("requires_vision") and not vision:
+        record = {
+            "scenario": scenario["id"],
+            "family": scenario["family"],
+            "rep": rep,
+            "pass": False,
+            "skipped": True,
+            "failures": ["the served model takes no images"],
+        }
+    else:
+        shutil.rmtree(run_dir, ignore_errors=True)
+        path = prepare(scenario, run_dir, seed=rep)
+        started = time.time()
+        subprocess.run(session_command(path, run_dir, args, socket_path), check=False)
+        record = {
+            **score_run(scenario, run_dir),
+            "rep": rep,
+            "wall_s": round(time.time() - started, 1),
+        }
+    return record
+
+
+def _log_record(record: dict, out: Path, hold: GateHold | None) -> None:
+    """Advances the gate hold, appends the record to `out` and prints it."""
+    if hold:
+        hold.advance()
+    with out.open("a") as log:
+        log.write(json.dumps(record, ensure_ascii=False) + "\n")
+    print(json.dumps(record, ensure_ascii=False), flush=True)  # noqa: T201 - CLI output
+
+
+def _stop(
+    hold: GateHold | None, forwarder: subprocess.Popen | None, socket_path: str | None
+) -> None:
+    """Releases the gate hold, stops the forwarder and removes its socket."""
+    if hold:
+        hold.__exit__()
+    if forwarder:
+        forwarder.terminate()
+    if socket_path and Path(socket_path).exists():
+        Path(socket_path).unlink()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Runs, plans or rescores the suite; returns the exit status."""
+    args = _parse(argv)
+    scenarios = _scenarios(args)
     reps = [int(r) for r in args.reps.split(",")]
     if args.plan:
-        for s in scenarios:
-            print(
-                f"{s['id']:32} {s['family']:4} turns {len(s['turns'])}  failures {s['failure']}"
-                f"{'  vision' if s.get('requires_vision') else ''}"
-            )
-        print(f"{len(scenarios)} scenarios x {len(reps)} repetitions")
-        return 0
+        return _print_plan(scenarios, reps)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     if args.rescore:
-        by_id = {s["id"]: s for s in scenarios}
-        records = []
-        for run_dir in sorted(Path(args.rescore).glob("*-r*")):
-            sid = run_dir.name.rsplit("-r", 1)[0]
-            if sid in by_id:
-                records.append(
-                    {**score_run(by_id[sid], run_dir), "rep": int(run_dir.name.rsplit("-r", 1)[1])}
-                )
-        out.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
-        print("\n".join(summary(records)))
-        return 0
+        return _rescore(scenarios, args.rescore, out)
     if not args.no_jail and not shutil.which("bwrap"):
-        print("❌ bwrap is not installed; the suite never runs unjailed.", file=sys.stderr)
+        print(  # noqa: T201 - CLI output
+            "❌ bwrap is not installed; the suite never runs unjailed.", file=sys.stderr
+        )
         return 2
     vision = True
     forwarder, socket_path = None, None
     if not args.no_model:
-        info = model_info(args.model_port)
-        if not info:
-            print(f"❌ No model server answers on 127.0.0.1:{args.model_port}.", file=sys.stderr)
+        started = _start_model(args.model_port)
+        if started is None:
             return 2
-        vision = bool(info.get("has_image_understanding", True))
-        forwarder, socket_path = start_forwarder(args.model_port)
+        vision, forwarder, socket_path = started
     runs = Path(args.runs)
     records = []
     # A stop (the night slot's `timeout`, `systemctl stop`) must still open the gate, stop the
@@ -244,40 +336,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for rep in reps:
             for scenario in scenarios:
-                run_dir = runs / f"{scenario['id']}-r{rep}"
-                if scenario.get("requires_vision") and not vision:
-                    record = {
-                        "scenario": scenario["id"],
-                        "family": scenario["family"],
-                        "rep": rep,
-                        "pass": False,
-                        "skipped": True,
-                        "failures": ["the served model takes no images"],
-                    }
-                else:
-                    shutil.rmtree(run_dir, ignore_errors=True)
-                    path = prepare(scenario, run_dir, seed=rep)
-                    started = time.time()
-                    subprocess.run(session_command(path, run_dir, args, socket_path), check=False)
-                    record = {
-                        **score_run(scenario, run_dir),
-                        "rep": rep,
-                        "wall_s": round(time.time() - started, 1),
-                    }
+                record = _scenario_record(scenario, rep, runs, args, socket_path, vision)
                 records.append(record)
-                if hold:
-                    hold.advance()
-                with out.open("a") as log:
-                    log.write(json.dumps(record, ensure_ascii=False) + "\n")
-                print(json.dumps(record, ensure_ascii=False), flush=True)
+                _log_record(record, out, hold)
     finally:
-        if hold:
-            hold.__exit__()
-        if forwarder:
-            forwarder.terminate()
-        if socket_path and Path(socket_path).exists():
-            Path(socket_path).unlink()
-    print("\n".join(summary(records)))
+        _stop(hold, forwarder, socket_path)
+    print("\n".join(summary(records)))  # noqa: T201 - CLI output
     return 0
 
 
