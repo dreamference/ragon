@@ -344,6 +344,10 @@ def test_a_stopped_run_resumes_where_it_left_off(setup, monkeypatch):
 def test_a_window_closing_mid_attempt_stops_and_the_next_run_redoes_the_attempt(setup, monkeypatch):
     monkeypatch.setenv("FAKE_PLAN", "hang,good,good")
     fix = setup["tasks"]["fix"]
+    # Detection first, without a window, so the window below measures the attempt alone.
+    first = stage(setup, [fix])
+    first.prepare_clone()
+    assert first.detect_all()
     result = stage(setup, [fix], until=time.time() + 5).run()
     assert result["status"] == "stopped"
     state = json.loads((setup["out"] / "generate/state" / f"{fix['commit'][:12]}.json").read_text())
