@@ -21,7 +21,7 @@ Inside phase 1 the A-gate items come first:
 4. the attention probe at 32K context, plus the session-0 and kill probes (they block the CI runner, see the windows below);
 5. tokens/s and prefill restated with ranges.
 
-**Stop condition**: if item 5 puts the whole decode step under 50 tokens/s, or the prefill ceiling under 500 tokens/s at 32K, the port is not viable as planned and phase 1 stops with a report, before the rest of W0 is spent.
+**Stop condition**: the Windows spec's decision point (§5.4) names 50 tokens/s for the whole decode step and 500 tokens/s prefill at 32K; the owner's 1.0 gate, set later, is 40 exact. So: a decode estimate **under 40 tokens/s**, or a prefill ceiling under 500 at 32K, with no fixed route to better, stops phase 1 with a report before the rest of W0 is spent; an estimate **between 40 and 50** continues and is raised to the owner as a decision (it meets the 1.0 gate, not the study's aim).
 
 ### The kernels of phase 1
 
@@ -44,9 +44,9 @@ Not in phase 1: `stream_gemm.cu` (W1; the A-gate's GEMM probe uses `bench/amd/vg
 ## The toolchain (the study's choice, confirmed on the box)
 
 - **TheRock 10.0.0**, already on the box outside PATH; it stays pinned (later SDKs are reported to stall on gfx1151). Its `hipcc` built and ran a trivial kernel, bit-identical over four runs, on and off PATH.
-- **No AMD HIP SDK installer and no reboot**: the installer replaces the display driver, and the M1 measurements rest on the current one. (An owner setup script of 2026-11-14 proposed it; the default taken is to drop that part.)
+- **No AMD HIP SDK installer and no reboot**: the installer replaces the display driver, and the M1 measurements rest on the current one.
 - The runtime is only the driver's HIP DLL and comgr: the shipped engine needs no SDK on the user's machine.
-- Visual Studio 2022 Build Tools (MSVC, clang-cl) and the Windows SDK; CMake and Ninja; vcpkg for ICU, PCRE2 and nlohmann_json. CMake, Ninja and vcpkg are not yet on the box: lane 1 installs them (user-level, no reboot).
+- Visual Studio 2022 Build Tools (MSVC, clang-cl) and the Windows SDK; CMake and Ninja; vcpkg for ICU, PCRE2 and nlohmann_json. A Visual Studio install is on the box; lane 1 first verifies that it has the Build Tools' MSVC and clang-cl and the Windows SDK, and if either is missing it stops and asks (installing them is the owner's call). CMake, Ninja and vcpkg are not yet on the box: lane 1 installs them (user-level, no reboot).
 - Every device build names `--offload-arch=gfx1151` (the default target builds, then fails at run time with "device kernel image is invalid").
 - **Optimisation flags**: TheRock issue 9564 reports newer Windows builds ignoring `-O`; the workaround is `-clang:-O2`. Whether it takes effect is measured in lane 1 (a kernel timed at both settings), not assumed.
 - **Determinism rule from the first kernel**: fixed-order reductions, no split-K or atomic reductions, no data-dependent kernel choice between runs.
@@ -82,11 +82,11 @@ All engine code goes into `ragon-engine` on branches from `eng/backend-interface
 
 ### `p1-hip-build`: toolchain and the first kernel
 
-On the box: install CMake, Ninja and vcpkg (user-level, no reboot), with ICU, PCRE2 and nlohmann_json. In a branch from `eng/backend-interface`: add `src/backend/hip/types.hpp` (`hipStream_t`, `__hip_bfloat16`, `__half`; capabilities: graphs yes, dependent launch no, green contexts no, bulk copy no), lift the `#error` and the CMake refusal for `hip`, compile the `.cu` sources as HIP for gfx1151 with clang-cl and TheRock 10.0.0. Hipify `src/core/topk.cu` and its test; record seeded inputs and CUDA outputs on a GB10. Measure whether `-clang:-O2` takes effect. **Done when**: the HIP build of the target holding `topk.cu` and its test configures and builds from a clean directory; `topk.cu` is bit-identical across two runs and against the host reference (A-gate item 2); the CUDA build on the GB10 still passes its tests; the report lists exact versions, the build line, the `-O2` finding and what `hipify-clang` could not translate.
+On the box: verify the Build Tools' MSVC and clang-cl and the Windows SDK (missing: stop and ask), then install CMake, Ninja and vcpkg (user-level, no reboot), with ICU, PCRE2 and nlohmann_json. In a branch from `eng/backend-interface`: add `src/backend/hip/types.hpp` (`hipStream_t`, `__hip_bfloat16`, `__half`; capabilities: graphs yes, dependent launch no, green contexts no, bulk copy no), lift the `#error` and the CMake refusal for `hip`, compile the `.cu` sources as HIP for gfx1151 with clang-cl and TheRock 10.0.0. Hipify `src/core/topk.cu` and its test; record seeded inputs and CUDA outputs on a GB10. Measure whether `-clang:-O2` takes effect. **Done when**: the HIP build of the target holding `topk.cu` and its test configures and builds from a clean directory; `topk.cu` is bit-identical across two runs and against the host reference (A-gate item 2); the CUDA build on the GB10 still passes its tests; the report lists exact versions, the build line, the `-O2` finding and what `hipify-clang` could not translate.
 
 ### `p1-hip-gemm-gate`: the GEMM half of the A-gate
 
-After `p1-hip-build` (it uses lane 1's flags finding). With `bench/amd/vg.hip`, `bw.hip` and `wmma.hip`: every GEMM shape of the served 27B model (projection, head, drafter) at 1 and 16 rows, NVFP4 and FP8, timed only while the runner is idle, at the 140 W setting (the WMMA rate probe tells 120 from 140 W). **Done when**: A-gate items 1 and 3 are answered with a table (GB/s per shape at 1 and 16 rows, the 16/1 ratio, M1 reproduced within 5% or the difference explained) and item 5's decode half is restated with a range; a figure under the stop condition is reported as such, with the stop recommended.
+After `p1-hip-build` (it uses lane 1's flags finding). With `bench/amd/vg.hip`, `bw.hip` and `wmma.hip`: every GEMM shape of the served 27B model (projection, head, drafter) at 1 and 16 rows, NVFP4 and FP8, timed only while the runner is idle, at the 140 W setting (the WMMA rate probe tells 120 from 140 W). **Done when**: A-gate items 1 and 3 are answered with a table (GB/s per shape at 1 and 16 rows, the 16/1 ratio, M1 reproduced within 5% or the difference explained) and item 5's decode half is restated with a range; a decode estimate under 40 tokens/s is reported with the stop recommended, one between 40 and 50 as a decision for the owner.
 
 ### `p1-hip-portable-kernels`: the rest of W0's kernels
 
