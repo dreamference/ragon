@@ -166,8 +166,10 @@ On the other computer, type `ragon`. It finds the node and remembers it:
 | `ragon node forget` | Forget the node; the next start looks again |
 | `RAGON_NODE=<name> ragon …` | Another node, for one command |
 
-If there are several nodes, `ragon` asks once which to use and never switches by itself. If the
-node's model server is stopped or still loading, it says so instead of waiting.
+If there are several nodes and none is remembered, each `ragon` session uses the least loaded one
+(the quickest to answer) and keeps it until the session ends; `ragon node use <name>` makes one
+node the one every session uses. If the node's model server is stopped or still loading, it says so
+instead of waiting.
 
 What does not work from a client yet: Gmail in `ragon`, Night Shift (`/night add` is refused: tasks
 run on the node), and anything `ragon-admin` does. The desktop app, `ragon-app`, runs its own
