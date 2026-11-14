@@ -24,7 +24,7 @@ use std::process::Command;
 use serde_json::Value;
 use serde_json::json;
 
-const USAGE: &str = "Usage: /night [list] | /night add [--test \"<cmd>\"] [--on <node>] [--best-of N] <task> | /night show <id> | /night apply <id> | /night drop <id> | /night report";
+const USAGE: &str = "Usage: /night [list [--all]] | /night add [--test \"<cmd>\"] [--on <node>] [--best-of N] <task> | /night retry <id> | /night show <id> | /night apply <id> | /night drop <id> | /night report";
 
 /// Statuses after which a task is finished for the night: the startup line counts them.
 const FINISHED: &[&str] = &["done", "no-change", "stalled", "failed", "interrupted"];
@@ -36,6 +36,10 @@ const DEFAULT_WINDOW: &str = "01:00-07:00";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     List,
+    /// `list --all`: every repository's queue, grouped by repository.
+    ListAll,
+    /// Queues a stalled, failed, no-change, interrupted or cancelled task again as a new one.
+    Retry(String),
     /// `on`: a paired node whose own runner works the task (specs/DREAMFERENCE_RAGON_NODE.md §13.3).
     /// `best_of`: the task's own attempt count, which outranks `[night] best_of`
     /// (specs/DREAMFERENCE_RAGON_NIGHT_SHIFT.md §11.9); None leaves it to the table.
@@ -60,10 +64,12 @@ impl Request {
         };
         match verb {
             "" | "list" if rest.is_empty() => Request::List,
+            "list" if rest == "--all" => Request::ListAll,
             "report" if rest.is_empty() => Request::Report,
-            "show" | "apply" | "drop" => match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
+            "show" | "apply" | "drop" | "retry" => match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
                 [id] if verb == "show" => Request::Show(id.to_string()),
                 [id] if verb == "apply" => Request::Apply(id.to_string()),
+                [id] if verb == "retry" => Request::Retry(id.to_string()),
                 [id] => Request::Drop(id.to_string()),
                 _ => Request::Usage(USAGE.to_string()),
             },
@@ -292,7 +298,7 @@ fn printable(line: &str) -> String {
 /// run`, which exists only on a node, so on a client a queued task would wait for a night that
 /// never comes (specs/DREAMFERENCE_RAGON_NODE.md §10). Reading the queue is not refused.
 pub fn client_refusal(request: &Request, is_node: bool) -> Option<String> {
-    (!is_node && matches!(request, Request::Add { .. })).then(|| {
+    (!is_node && matches!(request, Request::Add { .. } | Request::Retry(_))).then(|| {
         "Night Shift runs on a Ragon node, and this machine is a client: nothing here would run the task. \
          Queue it on the node, in a checkout of the repository there."
             .to_string()
@@ -316,13 +322,15 @@ pub fn run(dir: &Path, request: Request, cwd: &Path) -> Vec<String> {
 fn lines(dir: &Path, request: Request, cwd: &Path) -> Vec<String> {
     let repo = match repo_root(cwd) {
         Some(repo) => repo,
-        None if matches!(request, Request::Usage(_)) => PathBuf::new(),
+        None if matches!(request, Request::Usage(_) | Request::ListAll) => PathBuf::new(),
         None => return vec!["Night Shift needs a git repository, and this directory is not in one.".to_string()],
     };
     match request {
         Request::Usage(text) => vec![text],
         Request::List => list(dir, &repo),
-        Request::Add { test, on, best_of, task } => add(dir, &repo, cwd, test, on, best_of, &task),
+        Request::ListAll => list_all(dir),
+        Request::Retry(id) => retry(dir, &repo, cwd, &id),
+        Request::Add { test, on, best_of, task } => add(dir, &repo, cwd, test, on, best_of, &task, None),
         Request::Show(id) => show(dir, &repo, &id),
         Request::Apply(id) => apply(dir, &repo, cwd, &id),
         Request::Drop(id) => drop_task(dir, &repo, &id),
@@ -338,6 +346,7 @@ fn add(
     on: Option<String>,
     best_of: Option<u32>,
     task: &str,
+    retry_of: Option<&str>,
 ) -> Vec<String> {
     let Some(base) = git(cwd, &["rev-parse", "HEAD"]) else {
         return vec!["Night Shift: this repository has no commit yet, so there is nothing to start from.".to_string()];
@@ -354,6 +363,7 @@ fn add(
             "on": on,
             // Null leaves the count to `[night] best_of`; a number outranks it (§11.9).
             "best_of": best_of,
+            "retry_of": retry_of,
             "model_at_add": served_model_id(),
             "status": "queued",
             "history": [{"at": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, false), "status": "queued"}],
@@ -367,8 +377,10 @@ fn add(
         Ok(id) => id,
         Err(error) => return vec![format!("Night Shift: could not queue the task: {error}")],
     };
+    let waiting = tasks_for(dir, repo).iter().filter(|task| text(task, "status") == "queued").count();
     let mut lines = vec![
         format!("Queued {id} on branch night/{id}, from {}.", &base[..base.len().min(10)]),
+        format!("Place in the queue: {waiting} of {waiting} for this repository."),
         match &test {
             Some(command) => format!("Test command: {command}"),
             None => "Test command: detected in the worktree when the task runs.".to_string(),
@@ -380,6 +392,9 @@ fn add(
             "Attempts: {count}, one after another; the one chosen is committed on night/{id} and the report lists every one."
         )),
         None => {}
+    }
+    if let Some(old) = retry_of {
+        lines.push(format!("Retry of {old}."));
     }
     if let Some(node) = &on {
         lines.push(format!(
@@ -424,8 +439,70 @@ fn list(dir: &Path, repo: &Path) -> Vec<String> {
     if tasks.is_empty() {
         lines.push("No Night Shift tasks for this repository. Queue one with /night add <task>.".to_string());
     }
+    lines.extend(task_lines(&tasks));
+    lines.push(next_window_line());
+    lines
+}
+
+/// `/night list --all`: every repository's tasks under its path, repositories in path order.
+fn list_all(dir: &Path) -> Vec<String> {
+    let mut repos: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    if let Ok(entries) = std::fs::read_dir(dir.join("tasks")) {
+        for task in entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .filter_map(|path| read_task(&path))
+        {
+            repos.entry(text(&task, "repo")).or_default().push(task);
+        }
+    }
+    let mut lines = Vec::new();
+    if repos.is_empty() {
+        lines.push("No Night Shift tasks in any repository.".to_string());
+    }
+    for (repo, mut tasks) in repos {
+        tasks.sort_by_key(|task| text(task, "id"));
+        lines.push(format!("{repo}:"));
+        lines.extend(task_lines(&tasks).into_iter().map(|line| format!("  {line}")));
+    }
+    lines.push(next_window_line());
+    lines
+}
+
+/// `/night retry <id>`: a stalled, failed, no-change, interrupted or cancelled task queued again
+/// as a new task with the same text, test and attempt count, from the checkout's current HEAD.
+fn retry(dir: &Path, repo: &Path, cwd: &Path, id: &str) -> Vec<String> {
+    let Some(old) = find(dir, repo, id) else {
+        return vec![format!("No task {id} for this repository (see /night list).")];
+    };
+    let old_id = text(&old, "id");
+    let status = text(&old, "status");
+    if !matches!(status.as_str(), "stalled" | "failed" | "no-change" | "interrupted" | "cancelled") {
+        return vec![format!(
+            "{old_id} is {status}; only a stalled, failed, no-change, interrupted or cancelled task can be retried."
+        )];
+    }
+    let test = old["test"].as_str().map(str::to_string);
+    let on = old["on"].as_str().map(str::to_string);
+    let best_of = old["best_of"].as_u64().and_then(|count| u32::try_from(count).ok());
+    let mut lines = add(dir, repo, cwd, test, on, best_of, &text(&old, "task"), Some(&old_id));
+    let new_id = lines.first().and_then(|line| line.strip_prefix("Queued ")).and_then(|rest| rest.split_whitespace().next());
+    if let Some(new_id) = new_id.map(str::to_string) {
+        if let Err(error) = update_task(dir, &old_id, |task| {
+            task["retried_as"] = json!(new_id);
+            Ok(())
+        }) {
+            lines.push(format!("(Could not note it in {old_id}: {error}.)"));
+        }
+    }
+    lines
+}
+
+fn task_lines(tasks: &[Value]) -> Vec<String> {
+    let mut lines = Vec::new();
     let now = chrono::Local::now();
-    for task in &tasks {
+    for task in tasks {
         let age = last_change(task)
             .map(|at| short_age(now.signed_duration_since(at)))
             .unwrap_or_default();
@@ -438,7 +515,6 @@ fn list(dir: &Path, repo: &Path) -> Vec<String> {
             first_line(&text(task, "task"), 60),
         ));
     }
-    lines.push(next_window_line());
     lines
 }
 
@@ -457,6 +533,12 @@ fn show(dir: &Path, repo: &Path, id: &str) -> Vec<String> {
     }
     if let Some(count) = task["best_of"].as_u64() {
         lines.push(format!("Attempts: {count} (the task's own best_of)"));
+    }
+    if let Some(old) = task["retry_of"].as_str() {
+        lines.push(format!("Retry of: {old}"));
+    }
+    if let Some(new) = task["retried_as"].as_str() {
+        lines.push(format!("Retried as: {new}"));
     }
     lines.push("Task:".to_string());
     lines.extend(text(&task, "task").lines().map(|line| format!("  {line}")));
@@ -1009,6 +1091,63 @@ mod tests {
     }
 
     #[test]
+    fn retry_queues_a_finished_task_again_and_both_name_each_other() {
+        let (repo, dir) = repo("retry");
+        run(&dir, Request::from_line("add --test \"true\" --best-of 2 Fix it"), &repo);
+        let old = text(&tasks_for(&dir, &repo)[0], "id");
+        assert!(retry(&dir, &repo, &repo, &old)[0].contains("is queued"), "queued is refused");
+        update_task(&dir, &old, |task| {
+            set_status(task, "stalled", None);
+            Ok(())
+        })
+        .unwrap_or_default();
+        let lines = retry(&dir, &repo, &repo, &old);
+        assert!(lines[0].starts_with("Queued "), "{lines:?}");
+        assert!(lines.iter().any(|line| line == &format!("Retry of {old}.")), "{lines:?}");
+        let tasks = tasks_for(&dir, &repo);
+        assert_eq!(tasks.len(), 2);
+        let new = tasks.iter().find(|task| text(task, "id") != old).cloned().unwrap_or_default();
+        assert_eq!(text(&new, "task"), "Fix it");
+        assert_eq!(new["test"], json!("true"));
+        assert_eq!(new["best_of"], json!(2));
+        assert_eq!(new["retry_of"], json!(old));
+        assert_eq!(text(&new, "status"), "queued");
+        let new_id = text(&new, "id");
+        assert!(show(&dir, &repo, &new_id).contains(&format!("Retry of: {old}")));
+        assert!(show(&dir, &repo, &old).contains(&format!("Retried as: {new_id}")));
+        for status in ["running", "sent", "cancel-requested", "done"] {
+            update_task(&dir, &old, |task| {
+                set_status(task, status, None);
+                Ok(())
+            })
+            .unwrap_or_default();
+            assert!(retry(&dir, &repo, &repo, &old)[0].contains(&format!("is {status}")), "{status}");
+        }
+        assert!(retry(&dir, &repo, &repo, "nope")[0].starts_with("No task nope"));
+        assert!(client_refusal(&Request::Retry("x".into()), false).is_some());
+    }
+
+    #[test]
+    fn list_all_groups_every_repositorys_queue_and_add_names_the_place() {
+        let (repo_a, dir) = repo("listall");
+        let first = run(&dir, Request::from_line("add One"), &repo_a);
+        assert!(first.iter().any(|line| line.starts_with("Place in the queue: 1 of 1")), "{first:?}");
+        let second = run(&dir, Request::from_line("add Two"), &repo_a);
+        assert!(second.iter().any(|line| line.starts_with("Place in the queue: 2 of 2")), "{second:?}");
+        assert!(second.last().is_some_and(|line| line.contains("indow") || line.contains("not enabled")));
+        let tasks = dir.join("tasks");
+        let other = json!({"id": "20200101-0000-abc", "repo": "/elsewhere", "status": "done", "task": "Other", "history": []});
+        std::fs::write(tasks.join("20200101-0000-abc.json"), pretty(&other)).unwrap_or_default();
+        let lines = list_all(&dir);
+        let here = lines.iter().position(|line| line == &format!("{}:", repo_a.display())).unwrap_or(usize::MAX);
+        let there = lines.iter().position(|line| line == "/elsewhere:").unwrap_or(usize::MAX);
+        assert!(here < lines.len() && there < lines.len(), "{lines:?}");
+        assert!(lines[here + 1].starts_with("  ") && lines[here + 1].contains("One"));
+        assert!(lines[there + 1].contains("Other"));
+        assert_eq!(list_all(&scratch("listall-empty").join("night"))[0], "No Night Shift tasks in any repository.");
+    }
+
+    #[test]
     fn best_of_is_the_tasks_own_key_and_null_without_the_option() {
         let (repo, dir) = repo("best-of");
         let added = run(&dir, Request::from_line("add --best-of 3 Speed up the parser"), &repo);
@@ -1250,7 +1389,9 @@ mod tests {
         assert_eq!(Request::from_line("show t1"), Request::Show("t1".into()));
         assert_eq!(Request::from_line("apply t1"), Request::Apply("t1".into()));
         assert_eq!(Request::from_line("drop t1"), Request::Drop("t1".into()));
-        for line in ["show", "apply a b", "drop", "list extra", "report extra", "frobnicate", "LIST"] {
+        assert_eq!(Request::from_line("retry t1"), Request::Retry("t1".into()));
+        assert_eq!(Request::from_line("list --all"), Request::ListAll);
+        for line in ["retry", "retry a b", "list --none", "show", "apply a b", "drop", "list extra", "report extra", "frobnicate", "LIST"] {
             assert_eq!(usage_text(Request::from_line(line)), USAGE, "{line}");
         }
         assert_eq!(Request::from_line("  "), Request::List);
