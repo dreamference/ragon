@@ -1227,6 +1227,18 @@ pub fn build_with(
     exact: bool,
     on_demand: bool,
 ) -> (Plan, Vec<String>) {
+    if let Some(why) = crate::submodules::large_repo_hold(repo, crate::submodules::LARGE_REPO_BYTES)
+    {
+        let plan = Plan {
+            repo_root: repo.root.clone(),
+            main_root: repo.main_root.clone(),
+            state_dir: repo.state_dir(),
+            vllm_host: settings.vllm_host.clone(),
+            wait_idle_s: 600,
+            runs: Vec::new(),
+        };
+        return (plan, vec![why]);
+    }
     let tools = Tools::find();
     let manifest = Manifest::load(&repo.scip_dir());
     let graph = crate::manifest::GraphSnapshot::load(&repo.scip_dir());

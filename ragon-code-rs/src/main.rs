@@ -125,6 +125,11 @@ enum Command {
         #[arg(long)]
         wait: bool,
     },
+    /// A repository over 1 GB is indexed only after you say yes once: `include`, `exclude` or `auto`.
+    Large {
+        /// include, exclude or auto (ask again); omit to show the answer.
+        verb: Option<String>,
+    },
     /// Which submodules are indexed and why; `include`, `exclude` or `auto <path>` records your choice.
     Submodules {
         /// include, exclude or auto.
@@ -214,6 +219,34 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
                 anyhow::bail!("--include-submodules is gone (it lasted one run): choose per submodule with `ragon-code submodules include <path>`");
             }
             ragon_code::index::request_or_run(&repo, &settings, exact, wait)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Large { verb } => {
+            let choice = match verb.as_deref() {
+                None => {
+                    let held = ragon_code::submodules::large_repo_hold(
+                        &repo,
+                        ragon_code::submodules::LARGE_REPO_BYTES,
+                    );
+                    println!("{}", held.unwrap_or_else(|| "repository: indexed".into()));
+                    return Ok(ExitCode::SUCCESS);
+                }
+                Some("include") => Some(ragon_code::submodules::Choice::Include),
+                Some("exclude") => Some(ragon_code::submodules::Choice::Exclude),
+                Some("auto") => None,
+                Some(other) => {
+                    anyhow::bail!("`ragon-code large {other}`: use include, exclude or auto")
+                }
+            };
+            ragon_code::submodules::set_repo_choice(&repo, choice)?;
+            let _ = ragon_code::requests::append(
+                &repo.state_dir(),
+                ragon_code::requests::Request::Index,
+            );
+            println!(
+                "recorded in {}",
+                ragon_code::submodules::choices_file().display()
+            );
             Ok(ExitCode::SUCCESS)
         }
         Command::Submodules { verb, path } => {

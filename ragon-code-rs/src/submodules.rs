@@ -454,6 +454,113 @@ pub fn set_choice(repo: &Repo, submodule: &Submodule, choice: Option<Choice>) ->
     write().with_context(|| format!("writing {}", file.display()))
 }
 
+/// Tracked bytes at and above which indexing the repository itself waits for the user's yes.
+pub const LARGE_REPO_BYTES: u64 = 1 << 30;
+
+/// Whether the repository's tracked files add up to `limit` bytes or more. Stops counting at the
+/// limit, so a huge tree costs no more than a big one.
+pub fn is_large(repo: &Repo, limit: u64) -> bool {
+    let Ok(listing) = git(&repo.root, &["ls-files", "-z"]) else {
+        return false;
+    };
+    let mut total: u64 = 0;
+    for rel in listing.split('\0').filter(|p| !p.is_empty()) {
+        if let Ok(meta) = std::fs::symlink_metadata(repo.root.join(rel)) {
+            if meta.is_file() {
+                total = total.saturating_add(meta.len());
+                if total >= limit {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The user's answer for indexing this repository as a whole, from `$CODEX_HOME/ragon-code.toml`
+/// (`[projects."<path>"] index = "include" | "exclude"`); `None` until they have answered.
+pub fn repo_choice(repo: &Repo) -> Option<Choice> {
+    repo_choice_in(&choices_file(), repo)
+}
+
+fn repo_choice_in(file: &Path, repo: &Repo) -> Option<Choice> {
+    let table = std::fs::read_to_string(file)
+        .ok()?
+        .parse::<toml::Table>()
+        .ok()?;
+    match table
+        .get("projects")?
+        .get(project_key(repo))?
+        .get("index")?
+        .as_str()?
+    {
+        "include" => Some(Choice::Include),
+        "exclude" => Some(Choice::Exclude),
+        _ => None,
+    }
+}
+
+/// Records (or, with `None`, forgets) the answer for this repository, in `file`.
+fn set_repo_choice_in(file: &Path, repo: &Repo, choice: Option<Choice>) -> Result<()> {
+    let mut table = match std::fs::read_to_string(file) {
+        Ok(text) => text
+            .parse::<toml::Table>()
+            .with_context(|| format!("{} is not valid TOML", file.display()))?,
+        Err(_) => toml::Table::new(),
+    };
+    let shape = || anyhow::anyhow!("{} has an unexpected shape", file.display());
+    let projects = table
+        .entry("projects")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or_else(shape)?;
+    let project = projects
+        .entry(project_key(repo))
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or_else(shape)?;
+    match choice {
+        Some(Choice::Include) => project.insert("index".into(), "include".into()),
+        Some(Choice::Exclude) => project.insert("index".into(), "exclude".into()),
+        None => project.remove("index"),
+    };
+    let text = toml::to_string(&table)?;
+    let write = || -> std::io::Result<()> {
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let staging = file.with_extension(format!("toml.{}.tmp", std::process::id()));
+        std::fs::write(&staging, &text)?;
+        std::fs::rename(&staging, file).inspect_err(|_| {
+            let _ = std::fs::remove_file(&staging);
+        })
+    };
+    write().with_context(|| format!("writing {}", file.display()))
+}
+
+/// Records the user's answer. Fails inside Codex's sandbox, where `$CODEX_HOME` is read-only:
+/// the agent cannot say yes for the user.
+pub fn set_repo_choice(repo: &Repo, choice: Option<Choice>) -> Result<()> {
+    set_repo_choice_in(&choices_file(), repo, choice)
+}
+
+/// Why the repository is held back, if it is: it is at or over `limit` bytes and the user has not
+/// said yes. Below the limit nothing is asked.
+pub fn large_repo_hold(repo: &Repo, limit: u64) -> Option<String> {
+    large_repo_hold_in(&choices_file(), repo, limit)
+}
+
+fn large_repo_hold_in(file: &Path, repo: &Repo, limit: u64) -> Option<String> {
+    let answer = repo_choice_in(file, repo);
+    if answer == Some(Choice::Include) || !is_large(repo, limit) {
+        return None;
+    }
+    Some(match answer {
+        Some(_) => "repository: over 1 GB and you chose not to index it (`ragon-code large include` to change)".into(),
+        None => "repository: over 1 GB, not indexed until you say yes once (`ragon-code large include`, or `exclude` to stop asking)".into(),
+    })
+}
+
 /// The submodules `dir`'s `.gitmodules` declares: `(name, path relative to dir)`.
 ///
 /// Read from the file, not from `git submodule status`, which starts a git process per submodule
@@ -974,6 +1081,77 @@ mod tests {
     fn an_address_is_compared_without_case_or_padding() {
         let authors = Authors::from_addresses(["dev@acme.example".to_string()]);
         assert!(authors.wrote(" Dev@ACME.example\n"));
+    }
+
+    fn repo_with_bytes(dir: &Path, bytes: usize) -> Repo {
+        std::fs::create_dir_all(dir).unwrap();
+        let run = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        run(&["init", "-q"]);
+        std::fs::write(dir.join("big.bin"), vec![b'x'; bytes]).unwrap();
+        run(&["add", "big.bin"]);
+        Repo {
+            root: dir.to_path_buf(),
+            main_root: dir.to_path_buf(),
+            is_git: true,
+        }
+    }
+
+    #[test]
+    fn a_repository_over_the_limit_waits_for_one_yes() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo_with_bytes(&dir.path().join("r"), 4096);
+        let file = dir.path().join("ragon-code.toml");
+        assert!(is_large(&repo, 4096));
+        assert!(!is_large(&repo, 4097));
+        // Never answered: held back, and the answer is read from outside the repository.
+        assert!(large_repo_hold_in(&file, &repo, 4096).is_some());
+        set_repo_choice_in(&file, &repo, Some(Choice::Exclude)).unwrap();
+        assert!(large_repo_hold_in(&file, &repo, 4096)
+            .unwrap()
+            .contains("chose not to"));
+        set_repo_choice_in(&file, &repo, Some(Choice::Include)).unwrap();
+        assert_eq!(repo_choice_in(&file, &repo), Some(Choice::Include));
+        assert!(large_repo_hold_in(&file, &repo, 4096).is_none());
+        set_repo_choice_in(&file, &repo, None).unwrap();
+        assert!(large_repo_hold_in(&file, &repo, 4096).is_some());
+        assert!(!repo.root.join("ragon-code.toml").exists());
+    }
+
+    #[test]
+    fn a_repository_below_the_limit_is_never_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo_with_bytes(&dir.path().join("r"), 100);
+        let file = dir.path().join("ragon-code.toml");
+        assert!(large_repo_hold_in(&file, &repo, 4096).is_none());
+    }
+
+    #[test]
+    fn the_answer_keeps_the_submodule_choices() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = repo_with_bytes(&dir.path().join("r"), 10);
+        let file = dir.path().join("ragon-code.toml");
+        std::fs::write(
+            &file,
+            format!(
+                "[projects.{:?}.submodules]\nlib = \"include\"\n",
+                project_key(&repo)
+            ),
+        )
+        .unwrap();
+        set_repo_choice_in(&file, &repo, Some(Choice::Include)).unwrap();
+        assert_eq!(
+            choices_in(&file, &repo),
+            vec![("lib".to_string(), Choice::Include)]
+        );
+        assert_eq!(repo_choice_in(&file, &repo), Some(Choice::Include));
     }
 
     #[test]
