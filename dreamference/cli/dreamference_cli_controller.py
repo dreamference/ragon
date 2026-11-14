@@ -1783,7 +1783,11 @@ class DreamferenceCLIController:
 
         # Command: ragon-admin init
         init_parser = subparsers.add_parser(
-            "init", help="Initialize .dreamference project workspace and agent configs"
+            "init",
+            help=(
+                "First run: write the config, index the workspace, then check the install, "
+                "download the model, start the server and run ragon once"
+            ),
         )
         init_parser.add_argument(
             "--model", default=None, help="Model name served on vLLM GB10 endpoint"
@@ -4755,15 +4759,6 @@ class DreamferenceCLIController:
 
         elif args.command == _ARG_INIT:
             cls.display_header()
-            auto_t = config.use_tensorizer
-            if config.model:
-                download_model_with_drafter(
-                    config.model, hf_token=config.hf_token, auto_tensorize=auto_t
-                )
-                if config.draft_model:
-                    download_model(
-                        config.draft_model, hf_token=config.hf_token, auto_tensorize=auto_t
-                    )
             from dreamference.config.config_generator import generate_default_init_config
             from dreamference.config.config_path_resolver import ConfigPathResolver
 
@@ -4796,6 +4791,13 @@ class DreamferenceCLIController:
                 f"   [cyan]Indexed Files:[/cyan]   {summary['total_indexed_files']} "
                 f"({summary['total_ast_symbols']} AST symbols)"
             )
+            # The first run, one command (owner Q105): install checks, model download, server
+            # start and a first `ragon` turn, each still a command of its own.
+            from dreamference.cli.first_run import FirstRun
+
+            first_run = FirstRun.run(config, target_config_path, getattr(args, "model", None))
+            if first_run:
+                sys.exit(first_run)
 
         elif args.command == _ARG_RUN:
             if args.compat is not None:
