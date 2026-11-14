@@ -264,15 +264,14 @@ def test_the_clear_tensorize_cache_alias_clears_and_exits_by_the_result(monkeypa
 
 
 def test_init_writes_the_config_at_the_resolved_path_and_reindexes(clean_env, monkeypatch, capsys):
+    from dreamference.cli.first_run import FirstRun
     from dreamference.context_engine import ContextEngine
 
-    downloads, indexed = [], []
+    first_runs, indexed = [], []
+    # The download, the server and the smoke are the first run's steps (tests/test_first_run.py).
     monkeypatch.setattr(
-        controller,
-        "download_model_with_drafter",
-        lambda model, hf_token=None, auto_tensorize=False: downloads.append(model),
+        FirstRun, "run", lambda config, path, model: first_runs.append((config.model, path)) or 0
     )
-    monkeypatch.setattr(controller, "download_model", lambda *a, **k: downloads.append(a[0]))
     monkeypatch.setattr(
         ContextEngine,
         "index_workspace",
@@ -283,7 +282,7 @@ def test_init_writes_the_config_at_the_resolved_path_and_reindexes(clean_env, mo
     target = clean_env / "sub" / "mine.toml"
     target.parent.mkdir()
     DreamferenceCLIController.run_cli(["--config", str(target), "init"])
-    assert downloads == ["qwen3.8-27b-nvfp4-dflash2"]
+    assert first_runs == [("qwen3.8-27b-nvfp4-dflash2", str(target))]
     assert indexed == [True]
     text = target.read_text(encoding="utf-8")
     assert 'agent_runner = "codex"' in text  # the loopback host is the default and is not written
