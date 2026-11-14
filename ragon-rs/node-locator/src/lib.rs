@@ -103,6 +103,12 @@ impl Node {
         format!("{{\n{}\n}}\n", fields.join(",\n"))
     }
 
+    /// [`Node::render`] on one line, for an environment variable ([`SESSION_ENV`]). A value's
+    /// line break is escaped by `quote`, so joining the lines changes nothing but the layout.
+    pub fn render_line(&self) -> String {
+        self.render().lines().map(str::trim).collect()
+    }
+
     /// Reads the file's text. `None` unless it is an object with an address.
     pub fn parse(text: &str) -> Option<Node> {
         let fields = flat_object(text)?;
@@ -341,12 +347,50 @@ pub fn remembered_at(path: &Path) -> Option<Node> {
 
 /// What a program that is not the launcher should use for a service that defaults to loopback:
 /// `None` on a node, or on a client that remembers no node (loopback, as before the split), and
-/// the remembered node otherwise: at its LAN address, or at its overlay name when the LAN
-/// address does not accept a connection, the node has one and the overlay is up.
+/// the session's node ([`SESSION_ENV`]) or else the remembered node otherwise: at its LAN address,
+/// or at its overlay name when the LAN address does not accept a connection, the node has one and
+/// the overlay is up.
 pub fn remote_node() -> Option<Node> {
     let pin = std::env::var(PIN_ENV).ok();
-    remote_node_pinned(pin.as_deref(), is_node(), remembered())
+    let session = std::env::var(SESSION_ENV).ok();
+    remote_node_in_session(pin.as_deref(), is_node(), session.as_deref(), remembered())
         .map(|node| reachable(node, lan_answers, overlay_up))
+}
+
+/// [`remote_node_pinned`] with the session's node given as [`SESSION_ENV`]'s text: it stands in
+/// for the remembered node, so a pin still beats it and a node still uses loopback.
+pub fn remote_node_in_session(
+    pin: Option<&str>,
+    is_node: bool,
+    session: Option<&str>,
+    remembered: Option<Node>,
+) -> Option<Node> {
+    remote_node_pinned(pin, is_node, session_node_from(session).or(remembered))
+}
+
+/// The node the launcher picked for its session when several answered a browse and none was
+/// remembered: the least loaded ([`least_loaded`]). It is not written to `node.json`, so the next
+/// session picks again; the launcher hands it to the session's commands as `node.json`'s text on
+/// one line, and they use it in place of the remembered node.
+pub const SESSION_ENV: &str = "RAGON_SESSION_NODE";
+
+/// The session's node from [`SESSION_ENV`]'s text; `None` when unset or not a node's text.
+pub fn session_node_from(text: Option<&str>) -> Option<Node> {
+    text.and_then(Node::parse)
+}
+
+/// Which of several nodes a client uses for a session, by how long each took to answer
+/// `/v1/models` (`None`: it did not answer, and is never picked): the quickest, the busiest
+/// node's model server being the slowest to answer. A tie goes to the smaller key (the node's id),
+/// so that the same answers always pick the same node. The index into `answers`, or `None` when
+/// no node answered.
+pub fn least_loaded(answers: &[(&str, Option<Duration>)]) -> Option<usize> {
+    answers
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (key, took))| took.map(|took| (took, *key, index)))
+        .min()
+        .map(|(_, _, index)| index)
 }
 
 /// One command's choice of node, by name, address or id (the launcher reads it too).
@@ -1107,6 +1151,71 @@ mod tests {
         assert_eq!(remote_node_from(true, Some(node())), None);
         assert_eq!(remote_node_from(false, None), None);
         assert_eq!(remote_node_from(false, Some(node())), Some(node()));
+    }
+
+    #[test]
+    fn the_sessions_node_stands_in_for_the_remembered_one_below_a_pin_and_never_on_a_node() {
+        let picked = Node {
+            node: "2222bbbb".to_string(),
+            name: "spark-2".to_string(),
+            address: "192.168.1.21".to_string(),
+            web_port: Some(3100),
+            remote: "ragon-2222bbbb.netbird.selfhosted".to_string(),
+            ..node()
+        };
+        let line = picked.render_line();
+        assert!(!line.contains('\n'), "{line}");
+        assert_eq!(session_node_from(Some(&line)), Some(picked.clone()));
+        assert_eq!(
+            remote_node_in_session(None, false, Some(&line), Some(node())),
+            Some(picked.clone())
+        );
+        assert_eq!(
+            remote_node_in_session(None, false, Some(&line), None),
+            Some(picked.clone())
+        );
+        assert_eq!(remote_node_in_session(None, true, Some(&line), None), None);
+        // A pin names a node for one command, the session's included.
+        assert_eq!(
+            remote_node_in_session(Some("spark-2"), false, Some(&line), Some(node())),
+            Some(picked)
+        );
+        assert_eq!(
+            remote_node_in_session(Some("spark-1"), false, Some(&line), Some(node()))
+                .map(|n| n.address),
+            Some("spark-1.local".to_string())
+        );
+        // Unset, empty or not a node's text: the remembered node, as before.
+        for text in [None, Some(""), Some("spark-2"), Some("{}")] {
+            assert_eq!(
+                remote_node_in_session(None, false, text, Some(node())),
+                Some(node())
+            );
+        }
+    }
+
+    #[test]
+    fn a_line_break_in_a_value_survives_the_one_line_rendering() {
+        let odd = Node {
+            name: "a \"b\"\n c ".to_string(),
+            ..node()
+        };
+        assert_eq!(Node::parse(&odd.render_line()), Some(odd));
+    }
+
+    #[test]
+    fn the_quickest_node_to_answer_is_picked_and_a_silent_one_never() {
+        let ms = |n: u64| Some(Duration::from_millis(n));
+        assert_eq!(
+            least_loaded(&[("a", ms(90)), ("b", ms(12)), ("c", ms(40))]),
+            Some(1)
+        );
+        assert_eq!(least_loaded(&[("a", None), ("b", ms(500))]), Some(1));
+        assert_eq!(least_loaded(&[("a", None), ("b", None)]), None);
+        assert_eq!(least_loaded(&[]), None);
+        // A tie goes to the smaller id, whatever order the answers came in.
+        assert_eq!(least_loaded(&[("bbbb", ms(20)), ("aaaa", ms(20))]), Some(1));
+        assert_eq!(least_loaded(&[("aaaa", ms(20)), ("bbbb", ms(20))]), Some(0));
     }
 
     const WIFI_ONLY: &str = "wlP9s9:wifi:connected\np2p-dev-wlP9s9:wifi-p2p:disconnected\nenP7s7:ethernet:unavailable\nlo:loopback:connected (externally)\n";

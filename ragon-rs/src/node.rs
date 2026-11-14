@@ -12,8 +12,10 @@
 //! 4. the node remembered in `$CODEX_HOME/node.json`, found again on the network **by its id**, so
 //!    an address change costs nothing; its last address is tried only when a browse returns
 //!    nothing at all;
-//! 5. a browse of `_ragon-node._tcp`: one node is used and remembered, several are a question
-//!    unless only one of them serves a coding model, or only one of those is not stopped.
+//! 5. a browse of `_ragon-node._tcp`: one node is used and remembered. Of several, the one that
+//!    serves a coding model is used when it is the only one, or the only one not stopped; when
+//!    two or more serve one, the session uses the least loaded (the quickest to answer
+//!    `/v1/models`, owner Q108) without remembering it, and the next session picks again.
 //!
 //! When a browse misses (nothing answered, the remembered node did not, or the pinned one is not
 //! there), a Linux client whose own Wi-Fi saves power gets one more line saying so, with the
@@ -184,6 +186,10 @@ pub enum Resolution {
     /// Several nodes and no way to choose without asking; `gone` names a remembered node that
     /// did not answer while others did.
     Choose { adverts: Vec<Advert>, gone: Option<String> },
+    /// Nothing remembered and several nodes serving a coding model: the session uses the least
+    /// loaded of them ([`least_loaded`]), measured by whoever needs the model, and does not
+    /// remember it. Nothing has been asked of the nodes yet.
+    Least { adverts: Vec<Advert> },
     /// No node answered and none is remembered.
     NoneFound,
     /// A node was named that cannot be used; the text says why.
@@ -262,15 +268,19 @@ pub fn resolve(inputs: &Inputs, browser: &dyn Browser) -> Resolution {
         [only] => only,
         several => {
             // Two Sparks, one with a coding model and one with speech or embeddings, need no
-            // answer from anyone; two that both serve a coding model need one, once. Nor do two
-            // coding nodes of which only one has its model server up: a stopped one can serve
-            // nothing, and counting it made a client that remembers no node (the desktop app on
-            // the owner's desktop) refuse to start.
+            // answer from anyone. Nor do two coding nodes of which only one has its model server
+            // up: a stopped one can serve nothing, and counting it made a client that remembers
+            // no node (the desktop app on the owner's desktop) refuse to start. Two or more that
+            // serve a coding model need no answer either (owner, Q108): the session uses the least
+            // loaded of them, which `resolve_host` measures, and the next session picks again.
             let mut main = several.iter().filter(|advert| advert.main);
-            let mut up = several.iter().filter(|advert| serving(advert));
-            match (main.next(), main.next(), up.next(), up.next()) {
-                (Some(only), None, _, _) => only,
-                (_, _, Some(only), None) => only,
+            let up: Vec<&Advert> = several.iter().filter(|advert| serving(advert)).collect();
+            match (main.next(), main.next(), up.as_slice()) {
+                (Some(only), None, _) => only,
+                (_, _, [only]) => only,
+                (_, _, [_, _, ..]) => {
+                    return Resolution::Least { adverts: up.into_iter().cloned().collect() };
+                }
                 _ => return Resolution::Choose { adverts: found, gone: None },
             }
         }
@@ -508,6 +518,21 @@ pub async fn resolve_host(interactive: bool) -> anyhow::Result<String> {
             let chosen = choose(&adverts, gone.as_deref(), interactive)?;
             (chosen.node, chosen.state, true, None)
         }
+        Resolution::Least { adverts } => {
+            let timings = answer_times(&adverts).await;
+            match pick_least_loaded(&adverts, &timings) {
+                Some(advert) => {
+                    let note = least_loaded_note(&advert.node, adverts.len());
+                    let _ = SESSION_NODE.set(advert.node.clone());
+                    (advert.node, advert.state, false, Some(note))
+                }
+                // None answered in time: ask, as before the pick, and remember the answer.
+                None => {
+                    let chosen = choose(&adverts, None, interactive)?;
+                    (chosen.node, chosen.state, true, None)
+                }
+            }
+        }
         Resolution::Found { advert, remember, note } => (advert.node, advert.state, remember, note),
         Resolution::LastAddress { node, note } => (node, String::new(), false, note),
         Resolution::Overlay { node } => {
@@ -573,6 +598,69 @@ async fn answers(host: &str) -> bool {
         return false;
     };
     crate::served_model(&client, host).await.is_some()
+}
+
+/// The node this session picked as the least loaded of several, set once by [`resolve_host`]. It
+/// is not remembered in `node.json`; the session's commands learn it from [`with_session_node`].
+static SESSION_NODE: std::sync::OnceLock<Node> = std::sync::OnceLock::new();
+
+/// How long each node took to list its model on `/v1/models`, asked of all at once; `None` for
+/// one that did not answer within two seconds. A node busy with other sessions answers later, so
+/// this is the load the client can see: nothing that changes minute to minute is advertised.
+async fn answer_times(adverts: &[Advert]) -> Vec<Option<Duration>> {
+    let Ok(client) = crate::proxy::direct_client(Duration::from_secs(2)) else {
+        return vec![None; adverts.len()];
+    };
+    let asks = adverts.iter().map(|advert| {
+        let (client, host) = (&client, advert.node.model_url());
+        async move {
+            let started = Instant::now();
+            crate::served_model(client, &host).await.map(|_| started.elapsed())
+        }
+    });
+    futures::future::join_all(asks).await
+}
+
+/// The least loaded of `adverts`, given how long each took to answer ([`answer_times`]): the
+/// quickest, a tie going to the smaller node id ([`locator::least_loaded`]). A node that did not
+/// answer, or speaks a newer protocol than this `ragon`, is never picked.
+pub fn pick_least_loaded(adverts: &[Advert], timings: &[Option<Duration>]) -> Option<Advert> {
+    let answers: Vec<(&str, Option<Duration>)> = adverts
+        .iter()
+        .zip(timings)
+        .map(|(advert, took)| (advert.node.node.as_str(), took.filter(|_| advert.proto <= locator::PROTO)))
+        .collect();
+    locator::least_loaded(&answers).map(|index| adverts[index].clone())
+}
+
+fn least_loaded_note(node: &Node, of: usize) -> String {
+    format!(
+        "Using Ragon node {} at {} for this session, the least loaded of {of} (`ragon node use <name>` keeps one).",
+        label(node),
+        node.address
+    )
+}
+
+/// Hands the session's node to the commands it runs ([`locator::SESSION_ENV`]), so ragon-search,
+/// ragon-fetch and the web commands use the node this session picked rather than browse again.
+/// Added after the program name, so the user's own `-c` still wins. Unchanged when the session
+/// did not pick one.
+pub fn with_session_node(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    with_node_override(args, SESSION_NODE.get())
+}
+
+fn with_node_override(args: Vec<std::ffi::OsString>, node: Option<&Node>) -> Vec<std::ffi::OsString> {
+    let Some(node) = node else { return args };
+    let setting = format!(
+        "shell_environment_policy.set.{}={}",
+        locator::SESSION_ENV,
+        toml::Value::String(node.render_line())
+    );
+    let mut args = args.into_iter();
+    let mut out: Vec<std::ffi::OsString> = args.next().into_iter().collect();
+    out.extend(["-c".into(), setting.into()]);
+    out.extend(args);
+    out
 }
 
 /// Writes `node.json`, unless it already says the same apart from when the node was last seen
@@ -880,7 +968,7 @@ pub fn list_lines(inputs: &Inputs, adverts: &[Advert], models: &[Option<crate::S
             ));
         }
     } else if inputs.configured.is_none() && !inputs.is_node && !adverts.is_empty() {
-        lines.push("None is remembered yet: the next `ragon` uses the one it finds, or asks.".to_string());
+        lines.push("None is remembered yet: the next `ragon` uses the one it finds, or the least loaded of several.".to_string());
     }
     lines
 }
@@ -1411,6 +1499,51 @@ mod tests {
     }
 
     #[test]
+    fn the_least_loaded_pick_is_the_quickest_to_answer_and_never_a_silent_or_newer_node() {
+        let ms = |n| Some(Duration::from_millis(n));
+        let adverts = [spark1(), spark2()];
+        assert_eq!(pick_least_loaded(&adverts, &[ms(40), ms(12)]), Some(spark2()));
+        assert_eq!(pick_least_loaded(&adverts, &[ms(12), ms(40)]), Some(spark1()));
+        assert_eq!(pick_least_loaded(&adverts, &[None, ms(900)]), Some(spark2()));
+        // A tie goes to the smaller node id, whichever order the browse returned them in.
+        assert_eq!(pick_least_loaded(&[spark2(), spark1()], &[ms(20), ms(20)]), Some(spark1()));
+        let newer = Advert { proto: locator::PROTO + 1, ..spark1() };
+        assert_eq!(pick_least_loaded(&[newer, spark2()], &[ms(1), ms(50)]), Some(spark2()));
+        // None answered: no pick, and `resolve_host` asks as before.
+        assert_eq!(pick_least_loaded(&adverts, &[None, None]), None);
+    }
+
+    #[test]
+    fn the_least_loaded_pick_is_not_remembered_and_a_remembered_node_still_wins() {
+        // A remembered node found by its id is used and kept, however loaded it is.
+        let inputs = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        assert!(matches!(
+            resolve(&inputs, &Fixed::new(vec![spark2(), spark1()])),
+            Resolution::Found { advert, remember: true, .. } if advert == spark1()
+        ));
+        // The pick carries no `remember`: `resolve_host` uses it for the session only.
+        let note = least_loaded_note(&spark2().node, 2);
+        assert!(note.contains("spark-2") && note.contains("for this session") && note.contains("ragon node use"));
+    }
+
+    #[test]
+    fn the_sessions_node_reaches_its_commands_after_the_program_name_and_reads_back() {
+        let args: Vec<std::ffi::OsString> = vec!["codex".into(), "--oss".into()];
+        assert_eq!(with_node_override(args.clone(), None), args);
+        let node = spark2().node;
+        let out = with_node_override(args, Some(&node));
+        assert_eq!(out[0], "codex");
+        assert_eq!(out[1], "-c");
+        assert_eq!(out[3], "--oss");
+        let setting = out[2].to_str().unwrap();
+        let (key, value) = setting.split_once('=').unwrap();
+        assert_eq!(key, format!("shell_environment_policy.set.{}", locator::SESSION_ENV));
+        let value: toml::Value = toml::from_str(&format!("v = {value}")).unwrap();
+        let text = value["v"].as_str().unwrap();
+        assert_eq!(locator::session_node_from(Some(text)), Some(node));
+    }
+
+    #[test]
     fn none_found_and_none_remembered_is_its_own_case() {
         assert_eq!(resolve(&Inputs::default(), &Fixed::new(Vec::new())), Resolution::NoneFound);
         let message = none_found_message();
@@ -1419,9 +1552,15 @@ mod tests {
     }
 
     #[test]
-    fn several_nodes_need_an_answer_unless_exactly_one_serves_a_coding_model() {
+    fn several_coding_nodes_go_to_the_least_loaded_pick_and_other_mixes_need_an_answer() {
         let both = Fixed::new(vec![spark1(), spark2()]);
-        assert_eq!(resolve(&Inputs::default(), &both), Resolution::Choose { adverts: vec![spark1(), spark2()], gone: None });
+        assert_eq!(resolve(&Inputs::default(), &both), Resolution::Least { adverts: vec![spark1(), spark2()] });
+        // Only the serving ones are measured: a stopped coding node can serve nothing.
+        let three = Fixed::new(vec![spark1(), stopped(advert("spark-3", "33333333-cccc", "192.168.50.107")), spark2()]);
+        assert_eq!(resolve(&Inputs::default(), &three), Resolution::Least { adverts: vec![spark1(), spark2()] });
+        // Both stopped: nothing to measure, so the question stays.
+        let both_stopped = Fixed::new(vec![stopped(spark1()), stopped(spark2())]);
+        assert!(matches!(resolve(&Inputs::default(), &both_stopped), Resolution::Choose { gone: None, .. }));
         let speech = Advert { main: false, ..spark2() };
         let one_main = Fixed::new(vec![speech.clone(), spark1()]);
         assert!(matches!(resolve(&Inputs::default(), &one_main), Resolution::Found { advert, remember: true, .. } if advert == spark1()));

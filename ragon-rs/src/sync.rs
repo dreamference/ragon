@@ -24,7 +24,7 @@ fn node_host(resolution: Resolution) -> Result<String, String> {
         Resolution::Host(host) => Ok(host),
         Resolution::Found { advert, .. } => Ok(ragon_node_locator::url_host(&advert.node.address)),
         Resolution::LastAddress { node, .. } | Resolution::Overlay { node } => Ok(ragon_node_locator::url_host(&node.address)),
-        Resolution::Choose { .. } => Err("several nodes answer on this network: choose one with `ragon node use <name>`".to_string()),
+        Resolution::Choose { .. } | Resolution::Least { .. } => Err("several nodes answer on this network: choose one with `ragon node use <name>`".to_string()),
         Resolution::NoneFound => Err(node::none_found_message()),
         Resolution::Refused(message) => Err(message),
     }
