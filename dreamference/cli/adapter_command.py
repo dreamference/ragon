@@ -6,8 +6,11 @@ through the node's `/v1/models`. Only `install` reaches the network; `list`, `li
 """
 
 import argparse
+import dataclasses
+import importlib
 import json
 import sys
+from pathlib import Path
 from typing import Final
 
 from dreamference.config import DreamferenceConfig
@@ -15,10 +18,23 @@ from dreamference.hardware.adapter_catalog import AdapterCatalog
 from dreamference.hardware.adapter_installer import AdapterInstaller
 from dreamference.hardware.adapter_manifest import AdapterManifest
 from dreamference.hardware.adapter_store import TRUST_THIRD_PARTY, AdapterStore
+from dreamference.hardware.adapter_task_candidate import TaskCandidate
+from dreamference.hardware.adapter_train_run import (
+    DEFAULT_EPOCHS,
+    STAGE_CLASSES,
+    STAGES,
+    AdapterTrainRun,
+)
+from dreamference.hardware.adapter_train_tasks import AdapterTrainTasks
 from dreamference.hardware.adapter_verifier import AdapterVerifier
 from dreamference.vllm_server.adapter_serving import AdapterServing
 
 ADAPTER_COMMAND: Final[str] = "adapter"
+TRAINER_SCHEME: Final[str] = "ssh://"
+STAGE_DATA: Final[str] = "data"
+STAGE_TRAIN: Final[str] = "train"
+HOST_FORBIDDEN: Final[str] = "/ "
+DEFAULT_RANK: Final[int] = 16
 
 THIRD_PARTY_WARNING: Final[str] = """⚠️  This adapter is not signed by Dreamference.
     An adapter changes what the model writes: it can make the model suggest
@@ -89,6 +105,29 @@ class AdapterCommand:
             "verify", help="Check installed adapters again: signature, files and the served base"
         )
         verify.add_argument("name", nargs="?", default=None, help="One adapter (default: all)")
+        train = commands.add_parser(
+            "train",
+            help="Train a LoRA adapter on a repository's own history (stages; --dry-run changes nothing)",
+        )
+        train.add_argument("name", help="The adapter's name (the run's folder name)")
+        train.add_argument("--repo", required=True, help="The git repository to learn from")
+        train.add_argument("--test-cmd", default=None, help="The repository's test command")
+        train.add_argument("--language", default=None, help="The repository's main language")
+        train.add_argument(
+            "--trainer",
+            default=None,
+            help="Train on this host instead of locally: ssh://HOST (sends data off the node)",
+        )
+        train.add_argument("--budget-hours", type=float, default=None, help="GPU hours to spend")
+        train.add_argument("--rank", type=int, default=DEFAULT_RANK, help="LoRA rank")
+        train.add_argument(
+            "--epochs", type=int, default=DEFAULT_EPOCHS, help="Passes over the data"
+        )
+        train.add_argument("--stage", choices=STAGES, default=None, help="Run this stage alone")
+        train.add_argument("--resume", action="store_true", help="Continue an existing run")
+        train.add_argument(
+            "--dry-run", action="store_true", help="Print the plan and change nothing"
+        )
         return parser
 
     @classmethod
@@ -105,6 +144,8 @@ class AdapterCommand:
         """
         from dreamference.node.node_identity import NodeIdentity
 
+        if args.adapter_command == STAGE_TRAIN and args.dry_run:
+            return cls._train(args)
         if NodeIdentity.read() is None:
             print(
                 f"💡 Adapters are installed on the node that serves the model ({config.vllm_host}): "
@@ -118,6 +159,7 @@ class AdapterCommand:
             "install": lambda args, base: cls._install(args, base, config),
             "remove": cls._remove,
             "verify": cls._verify,
+            "train": lambda args, base: cls._train(args),
         }
         return handlers[args.adapter_command](args, base)
 
@@ -287,3 +329,221 @@ class AdapterCommand:
             else:
                 print(f"✅ {name}: signature, files and base check out")
         return 1 if failed else 0
+
+    @classmethod
+    def _trainer_host(cls, trainer: str | None) -> str | None:
+        """The host a `--trainer` names, or None for a local run.
+
+        Args:
+            trainer: The option's value.
+
+        Returns:
+            str | None: The host name.
+
+        Raises:
+            ValueError: When the value is not `ssh://HOST`.
+        """
+        if trainer is None:
+            return None
+        host = trainer[len(TRAINER_SCHEME) :] if trainer.startswith(TRAINER_SCHEME) else ""
+        if not host or host.startswith("-") or any(c in host for c in HOST_FORBIDDEN):
+            raise ValueError(f"--trainer must be ssh://HOST, not {trainer!r}")
+        return host
+
+    @classmethod
+    def _train(cls, args: argparse.Namespace) -> int:
+        """Plan or run the next stage of a training run.
+
+        Args:
+            args: The parsed `train` arguments.
+
+        Returns:
+            int: The exit code.
+        """
+        checked = cls._preflight(args)
+        if isinstance(checked, int):
+            return checked
+        run, host, repo, training, holdout = checked
+        if args.dry_run:
+            return cls._plan(args, run, host, len(training), len(holdout))
+        stage = args.stage or run.next_stage()
+        if args.stage is None and run.state()["done"] and not args.resume:
+            print(f"❌ The run {args.name!r} exists: add --resume, or pick another name.")
+            stage = None
+        elif stage is None:
+            print(f"✅ Every stage of {args.name!r} is done.")
+            return 0
+        if stage is None:
+            return 1
+        run.write_config(
+            {
+                "repo": str(repo),
+                "test_cmd": args.test_cmd,
+                "language": args.language,
+                "trainer": args.trainer,
+                "budget_hours": args.budget_hours,
+                "rank": args.rank,
+                "epochs": args.epochs,
+            }
+        )
+        if stage == STAGE_DATA:
+            return cls._write_tasks(run, training, holdout)
+        return cls._dispatch(stage, run, host)
+
+    @classmethod
+    def _write_tasks(
+        cls,
+        run: AdapterTrainRun,
+        training: tuple[TaskCandidate, ...],
+        holdout: tuple[TaskCandidate, ...],
+    ) -> int:
+        """Run the data stage: keep the mined tasks in the run directory.
+
+        Args:
+            run: The run.
+            training: The training tasks.
+            holdout: The hold-out tasks.
+
+        Returns:
+            int: 0.
+        """
+        payload = {
+            "train": [dataclasses.asdict(t) for t in training],
+            "holdout": [dataclasses.asdict(t) for t in holdout],
+        }
+        (run.directory / "tasks.json").write_text(json.dumps(payload, indent=2) + "\n")
+        run.mark_done(STAGE_DATA)
+        print(
+            f"✅ data: {len(training)} tasks, {len(holdout)} held out, "
+            f"in {run.directory / 'tasks.json'}"
+        )
+        return 0
+
+    @classmethod
+    def _preflight(
+        cls, args: argparse.Namespace
+    ) -> "int | tuple[AdapterTrainRun, str | None, Path, tuple[TaskCandidate, ...], tuple[TaskCandidate, ...]]":
+        """Check the arguments, the egress gate and the repository.
+
+        Args:
+            args: The parsed `train` arguments.
+
+        Returns:
+            An exit code when the run must stop, else the run, the trainer host, the repository
+            and the training and hold-out tasks.
+        """
+        from dreamference.config.airgapped_resolver import AIRGAPPED_OFF, AirgappedResolver
+
+        try:
+            host = cls._trainer_host(args.trainer)
+            run = AdapterTrainRun(args.name)
+            repo = Path(args.repo).expanduser()
+            if not (repo / ".git").exists():
+                raise ValueError(f"{repo} is not a git repository")
+        except ValueError as error:
+            print(f"❌ {error}")
+            return 2
+        if host is not None and AirgappedResolver.level(cwd=repo) != AIRGAPPED_OFF:
+            print(
+                f"❌ Training on {host} sends data off this node, which /airgapped on refuses "
+                "(it also refuses when the level cannot be read). Turn it off or train locally."
+            )
+            return 1
+        try:
+            training, holdout = AdapterTrainTasks.collect(repo)
+        except RuntimeError as error:
+            print(f"❌ {error}")
+            return 1
+        return run, host, repo, training, holdout
+
+    @classmethod
+    def _consent(cls, run: AdapterTrainRun, host: str) -> bool:
+        """Ask for the host's name once, before the first upload to it.
+
+        Args:
+            run: The run, which remembers the answer.
+            host: The trainer host.
+
+        Returns:
+            bool: True when the host is known or the person typed its name.
+        """
+        if host in run.state()["consented"]:
+            return True
+        print(
+            f"💡 The packed training data (and nothing else) will be sent to {host}. "
+            f"Type the host name to allow it: ",
+            end="",
+        )
+        if input().strip() != host:
+            print("❌ Not confirmed; nothing was sent.")
+            return False
+        run.record_consent(host)
+        return True
+
+    @classmethod
+    def _dispatch(cls, stage: str, run: AdapterTrainRun, host: str | None) -> int:
+        """Run a stage's class, or say which lane brings it.
+
+        Args:
+            stage: One of the stages after `data`.
+            run: The run.
+            host: The trainer host, None for local.
+
+        Returns:
+            int: The stage's exit code; 1 when its class is not in this release or the host
+                was not confirmed.
+        """
+        if stage == STAGE_TRAIN and host is not None and not cls._consent(run, host):
+            return 1
+        module, name, lane = STAGE_CLASSES[stage]
+        try:
+            stage_class = getattr(importlib.import_module(module), name)
+        except (ImportError, AttributeError):
+            print(f"❌ The {stage} stage is not in this release yet: lane {lane} brings it.")
+            return 1
+        code = int(stage_class.run(run))
+        if code == 0:
+            run.mark_done(stage)
+        return code
+
+    @classmethod
+    def _plan(
+        cls,
+        args: argparse.Namespace,
+        run: AdapterTrainRun,
+        host: str | None,
+        training: int,
+        holdout: int,
+    ) -> int:
+        """Print what a run would do and change nothing.
+
+        Args:
+            args: The parsed `train` arguments.
+            run: The run (only its directory is named).
+            host: The trainer host, None for local.
+            training: Candidate tasks outside the hold-out.
+            holdout: The hold-out's size.
+
+        Returns:
+            int: 0.
+        """
+        estimate = AdapterTrainRun.estimate(
+            training, epochs=args.epochs, budget_hours=args.budget_hours
+        )
+        print(f"Plan for {args.name!r} (dry run: nothing is written or sent)")
+        print(
+            f"  candidate tasks: {training} for training, {holdout} held out "
+            "(gradability is known after the generate stage)"
+        )
+        print(
+            f"  token estimate: {estimate['tokens']:,.0f} over {args.epochs} epochs; "
+            f"GPU hours: {estimate['gpu_hours']:.1f} at "
+            f"{estimate['tokens_per_second']:.0f} tokens/s (default rate; a pilot replaces it)"
+        )
+        print(f"  trainer: {host if host else 'local (this node)'}")
+        print(f"  run directory: {run.directory}")
+        if host:
+            print(f"  leaves the node: the packed training jsonl, sent to {host} only")
+        else:
+            print("  leaves the node: nothing")
+        return 0

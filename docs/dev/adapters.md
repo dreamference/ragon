@@ -1,6 +1,6 @@
 # LoRA adapters
 
-Developer notes for `ragon-admin adapter` and serving adapters on the default model. Spec: `specs/DREAMFERENCE_RAGON_ADAPTERS.md`; the probe that decided what is served: `docs/dev/lora-serving-probe.md` on branch `research/lora-serving-probe`. Training adapters on a person's repository (planned): [adapter-train-plan.md](adapter-train-plan.md).
+Developer notes for `ragon-admin adapter` and serving adapters on the default model. Spec: `specs/DREAMFERENCE_RAGON_ADAPTERS.md`; the probe that decided what is served: `docs/dev/lora-serving-probe.md` on branch `research/lora-serving-probe`. Training adapters on a person's repository: [adapter-train-plan.md](adapter-train-plan.md); the `train` subcommand is below.
 
 ## Installing (`dreamference/hardware/adapter_*.py`)
 
@@ -24,6 +24,14 @@ Any failure stops before anything is signed or uploaded. `publish --dry-run --ke
 ## Paired nodes
 
 `node sync-model` follows a successful model copy with `NodeAdapterSync.send`: one `adapter-receive <name> <repo> <commit> <size>` per installed adapter that Dreamference signed for that model, a tar of its cache folder over the same forced command. The receiving node unpacks into a staging folder, checks the blobs and the adapter itself (its own key list), and only then merges and records it. A third-party adapter is never sent.
+
+## Training (`adapter train`, `dreamference/hardware/adapter_train_run.py`)
+
+`ragon-admin adapter train <name> --repo PATH [--test-cmd CMD] [--language LANG] [--trainer ssh://HOST] [--budget-hours N] [--rank R] [--epochs N] [--stage data|generate|train|eval|install] [--resume] [--dry-run]`. The run lives in `~/.local/share/dreamference/adapters/train/<name>/` (`state.json`, `train-config.json`, `tasks.json`), never in the repository.
+
+- `--dry-run` prints the task count, the hold-out size, the token and GPU-hour estimate (the plan's default rate until a pilot measures one), the trainer host and what would leave the node, and writes nothing.
+- Without `--stage` the next unfinished stage runs. `data` is `AdapterTrainTasks`; the others are looked up by name in `STAGE_CLASSES` (a class with `run(run) -> int`), and a stage whose module is missing says which lane brings it.
+- A `--trainer` is refused at `/airgapped on` (asked of `ragon airgapped --json`, failing closed), and the first upload to a host asks for its name typed; the run's state records the consent and what left the node.
 
 ## Output
 
