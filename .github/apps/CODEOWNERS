@@ -82,6 +82,7 @@
 # Inference & Models
 /dreamference/vllm_server/                      @dreamference/models
 /dreamference/hardware/                         @dreamference/models
+/tests/test_adapter_train_tasks.py              @dreamference/models
 /dreamference/cli/adapter_command.py            @dreamference/models
 /dreamference/cli/model_deep_inspector.py       @dreamference/models
 /scripts/adapters/                              @dreamference/models
