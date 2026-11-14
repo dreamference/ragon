@@ -101,6 +101,51 @@ class SweBenchArmSmoke:
         return False
 
     @classmethod
+    def exec_failure(cls, status: object, outcome: object, said: str, notes: str) -> str | None:
+        """Flags a smoke task that did not run cleanly, from its recorded status and ragon exec outcome.
+
+        Args:
+            status: The instance's recorded status.
+            outcome: The `ragon exec` outcome recorded in the instance state.
+            said: The "; ragon said: ..." suffix, or the empty string.
+            notes: The "; notes: ..." suffix, or the empty string.
+
+        Returns:
+            Optional[str]: Why the arm must not run tonight, or None when both checks pass.
+        """
+        if status not in RAN:
+            return f"the smoke task ended `{status}` (ragon exec: {outcome}){said}{notes}"
+        if outcome not in EXEC_RAN:
+            return (
+                f"ragon exec ended `{outcome}` (the agent errored or exited non-zero){said}{notes}"
+            )
+        return None
+
+    @classmethod
+    def event_failure(cls, events: list[dict[str, Any]]) -> str | None:
+        """Flags a failed turn, or a stream error that the agent did not recover from.
+
+        Args:
+            events: The parsed log events, in order.
+
+        Returns:
+            Optional[str]: Why the arm must not run tonight, or None when no fatal event is found.
+        """
+        for index, event in enumerate(events):
+            if event.get("type") == TURN_FAILED:
+                raw_error = event.get("error")
+                error: dict[str, Any] = raw_error if isinstance(raw_error, dict) else {}
+                return f"a turn failed: {str(error.get('message') or event)[:QUOTE]}"
+            # A stream error the agent retried is followed by a completed turn; one it was not is fatal.
+            if event.get("type") == STREAM_ERROR and not any(
+                later.get("type") == TURN_COMPLETED for later in events[index + 1 :]
+            ):
+                return (
+                    f"the session reported an error: {str(event.get('message') or event)[:QUOTE]}"
+                )
+        return None
+
+    @classmethod
     def verdict(cls, state: dict[str, Any] | None, log_text: str, run_status: int) -> str | None:
         """Decides whether the arm ran.
 
@@ -119,25 +164,13 @@ class SweBenchArmSmoke:
         status, outcome = state.get("status"), state.get("exec")
         notes = "; ".join(str(note) for note in state.get("notes") or [])[:QUOTE]
         notes = f"; notes: {notes}" if notes else ""
-        if status not in RAN:
-            return f"the smoke task ended `{status}` (ragon exec: {outcome}){said}{notes}"
-        if outcome not in EXEC_RAN:
-            return (
-                f"ragon exec ended `{outcome}` (the agent errored or exited non-zero){said}{notes}"
-            )
+        failure = cls.exec_failure(status, outcome, said, notes)
+        if failure:
+            return failure
         events = cls.events(log_text)
-        for index, event in enumerate(events):
-            if event.get("type") == TURN_FAILED:
-                raw_error = event.get("error")
-                error: dict[str, Any] = raw_error if isinstance(raw_error, dict) else {}
-                return f"a turn failed: {str(error.get('message') or event)[:QUOTE]}"
-            # A stream error the agent retried is followed by a completed turn; one it was not is fatal.
-            if event.get("type") == STREAM_ERROR and not any(
-                later.get("type") == TURN_COMPLETED for later in events[index + 1 :]
-            ):
-                return (
-                    f"the session reported an error: {str(event.get('message') or event)[:QUOTE]}"
-                )
+        failure = cls.event_failure(events)
+        if failure:
+            return failure
         if not cls.model_replied(events):
             return f"no answer from the model reached the agent (status {status}, ragon exec: {outcome}){said}"
         if run_status != 0:
