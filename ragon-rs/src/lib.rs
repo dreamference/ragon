@@ -110,8 +110,8 @@ pub const PROVIDER: &str = "openai-custom";
 /// session; this makes any call not found fail on this machine instead of reaching OpenAI.
 pub const OFFLINE_CHATGPT_BASE_URL: &str = "http://127.0.0.1:9/backend-api/";
 
-/// How long to wait for a model server that is still loading. A cold load of the default model
-/// runs to several minutes.
+/// How long to wait for a model server that is still loading: the known cold load of the default
+/// model, with margin (several minutes).
 const MAX_WAIT: Duration = Duration::from_secs(600);
 
 /// Set by `ragon-admin codex test` for Codex's own test suite. Its integration tests start this
@@ -1226,29 +1226,61 @@ fn parse_served_model(body: &serde_json::Value) -> Option<ServedModel> {
 }
 
 async fn wait_for_model(host: &str) -> anyhow::Result<(ServedModel, Vec<adapter::Adapter>)> {
+    wait_for_model_within(host, MAX_WAIT, Duration::from_secs(1)).await
+}
+
+/// How often the wait prints its progress line.
+const PROGRESS_EVERY: Duration = Duration::from_secs(10);
+
+/// What to do when the server did not come up: printed after the wait ends.
+fn server_down_advice(host: &str, waited: Duration) -> String {
+    format!(
+        "❌ The model server at {host} did not answer in {} seconds.\n\
+         💡 Check it with `ragon-admin server status`; if it is not running, start it with \
+         `ragon-admin server start` (a cold load takes several minutes), then run `ragon` again.",
+        waited.as_secs()
+    )
+}
+
+/// The progress line of a wait: elapsed time against the known load time.
+fn progress_line(host: &str, elapsed: Duration, limit: Duration) -> String {
+    format!(
+        "⏳ Waiting for the model server at {host}: {}s of up to {}s (it may still be loading)",
+        elapsed.as_secs(),
+        limit.as_secs()
+    )
+}
+
+/// Waits up to `limit` for the server, one progress line every ten seconds, then names the
+/// commands that start it and gives up.
+async fn wait_for_model_within(
+    host: &str,
+    limit: Duration,
+    poll: Duration,
+) -> anyhow::Result<(ServedModel, Vec<adapter::Adapter>)> {
     let client = proxy::direct_client(Duration::from_secs(1))?;
     let configured = configured_context_window();
     if let Some(listing) = served_listing(&client, host, configured).await {
         return Ok(listing);
     }
-    eprintln!("⏳ Waiting for local vLLM server at {host} to become available...");
+    eprintln!("{}", progress_line(host, Duration::ZERO, limit));
     let started = Instant::now();
+    let mut next_report = PROGRESS_EVERY;
     loop {
         if let Some(listing) = served_listing(&client, host, configured).await {
-            eprintln!("\n✅ vLLM server is online and ready!");
+            eprintln!("✅ The model server is online and ready.");
             return Ok(listing);
         }
-        if started.elapsed() > MAX_WAIT {
-            eprintln!(
-                "\n❌ Timed out waiting for vLLM server after {} seconds.",
-                MAX_WAIT.as_secs()
-            );
-            eprintln!("💡 Start vLLM in another terminal via: `ragon-admin server start`");
+        let elapsed = started.elapsed();
+        if elapsed >= limit {
+            eprintln!("{}", server_down_advice(host, limit));
             bail!("the model server at {host} is not answering");
         }
-        eprint!(".");
-        let _ = std::io::stderr().flush();
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        if elapsed >= next_report {
+            eprintln!("{}", progress_line(host, elapsed, limit));
+            next_report += PROGRESS_EVERY;
+        }
+        tokio::time::sleep(poll).await;
     }
 }
 
@@ -2439,6 +2471,52 @@ mod tests {
         for host in ["http://192.168.50.105:8000", "http://gx10-1a2b.local:8000", "http://[fd00::2]:8000", "", "http://127.example.com:8000", "http://localhost.example.com", "http://localhost:x@evil.example.com/", "http://127.0.0.1@evil.example.com:8000", "localhost@evil.example.com"] {
             assert!(!host_is_local(host), "{host}");
         }
+    }
+
+    #[test]
+    fn the_advice_names_status_and_start() {
+        let text = server_down_advice("http://h:8000", Duration::from_secs(600));
+        assert!(text.contains("ragon-admin server status") && text.contains("ragon-admin server start"));
+        assert!(text.contains("600 seconds") && text.contains("http://h:8000"));
+        assert!(progress_line("h", Duration::from_secs(20), Duration::from_secs(600)).contains("20s of up to 600s"));
+    }
+
+    #[tokio::test]
+    async fn a_server_that_never_answers_ends_the_wait_with_an_error() {
+        let started = Instant::now();
+        let result = wait_for_model_within(
+            "http://127.0.0.1:1",
+            Duration::from_millis(300),
+            Duration::from_millis(50),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn a_server_that_comes_up_during_the_wait_is_used() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let host = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut buffer = [0u8; 2048];
+                let _ = stream.read(&mut buffer);
+                let body = r#"{"data":[{"id":"m","max_model_len":4096,"owned_by":"x"}]}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let (model, _) = wait_for_model_within(&host, Duration::from_secs(20), Duration::from_millis(50))
+            .await
+            .unwrap();
+        assert_eq!(model.id, "m");
     }
 
     #[test]
