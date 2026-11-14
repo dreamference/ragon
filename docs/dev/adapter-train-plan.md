@@ -60,7 +60,7 @@ All of it runs on the person's own node (the GB10 with the served base), so no d
 4. **Optional repository text.** A low-weight slice of the repository's own source, a tenth of the tokens at most, for identifiers and style. Off by default and decided after the first eval (D5).
 5. **Pack.** Write `train.jsonl`, `holdout.jsonl` and `source.json` under `~/.local/share/dreamference/adapters/train/<name>/`, never in the repository. `source.json` records the commit range, counts and the k used, and becomes the manifest's provenance.
 
-Without tests the recipe cannot grade attempts. A repository with fewer than about 50 gradable tasks gets a clear refusal from the `data` stage. There is no fallback to diff similarity in v1 (D6).
+Without tests the recipe cannot grade attempts. A repository with fewer than about 50 candidate tasks gets a clear refusal from the `data` stage, and the generate stage refuses again if fewer than 50 turn out gradable. There is no fallback to diff similarity in v1 (D6).
 
 **The first-party Rust adapter** uses the same pipeline over a list of permissively licensed Rust repositories. Every repository in SWE-bench Multilingual and every SWE-bench Verified instance are excluded, because they are the eval (MULTI_DRAFTER §3.1).
 
@@ -89,7 +89,8 @@ The parity probe (lane `adt-trainer-parity`) must show the trainer's teacher-for
 **GPU hours: the estimate the pilot replaces.**
 
 - **Compute.** About 6 × 27e9 ≈ 1.6e11 FLOPs per trained token (frozen base, LoRA gradients, one recompute).
-- **Throughput.** Assume a 5090 sustains 25–40% of its BF16 tensor peak with FP32 accumulation. That gives roughly 150–300 tokens per second.
+- **Throughput.** Assume a dense BF16 tensor peak of about 100 TFLOPS with FP32 accumulation on a 5090, sustained at 25–40%. That gives roughly 150–300 tokens per second.
+- **Memory.** 32 GB is the binding constraint. Whether the served snapshot, the LoRA state and the activations of a 32K-token sequence fit is the pilot's first answer; if not, the sequence cap drops or activations go to host RAM.
 - **Data.** About 150–250 kept trajectories at about 15–25K tokens each, capped by default at 3M sequence tokens per epoch. Two epochs make 6M tokens.
 - **Result: about 6–11 GPU hours on one 5090**, one overnight run.
   - The pilot (200K tokens, under half an hour) measures the real rate.
@@ -122,13 +123,13 @@ adapter train <name> --repo PATH [--test-cmd CMD] [--language LANG]
 ```
 
 - **`--dry-run`** prints the plan and changes nothing. It shows:
-  - the gradable task count and hold-out size;
+  - the candidate task count and hold-out size (gradability is known only after the generate stage's FAIL_TO_PASS check);
   - the token estimate;
   - the GPU-hour estimate from the pilot's measured rate, or from the default above;
   - the trainer host;
   - exactly what would leave the node.
 - **Without `--stage`**, the command runs the next unfinished stage and stops at the first one that needs the person: the night for `generate`, consent for an upload.
-- **`install`** writes the manifest (schema 1, the base digest, `source.json`) and runs `AdapterVerifier`. It then installs the adapter through the existing third-party path (D1), after which the existing surface takes over: `adapter list`, `ragon --adapter <name>`, `/adapter` in the TUI, and `ragon_adapter` in the config. Pairing syncs it like any installed adapter.
+- **`install`** writes the manifest (schema 1, the base digest, `source.json`) and runs `AdapterVerifier`. It then installs the adapter through the existing third-party path (D1), after which the existing surface takes over: `adapter list`, `ragon --adapter <name>`, `/adapter` in the TUI, and `ragon_adapter` in the config. Paired-node sync (`NodeAdapterSync`) carries only adapters Dreamference signed, so a person's adapter stays on the node that trained it unless D1 changes.
 - **The exact run is reproducible:** the run directory keeps `train-config.json` (the recipe, hyperparameters and the snapshot revision).
 
 ## Decisions this plan needs, with defaults
@@ -144,7 +145,7 @@ adapter train <name> --repo PATH [--test-cmd CMD] [--language LANG]
 
 ## The lanes
 
-The lanes that need no GPU go first. Briefs are written as dispatch-ready rows in the coordinator's backlog. New files get a CODEOWNERS line: `/dreamference/hardware/adapter_*` and `/scripts/adapters/` belong to the models team.
+The lanes that need no GPU go first. Briefs are written as dispatch-ready rows in the coordinator's backlog. Code under `/dreamference/hardware/` and `/scripts/adapters/` already belongs to the models team in CODEOWNERS; new test files need their own line.
 
 1. **`adt-data`**: the commit miner and the hold-out split.
    - Files: `dreamference/hardware/adapter_train_tasks.py`, `tests/test_adapter_train_tasks.py`.
@@ -163,10 +164,14 @@ The lanes that need no GPU go first. Briefs are written as dispatch-ready rows i
    - Scope: the served-weights forward, the parity probe against ragon-serve's logits in a day window on a GB10, and the 200K-token pilot.
    - Output: measured tokens per second and peak VRAM, which replace this page's estimate.
    - Held until the 5090 is up and not running the drafter retrain (Q219).
-5. **`adt-train-export`**: the full LoRA run, the gdn-split export, the manifest and `AdapterVerifier`.
+5. **`adt-gen-data`**: the first real data.
+   - Scope: the `data` and `generate` stages on one permissively licensed open-source repository with tests (not in either SWE-bench set), on a GB10 in a window the GPU split allows.
+   - Output: candidate, gradable and kept counts and the stage's wall time, as a results note on this page.
+   - Order: after `adt-cli` and `adt-generate`; held until the coordinator names the box and window.
+6. **`adt-train-export`**: the full LoRA run, the gdn-split export, the manifest and `AdapterVerifier`.
    - Acceptance: the adapter serves on ragon-serve with outputs identical with and without speculation.
-   - Order: after `adt-trainer-parity` and `adt-generate`; held with it.
-6. **`adt-eval`**: E1 to E5 as one stage and one report.
+   - Order: after `adt-trainer-parity`, `adt-gen-data` and `adt-cli`; held with them.
+7. **`adt-eval`**: E1 to E5 as one stage and one report.
    - Order: after `adt-generate` (E1 and E2 reuse its runner); runs with the adapter once `adt-train-export` lands.
 
 After these: the first-party Rust adapter is trained with this recipe and taken through the §7.3 bar and CI signing (its own plan once `adt-eval` lands). D1's `local` trust class is a lane only if the owner chooses it.
