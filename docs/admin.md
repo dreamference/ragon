@@ -21,7 +21,7 @@ commands are programs of their own, `ragon-search` and `ragon-fetch`; see [Termi
 
 ### `ragon-admin init`
 
-Initialize .dreamference project workspace and agent configs.
+First run: write the config, index the workspace, then check the install, download the model, start the server and run ragon once.
 
 | Option | Description |
 |---|---|

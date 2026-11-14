@@ -26,7 +26,7 @@
   with bubblewrap and Avahi, among what to install.
 - **Python 3** (Ragon is developed on 3.12) and **Git**.
 - **Disk space for model weights.** The default model's weights are tens of gigabytes, downloaded
-  from Hugging Face the first time the server starts.
+  from Hugging Face by the first run (`ragon-admin init`) or the first `server start`.
 - **Swap and an out-of-memory guard.** `ragon-admin server start` checks the host before loading a
   model and explains any setting it wants changed (swap, `sysctl` values, `earlyoom` or
   `systemd-oomd`). See [Architecture](architecture.md#keeping-the-host-alive).
@@ -52,22 +52,7 @@ export PATH="$HOME/ragon/.venv/bin:$PATH"
     the agent inherits, those commands fail and the agent concludes it has no web access.
     `ragon-admin codex build` links all three into `~/.local/bin`.
 
-## 2. Start the model server
-
-```bash
-ragon-admin server start
-```
-
-The first start downloads the model weights, then loads the model. Expect several minutes. Later
-starts only load the model.
-
-Check that it is answering:
-
-```bash
-ragon-admin endpoints
-```
-
-## 3. Build the terminal agent
+## 2. Build the terminal agent
 
 ```bash
 ragon-admin codex build
@@ -77,6 +62,38 @@ This compiles `ragon` from the source in the repository, installs it
 under `~/.local/share/dreamference/ragon/`, and links `~/.local/bin/ragon` to it. It installs a
 Rust toolchain if you have none. The first build compiles several hundred dependencies and takes a
 while; rebuilds after small changes take a few minutes.
+
+## 3. First run: one command
+
+```bash
+ragon-admin init
+```
+
+It writes the config and indexes the folder you run it in, then runs the four first-run steps in
+order, one progress line each (ending with how long the step took), and stops at the first that
+fails, naming the command that runs that step alone:
+
+```text
+[1/4] install checks … ✅ docker, ragon and the host settings are in place (…)
+[2/4] model download … ✅ the weights are in the Hugging Face cache (…)
+[3/4] server start … ✅ serving qwen3.8-27b-nvfp4-dflash2 (…)
+[4/4] first ragon run … ✅ ragon answered: ready (…)
+```
+
+| Step | Its own command |
+|---|---|
+| Install checks: docker, `ragon` and the host settings | `ragon-admin host check` (`ragon-admin host setup` applies the settings) |
+| Model download: the model and its drafter | `ragon-admin model download` |
+| Server start (skipped when the server already serves the model) | `ragon-admin server start` |
+| A first `ragon` turn against the server | `ragon exec "Reply with the single word: ready"` |
+
+Every step's output goes to `~/.local/state/dreamference/first-run.log`. The download is the long
+part (the default model's weights are tens of gigabytes); running `init` again skips what is
+already done. Check that the server is answering at any time:
+
+```bash
+ragon-admin endpoints
+```
 
 ## 4. Run it
 

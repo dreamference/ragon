@@ -119,10 +119,15 @@ A top-level `clear-tensorize-cache` subcommand is the older spelling of `clear t
 ragon-admin init [--model MODEL] [--draft-model DRAFT_MODEL] [--vllm-host HOST] [--agent …] [--hf-token …]
 ```
 
-**Behaviour:**
-1. Downloads the main (and draft) weights into the HF cache, tensorizing them if `use_tensorizer` is set.
-2. Writes a minimal `dreamference.toml` via `config_generator.generate_default_init_config`, at the path `ConfigPathResolver` resolves.
-3. Forces a full workspace re-index (`ContextEngine.index_workspace(force_reindex=True)`).
+**Behaviour:** the first run, one command (owner Q105, 2026-11-10).
+1. Writes a minimal `dreamference.toml` via `config_generator.generate_default_init_config`, at the path `ConfigPathResolver` resolves.
+2. Forces a full workspace re-index (`ContextEngine.index_workspace(force_reindex=True)`).
+3. Runs the first-run steps (`cli/first_run.py`, `FirstRun`) in order, one progress line `[n/4] <step> … ✅|❌ <detail> (<duration>)` each, every step's output appended to `~/.local/state/dreamference/first-run.log`, stopping at the first failure with the command that runs that step alone and exit 1. Each step stays a command of its own:
+   - install checks: docker on `PATH`, the built `ragon`, then `ragon-admin host check`;
+   - model download: `ragon-admin model download [--model MODEL]`;
+   - server start: `ragon-admin server start [--model MODEL]`, skipped when `/v1/models` already serves the model;
+   - a first `ragon` turn: `ragon exec` (read-only sandbox, a temporary folder, `DREAMFERENCE_VLLM_HOST` set to the configured server), passing on exit 0 with a non-empty answer.
+   The `ragon-admin` steps run from the same Python with `--config` handed on and the token in `HF_TOKEN`, never on the command line. With a model server that is not on loopback, the download and the start are skipped.
 
 ---
 
