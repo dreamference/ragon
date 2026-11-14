@@ -40,9 +40,6 @@
    "E501": 1,
    "T201": 17
   },
-  "dreamference/chat/desktop_runner.py": {
-   "T201": 22
-  },
   "dreamference/chat/gmail_credentials.py": {
    "PTH111": 1,
    "PTH118": 1,
@@ -50,9 +47,6 @@
   },
   "dreamference/chat/gmail_search_service.py": {
    "C901": 1
-  },
-  "dreamference/chat/matrix_homeserver.py": {
-   "T201": 27
   },
   "dreamference/cli/code_index_setup.py": {
    "E501": 2,
@@ -66,16 +60,6 @@
    "C901": 4,
    "PLR0912": 2,
    "PLR0915": 2
-  },
-  "dreamference/cli/model_deep_inspector.py": {
-   "B905": 1,
-   "BLE001": 4,
-   "PLR2004": 3
-  },
-  "dreamference/config/config_file_storage_manager.py": {
-   "BLE001": 1,
-   "PLR2004": 2,
-   "T201": 1
   },
   "dreamference/config/dreamference_config.py": {
    "ANN401": 2,
@@ -101,13 +85,6 @@
    "PLR0911": 1,
    "PLR1702": 1,
    "T201": 7
-  },
-  "dreamference/night_shift/night_shift_runner.py": {
-   "ANN401": 1,
-   "C901": 1,
-   "PLR1702": 1,
-   "PLR2004": 1,
-   "T201": 6
   },
   "dreamference/night_shift/night_shift_task_run.py": {
    "ANN401": 1,
@@ -140,19 +117,8 @@
    "PLR0913": 2,
    "T201": 20
   },
-  "dreamference/node/node_lanes.py": {
-   "ANN401": 4,
-   "C901": 1,
-   "PLR2004": 1
-  },
   "dreamference/node/node_pairing.py": {
    "T201": 20
-  },
-  "dreamference/node/node_prepare.py": {
-   "T201": 11
-  },
-  "dreamference/node/node_provisioner.py": {
-   "T201": 14
   },
   "dreamference/node/node_serve.py": {
    "T201": 16
@@ -191,10 +157,7 @@
    "T201": 4
   },
   "dreamference/swe_bench/swe_bench_arm_smoke.py": {
-   "D205": 1,
-   "PLR0911": 1,
-   "PLR2004": 4,
-   "T201": 2
+   "PLR0911": 1
   },
   "dreamference/swe_bench/swe_bench_command.py": {
    "ANN401": 1,
@@ -252,30 +215,9 @@
    "PLR2004": 4,
    "T201": 2
   },
-  "dreamference/vllm_server/diffusion_server_manager.py": {
-   "BLE001": 2,
-   "PLR2004": 2,
-   "T201": 5
-  },
   "dreamference/vllm_server/host_safety_setup.py": {
    "ANN401": 2,
    "PLR1702": 3,
-   "T201": 4
-  },
-  "dreamference/vllm_server/model_gate.py": {
-   "PLR2004": 4,
-   "PTH111": 1,
-   "T201": 2
-  },
-  "dreamference/vllm_server/model_gate_service.py": {
-   "ANN401": 1,
-   "PTH118": 2,
-   "RUF046": 2,
-   "T201": 1
-  },
-  "dreamference/vllm_server/model_loading_monitor.py": {
-   "BLE001": 2,
-   "S110": 1,
    "T201": 4
   },
   "dreamference/vllm_server/sandbox_prerequisite.py": {
@@ -291,21 +233,6 @@
    "PLR0915": 2,
    "T201": 33,
    "UP031": 1
-  },
-  "dreamference/vllm_server/vllm_startup_monitor.py": {
-   "BLE001": 1,
-   "PLR1702": 1,
-   "PTH123": 1,
-   "T201": 1
-  },
-  "tests/test_night_shift_best_of_n.py": {
-   "F811": 2
-  },
-  "tests/test_night_shift_compaction.py": {
-   "F811": 7
-  },
-  "tests/test_node.py": {
-   "E501": 5
   },
   "tests/test_ragon_slash_commands.py": {
    "C901": 1
@@ -330,11 +257,8 @@
   },
   "tests/test_turn_end_compaction_bench.py": {
    "PLR0913": 2
-  },
-  "tests/test_wifi_power_save.py": {
-   "E501": 1
   }
  },
  "ruff": "0.16.10",
- "total": 760
+ "total": 548
 }

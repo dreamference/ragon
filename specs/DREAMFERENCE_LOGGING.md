@@ -153,11 +153,10 @@ The owner approved every recommended answer of O1â€“O12 on 2026-11-08, and O13â€
   - 0009 removes `/feedback`, which uploaded session logs;
   - 0011 removes the TUI analytics view;
   - 0013 turns analytics off;
-  - 0015 sets `OtelExporter::None` and removes Statsig.
-
+  - 0015 sets `OtelExporter::None` and removes Statsig;
   - 0037 logs each submission by id and operation kind only (no prompt, shell command or tool response) and caps `codex_tui::markdown_stream` at DEBUG.
 
-- The audit and how to re-run it after a Codex bump: `docs/dev/codex-log-store.md` (P7).
+- The audit of what the store records at TRACE (P7) found two content leaks, both closed by patch 0037: the submission's payload and the TUI's streamed reply; the owner's decision kept O8 (upstream's filter and retention). What it stores, its retention and how to re-run the audit after a Codex bump: `docs/dev/codex-log-store.md`.
 
 ### 2.4 The engine (`ragon-engine/`, read-only here)
 
