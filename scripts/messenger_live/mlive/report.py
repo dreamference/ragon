@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Final
@@ -72,6 +73,26 @@ class Run:
             result.detail = f"{result.detail} ({why})" if result.detail else why
         self.results.append(result)
         return result
+
+    def retried(self, step: Callable[[], Any]) -> None:
+        """Runs a check that depends on one model sample; a failure is tried once more.
+
+        The first attempt's failures are dropped from the results and named in the second's detail,
+        so a single odd answer (rich answer, typo, search) does not alert and does not block a
+        release, while a check that fails twice still does.
+        """
+        mark = len(self.results)
+        step()
+        first = [r for r in self.results[mark:] if r.status == FAIL]
+        if not first:
+            return
+        del self.results[mark:]
+        step()
+        note = "first attempt: " + "; ".join(f"{r.check}: {r.detail}" for r in first)
+        for r in self.results[mark:]:
+            if r.status in (PASS, FAIL):
+                tag = "passed on the retry" if r.status == PASS else "failed twice"
+                r.detail = f"{r.detail} ({tag}; {note})" if r.detail else f"{tag}; {note}"
 
     def known(self) -> list[Result]:
         """The known failures: reported, never alerting."""

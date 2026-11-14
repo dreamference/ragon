@@ -882,7 +882,7 @@ class TelegramSuite:
         topic = self.guard("/new makes a topic", self.check_new_topic)
         if not topic:
             return
-        self.guard("rich answer", self.check_rich, topic)
+        self.guard("rich answer", self.run.retried, lambda: self.check_rich(topic))
         self.guard("hostile answer stays text", self.check_hostile, topic)
         self.guard("voice note", self.check_voice, topic)
         self.guard("/night add", self.check_night, topic)
@@ -892,8 +892,16 @@ class TelegramSuite:
         others = [self.guard("/new", self.driver.new_topic) for _ in range(2)]
         if all(other and other[0] for other in others):
             self.guard("two topics at once", self.check_two_topics, others[0][0], others[1][0])
-            self.guard("typo answered on its best reading", self.check_typo, others[0][0])
-            self.guard("searches with ragon-search, not curl", self.check_search, others[1][0])
+            self.guard(
+                "typo answered on its best reading",
+                self.run.retried,
+                lambda: self.check_typo(others[0][0]),
+            )
+            self.guard(
+                "searches with ragon-search, not curl",
+                self.run.retried,
+                lambda: self.check_search(others[1][0]),
+            )
         self.guard("message outside topics", self.check_outside_topics)
         latencies = [
             r.latency

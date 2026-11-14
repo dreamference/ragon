@@ -30,7 +30,7 @@ CHAT_WORD: Final = b"chat"
 SERVE_WORD: Final = b"serve"
 # Splits one NAME=value entry of /proc/<pid>/environ.
 ENV_SEPARATOR: Final = "="
-RAGON: Final = Path.home() / ".local" / "bin" / "ragon"
+RAGON = Path.home() / ".local" / "bin" / "ragon"
 USER_CONFIG: Final = """[chat]
 telegram_rich = true
 telegram_topics = true
@@ -58,6 +58,8 @@ def scratch_env(home: Path) -> dict[str, str]:
             "XDG_DATA_HOME": str(home / ".local" / "share"),
             "XDG_CACHE_HOME": str(home / ".cache"),
             "XDG_STATE_HOME": str(home / ".local" / "state"),
+            # The tested build's own ragon-search and ragon-fetch come first.
+            "PATH": f"{RAGON.parent}{os.pathsep}{os.environ.get('PATH', '')}",
         }
     )
     return env

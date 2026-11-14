@@ -702,3 +702,56 @@ def test_stop_is_judged_by_what_the_answer_had_written():
     )
     assert checks.stop_kept(["Stopped."], False)[0]
     assert not checks.stop_kept(["Working on it…"], False)[0]
+
+
+def _result(check: str, ok: bool) -> report.Result:
+    return report.Result("telegram", check, "bridge", "pass" if ok else "fail", detail="d")
+
+
+def test_a_failure_on_one_sample_is_retried_once_and_a_second_one_counts():
+    run = report.Run()
+    answers = iter([False, True])
+    run.retried(lambda: run.add(_result("typo", next(answers))))
+    assert [r.status for r in run.results] == ["pass"]
+    assert "passed on the retry" in run.results[0].detail
+    assert run.exit_code() == 0
+
+    run = report.Run()
+    run.retried(lambda: run.add(_result("typo", False)))
+    assert [r.status for r in run.results] == ["fail"]
+    assert "failed twice" in run.results[0].detail
+    assert run.exit_code() == 1
+
+    run = report.Run()
+    calls = []
+    run.retried(lambda: calls.append(run.add(_result("typo", True))))
+    assert len(calls) == 1
+
+
+def test_the_run_tests_the_release_in_its_own_prefix_and_names_it(tmp_path, monkeypatch):
+    import run as live_run
+    from mlive import gate, release
+
+    monkeypatch.setattr(gate, "state_dir", lambda: tmp_path / "state")
+    prefix_ragon = tmp_path / "prefix" / "ragon"
+    monkeypatch.setattr(
+        release, "install_latest", lambda cache, installer: release.Release(prefix_ragon, "v9.9.9")
+    )
+    monkeypatch.setattr(bridge, "RAGON", bridge.RAGON)
+    build = live_run.tested_build(tmp_path)
+    assert prefix_ragon == bridge.RAGON
+    assert (build["release"], build["source"]) == ("v9.9.9", "release")
+    assert "build-key" not in build
+
+    # after a merge the installed build is judged, once
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / release.USE_INSTALLED).write_text("x")
+    monkeypatch.setattr(bridge, "RAGON", tmp_path / "none")
+    assert live_run.tested_build(tmp_path)["source"].startswith("installed")
+    assert not (tmp_path / "state" / release.USE_INSTALLED).exists()
+
+    def broken(cache, installer):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(release, "install_latest", broken)
+    assert "release install failed" in live_run.tested_build(tmp_path)["source"]

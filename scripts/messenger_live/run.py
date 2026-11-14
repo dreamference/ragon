@@ -34,6 +34,7 @@ from mlive import (
     bridge,
     gate,
     paths,
+    release,
     report,
     signal_device,
     signal_suite,
@@ -139,9 +140,33 @@ def after_merge() -> int:
     return gate.AfterMerge(repo).check(start_suite_unit)
 
 
-def installed_build() -> dict[str, str]:
-    """What the run tests: the installed `ragon`'s version and build key."""
-    build = {"build-key": gate.installed_stamp() or "none"}
+def tested_build(cache: Path) -> dict[str, str]:
+    """Chooses and describes the build the run tests, and points the bridge at it.
+
+    The latest published release is installed into the suite's own prefix. The machine's install is
+    tested only when the after-merge check asked for it (it has matched that install to the merge),
+    or, said so in 'Tested:', when the release could not be installed.
+    """
+    flag = gate.state_dir() / release.USE_INSTALLED
+    if flag.exists():
+        flag.unlink(missing_ok=True)
+        return installed_build("installed (matched to the merge)")
+    try:
+        made = release.install_latest(cache, Path(__file__).resolve().parents[2] / "install.sh")
+    except (OSError, RuntimeError, subprocess.SubprocessError) as err:
+        _say(f"⚠️ the latest release could not be installed ({err}); testing the installed build")
+        return installed_build("installed (release install failed)")
+    bridge.RAGON = made.ragon
+    build = installed_build("release")
+    build["release"] = made.tag
+    return build
+
+
+def installed_build(source: str) -> dict[str, str]:
+    """What the run tests: the version of `bridge.RAGON`, where it came from, its build key if any."""
+    build = {"source": source}
+    if source != "release":
+        build["build-key"] = gate.installed_stamp() or "none"
     try:
         version = subprocess.run(
             [str(bridge.RAGON), "--version"], capture_output=True, text=True, timeout=30
@@ -273,7 +298,7 @@ def run_suite(
     """Runs the chosen messengers' checks and writes the reports."""
     cache = paths.private_dir(paths.cache_dir())
     reports = paths.private_dir(cache / "reports")
-    run = report.Run(build=installed_build())
+    run = report.Run(build=tested_build(cache))
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(run.started))
     if only in (None, "telegram"):
         run_telegram(

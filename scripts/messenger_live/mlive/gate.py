@@ -23,6 +23,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
+from . import release
+
 WATCHED: Final = ("ragon-rs/chat", "ragon-rs/signal")
 SUITE_UNIT: Final = "ragon-messenger-live.service"
 # The decision that starts the suite (see decide()).
@@ -204,6 +206,10 @@ class AfterMerge:
         if action in ("init", "idle"):
             state["last_tested"] = target
         elif action == RUN:
+            state_dir().mkdir(parents=True, exist_ok=True)
+            (state_dir() / release.USE_INSTALLED).write_text(
+                "the installed build matches the merge\n"
+            )
             status = start_suite()
             state["last_tested"] = target
             state["last_run"] = {

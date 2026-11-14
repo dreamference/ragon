@@ -573,7 +573,10 @@ class SignalSuite:
         ):
             step_began = time.monotonic()
             try:
-                step()
+                if step in (self.check_rich, self.check_typo, self.check_search):
+                    self.run.retried(step)
+                else:
+                    step()
             except Exception as err:  # noqa: BLE001 (any harness error is reported, not raised)
                 self.result(
                     step.__name__.removeprefix("check_"),
