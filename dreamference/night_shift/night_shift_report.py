@@ -23,6 +23,32 @@ MINUTE_S: Final[int] = 60
 # reason, and `ragon night report` prints the file to a terminal, where ESC starts a sequence that
 # can set the clipboard (OSC 52), hide text or retitle the window.
 CONTROL: Final[re.Pattern] = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+# The order and words of the TUI start line's counts (`startup_line` in ragon-rs/src/night.rs),
+# then the statuses only the report sees.
+COUNT_ORDER: Final[tuple] = (
+    "done",
+    "no-change",
+    "stalled",
+    "failed",
+    "interrupted",
+    SENT,
+    RUNNING,
+    "cancelled",
+)
+# The summary's groups, in order, and the statuses that leave nothing to do.
+DONE: Final[str] = "done"
+READY, LOOK, NOTHING = "ready to apply", "needs a look", "nothing to do"
+NOTHING_STATUSES: Final[tuple] = ("no-change", "cancelled")
+VERDICTS: Final[dict] = {
+    "done": "finished, its changes are on a branch",
+    "no-change": "ran and changed nothing",
+    "stalled": "stopped before it finished",
+    "failed": "failed",
+    "interrupted": "cut off by the end of the window",
+    SENT: "sent to another node, not back yet",
+    RUNNING: "still running when the report was written",
+    "cancelled": "cancelled",
+}
 
 
 class NightShiftReport:
@@ -53,6 +79,7 @@ class NightShiftReport:
             f"Run started {started:%H:%M}, finished {datetime.now():%H:%M}.",
             "",
         ]
+        lines += cls._summary(tasks)
         by_repo: dict[str, list[dict[str, Any]]] = {}
         for task in tasks:
             by_repo.setdefault(task.get("repo", "?"), []).append(task)
@@ -67,6 +94,41 @@ class NightShiftReport:
         if notes:
             lines += ["", "## Notes", ""] + [f"- {note}" for note in notes]
         return CONTROL.sub("", "\n".join(lines)).rstrip() + "\n"
+
+    @classmethod
+    def _group(cls, task: dict[str, Any]) -> str:
+        """Which summary group a task belongs to."""
+        status = task.get("status")
+        if status == DONE and (task.get("result") or {}).get("branch"):
+            return READY
+        return NOTHING if status in NOTHING_STATUSES else LOOK
+
+    @classmethod
+    def _summary(cls, tasks: list[dict[str, Any]]) -> list[str]:
+        """The block under the title: counts per status, then a line per task with its next command."""
+        if not tasks:
+            return []
+        counts = [
+            f"{n} {status}"
+            for status in COUNT_ORDER
+            if (n := sum(1 for task in tasks if task.get("status") == status))
+        ]
+        other = sum(1 for task in tasks if task.get("status") not in COUNT_ORDER)
+        if other:
+            counts.append(f"{other} other")
+        lines = ["## Summary", "", ", ".join(counts), ""]
+        for group in (READY, LOOK, NOTHING):
+            for task in tasks:
+                if cls._group(task) != group:
+                    continue
+                first = (task.get("task", "").strip().splitlines() or [""])[0]
+                verdict = VERDICTS.get(str(task.get("status")), f"status {task.get('status')}")
+                verb = "apply" if group == READY else "show"
+                lines.append(
+                    f"- {task.get('id')} ({group}): {first[:100]} — {verdict}; "
+                    f"`ragon night {verb} {task.get('id')}`"
+                )
+        return [*lines, ""]
 
     @classmethod
     def _review(cls, tasks: list[dict[str, Any]]) -> list[str]:
