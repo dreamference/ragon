@@ -26,11 +26,13 @@ from dreamference.hardware.model_matrix_registry import (
     QWEN38_RAGON_FLAT_CONTEXT,
     QWEN38_RAGON_IMAGE,
     QWEN38_SGLANG_IMAGE,
+    QWEN38_SPARSE_HEAD_ASSET,
 )
 from dreamference.vllm_server.ragon_serve_launch_builder import (
     RAGON_SERVE_PROGRAM,
     RagonServeLaunchBuilder,
 )
+from dreamference.vllm_server.sglang_launch_builder import SGLangLaunchBuilder
 from dreamference.vllm_server.vllm_server_manager import (
     RAGON_SERVE_HOST_RESERVE_GB,
     VLLMServerManager,
@@ -175,6 +177,7 @@ def test_every_flag_the_builder_emits_is_one_ragon_serve_parses():
         "--no-kv-pages",
         "--fair-pairing",
         "--vision",
+        "--sparse-head-dir",
     }
     for gate in (False, True):
         cmd = VLLMServerManager().build_launch_command(
@@ -807,6 +810,7 @@ def test_the_paged_launch_uses_only_flags_ragon_serve_parses():
         "--batch",
         "--kv-pages",
         "--vision",
+        "--sparse-head-dir",
         "--plan-only",
     }
     args = RagonServeLaunchBuilder.server_args(
@@ -1118,3 +1122,26 @@ def test_the_plan_only_call_and_the_launch_ask_the_engine_for_the_same_sessions(
     assert asked(planned[-1]) == asked(seen["cmd"])
     assert asked(seen["cmd"])["--sessions"] == str(planned_sessions := calls["asked"][-1])
     assert planned_sessions == int(asked(planned[-1])["--sessions"])
+
+
+def test_every_ragon_serve_launch_passes_the_sparse_head_when_the_recipe_lists_the_feature():
+    # Without --sparse-head-dir the engine serves "drafter head: full", 1-2 ms a step slower.
+
+    recipe = get_model_launch_overrides(DEFAULT_MODEL_ALIAS, ENGINE_RAGON)
+    assert "sparse-head" in recipe["engine_features"]
+    expected = SGLangLaunchBuilder.snapshot_path(
+        QWEN38_SPARSE_HEAD_ASSET["repo"], QWEN38_SPARSE_HEAD_ASSET["revision"]
+    )
+    for loopback in (True, False):
+        args = RagonServeLaunchBuilder.server_args(
+            "RadixArk/Qwen3.8-27B-NVFP4",
+            recipe,
+            8000,
+            262144,
+            host="127.0.0.1" if loopback else "0.0.0.0",
+        )
+        assert flag(args, "--sparse-head-dir") == expected
+    older = {**recipe, "engine_features": []}
+    assert "--sparse-head-dir" not in RagonServeLaunchBuilder.server_args(
+        "RadixArk/Qwen3.8-27B-NVFP4", older, 8000, 262144
+    )

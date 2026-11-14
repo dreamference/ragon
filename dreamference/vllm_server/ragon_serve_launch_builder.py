@@ -146,7 +146,38 @@ class RagonServeLaunchBuilder:
                 args.extend(["--draft-block", str(speculative["num_speculative_tokens"])])
         if KV_PAGES_FEATURE in (recipe.get("engine_features") or []):
             args.extend(cls._paged_engine_args(recipe))
+        args.extend(cls._engine_asset_args(recipe))
         args.extend(str(a) for a in recipe.get("extra_args") or [])
+        return args
+
+    @classmethod
+    def _engine_asset_args(cls, recipe: dict[str, Any]) -> list[str]:
+        """The flags that point ragon-serve at its assets (the sparse drafter head), at their pins.
+
+        An asset applies when the recipe's build lists its feature, as `get_engine_assets` decides.
+        Without the flag the engine falls back to the full drafter head ("drafter head: full"),
+        1-2 ms a step slower, so every launch the builder makes carries it.
+
+        Args:
+            recipe: The model's launch recipe (`engine: ragon`).
+
+        Returns:
+            list[str]: `<flag> <snapshot path>` per applicable asset, possibly empty.
+        """
+        features = set(recipe.get("engine_features") or [])
+        args: list[str] = []
+        for asset in recipe.get("engine_assets") or []:
+            if asset.get("engine") != ENGINE_RAGON or asset.get("feature") not in features:
+                continue
+            if asset.get("flag") and asset.get("repo"):
+                args.extend(
+                    [
+                        str(asset["flag"]),
+                        SGLangLaunchBuilder.snapshot_path(
+                            str(asset["repo"]), asset.get("revision")
+                        ),
+                    ]
+                )
         return args
 
     @classmethod
