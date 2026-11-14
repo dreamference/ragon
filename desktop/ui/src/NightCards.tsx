@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import * as bridge from "./bridge";
 import { Icon } from "./icons";
 import { renderMarkdown } from "./markdown";
-import { cardOf, noteBody, reportDate } from "./nightthread";
+import { cardOf, noteBody, reportDate, summaryLine } from "./nightthread";
 
 /** How often the cards look again while a task is queued or running. */
 const POLL_MS = 60_000;
@@ -72,11 +72,18 @@ export function NightCards(props: {
               {card.branch ? <> · on <code>{card.branch}</code></> : null}
               {card.applied ? <> · applied {card.applied}</> : null}
             </p>
+            {note && summaryLine(note.text) ? <p className="night-card-summary">{summaryLine(note.text)}</p> : null}
             {note ? (
               <div className="night-note" role="note" aria-label={`From the night's report, ${reportDate(note.report)}`}>
                 <div className="night-note-head">From the night's report, {reportDate(note.report)}</div>
                 <div className="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(noteBody(note.text)) }} />
               </div>
+            ) : null}
+            {card.retry ? (
+              <p className="night-card-commands">
+                Retry: <code className="night-cmd">{card.retry}</code>
+                {card.applyAttempt ? <> · Apply one attempt: <code className="night-cmd">{card.applyAttempt}</code></> : null}
+              </p>
             ) : null}
             {said[id] ? <pre className="info-pre night-card-said">{said[id]}</pre> : null}
             {card.ended ? (

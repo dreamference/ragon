@@ -76,6 +76,10 @@ export interface NightCard {
   applied: string | null;
   /** Apply is offered: there is a branch to bring back. */
   canApply: boolean;
+  /** `/night retry <id>`, copyable text, on a finished task; else null. */
+  retry: string | null;
+  /** `/night apply <id> --attempt N` for the chosen attempt, on a finished task with a branch; else null. */
+  applyAttempt: string | null;
   repo: string;
 }
 
@@ -95,7 +99,7 @@ const STATES: Record<string, string> = {
 /** A card for a task as `night/list` read it, or a queued card when the list does not have it yet. */
 export function cardOf(id: string, task: NightTask | undefined): NightCard {
   if (!task) {
-    return { id, title: id, status: "queued", ended: false, state: STATES.queued, attempts: null, branch: null, applied: null, canApply: false, repo: "" };
+    return { id, title: id, status: "queued", ended: false, state: STATES.queued, attempts: null, branch: null, applied: null, canApply: false, retry: null, applyAttempt: null, repo: "" };
   }
   const result = (typeof task.result === "object" && task.result !== null ? task.result : {}) as Record<string, unknown>;
   const best = (typeof result.best_of === "object" && result.best_of !== null ? result.best_of : null) as Record<string, unknown> | null;
@@ -120,6 +124,8 @@ export function cardOf(id: string, task: NightTask | undefined): NightCard {
     branch,
     applied: task.applied ?? null,
     canApply: Boolean(branch) && ended,
+    retry: ended ? `/night retry ${id}` : null,
+    applyAttempt: ended && branch ? `/night apply ${id} --attempt ${typeof best?.chosen === "number" ? best.chosen : 1}` : null,
     repo: task.repo,
   };
 }
@@ -132,4 +138,12 @@ export function reportDate(name: string): string {
 /** The report's block without its `### <id> — <status>` heading, which the card already shows. */
 export function noteBody(block: string): string {
   return block.split("\n").filter((line, index) => !(index === 0 && line.startsWith("### "))).join("\n").trim();
+}
+
+/** The report block's one summary line: its `- Changes:` line, else its `- Task:` line, without the bullet; null when neither. */
+export function summaryLine(block: string): string | null {
+  const lines = block.split("\n").map((line) => line.trim());
+  const pick = (label: string) => lines.find((line) => line.startsWith(`- ${label}:`));
+  const line = pick("Changes") ?? pick("Task");
+  return line ? line.slice(2).trim() : null;
 }

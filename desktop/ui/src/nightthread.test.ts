@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { NightTask } from "./bridge";
-import { cardOf, cleanNightThreads, NIGHT_THREADS_MAX, noteBody, queuedId, reportDate, tasksOf, tieTask } from "./nightthread";
+import { cardOf, cleanNightThreads, NIGHT_THREADS_MAX, noteBody, queuedId, reportDate, summaryLine, tasksOf, tieTask } from "./nightthread";
 
 const SAID = "Queued 20151027-2200-abc on branch night/20151027-2200-abc, from 1a2b3c4d5e.\nTest command: detected in the worktree when the task runs.";
 
@@ -65,5 +65,20 @@ describe("a card", () => {
   it("puts the report's block under its date, without the heading the card already shows", () => {
     expect(reportDate("2015-10-28.md")).toBe("2015-10-28");
     expect(noteBody("### 20151027-2200-abc — done\n\n- Task: x\n- Branch: `night/x`")).toBe("- Task: x\n- Branch: `night/x`");
+  });
+});
+
+describe("a card's summary and commands", () => {
+  it("takes the report block's Changes line, else its Task line", () => {
+    expect(summaryLine("### t — done\n\n- Task: x\n- Changes: 2 files changed, 3 insertions(+)")).toBe("Changes: 2 files changed, 3 insertions(+)");
+    expect(summaryLine("### t — failed\n\n- Task: x")).toBe("Task: x");
+    expect(summaryLine("nothing")).toBeNull();
+  });
+
+  it("offers retry and apply --attempt as text on a finished task only", () => {
+    const done = cardOf("t1", task("done", { result: { branch: "night/t1", best_of: { n: 3, ran: 3, chosen: 2 } } }));
+    expect(done).toMatchObject({ retry: "/night retry t1", applyAttempt: "/night apply t1 --attempt 2" });
+    expect(cardOf("t1", task("failed", { result: {} }))).toMatchObject({ retry: "/night retry t1", applyAttempt: null });
+    expect(cardOf("t1", task("running"))).toMatchObject({ retry: null, applyAttempt: null });
   });
 });

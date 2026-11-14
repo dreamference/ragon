@@ -1088,6 +1088,9 @@ html.quick-page body { margin: 0; background: var(--canvas); }
 .night-card-state { margin: 6px 0 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .night-note { margin-top: 10px; padding: 8px 12px; border-left: 3px solid var(--line-strong); background: var(--canvas); border-radius: var(--radius-sm); font-size: 13px; }
 .night-note-head { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.night-card-summary { margin: 4px 0; font-size: 13px; }
+.night-card-commands { font-size: 12px; color: var(--muted); }
+.night-cmd { user-select: all; }
 .night-card-said { margin: 8px 0 0; }
 .night-card .buttons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .night-transcript { white-space: pre-wrap; font-family: var(--font-code); font-size: 12.5px; background: var(--code-bg); border-radius: var(--radius-sm); padding: 8px 10px; }
