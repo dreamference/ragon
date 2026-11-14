@@ -21,6 +21,7 @@
 /README.md                                      @dreamference/docs
 /CHANGELOG.md                                   @dreamference/release
 /scripts/rbrb.py                                @dreamference/docs
+/scripts/swe_bench_history.py                   @dreamference/docs
 /AGENTS.md                                      @dreamference/docs
 /mkdocs.yml                                     @dreamference/docs
 /CONTRIBUTING.md                                @dreamference/docs

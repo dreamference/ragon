@@ -58,6 +58,7 @@ nav:
       - Models: models.md
       - Benchmarks: benchmarks.md
       - Node monitoring: monitoring.md
+      - SWE-bench history: benchmarks/swe-bench-history.md
   - How it works:
       - Architecture: architecture.md
       - Privacy & security: privacy.md

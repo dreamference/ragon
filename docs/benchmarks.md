@@ -8,3 +8,7 @@ wall time of the run. Only numbers tied to a release are published.
     Measured on our own GB10 with our harness; it compares configurations, it is not a leaderboard score.
 
 No release has a published result yet.
+
+## Every number, with its history
+
+The history of every published SWE-bench number, slice by slice: [benchmarks/swe-bench-history.md](benchmarks/swe-bench-history.md)

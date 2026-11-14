@@ -1,0 +1,224 @@
+{
+  "benchmark": "SWE-bench Verified",
+  "slices": [
+    {
+      "name": "Slice 1",
+      "list": "docs/dev/swe-bench/verified357-1.txt",
+      "tasks": 39,
+      "runs": [
+        {
+          "date": "2026-11-07",
+          "run": "0.9.0 weekend",
+          "build": "0.9.0",
+          "engine": "ragon-serve (SGLang then)",
+          "recipe": "one engine session per agent, function-call exec tool, apply-patch off, 60-minute task limit",
+          "resolved": 30,
+          "timeouts": null,
+          "starved": null
+        },
+        {
+          "date": "2026-11-09",
+          "run": "0.9.1 night (a)",
+          "build": "0.9.1",
+          "engine": "ragon-serve",
+          "recipe": "one engine session per agent, 60-minute task limit",
+          "resolved": 28,
+          "timeouts": null,
+          "starved": null
+        },
+        {
+          "date": "2026-11-10",
+          "run": "0.9.1 night (b)",
+          "build": "0.9.1",
+          "engine": "ragon-serve",
+          "recipe": "one engine session per agent, 60-minute task limit",
+          "resolved": 24,
+          "timeouts": null,
+          "starved": null
+        },
+        {
+          "date": "2026-11-10",
+          "run": "0.9.4 (1st)",
+          "build": "0.9.4",
+          "engine": "ragon-serve, integration build 7d831bf",
+          "recipe": "one engine session per agent, 60-minute task limit",
+          "resolved": 28,
+          "timeouts": 3,
+          "starved": 1
+        },
+        {
+          "date": "2026-11-10",
+          "run": "0.9.4 (2nd)",
+          "build": "0.9.4",
+          "engine": "ragon-serve, integration build 7d831bf",
+          "recipe": "one engine session per agent, 60-minute task limit",
+          "resolved": 26,
+          "timeouts": 3,
+          "starved": 1
+        },
+        {
+          "date": "2026-11-11",
+          "run": "0.9.4 (3rd)",
+          "build": "0.9.4",
+          "engine": "ragon-serve, integration build 7d831bf",
+          "recipe": "one engine session per agent, 60-minute task limit",
+          "resolved": 27,
+          "timeouts": 3,
+          "starved": 1
+        },
+        {
+          "date": "2026-11-11",
+          "run": "0.9.4 (4th)",
+          "build": "0.9.4",
+          "engine": "ragon-serve, integration build 7d831bf",
+          "recipe": "one engine session per agent, 60-minute task limit",
+          "resolved": 30,
+          "timeouts": 3,
+          "starved": 1
+        },
+        {
+          "date": "2026-11-12",
+          "run": "0.9.5 image",
+          "build": "0.9.6",
+          "engine": "ragon-serve, engine image 47277016 (session-protect)",
+          "recipe": "two session slots, 60-minute task limit",
+          "resolved": 28,
+          "timeouts": 0,
+          "starved": 0
+        }
+      ]
+    },
+    {
+      "name": "Slice 2",
+      "list": "docs/dev/swe-bench/verified357-2.txt",
+      "tasks": 106,
+      "runs": [
+        {
+          "date": "2026-11-07",
+          "run": "0.9.0 weekend",
+          "build": "0.9.0",
+          "engine": "ragon-serve (SGLang then)",
+          "recipe": "one engine session per agent, function-call exec tool, apply-patch off, 60-minute task limit",
+          "resolved": 70,
+          "timeouts": null,
+          "starved": null
+        },
+        {
+          "date": "2026-11-09",
+          "run": "0.9.1 night",
+          "build": "0.9.1",
+          "engine": "ragon-serve",
+          "recipe": "one engine session per agent, 60-minute task limit",
+          "resolved": 67,
+          "timeouts": null,
+          "starved": null
+        },
+        {
+          "date": "2026-11-11",
+          "run": "0.9.4",
+          "build": "0.9.4",
+          "engine": "ragon-serve, integration build 7d831bf",
+          "recipe": "one engine session per agent, 60-minute task limit",
+          "resolved": 69,
+          "timeouts": 4,
+          "starved": null
+        }
+      ]
+    },
+    {
+      "name": "Slice 3",
+      "list": "docs/dev/swe-bench/verified357-3.txt",
+      "tasks": 106,
+      "runs": [
+        {
+          "date": "2026-11-07",
+          "run": "0.9.0 weekend",
+          "build": "0.9.0",
+          "engine": "ragon-serve (SGLang then)",
+          "recipe": "one engine session per agent, function-call exec tool, apply-patch off, 60-minute task limit",
+          "resolved": 76,
+          "timeouts": null,
+          "starved": null
+        },
+        {
+          "date": "2026-11-09",
+          "run": "0.9.1 night",
+          "build": "0.9.1",
+          "engine": "ragon-serve",
+          "recipe": "one engine session per agent, 60-minute task limit",
+          "resolved": 73,
+          "timeouts": null,
+          "starved": null
+        },
+        {
+          "date": "2026-11-11",
+          "run": "0.9.4",
+          "build": "0.9.4",
+          "engine": "ragon-serve, integration build 7d831bf",
+          "recipe": "one engine session per agent, 60-minute task limit",
+          "resolved": 69,
+          "timeouts": 4,
+          "starved": 1
+        },
+        {
+          "date": "2026-11-12",
+          "run": "0.9.5 image",
+          "build": "0.9.6",
+          "engine": "ragon-serve, engine image 47277016 (session-protect)",
+          "recipe": "two session slots, 60-minute task limit",
+          "resolved": 69,
+          "timeouts": 0,
+          "starved": 0
+        }
+      ]
+    },
+    {
+      "name": "Slice 4",
+      "list": "docs/dev/swe-bench/verified357-4.txt",
+      "tasks": 106,
+      "runs": [
+        {
+          "date": "2026-11-07",
+          "run": "0.9.0 weekend",
+          "build": "0.9.0",
+          "engine": "ragon-serve (SGLang then)",
+          "recipe": "one engine session per agent, function-call exec tool, apply-patch off, 60-minute task limit",
+          "resolved": 72,
+          "timeouts": null,
+          "starved": null
+        },
+        {
+          "date": "2026-11-09",
+          "run": "0.9.1 night",
+          "build": "0.9.1",
+          "engine": "ragon-serve",
+          "recipe": "one engine session per agent, 60-minute task limit",
+          "resolved": 69,
+          "timeouts": null,
+          "starved": null
+        },
+        {
+          "date": "2026-11-11",
+          "run": "0.9.4",
+          "build": "0.9.4",
+          "engine": "ragon-serve, integration build 7d831bf",
+          "recipe": "one engine session per agent, 60-minute task limit",
+          "resolved": 75,
+          "timeouts": null,
+          "starved": null
+        },
+        {
+          "date": "2026-11-12",
+          "run": "0.9.5 image",
+          "build": "0.9.6",
+          "engine": "ragon-serve, engine image 47277016 (session-protect)",
+          "recipe": "two session slots, 60-minute task limit",
+          "resolved": 69,
+          "timeouts": 0,
+          "starved": 0
+        }
+      ]
+    }
+  ],
+  "method": "Every run on this page is a single `ragon-admin swe-bench run` of one slice of the 357-task validated SWE-bench Verified set on this machine's own GB10, graded by the harness in the instance's own arm64 container; the slice list is the file named under each table. Each number is the count of instances whose patch the grader judged as resolving the issue, out of the slice's tasks. Runs are appended to docs/swe-bench-runs.json after they are graded; this page is regenerated from that file by scripts/swe_bench_history.py. A timeout is a task that reached its time limit; a starved timeout is one that never received its first reply (a session-protect stall), counted apart. A gross flip between two runs of the same slice is an instance resolved in exactly one of the two. None of these numbers is a leaderboard score; the spread between runs of the same build is the noise floor, and differences inside it are not measurable."
+}

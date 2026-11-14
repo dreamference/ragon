@@ -112,3 +112,7 @@ Every `docker` call goes through `SweBenchDocker`, and the cache and results dir
 ## Published release results
 
 Only numbers tied to a release are published; nightly results stay internal. A release's entry is `docs/releases/<version>.json`, recorded by `scripts/release_benchmark.py record` from the report of the night that qualified the release, the night given by id and never guessed, with the previous default's result beside it. `render` rewrites the Benchmarks page (`docs/benchmarks.md`); the release workflow's `validate` job runs `check`. A release with no entry shows no number. No hostname, address, user name or home path goes in an entry (the script refuses them).
+
+## The run log and its page
+
+The history of every published SWE-bench number is `docs/benchmarks/swe-bench-history.md`, generated from the run log `docs/swe-bench-runs.json` by `scripts/swe_bench_history.py` (one table per slice: every run with its date, build/engine, recipe, resolved count, timeouts and starved ones, and the gross flips against the previous run on that slice, then the spread). The coordinator appends one entry to the run log after each graded run and reruns the script; the log is checked the way the release entries are, so no hostname, address, user name or home path reaches the page.
