@@ -156,9 +156,6 @@
    "BLE001": 3,
    "T201": 4
   },
-  "dreamference/swe_bench/swe_bench_arm_smoke.py": {
-   "PLR0911": 1
-  },
   "dreamference/swe_bench/swe_bench_command.py": {
    "ANN401": 1,
    "D205": 1,
@@ -260,5 +257,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 548
+ "total": 547
 }
