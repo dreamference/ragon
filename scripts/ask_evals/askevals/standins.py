@@ -30,13 +30,14 @@ engine unresponsive beside them).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Final, Optional
+from typing import Any, Final
 from urllib.parse import parse_qs, urlsplit
 
 CAPTCHA_PAGE: Final[str] = (
@@ -58,6 +59,12 @@ UNRESPONSIVE: Final[dict] = {
 }
 # `one_down`: the other engines answer, this one does not.
 ONE_DOWN: Final[list] = [["duckduckgo", "CAPTCHA"]]
+FAULT_EMPTY: Final[str] = "empty"
+FAULT_ONE_DOWN: Final[str] = "one_down"
+FAULT_RESET: Final[str] = "reset"
+FAULT_STALL: Final[str] = "stall"
+FAULT_RATE_LIMITED: Final[str] = "rate_limited"
+FAULT_FORBIDDEN: Final[str] = "forbidden"
 DEFAULT_STALL_S: Final[float] = 30.0
 
 
@@ -94,10 +101,8 @@ def _send(
 def _reset(handler: BaseHTTPRequestHandler) -> None:
     """Closes the connection with no answer at all."""
     handler.close_connection = True
-    try:
+    with contextlib.suppress(OSError):
         handler.connection.shutdown(socket.SHUT_RDWR)
-    except OSError:
-        pass
 
 
 def search_answer(query: str, search: dict) -> tuple[int, dict]:
@@ -115,7 +120,7 @@ def search_answer(query: str, search: dict) -> tuple[int, dict]:
     if fault in UNRESPONSIVE:
         body["unresponsive_engines"] = UNRESPONSIVE[fault]
         return 200, body
-    if fault == "empty":
+    if fault == FAULT_EMPTY:
         return 200, body
     results = search.get("results", [])
     by_query = search.get("by_query", {})
@@ -127,7 +132,7 @@ def search_answer(query: str, search: dict) -> tuple[int, dict]:
         {"engine": "wikipedia", "engines": ["wikipedia"], "score": 1.0, **r} for r in results
     ]
     body["number_of_results"] = len(body["results"])
-    if fault == "one_down":
+    if fault == FAULT_ONE_DOWN:
         body["unresponsive_engines"] = ONE_DOWN
     return 200, body
 
@@ -138,21 +143,21 @@ class _SearchHandler(BaseHTTPRequestHandler):
     def log_message(self, *args: object) -> None:  # quiet
         pass
 
-    def do_GET(self) -> None:  # noqa: N802 - the stdlib's name
+    def do_GET(self) -> None:
         parts = urlsplit(self.path)
         query = (parse_qs(parts.query).get("q") or [""])[0]
         search = self.server.web.get("search", {})
         self.server.log.write(
             {"server": "search", "path": parts.path, "query": query, "fault": search.get("fault")}
         )
-        if search.get("fault") == "reset":
+        if search.get("fault") == FAULT_RESET:
             _reset(self)
             return
         delay = float(search.get("delay_s", 0) or 0)
-        if search.get("fault") == "stall":
+        if search.get("fault") == FAULT_STALL:
             delay = delay or DEFAULT_STALL_S
         time.sleep(delay)
-        if search.get("fault") == "stall":
+        if search.get("fault") == FAULT_STALL:
             status, body = search_answer(query, {**search, "fault": None})
         else:
             status, body = search_answer(query, search)
@@ -163,9 +168,9 @@ def fault_response(fault: str | None) -> tuple[int, str, dict] | None:
     """(status, body, headers) for a proxied request's fault; None for `reset` and `stall`."""
     if fault in (None, "captcha"):
         return 200, CAPTCHA_PAGE, {}
-    if fault == "rate_limited":
+    if fault == FAULT_RATE_LIMITED:
         return 429, "<html><body>Too Many Requests</body></html>", {"Retry-After": "60"}
-    if fault == "forbidden":
+    if fault == FAULT_FORBIDDEN:
         return 403, "<html><body>Forbidden</body></html>", {}
     return None
 
@@ -178,10 +183,10 @@ class _ProxyHandler(BaseHTTPRequestHandler):
 
     def _fault(self, block: dict) -> None:
         fault = block.get("fault", "captcha")
-        if fault == "reset":
+        if fault == FAULT_RESET:
             _reset(self)
             return
-        if fault == "stall":
+        if fault == FAULT_STALL:
             time.sleep(float(block.get("delay_s", DEFAULT_STALL_S)))
             fault = block.get("then", "forbidden")
         answer = fault_response(fault)
@@ -191,7 +196,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         status, body, headers = answer
         _send(self, status, body, "text/html; charset=utf-8", headers)
 
-    def do_CONNECT(self) -> None:  # noqa: N802
+    def do_CONNECT(self) -> None:
         host = self.path
         self.server.log.write({"server": "proxy", "method": "CONNECT", "url": host})
         block = self.server.web.get("connect", {"fault": "forbidden"})
@@ -199,7 +204,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             block = {**block, "fault": "forbidden"}  # a tunnel cannot carry a page without TLS
         self._fault(block)
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         url = self.path
         pages = self.server.web.get("pages", {})
         page = pages.get(url) or pages.get(url.rstrip("/"))
@@ -237,6 +242,7 @@ class StandIns:
     """Both stand-ins for one scenario, on free loopback ports, for a `with` block."""
 
     def __init__(self, web: dict, log_path: Path) -> None:
+        """Creates both servers on free loopback ports; __enter__ starts them."""
         self.log = _Log(log_path)
         self.search = _Server(_SearchHandler, web, self.log)
         self.proxy = _Server(_ProxyHandler, web, self.log)
@@ -246,10 +252,12 @@ class StandIns:
 
     @property
     def searxng_url(self) -> str:
+        """The search stand-in's base URL."""
         return f"http://127.0.0.1:{self.search.server_address[1]}"
 
     @property
     def proxy_url(self) -> str:
+        """The proxy stand-in's base URL."""
         return f"http://127.0.0.1:{self.proxy.server_address[1]}"
 
     def environment(self) -> dict[str, str]:
@@ -267,11 +275,13 @@ class StandIns:
         }
 
     def __enter__(self) -> StandIns:
+        """Starts both servers and returns self."""
         for thread in self._threads:
             thread.start()
         return self
 
     def __exit__(self, *exc: object) -> None:
+        """Shuts both servers down and closes their sockets."""
         for server in (self.search, self.proxy):
             server.shutdown()
             server.server_close()
