@@ -1,6 +1,6 @@
 # Night Shift
 
-Developer notes behind the Night Shift line in `AGENTS.md`. Spec: `specs/DREAMFERENCE_RAGON_NIGHT_SHIFT.md`, whose §11 records what was built.
+Developer notes behind the Night Shift line in `AGENTS.md`. Spec: `specs/DREAMFERENCE_RAGON_NIGHT_SHIFT.md`, whose §11 records what was built. The plan for 1.0 (polish, docs page, QA run, demo): [night-shift-1.0-plan.md](night-shift-1.0-plan.md).
 
 Night Shift is two halves that share only files:
 
