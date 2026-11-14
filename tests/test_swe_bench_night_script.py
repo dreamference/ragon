@@ -898,6 +898,8 @@ def test_the_night_folder_reaches_the_helper_and_the_unit(tmp_path):
         "REFINE": "0",
         "REMOTE": "node-b",
         "REMOTE_AB_DIR": "/home/user/ab-n15",
+        # No disk reserve: a box with little free space would otherwise pause the round (poll 300 s).
+        "RESERVE_GB": "0",
         "PATH": f"{bindir}:{os.environ['PATH']}",
     }
     result = subprocess.run(
