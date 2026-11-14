@@ -22,9 +22,10 @@ tasks of ``sample-100.txt``, so they are measured on tasks outside it. This scri
     writes them with a header that says how they were drawn. ``--exclude <list>`` (repeatable) also
     leaves out every task of an earlier fresh list, so that a list stays fresh once the failures of an
     earlier one have been read (FAILURES §9.4). The PR-issue mismatch list (``MISMATCH_LIST``, 68
-    tasks whose PR does not match its issue; they are out of every list) is excluded by default; ``--keep-mismatch`` leaves it in. Commit the list
-    before any arm runs. ``--reuse-from <list>`` (repeatable) names an earlier list whose tasks may
-    recur, under the rotation rule (SWE_BENCH spec §16: a night may reuse the tasks of
+    tasks whose PR does not match its issue; they are out of every list) is excluded by default;
+    ``--keep-mismatch`` leaves it in. Commit the list before any arm runs. ``--reuse-from <list>``
+    (repeatable) names an earlier list whose tasks may recur, under the rotation rule (SWE_BENCH spec
+    §16: a night may reuse the tasks of
     lists used three or more nights earlier, both arms seeing the same list): the draw treats them
     like any other validated task, the header names each list and how many drawn tasks come from it,
     and the excluded lists still win over them. A list named for both is refused.
@@ -49,17 +50,22 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
-import json
 import random
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Final, List, Optional
+from typing import Final
 
-from dreamference.swe_bench import SweBenchDocker, SweBenchEvaluator, SweBenchHarness, SweBenchImages, SweBenchSettings
-from dreamference.swe_bench import swe_bench_settings
+from dreamference.swe_bench import (
+    SweBenchDocker,
+    SweBenchEvaluator,
+    SweBenchHarness,
+    SweBenchImages,
+    SweBenchSettings,
+    swe_bench_settings,
+)
 
 DATASET: Final[str] = "verified"
 SAMPLE_100: Final[Path] = swe_bench_settings.CACHE_DIR / "sample-100.txt"
@@ -67,7 +73,9 @@ DEFAULT_LIST: Final[Path] = swe_bench_settings.CACHE_DIR / "fresh-50.txt"
 CANDIDATES: Final[Path] = swe_bench_settings.CACHE_DIR / "fresh-candidates.txt"
 # The committed record of the PR-issue mismatch list (PAIChecker's human-labelled data), read from
 # the checkout so that a draw is reproducible from the repository alone.
-MISMATCH_LIST: Final[Path] = Path(__file__).resolve().parent.parent / "docs" / "dev" / "swe-bench" / "verified-mismatch-exclude.txt"
+MISMATCH_LIST: Final[Path] = (
+    Path(__file__).resolve().parent.parent / "docs" / "dev" / "swe-bench" / "verified-mismatch-exclude.txt"
+)
 LIVE_UNIT: Final[str] = "ragon-swe-im100-refine"
 # An instance image unpacked (2.1 to 2.4 GB measured), with a margin.
 IMAGE_BYTES: Final[int] = int(2.5 * 1024 ** 3)
@@ -76,9 +84,15 @@ IMAGE_BYTES: Final[int] = int(2.5 * 1024 ** 3)
 # that solve a task.
 EASY: Final[float] = 0.75
 MEDIUM: Final[float] = 0.40
+# A strong submission solves 60% or more of the tasks overall.
+STRONG: Final[float] = 0.6
+# A candidate skipped for disk or a failed pull is tried once more.
+TRIES: Final[int] = 2
+CANDIDATES_COMMAND: Final[str] = "candidates"
+VALIDATE_COMMAND: Final[str] = "validate"
 
 
-def read_ids(path: Path) -> List[str]:
+def read_ids(path: Path) -> list[str]:
     """Instance ids from a list file, one per line, ``#`` comments ignored."""
     try:
         lines = path.read_text().splitlines()
@@ -88,10 +102,11 @@ def read_ids(path: Path) -> List[str]:
 
 
 def order_key(instance_id: str) -> str:
+    """The validation order of a task: the sha256 of its id."""
     return hashlib.sha256(instance_id.encode()).hexdigest()
 
 
-def candidates() -> List[str]:
+def candidates() -> list[str]:
     """Verified tasks with an arm64 image, outside sample-100, not yet validated or rejected here."""
     tags = SweBenchImages.tags()
     used = set(read_ids(SAMPLE_100))
@@ -101,7 +116,7 @@ def candidates() -> List[str]:
     return sorted(fresh, key=order_key)
 
 
-def busy(unit: str) -> Optional[str]:
+def busy(unit: str) -> str | None:
     """Why validation must wait, or None."""
     from dreamference.night_shift import NightShiftQueue
     holder = NightShiftQueue.runner_holder()
@@ -113,19 +128,19 @@ def busy(unit: str) -> Optional[str]:
     return None
 
 
-def validate(count: int, batch: int, unit: str, disk_reserve: Optional[str]) -> int:
-    """
-    Validates candidates, in order, until ``count`` of them have a recorded result (validated or
-    rejected). Each batch is no larger than the disk above the reserve holds, its images are
+def validate(count: int, batch: int, unit: str, disk_reserve: str | None) -> int:
+    """Validates candidates, in order, until ``count`` of them have a recorded result.
+
+    The result is validated or rejected. Each batch is no larger than the disk above the reserve holds, its images are
     removed afterwards, and a candidate that could not be validated yet (no disk, no pull) is tried
     once more later.
     """
     if not SweBenchHarness.rows(DATASET) or SweBenchHarness.installed_version() != swe_bench_settings.HARNESS_VERSION:
-        print("❌ The harness or the dataset snapshot is missing: run `ragon-admin swe-bench setup` first.")
+        print("❌ The harness or the dataset snapshot is missing: run `ragon-admin swe-bench setup` first.")  # noqa: T201 - CLI output
         return 1
     reason = busy(unit)
     if reason:
-        print(f"❌ Not now: {reason}.")
+        print(f"❌ Not now: {reason}.")  # noqa: T201 - CLI output
         return 1
     from dreamference.night_shift.night_shift_host import GIB, NightShiftHost
     settings = SweBenchSettings()
@@ -135,18 +150,18 @@ def validate(count: int, batch: int, unit: str, disk_reserve: Optional[str]) -> 
     order = candidates()
     CANDIDATES.write_text(f"# {len(order)} candidates, sha256 order, {time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n"
                           + "".join(f"{i}\n" for i in order))
-    print(f"🔎 Validating until {count} candidate(s) have a result, at most {batch} at a time, "
+    print(f"🔎 Validating until {count} candidate(s) have a result, at most {batch} at a time, "  # noqa: T201 - CLI output
           f"keeping {settings.disk_reserve} of disk free (candidates: {CANDIDATES})", flush=True)
     tags = SweBenchImages.tags()
     good, bad, tries = [], {}, {}
     while len(good) + len(bad) < count:
-        queue = [i for i in order if i not in good and i not in bad and tries.get(i, 0) < 2]
+        queue = [i for i in order if i not in good and i not in bad and tries.get(i, 0) < TRIES]
         if not queue:
             break
         free = shutil.disk_usage(swe_bench_settings.CACHE_DIR).free
         room = int((free - reserve) // IMAGE_BYTES)
         if room < 1:
-            print(f"⚠️  Stopped: {free / GIB:.0f} GiB free and the reserve is {reserve / GIB:.0f} GiB, no room for an "
+            print(f"⚠️  Stopped: {free / GIB:.0f} GiB free and the reserve is {reserve / GIB:.0f} GiB, no room for an "  # noqa: T201 - CLI output
                   "image. Free some (`ragon-admin swe-bench clean --images`) or pass --disk-reserve.")
             break
         chunk = queue[:min(batch, room, count - len(good) - len(bad))]
@@ -160,18 +175,18 @@ def validate(count: int, batch: int, unit: str, disk_reserve: Optional[str]) -> 
                 good.append(instance_id)
             elif problem.startswith("not validated yet"):
                 tries[instance_id] = tries.get(instance_id, 0) + 1
-                print(f"   {instance_id}: {problem} (attempt {tries[instance_id]})", flush=True)
+                print(f"   {instance_id}: {problem} (attempt {tries[instance_id]})", flush=True)  # noqa: T201 - CLI output
             else:
                 bad[instance_id] = problem
-                print(f"   {instance_id}: {problem}", flush=True)
-        print(f"   {len(good)} validated, {len(bad)} rejected so far; {removed} image(s) removed again", flush=True)
+                print(f"   {instance_id}: {problem}", flush=True)  # noqa: T201 - CLI output
+        print(f"   {len(good)} validated, {len(bad)} rejected so far; {removed} image(s) removed again", flush=True)  # noqa: T201 - CLI output
     fresh = [i for i in SweBenchImages.validated() if i not in set(read_ids(SAMPLE_100))]
-    print(f"✅ {len(good)} validated and {len(bad)} rejected now; {len(fresh)} validated tasks lie outside "
+    print(f"✅ {len(good)} validated and {len(bad)} rejected now; {len(fresh)} validated tasks lie outside "  # noqa: T201 - CLI output
           "sample-100.txt.")
     return 0 if len(good) + len(bad) >= count else 1
 
 
-def strong_rates(experiments: Path) -> Optional[Dict[str, float]]:
+def strong_rates(experiments: Path) -> dict[str, float] | None:
     """Each Verified task's share of strong submissions that solve it, or None without the data."""
     script = Path(__file__).with_name("swe_bench_compare.py")
     if not (experiments / "evaluation" / "verified").is_dir() or not script.is_file():
@@ -181,17 +196,18 @@ def strong_rates(experiments: Path) -> Optional[Dict[str, float]]:
     sys.modules["swe_bench_compare"] = module  # dataclasses look their module up by name
     spec.loader.exec_module(module)
     submissions, all_ids, _ = module.load_submissions(experiments)
-    strong = [s for s in submissions if s.overall >= 0.6]
+    strong = [s for s in submissions if s.overall >= STRONG]
     if not strong:
         return None
     return {t: sum(t in s.resolved for s in strong) / len(strong) for t in all_ids}
 
 
 def tier(rate: float) -> str:
+    """The difficulty tier of a task solved by ``rate`` of the strong submissions."""
     return "easy" if rate >= EASY else "medium" if rate >= MEDIUM else "hard"
 
 
-def allocate(total: int, weights: Dict[str, int]) -> Dict[str, int]:
+def allocate(total: int, weights: dict[str, int]) -> dict[str, int]:
     """Splits ``total`` in proportion to ``weights`` by largest remainder."""
     whole = sum(weights.values()) or 1
     exact = {k: total * v / whole for k, v in weights.items()}
@@ -205,9 +221,85 @@ FAILURES_PURPOSE: Final[str] = ("the failure analysis's A/B rounds\n"
                                 "# the failure analysis §6.5")
 
 
-def draw(count: int, seed: int, out: Path, experiments: Path, purpose: str = FAILURES_PURPOSE,
-         exclude: Optional[List[Path]] = None, keep_mismatch: bool = False,
-         reuse: Optional[List[Path]] = None) -> int:
+def _reused_lists(reuse: list[Path] | None, lists: list[Path]) -> dict[Path, list[str]] | None:
+    """The task ids of each ``--reuse-from`` list, or None (after saying why) when one is refused."""
+    reused: dict[Path, list[str]] = {}
+    for path in reuse or []:
+        if any(path.resolve() == other.resolve() for other in lists):
+            print(f"❌ --reuse-from {path}: the same list is excluded; name it for one or the other.")  # noqa: T201 - CLI output
+            return None
+        ids = read_ids(path)
+        if not ids:
+            print(f"❌ --reuse-from {path}: no task ids found; an earlier list must be named by its real path.")  # noqa: T201 - CLI output
+            return None
+        reused[path] = ids
+    return reused
+
+
+def _excluded_ids(lists: list[Path]) -> tuple[list[str], set[str]] | None:
+    """The header names and the task ids of the excluded lists, or None (after saying why) when one is empty."""
+    excluded_from: list[str] = []
+    used: set[str] = set()
+    for path in lists:
+        ids = read_ids(path)
+        if not ids:
+            print(f"❌ --exclude {path}: no task ids found; an earlier fresh list must be named by its real path.")  # noqa: T201 - CLI output
+            return None
+        excluded_from.append(f"{path.name} ({len(ids)})")
+        used |= set(ids)
+    return excluded_from, used
+
+
+def _stratified(
+    pool: list[str], count: int, sample: set[str], rates: dict[str, float], rng: random.Random
+) -> tuple[list[str], list[str]]:
+    """Draws ``count`` tasks from ``pool`` to ``sample``'s difficulty mix; returns them and two header lines."""
+    # The target is the sample's own mix: `used` also holds the excluded lists, whose tasks would
+    # skew it (fresh-50b was first drawn against 201 tasks that way).
+    mix: dict[str, int] = {"easy": 0, "medium": 0, "hard": 0}
+    for instance_id in sample:
+        mix[tier(rates.get(instance_id, 0.0))] += 1
+    wanted = allocate(count, mix)
+    by_tier: dict[str, list[str]] = {"easy": [], "medium": [], "hard": []}
+    for instance_id in pool:
+        by_tier[tier(rates.get(instance_id, 0.0))].append(instance_id)
+    chosen: list[str] = []
+    short = 0
+    for name in ("easy", "medium", "hard"):
+        take = min(wanted[name], len(by_tier[name]))
+        short += wanted[name] - take
+        chosen += rng.sample(by_tier[name], take)
+    if short:
+        rest = sorted(set(pool) - set(chosen))
+        chosen += rng.sample(rest, short)
+    chosen = sorted(chosen)
+    got = {name: sum(1 for i in chosen if tier(rates.get(i, 0.0)) == name) for name in mix}
+    header = [f"# Stratified to sample-100.txt's mix (easy/medium/hard {mix['easy']}/{mix['medium']}/"
+              f"{mix['hard']} of {len(sample)}; easy = solved by >= 75% of strong submissions, hard < 40%):",
+              f"# wanted {wanted['easy']}/{wanted['medium']}/{wanted['hard']}, drawn "
+              f"{got['easy']}/{got['medium']}/{got['hard']}"
+              + (f" ({short} filled from other tiers, which were short)" if short else "") + "."]
+    return chosen, header
+
+
+def _reuse_summary(chosen: list[str], reused: dict[Path, list[str]]) -> str:
+    """How many of the ``chosen`` tasks come from each reused list, and how many from none."""
+    counts = {path.name: sum(1 for i in chosen if i in set(ids)) for path, ids in reused.items()}
+    unseen = sum(1 for i in chosen if not any(i in set(ids) for ids in reused.values()))
+    return (", ".join(f"{n} from {name}" for name, n in counts.items())
+            + f", {unseen} in none of them")
+
+
+def draw(  # noqa: PLR0913 - main and the tests pass all eight
+    count: int,
+    seed: int,
+    out: Path,
+    experiments: Path,
+    purpose: str = FAILURES_PURPOSE,
+    exclude: list[Path] | None = None,
+    keep_mismatch: bool = False,
+    reuse: list[Path] | None = None,
+) -> int:
     """Draws ``count`` validated tasks outside ``sample-100.txt`` and every ``exclude`` list into ``out``.
 
     Args:
@@ -233,37 +325,28 @@ def draw(count: int, seed: int, out: Path, experiments: Path, purpose: str = FAI
     sample = set(read_ids(SAMPLE_100))
     used = set(sample)
     if not used:
-        print(f"❌ {SAMPLE_100} is missing: the fresh tasks are defined against it.")
+        print(f"❌ {SAMPLE_100} is missing: the fresh tasks are defined against it.")  # noqa: T201 - CLI output
         return 1
-    excluded_from: List[str] = []
     lists = list(exclude or [])
     if not keep_mismatch:
         lists.insert(0, MISMATCH_LIST)
-    reused: Dict[Path, List[str]] = {}
-    for path in reuse or []:
-        if any(path.resolve() == other.resolve() for other in lists):
-            print(f"❌ --reuse-from {path}: the same list is excluded; name it for one or the other.")
-            return 1
-        ids = read_ids(path)
-        if not ids:
-            print(f"❌ --reuse-from {path}: no task ids found; an earlier list must be named by its real path.")
-            return 1
-        reused[path] = ids
-    for path in lists:
-        ids = read_ids(path)
-        if not ids:
-            print(f"❌ --exclude {path}: no task ids found; an earlier fresh list must be named by its real path.")
-            return 1
-        excluded_from.append(f"{path.name} ({len(ids)})")
-        used |= set(ids)
+    reused = _reused_lists(reuse, lists)
+    if reused is None:
+        return 1
+    excluded = _excluded_ids(lists)
+    if excluded is None:
+        return 1
+    excluded_from, excluded_ids = excluded
+    used |= excluded_ids
     outside = "sample-100.txt" + (" and " + ", ".join(excluded_from) if excluded_from else "")
     pool = sorted(i for i in SweBenchImages.validated() if i not in used)
     if len(pool) < count:
-        print(f"❌ Only {len(pool)} validated tasks lie outside {outside}; {count} are wanted. Validate more first.")
+        print(f"❌ Only {len(pool)} validated tasks lie outside {outside}; {count} are wanted. Validate more first.")  # noqa: T201 - CLI output
         return 1
     rng = random.Random(seed)
     rates = strong_rates(experiments)
-    lines = [f"# {count} {'fresh ' if not reused else ''}SWE-bench Verified tasks for {purpose}, drawn {time.strftime('%Y-%m-%d')}",
+    lines = [f"# {count} {'fresh ' if not reused else ''}SWE-bench Verified tasks for {purpose}, "
+             f"drawn {time.strftime('%Y-%m-%d')}",
              f"# from the {len(pool)} tasks validated on this machine outside {outside}, seed {seed}."]
     if reused:
         lines.append("# Reuse (the rotation rule, SWE_BENCH spec §16): the tasks of "
@@ -273,50 +356,25 @@ def draw(count: int, seed: int, out: Path, experiments: Path, purpose: str = FAI
         chosen = sorted(rng.sample(pool, count))
         lines.append("# Not stratified: the comparison data (--experiments) was not found.")
     else:
-        # The target is the sample's own mix: `used` also holds the excluded lists, whose tasks would
-        # skew it (fresh-50b was first drawn against 201 tasks that way).
-        mix: Dict[str, int] = {"easy": 0, "medium": 0, "hard": 0}
-        for instance_id in sample:
-            mix[tier(rates.get(instance_id, 0.0))] += 1
-        wanted = allocate(count, mix)
-        by_tier: Dict[str, List[str]] = {"easy": [], "medium": [], "hard": []}
-        for instance_id in pool:
-            by_tier[tier(rates.get(instance_id, 0.0))].append(instance_id)
-        chosen = []
-        short = 0
-        for name in ("easy", "medium", "hard"):
-            take = min(wanted[name], len(by_tier[name]))
-            short += wanted[name] - take
-            chosen += rng.sample(by_tier[name], take)
-        if short:
-            rest = sorted(set(pool) - set(chosen))
-            chosen += rng.sample(rest, short)
-        chosen = sorted(chosen)
-        got = {name: sum(1 for i in chosen if tier(rates.get(i, 0.0)) == name) for name in mix}
-        lines.append(f"# Stratified to sample-100.txt's mix (easy/medium/hard {mix['easy']}/{mix['medium']}/"
-                     f"{mix['hard']} of {len(sample)}; easy = solved by >= 75% of strong submissions, hard < 40%):")
-        lines.append(f"# wanted {wanted['easy']}/{wanted['medium']}/{wanted['hard']}, drawn "
-                     f"{got['easy']}/{got['medium']}/{got['hard']}"
-                     + (f" ({short} filled from other tiers, which were short)" if short else "") + ".")
+        chosen, header = _stratified(pool, count, sample, rates, rng)
+        lines += header
     seen = ""
     if reused:
-        counts = {path.name: sum(1 for i in chosen if i in set(ids)) for path, ids in reused.items()}
-        unseen = sum(1 for i in chosen if not any(i in set(ids) for ids in reused.values()))
-        seen = (", ".join(f"{n} from {name}" for name, n in counts.items())
-                + f", {unseen} in none of them")
+        seen = _reuse_summary(chosen, reused)
         lines.append(f"# Drawn: {seen}.")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines) + "\n" + "".join(f"{i}\n" for i in chosen))
-    print(f"✅ {len(chosen)} tasks written to {out}" + (f" ({seen})" if seen else ""))
+    print(f"✅ {len(chosen)} tasks written to {out}" + (f" ({seen})" if seen else ""))  # noqa: T201 - CLI output
     return 0
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Runs the ``candidates``, ``validate`` or ``draw`` command."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    listing = commands.add_parser("candidates", help="print the candidates, in validation order")
+    listing = commands.add_parser(CANDIDATES_COMMAND, help="print the candidates, in validation order")
     listing.add_argument("--count", type=int, default=60)
-    checking = commands.add_parser("validate", help="validate candidates until --count have a result")
+    checking = commands.add_parser(VALIDATE_COMMAND, help="validate candidates until --count have a result")
     checking.add_argument("--count", type=int, default=60)
     checking.add_argument("--batch", type=int, default=10)
     checking.add_argument("--disk-reserve", default=None,
@@ -339,12 +397,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                          help="an earlier list whose tasks may recur (the rotation rule: lists used three or more "
                               "nights earlier); named in the header with how many drawn tasks it holds (repeatable)")
     args = parser.parse_args(argv)
-    if args.command == "candidates":
+    if args.command == CANDIDATES_COMMAND:
         found = candidates()
-        print(f"# {len(found)} candidates; the first {min(args.count, len(found))}:")
-        print("\n".join(found[:args.count]))
+        print(f"# {len(found)} candidates; the first {min(args.count, len(found))}:")  # noqa: T201 - CLI output
+        print("\n".join(found[:args.count]))  # noqa: T201 - CLI output
         return 0
-    if args.command == "validate":
+    if args.command == VALIDATE_COMMAND:
         return validate(args.count, args.batch, args.wait_for_unit, args.disk_reserve)
     return draw(args.count, args.seed, args.out, args.experiments, args.purpose, args.exclude, args.keep_mismatch,
                 args.reuse_from)
