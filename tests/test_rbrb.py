@@ -51,3 +51,36 @@ def test_svg_is_regenerated_byte_identical() -> None:
 def test_check_flag() -> None:
     module = _load()
     assert module.main(["--check"]) == 0
+
+
+def test_chart_has_two_lines_and_deterministic_badge() -> None:
+    module = _load()
+    data = _data()
+    data["quality"] = [
+        {
+            "week": "2026-W46",
+            "ragon_reverted": 0,
+            "ragon_commits": 6,
+            "other_reverted": 5,
+            "other_commits": 402,
+        },
+        {
+            "week": "2026-W47",
+            "ragon_reverted": 1,
+            "ragon_commits": 10,
+            "other_reverted": 4,
+            "other_commits": 300,
+        },
+    ]
+    svg = module.render(data)
+    assert svg == module.render(data)
+    assert svg.count("<polyline") == 2  # one point has no line; the band has two
+    assert "Quality band" in svg
+    assert module.revert_percent(data["quality"][1], "ragon") == 10.0
+
+
+def test_badge_is_regenerated_byte_identical() -> None:
+    module = _load()
+    badge = (ROOT / "images" / "rbrb-badge.svg").read_text(encoding="utf-8")
+    assert badge == module.render_badge(_data())
+    assert "0.97 %" in badge
