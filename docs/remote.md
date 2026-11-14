@@ -142,6 +142,33 @@ only into your own terminals.
 A new GB10 joined this way can then be set up from your GB10 over the overlay, as in
 [Setting up a node from far away](ragon.md#setting-up-a-node-from-far-away).
 
+## How do I check that a device reaches the GB10?
+
+On the device you joined, away from your network:
+
+```bash
+netbird status                 # "Connected", and the GB10 listed as a peer
+ssh gx10-remote                # a machine joined with the one-line command has this shortcut
+ragon exec "say hello"         # on a computer that runs ragon: it finds the GB10 by its overlay name
+```
+
+On the GB10, `ragon-admin remote peers` lists the device, and `ragon-admin remote status` shows
+whether it is connected directly or through the relay box (a relayed connection works but is slower).
+A phone is checked by opening the [web UI](web.md) at the GB10's overlay name.
+
+## What if it does not work?
+
+- **`ragon node remote join` finds no GB10:** the code is for a computer on
+  the *same network* as the GB10 and lasts ten minutes. Off the network, use the one-line join above.
+- **The one-line join says the line is spent or expired:** it works once and for at most 24 hours.
+  Make a new one with `ragon-admin remote code --bundle-file … --join`.
+- **The device joined but cannot reach the GB10:** run `ragon-admin remote status` on the GB10; the
+  tunnel, the box's services and the certificates must all show healthy. Run
+  `ragon-admin remote setup <the box's DNS name>` again to repair them.
+- **A phone refuses the server's certificate:** it needs the public certificates above, for both the
+  box's name and the relay.
+- **A device you no longer want:** `ragon-admin remote revoke <peer>`.
+
 ## How do I restart a hung GB10 from a distance?
 
 A smart plug that your GB10's neighbour can reach on its network lets you cut power and restore
