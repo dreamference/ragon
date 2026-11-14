@@ -1,6 +1,6 @@
 # LoRA adapters
 
-Developer notes for `ragon-admin adapter` and serving adapters on the default model. Spec: `specs/DREAMFERENCE_RAGON_ADAPTERS.md`; the probe that decided what is served: `docs/dev/lora-serving-probe.md` on branch `research/lora-serving-probe`.
+Developer notes for `ragon-admin adapter` and serving adapters on the default model. Spec: `specs/DREAMFERENCE_RAGON_ADAPTERS.md`; the probe that decided what is served: `docs/dev/lora-serving-probe.md` on branch `research/lora-serving-probe`. Training adapters on a person's repository (planned): [adapter-train-plan.md](adapter-train-plan.md).
 
 ## Installing (`dreamference/hardware/adapter_*.py`)
 
