@@ -9,13 +9,12 @@ every turn of a scenario.
 
 from __future__ import annotations
 
-import glob
 import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Final
 
 
 @dataclass
@@ -57,11 +56,13 @@ class Turn:
     completed: bool = False
 
     def seconds(self) -> float | None:
+        """Seconds from the turn's start to its end, or None if either is unknown."""
         if self.started is None or self.ended is None:
             return None
         return round(self.ended - self.started, 1)
 
     def seconds_to_first_output(self) -> float | None:
+        """Seconds from the turn's start to its first output, or None if either is unknown."""
         if self.started is None or self.first_output is None:
             return None
         return round(self.first_output - self.started, 1)
@@ -83,6 +84,47 @@ def _text(item: dict) -> str:
 
 
 _CONTEXT = re.compile(r"^\s*<(environment_context|user_instructions|turn_aborted|world_state)\b")
+EVENT_MSG: Final[str] = "event_msg"
+TASK_STARTED: Final[str] = "task_started"
+TASK_COMPLETE: Final[str] = "task_complete"
+TOKEN_COUNT: Final[str] = "token_count"
+RESPONSE_ITEM: Final[str] = "response_item"
+MESSAGE: Final[str] = "message"
+ROLE_USER: Final[str] = "user"
+ROLE_ASSISTANT: Final[str] = "assistant"
+
+
+def _take_response_item(
+    current: Turn, sub: object, payload: dict, at: float | None, calls_by_id: dict[str, ToolCall]
+) -> None:
+    """Adds one response_item (a message, a tool call or a call's output) to the current turn."""
+    if sub == MESSAGE and payload.get("role") == ROLE_USER:
+        text = _text(payload)
+        if not _CONTEXT.match(text):
+            current.user = (current.user + "\n" + text).strip()
+    elif sub == MESSAGE and payload.get("role") == ROLE_ASSISTANT:
+        current.first_output = current.first_output or at
+        if current.answer:
+            current.commentary.append(current.answer)
+        current.answer = _text(payload)
+    elif sub in ("function_call", "custom_tool_call"):
+        current.first_output = current.first_output or at
+        if current.answer:
+            current.commentary.append(current.answer)
+            current.answer = ""
+        call = ToolCall(
+            name=str(payload.get("name") or ""),
+            arguments=str(payload.get("arguments") or payload.get("input") or ""),
+            at=at or 0.0,
+        )
+        current.calls.append(call)
+        if payload.get("call_id"):
+            calls_by_id[str(payload["call_id"])] = call
+    elif sub in ("function_call_output", "custom_tool_call_output"):
+        call = calls_by_id.get(str(payload.get("call_id")))
+        output = payload.get("output")
+        if call is not None:
+            call.output = output if isinstance(output, str) else json.dumps(output)
 
 
 def read(path: Path) -> list[Turn]:
@@ -102,7 +144,7 @@ def read(path: Path) -> list[Turn]:
             continue
         at = _time(record.get("timestamp"))
         kind, sub = record.get("type"), payload.get("type")
-        if kind == "event_msg" and sub == "task_started":
+        if kind == EVENT_MSG and sub == TASK_STARTED:
             # Output tokens are counted from the session's running total at this turn's start.
             tokens_before = last_total
             current = Turn(started=at)
@@ -110,51 +152,25 @@ def read(path: Path) -> list[Turn]:
             continue
         if current is None:
             continue
-        if kind == "event_msg" and sub == "task_complete":
+        if kind == EVENT_MSG and sub == TASK_COMPLETE:
             current.ended, current.completed = at, True
             continue
-        if kind == "event_msg" and sub == "token_count" and payload.get("info"):
+        if kind == EVENT_MSG and sub == TOKEN_COUNT and payload.get("info"):
             total = payload["info"].get("total_token_usage") or {}
             if isinstance(total.get("output_tokens"), int):
                 current.output_tokens = total["output_tokens"] - tokens_before
                 last_total = total["output_tokens"]
             continue
-        if kind != "response_item":
+        if kind != RESPONSE_ITEM:
             continue
-        if sub == "message" and payload.get("role") == "user":
-            text = _text(payload)
-            if not _CONTEXT.match(text):
-                current.user = (current.user + "\n" + text).strip()
-        elif sub == "message" and payload.get("role") == "assistant":
-            current.first_output = current.first_output or at
-            if current.answer:
-                current.commentary.append(current.answer)
-            current.answer = _text(payload)
-        elif sub in ("function_call", "custom_tool_call"):
-            current.first_output = current.first_output or at
-            if current.answer:
-                current.commentary.append(current.answer)
-                current.answer = ""
-            call = ToolCall(
-                name=str(payload.get("name") or ""),
-                arguments=str(payload.get("arguments") or payload.get("input") or ""),
-                at=at or 0.0,
-            )
-            current.calls.append(call)
-            if payload.get("call_id"):
-                calls_by_id[str(payload["call_id"])] = call
-        elif sub in ("function_call_output", "custom_tool_call_output"):
-            call = calls_by_id.get(str(payload.get("call_id")))
-            output = payload.get("output")
-            if call is not None:
-                call.output = output if isinstance(output, str) else json.dumps(output)
+        _take_response_item(current, sub, payload, at, calls_by_id)
     return turns
 
 
 def read_home(codex_home: Path) -> list[Turn]:
     """Every turn under a `CODEX_HOME`'s sessions, oldest rollout first."""
-    files = sorted(glob.glob(str(codex_home / "sessions" / "**" / "*.jsonl"), recursive=True))
+    files = sorted((codex_home / "sessions").glob("**/*.jsonl"), key=str)
     turns: list[Turn] = []
-    for name in files:
-        turns.extend(read(Path(name)))
+    for path in files:
+        turns.extend(read(path))
     return turns
