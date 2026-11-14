@@ -84,6 +84,8 @@
 /dreamference/hardware/                         @dreamference/models
 /tests/test_adapter_train_tasks.py              @dreamference/models
 /dreamference/cli/adapter_command.py            @dreamference/models
+/dreamference/hardware/adapter_train_generate.py @dreamference/models
+/tests/test_adapter_train_generate.py           @dreamference/models
 /dreamference/cli/model_deep_inspector.py       @dreamference/models
 /scripts/adapters/                              @dreamference/models
 /scripts/install_gb10.sh                        @dreamference/models
