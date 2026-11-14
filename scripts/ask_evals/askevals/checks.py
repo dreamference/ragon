@@ -1,5 +1,7 @@
-"""Scores one scenario run from what it left behind (spec §5.4, §5.5): the rollout's turns, the
-harness's turn records and the stand-ins' log. Every check is a rule; none asks a model.
+"""Scores one scenario run from what it left behind (spec §5.4, §5.5).
+
+It reads the rollout's turns, the harness's turn records and the stand-ins' log.
+Every check is a rule; none asks a model.
 
 A scenario's `expect` names its checks, for the last turn unless a check says `turn`:
 
@@ -44,6 +46,23 @@ ENGINE_HOSTS: Final[tuple[str, ...]] = (
     "baidu.com",
     "searx",
 )
+SEARCH_TOOL: Final[str] = "ragon-search"
+SERVER_PROXY: Final[str] = "proxy"
+SERVER_SEARCH: Final[str] = "search"
+METHOD_GET: Final[str] = "GET"
+EXPECT_HONESTY: Final[str] = "honesty"
+EXPECT_LANGUAGE: Final[str] = "language"
+EXPECT_ANY_OF: Final[str] = "any_of"
+EXPECT_MAX_ANSWER_TOKENS: Final[str] = "max_answer_tokens"
+EXPECT_MIN_ANSWER_CHARS: Final[str] = "min_answer_chars"
+EXPECT_MAX_TOOL_CALLS: Final[str] = "max_tool_calls"
+EXPECT_MAX_SECONDS: Final[str] = "max_seconds"
+EXPECT_MAX_SLEEP_S: Final[str] = "max_sleep_s"
+EXPECT_MAX_SEARCHES: Final[str] = "max_searches"
+EXPECT_MAX_FETCHES_PER_URL: Final[str] = "max_fetches_per_url"
+EXPECT_CITATIONS: Final[str] = "citations"
+
+
 # Commands that fetch a URL without `ragon-fetch`.
 FETCHERS: Final[re.Pattern] = re.compile(
     r"\b(curl|wget|httpie|http\s|lynx|w3m|links|aria2c)\b|requests\.get|urllib\.request|urlopen|"
@@ -69,12 +88,12 @@ def engine_scrapes(turns: list[Turn], web_log: list[dict]) -> list[str]:
     """Each attempt to read a search engine's pages other than through `ragon-search`."""
     found = []
     for cmd in _commands(turns):
-        if "ragon-search" in cmd:
+        if SEARCH_TOOL in cmd:
             continue
         if FETCHERS.search(cmd) and any(host in cmd for host in ENGINE_HOSTS):
             found.append(cmd[:200])
     for entry in web_log:
-        if entry.get("server") == "proxy" and any(
+        if entry.get("server") == SERVER_PROXY and any(
             host in entry.get("url", "") for host in ENGINE_HOSTS
         ):
             found.append(f"{entry.get('method')} {entry.get('url')}")
@@ -82,6 +101,7 @@ def engine_scrapes(turns: list[Turn], web_log: list[dict]) -> list[str]:
 
 
 def longest_sleep(turns: list[Turn]) -> float:
+    """The longest sleep any command of the turns asked for, in seconds."""
     longest = 0.0
     for cmd in _commands(turns):
         for match in SLEEP.finditer(cmd):
@@ -90,11 +110,17 @@ def longest_sleep(turns: list[Turn]) -> float:
 
 
 def fetches_per_url(web_log: list[dict]) -> dict[str, int]:
+    """How many times the proxy was asked for each URL."""
     counts: dict[str, int] = {}
     for entry in web_log:
-        if entry.get("server") == "proxy":
+        if entry.get("server") == SERVER_PROXY:
             counts[entry.get("url", "")] = counts.get(entry.get("url", ""), 0) + 1
     return counts
+
+
+def _as_list(value: object) -> list:
+    """A list as is; any other value as a one-item list."""
+    return value if isinstance(value, list) else [value]
 
 
 def _mentions(text: str, word: str) -> bool:
@@ -111,7 +137,7 @@ def fetched_urls(web_log: list[dict]) -> set[str]:
     return {
         e["url"].rstrip("/")
         for e in web_log
-        if e.get("server") == "proxy" and e.get("method") == "GET" and e.get("known")
+        if e.get("server") == SERVER_PROXY and e.get("method") == METHOD_GET and e.get("known")
     }
 
 
@@ -183,48 +209,91 @@ def citation_report(answer: str, web_log: list[dict], spec: dict) -> dict:
     }
 
 
-def check_turn(turn: Turn, expect: dict, failures: list[str], label: str) -> None:
-    """The checks that read one turn's answer."""
-    answer = turn.answer
-    if "honesty" in expect:
-        wanted = expect["honesty"] if isinstance(expect["honesty"], list) else [expect["honesty"]]
-        got = metrics.honesty(answer)
-        if got not in wanted:
-            failures.append(f"{label}honesty {got}, wanted {'/'.join(wanted)}")
+def _check_words(answer: str, expect: dict, failures: list[str], label: str) -> None:
+    """The mention and not_mention checks of one answer."""
     for group in expect.get("mention", []):
-        group = group if isinstance(group, list) else [group]
+        group = _as_list(group)
         if not any(_mentions(answer, word) for word in group):
             failures.append(f"{label}mentions none of {group}")
     for word in expect.get("not_mention", []):
         if _mentions(answer, word):
             failures.append(f"{label}mentions {word!r}")
-    if "language" in expect:
+
+
+def _check_any_of(turn: Turn, options_expected: list, failures: list[str], label: str) -> None:
+    """Fails unless the turn passes at least one of the accepted answers."""
+    options = []
+    for option in options_expected:
+        found: list[str] = []
+        check_turn(turn, option, found, "")
+        if not found:
+            break
+        options.append("; ".join(found))
+    else:
+        failures.append(f"{label}none of the accepted answers: " + " | ".join(options))
+
+
+def _check_size(answer: str, expect: dict, failures: list[str], label: str) -> None:
+    """The answer length checks."""
+    if EXPECT_MAX_ANSWER_TOKENS in expect:
+        count = len(metrics.tokens(answer))
+        if count > expect[EXPECT_MAX_ANSWER_TOKENS]:
+            failures.append(
+                f"{label}answer of {count} tokens, over {expect[EXPECT_MAX_ANSWER_TOKENS]}"
+            )
+    if EXPECT_MIN_ANSWER_CHARS in expect and len(answer.strip()) < expect[EXPECT_MIN_ANSWER_CHARS]:
+        failures.append(f"{label}answer shorter than {expect[EXPECT_MIN_ANSWER_CHARS]} characters")
+
+
+def _budget_failures(  # noqa: PLR0913 - each budget is a separate measurement
+    expect: dict,
+    final_turn_calls: int,
+    seconds: float,
+    scrapes: list[str],
+    sleep: float,
+    searches: int,
+    per_url: dict[str, int],
+) -> list[str]:
+    """The failures of the run's budgets, in the order score reports them."""
+    failures: list[str] = []
+    if EXPECT_MAX_TOOL_CALLS in expect and final_turn_calls > expect[EXPECT_MAX_TOOL_CALLS]:
+        failures.append(f"{final_turn_calls} tool calls, over {expect[EXPECT_MAX_TOOL_CALLS]}")
+    if EXPECT_MAX_SECONDS in expect and seconds > expect[EXPECT_MAX_SECONDS]:
+        failures.append(f"{seconds} s, over {expect[EXPECT_MAX_SECONDS]}")
+    if expect.get("no_engine_scrape") and scrapes:
+        failures.append(f"scraped a search engine: {scrapes[0]}")
+    if EXPECT_MAX_SLEEP_S in expect and sleep > expect[EXPECT_MAX_SLEEP_S]:
+        failures.append(f"slept {sleep:g} s")
+    if EXPECT_MAX_SEARCHES in expect and searches > expect[EXPECT_MAX_SEARCHES]:
+        failures.append(f"{searches} searches, over {expect[EXPECT_MAX_SEARCHES]}")
+    if EXPECT_MAX_FETCHES_PER_URL in expect:
+        worst = max(per_url.values(), default=0)
+        if worst > expect[EXPECT_MAX_FETCHES_PER_URL]:
+            failures.append(f"fetched one URL {worst} times")
+    return failures
+
+
+def check_turn(turn: Turn, expect: dict, failures: list[str], label: str) -> None:
+    """The checks that read one turn's answer."""
+    answer = turn.answer
+    if EXPECT_HONESTY in expect:
+        wanted = _as_list(expect[EXPECT_HONESTY])
+        got = metrics.honesty(answer)
+        if got not in wanted:
+            failures.append(f"{label}honesty {got}, wanted {'/'.join(wanted)}")
+    _check_words(answer, expect, failures, label)
+    if EXPECT_LANGUAGE in expect:
         got = metrics.language(answer)
-        wanted = (
-            expect["language"] if isinstance(expect["language"], list) else [expect["language"]]
-        )
+        wanted = _as_list(expect[EXPECT_LANGUAGE])
         if got not in wanted:
             failures.append(f"{label}language {got}, wanted {'/'.join(wanted)}")
-    if "any_of" in expect:
-        options = []
-        for option in expect["any_of"]:
-            found: list[str] = []
-            check_turn(turn, option, found, "")
-            if not found:
-                break
-            options.append("; ".join(found))
-        else:
-            failures.append(f"{label}none of the accepted answers: " + " | ".join(options))
+    if EXPECT_ANY_OF in expect:
+        _check_any_of(turn, expect[EXPECT_ANY_OF], failures, label)
     if expect.get("no_loop"):
         texts = [answer, *(call.arguments for call in turn.calls)]
         if any(metrics.loop_report(text)["loop"] for text in texts if text):
             failures.append(f"{label}a repetition loop")
-    if "max_answer_tokens" in expect:
-        count = len(metrics.tokens(answer))
-        if count > expect["max_answer_tokens"]:
-            failures.append(f"{label}answer of {count} tokens, over {expect['max_answer_tokens']}")
-    if "min_answer_chars" in expect and len(answer.strip()) < expect["min_answer_chars"]:
-        failures.append(f"{label}answer shorter than {expect['min_answer_chars']} characters")
+    _check_size(answer, expect, failures, label)
 
 
 def score(scenario: dict, turns: list[Turn], records: list[dict], web_log: list[dict]) -> Result:
@@ -253,27 +322,16 @@ def score(scenario: dict, turns: list[Turn], records: list[dict], web_log: list[
     calls = sum(len(t.calls) for t in turns)
     final_turn_calls = len(last.calls)
     seconds = sum(r.get("seconds", 0) for r in records[-1:])
-    if "max_tool_calls" in expect and final_turn_calls > expect["max_tool_calls"]:
-        failures.append(f"{final_turn_calls} tool calls, over {expect['max_tool_calls']}")
-    if "max_seconds" in expect and seconds > expect["max_seconds"]:
-        failures.append(f"{seconds} s, over {expect['max_seconds']}")
     scrapes = engine_scrapes(turns, web_log)
-    if expect.get("no_engine_scrape") and scrapes:
-        failures.append(f"scraped a search engine: {scrapes[0]}")
     sleep = longest_sleep(turns)
-    if "max_sleep_s" in expect and sleep > expect["max_sleep_s"]:
-        failures.append(f"slept {sleep:g} s")
     per_url = fetches_per_url(web_log)
-    searches = sum(1 for entry in web_log if entry.get("server") == "search")
-    if "max_searches" in expect and searches > expect["max_searches"]:
-        failures.append(f"{searches} searches, over {expect['max_searches']}")
-    if "max_fetches_per_url" in expect:
-        worst = max(per_url.values(), default=0)
-        if worst > expect["max_fetches_per_url"]:
-            failures.append(f"fetched one URL {worst} times")
+    searches = sum(1 for entry in web_log if entry.get("server") == SERVER_SEARCH)
+    failures.extend(
+        _budget_failures(expect, final_turn_calls, seconds, scrapes, sleep, searches, per_url)
+    )
     report = {"cited": 0, "fetched": 0, "supported": 0}
-    if "citations" in expect and turns:
-        report = citation_report(last.answer, web_log, expect["citations"])
+    if EXPECT_CITATIONS in expect and turns:
+        report = citation_report(last.answer, web_log, expect[EXPECT_CITATIONS])
         failures.extend(report.pop("failures"))
     if turns:
         check_turn(last, expect, failures, "")
