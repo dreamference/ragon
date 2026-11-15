@@ -96,3 +96,18 @@ def test_no_subcommand_prints_the_usage(capsys):
     args = _parser().parse_args(["monitor"])
     assert MonitorCommand.run(args) == 2
     assert "usage" in capsys.readouterr().out
+
+
+def test_history_forwards_window_and_item(monkeypatch):
+    seen = []
+    monkeypatch.setattr(MonitorCommand, "forward", classmethod(lambda cls, a: seen.append(a) or 0))
+    args = _parser().parse_args(["monitor", "history", "--window", "6h", "--item", "gpu"])
+    assert MonitorCommand.run(args) == 0
+    assert seen == [["history", "--window", "6h", "--item", "gpu"]]
+
+
+@pytest.mark.parametrize("argv", [["monitor", "history", "--bogus"], ["monitor", "history", "x"]])
+def test_history_rejects_unknown_arguments(argv):
+    with pytest.raises(SystemExit) as error:
+        _parser().parse_args(argv)
+    assert error.value.code == 2

@@ -163,7 +163,11 @@ impl Store {
                     .map_err(err)?;
                 // Freed pages count only after they are returned to the file.
                 let _ = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-                if self.conn.execute_batch("PRAGMA incremental_vacuum;").is_err() {
+                if self
+                    .conn
+                    .execute_batch("PRAGMA incremental_vacuum;")
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -199,6 +203,39 @@ impl Store {
             }
         }
         out
+    }
+
+    /// The stored series in `[from, to)` as `(ts, item, state)`, oldest first; `item` filters to one.
+    /// Raw samples serve a window within the raw retention, else the minute rollups (14 days), else
+    /// the hour rollups.
+    pub fn stored_series(
+        &self,
+        item: Option<&str>,
+        from: i64,
+        to: i64,
+        now: i64,
+    ) -> io::Result<Vec<(i64, String, String)>> {
+        let age = now - from;
+        let (table, state) = if age <= RAW_KEEP_SECS {
+            ("samples", "state")
+        } else if age <= MINUTE_KEEP_SECS {
+            ("rollup_1m", "worst")
+        } else {
+            ("rollup_1h", "worst")
+        };
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT ts, item, {state} FROM {table} WHERE ts>=?1 AND ts<?2
+                 AND (?3 IS NULL OR item=?3) ORDER BY ts, item"
+            ))
+            .map_err(err)?;
+        let rows = stmt
+            .query_map(params![from, to, item], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .map_err(err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(err)
     }
 
     /// The worst rank recorded for `item` in `[from, to)`, by raw samples (tests, `history`).
@@ -275,6 +312,19 @@ mod tests {
     }
 
     #[test]
+    fn stored_series_returns_the_window_oldest_first_and_filters_by_item() {
+        let mut s = Store::in_memory().unwrap();
+        s.record(100, &[item("a", State::Ok), item("b", State::Down)])
+            .unwrap();
+        s.record(200, &[item("a", State::Degraded)]).unwrap();
+        let all = s.stored_series(None, 0, 1000, 300).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].0, 100);
+        let a = s.stored_series(Some("a"), 150, 1000, 300).unwrap();
+        assert_eq!(a, vec![(200, "a".to_string(), "degraded".to_string())]);
+    }
+
+    #[test]
     fn the_current_minute_is_not_rolled_up_yet() {
         let mut s = Store::in_memory().unwrap();
         s.record(125, &[item("a", State::Ok)]).unwrap();
@@ -293,8 +343,11 @@ mod tests {
             .with_cap(200 * 1024);
         let now = 100_000;
         for i in 0..3000 {
-            s.record(now - 3000 + i, &[item("a", State::Ok), item("b", State::Ok)])
-                .unwrap();
+            s.record(
+                now - 3000 + i,
+                &[item("a", State::Ok), item("b", State::Ok)],
+            )
+            .unwrap();
         }
         s.maintain(now).unwrap();
         assert!(s.size_bytes() <= 200 * 1024, "{}", s.size_bytes());
@@ -334,7 +387,9 @@ mod tests {
             )
             .unwrap();
         s.maintain(now).unwrap();
-        s.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        s.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
         let size = std::fs::metadata(&path).unwrap().len() as i64;
         let rollups = s.count("rollup_1m");
         assert!(rollups > 0);

@@ -3,8 +3,10 @@ use ragon_node_monitor::{
 };
 use std::path::PathBuf;
 
-const USAGE: &str =
-    "usage: ragon-node-monitor status [--json] [--port N] [--engine-port N] [--root DIR]\n       ragon-node-monitor history [--db FILE] [--hours N]\n       ragon-node-monitor run [--db FILE] [--port N] [--engine-port N] [--root DIR]";
+const USAGE: &str = "usage: ragon-node-monitor status [--json] [--port N] [--engine-port N] [--root DIR]
+       ragon-node-monitor history [--db FILE] [--hours N]
+       ragon-node-monitor history [--window 30m|6h|2d] [--item NAME] [--db FILE]
+       ragon-node-monitor run [--db FILE] [--port N] [--engine-port N] [--root DIR]";
 
 fn main() {
     std::process::exit(run(std::env::args().skip(1).collect()));
@@ -14,6 +16,9 @@ fn run(args: Vec<String>) -> i32 {
     match args.first().map(String::as_str) {
         Some("status") => {}
         Some("run") => return run_sampler(args),
+        Some("history") if args.iter().any(|a| a == "--window" || a == "--item") => {
+            return run_history(args);
+        }
         Some("history") => return history(args),
         _ => return usage(),
     }
@@ -152,6 +157,70 @@ fn run_sampler(args: Vec<String>) -> i32 {
     }
 }
 
+/// `history`: prints the stored series of a window, oldest first.
+fn run_history(args: Vec<String>) -> i32 {
+    let mut window = 3600;
+    let mut item: Option<String> = None;
+    let mut db: Option<PathBuf> = None;
+    let mut rest = args.into_iter().skip(1);
+    while let Some(arg) = rest.next() {
+        match (arg.as_str(), rest.next()) {
+            ("--window", Some(v)) => match parse_window(&v) {
+                Some(secs) => window = secs,
+                None => return usage(),
+            },
+            ("--item", Some(v)) => item = Some(v),
+            ("--db", Some(v)) => db = Some(PathBuf::from(v)),
+            _ => return usage(),
+        }
+    }
+    let Some(db) = db.or_else(default_db) else {
+        eprintln!("no --db and no home directory");
+        return 2;
+    };
+    if !db.is_file() {
+        eprintln!("no history at {}", db.display());
+        return 1;
+    }
+    let store = match Store::open(&db) {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("cannot open {}: {e}", db.display());
+            return 1;
+        }
+    };
+    let end = now();
+    match store.stored_series(item.as_deref(), end - window, end + 1, end) {
+        Ok(rows) => {
+            for (ts, name, state) in rows {
+                println!("{ts} {name} {state}");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("cannot read history: {e}");
+            1
+        }
+    }
+}
+
+/// `30m`, `6h`, `2d` or plain seconds.
+fn parse_window(text: &str) -> Option<i64> {
+    let (digits, unit) = match text.char_indices().last()? {
+        (i, c @ ('m' | 'h' | 'd' | 's')) => (&text[..i], c),
+        _ => (text, 's'),
+    };
+    let n: i64 = digits.parse().ok().filter(|n| *n > 0)?;
+    Some(
+        n * match unit {
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86400,
+            _ => 1,
+        },
+    )
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -163,4 +232,18 @@ fn now() -> i64 {
 fn default_db() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".local/share/dreamference/monitor/node/monitor.sqlite"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_window;
+
+    #[test]
+    fn windows_parse_with_units() {
+        assert_eq!(parse_window("30m"), Some(1800));
+        assert_eq!(parse_window("2d"), Some(172800));
+        assert_eq!(parse_window("90"), Some(90));
+        assert_eq!(parse_window("0h"), None);
+        assert_eq!(parse_window("x"), None);
+    }
 }

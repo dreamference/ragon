@@ -997,6 +997,15 @@ Show the node's state and its checks.
 |---|---|
 | `--json` | Print the monitor's JSON as is. |
 
+#### `ragon-admin monitor history`
+
+Print the stored series for a window.
+
+| Option | Description |
+|---|---|
+| `--window` | 30m, 6h, 2d or seconds (default 1h) |
+| `--item` | Only this item. |
+
 ### `ragon-admin images`
 
 Manage image search (the image_search tool and /images/).

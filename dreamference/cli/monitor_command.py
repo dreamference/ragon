@@ -1,4 +1,4 @@
-"""`ragon-admin monitor status [--json]`: the node's health, from `ragon-node-monitor`."""
+"""`ragon-admin monitor status|history`: the node's health, from `ragon-node-monitor`."""
 
 import argparse
 import os
@@ -12,6 +12,7 @@ from dreamference.runner.codex_branded_builder import INSTALL_DIR
 MONITOR_COMMAND: Final[str] = "monitor"
 MONITOR_BINARY: Final[str] = "ragon-node-monitor"
 STATUS: Final[str] = "status"
+HISTORY: Final[str] = "history"
 RUN_TIMEOUT_SECONDS: Final[int] = 60
 NOT_BUILT_EXIT: Final[int] = 1
 
@@ -37,6 +38,9 @@ class MonitorCommand:
         commands = parser.add_subparsers(dest="monitor_command")
         status = commands.add_parser(STATUS, help="Show the node's state and its checks")
         status.add_argument("--json", action="store_true", help="Print the monitor's JSON as is")
+        history = commands.add_parser(HISTORY, help="Print the stored series for a window")
+        history.add_argument("--window", default="1h", help="30m, 6h, 2d or seconds (default 1h)")
+        history.add_argument("--item", default=None, help="Only this item")
         return parser
 
     @classmethod
@@ -59,8 +63,12 @@ class MonitorCommand:
         Returns:
             int: The exit code (the binary's own for `status`).
         """
-        if getattr(args, "monitor_command", None) != STATUS:
-            print("usage: ragon-admin monitor status [--json]")
+        sub = getattr(args, "monitor_command", None)
+        if sub == HISTORY:
+            extra = ["--window", args.window] + (["--item", args.item] if args.item else [])
+            return cls.forward([HISTORY, *extra])
+        if sub != STATUS:
+            print("usage: ragon-admin monitor status [--json] | history [--window W] [--item I]")
             return 2
         return cls.status(bool(args.json))
 
@@ -74,6 +82,18 @@ class MonitorCommand:
         Returns:
             int: 0, the monitor's exit code, or 1 when it is not built.
         """
+        return cls.forward([STATUS] + (["--json"] if as_json else []))
+
+    @classmethod
+    def forward(cls, arguments: list[str]) -> int:
+        """Runs `ragon-node-monitor` with `arguments` and relays its output.
+
+        Args:
+            arguments: The monitor's own arguments, subcommand first.
+
+        Returns:
+            int: The monitor's exit code, or 1 when it is not built or did not run.
+        """
         binary = cls.executable()
         if binary is None:
             print(
@@ -82,7 +102,7 @@ class MonitorCommand:
                 file=sys.stderr,
             )
             return NOT_BUILT_EXIT
-        command = [binary, STATUS] + (["--json"] if as_json else [])
+        command = [binary, *arguments]
         try:
             done = subprocess.run(
                 command, capture_output=True, text=True, timeout=RUN_TIMEOUT_SECONDS, check=False
