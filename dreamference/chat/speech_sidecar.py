@@ -18,6 +18,7 @@ import subprocess
 from typing import ClassVar, Final
 
 from dreamference.chat.sidecar_network import SIDECAR_NETWORK, SidecarNetwork
+from dreamference.config.container_log_options import ContainerLogOptions
 
 STT_CONTAINER_NAME: Final[str] = "dreamference-stt"
 STT_IMAGE: Final[str] = "ghcr.io/speaches-ai/speaches:latest-cpu"
@@ -58,7 +59,7 @@ class SpeechSidecar:
             List[str]: The argv: on the sidecar network, published on loopback only.
         """
         return [
-            "docker", "run", "-d", "--name", STT_CONTAINER_NAME,
+            "docker", "run", "-d", *ContainerLogOptions.args("speech"), "--name", STT_CONTAINER_NAME,
             "--restart", "unless-stopped", "--network", SIDECAR_NETWORK,
             "-p", f"127.0.0.1:{STT_HOST_PORT}:8000",
             "-v", f"{STT_CACHE_VOLUME}:/home/ubuntu/.cache/huggingface",

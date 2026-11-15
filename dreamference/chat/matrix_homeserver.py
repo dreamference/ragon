@@ -32,6 +32,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Final
 
+from dreamference.config.container_log_options import ContainerLogOptions
 from dreamference.config.unit_log_directives import UnitLogDirectives
 
 LOG: Final[logging.Logger] = logging.getLogger(__name__)
@@ -351,6 +352,7 @@ class MatrixHomeserver:
             "docker",
             "run",
             "-d",
+            *ContainerLogOptions.args("matrix"),
             "--name",
             MATRIX_CONTAINER,
             "--restart",

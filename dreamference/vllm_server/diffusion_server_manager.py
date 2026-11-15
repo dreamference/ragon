@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 from typing import Final
 
+from dreamference.config.container_log_options import ContainerLogOptions
 from dreamference.vllm_server.vllm_server_manager import DEFAULT_VLLM_IMAGE
 
 DEFAULT_DIFFUSION_PORT: Final[int] = 8001
@@ -166,6 +167,7 @@ class DiffusionServerManager:
             "docker",
             "run",
             "-d",
+            *ContainerLogOptions.args("diffusion"),
             "--network",
             "host",
             "--restart",

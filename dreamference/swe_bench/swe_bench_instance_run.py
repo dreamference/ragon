@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
 
+from dreamference.config.container_log_options import ContainerLogOptions
 from dreamference.config.proxy_bypass import ProxyBypass
 from dreamference.night_shift.night_shift_host import NIGHT_RUN_ENV
 from dreamference.night_shift.night_shift_task_run import ANNOUNCES_WORK, NUDGE, NightShiftTaskRun
@@ -1416,6 +1417,7 @@ class SweBenchInstanceRun:
         command = [
             "run",
             "-d",
+            *ContainerLogOptions.args("swe-bench"),
             "--init",
             "--name",
             self.container,

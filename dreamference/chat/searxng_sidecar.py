@@ -16,6 +16,7 @@ from typing import Final
 
 from dreamference.chat.searxng_settings import OWN, UNWRITTEN, WRITTEN, SearxngSettings
 from dreamference.chat.sidecar_network import SIDECAR_NETWORK, SidecarNetwork
+from dreamference.config.container_log_options import ContainerLogOptions
 
 # The name other sidecars (image search) resolve SearXNG by on the sidecar network. SearXNG publishes
 # only on 127.0.0.1, so the bridge gateway that reaches vLLM does not reach it -- the shared
@@ -60,6 +61,7 @@ class SearxngSidecar:
             "docker",
             "run",
             "-d",
+            *ContainerLogOptions.args("searxng"),
             "--name",
             SEARXNG_CONTAINER_NAME,
             "--restart",
@@ -120,6 +122,7 @@ class SearxngSidecar:
                 "docker",
                 "run",
                 "--rm",
+                *ContainerLogOptions.args("searxng"),
                 "-i",
                 "--network",
                 "none",

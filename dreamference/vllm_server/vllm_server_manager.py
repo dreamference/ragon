@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, ClassVar, Final, TypeVar
 
+from dreamference.config.container_log_options import ContainerLogOptions
 from dreamference.config.dreamference_config import (
     DEFAULT_GUIDED_DECODING_BACKEND,
 )
@@ -510,7 +511,17 @@ class VLLMServerManager:
         )
         try:
             res = subprocess.run(
-                ["docker", "run", "--rm", "--entrypoint", "python3", docker_image, "-c", script],
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    *ContainerLogOptions.args("engine"),
+                    "--entrypoint",
+                    "python3",
+                    docker_image,
+                    "-c",
+                    script,
+                ],
                 capture_output=True,
                 text=True,
                 timeout=120,
@@ -1112,6 +1123,7 @@ class VLLMServerManager:
         cmd = [
             "docker",
             "run",
+            *ContainerLogOptions.args("engine", max_size="20m", max_file=5),
             "--ipc=host",
             "--network",
             "host",
@@ -1754,6 +1766,7 @@ class VLLMServerManager:
                         "docker",
                         "run",
                         "--rm",
+                        *ContainerLogOptions.args("engine"),
                         "-v",
                         f"{Path.home() / '.cache' / 'dreamference'}:/root/.cache/dreamference",
                         "--entrypoint",
@@ -1862,6 +1875,7 @@ class VLLMServerManager:
             "docker",
             "run",
             "--rm",
+            *ContainerLogOptions.args("engine"),
             "--gpus",
             "all",
             "--entrypoint",

@@ -20,6 +20,7 @@ import subprocess
 from typing import ClassVar, Final
 
 from dreamference.chat.sidecar_network import SIDECAR_NETWORK, SidecarNetwork
+from dreamference.config.container_log_options import ContainerLogOptions
 
 GOOGLE_CONTAINER_NAME: Final[str] = "dreamference-gmail"
 # Python 3.14.7 slim, the multi-architecture index, pinned by digest: the Google service holds
@@ -197,7 +198,7 @@ class GoogleService:
                 sidecar network, published on loopback only.
         """
         return [
-            "docker", "run", "-d", "--name", GOOGLE_CONTAINER_NAME,
+            "docker", "run", "-d", *ContainerLogOptions.args("google"), "--name", GOOGLE_CONTAINER_NAME,
             "--restart", "unless-stopped", "--network", SIDECAR_NETWORK,
             "--user", f"{os.getuid()}:{os.getgid()}",
             "-v", f"{directory}:/config",

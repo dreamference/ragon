@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import Final
 
+from dreamference.config.container_log_options import ContainerLogOptions
 from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
 
 REPO_SEPARATOR: Final[str] = "/"
@@ -309,6 +310,7 @@ class ModelDownloader:
                         "docker",
                         "run",
                         "--rm",
+                        *ContainerLogOptions.args("model-downloader"),
                         "--gpus",
                         "all",
                         f"--cpus={cpus_limit:.1f}",

@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import Any, Final
 
+from dreamference.config.container_log_options import ContainerLogOptions
 from dreamference.config.unit_log_directives import UnitLogDirectives
 from dreamference.remote.remote_certificate_authority import RemoteCertificateAuthority
 from dreamference.remote.remote_settings import (
@@ -245,7 +246,8 @@ class RemoteControlPlane:
             list[str]: The argv.
         """
         argv = [
-            "docker", "run", "-d", "--name", SERVER_CONTAINER, "--restart", "unless-stopped",
+            "docker", "run", "-d", *ContainerLogOptions.args("netbird-server"),
+            "--name", SERVER_CONTAINER, "--restart", "unless-stopped",
             "--network", CONTROL_NETWORK, "--ip", CONTROL_ADDRESS,
             "--memory", MEMORY_LIMIT, "--memory-swap", MEMORY_LIMIT,
             "--label", "dreamference.service=remote-access",

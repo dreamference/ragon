@@ -18,6 +18,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Final
 
+from dreamference.config.container_log_options import ContainerLogOptions
 from dreamference.forge.forge_app_ini import RECORD_ALIAS, WORK_DIR
 from dreamference.forge.forge_bind import ForgeBind
 from dreamference.forge.forge_settings import (
@@ -100,6 +101,7 @@ class ForgeContainer:
             "docker",
             "run",
             "--rm",
+            *ContainerLogOptions.args("forge"),
             "--name",
             cls.name,
             "--label",
@@ -118,10 +120,6 @@ class ForgeContainer:
             f"{os.getuid()}:{os.getgid()}",
             "--pids-limit",
             "1024",
-            "--log-opt",
-            "max-size=10m",
-            "--log-opt",
-            "max-file=3",
             "-v",
             f"{data_dir}:{WORK_DIR}",
         ]

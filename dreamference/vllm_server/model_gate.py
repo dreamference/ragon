@@ -20,6 +20,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Final
 
+from dreamference.config.container_log_options import ContainerLogOptions
 from dreamference.config.ports import ENGINE_PORT_OFFSET
 from dreamference.vllm_server.adapter_serving import AdapterServing
 from dreamference.vllm_server.model_gate_service import (
@@ -112,6 +113,7 @@ class ModelGate:
             "docker",
             "run",
             "-d",
+            *ContainerLogOptions.args("model-gate"),
             "--name",
             cls.container_name(port),
             "--network",

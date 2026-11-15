@@ -27,6 +27,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
+from dreamference.config.container_log_options import ContainerLogOptions
 from dreamference.swe_bench import swe_bench_settings
 from dreamference.swe_bench.swe_bench_docker import SweBenchDocker
 from dreamference.swe_bench.swe_bench_images import SweBenchImages
@@ -579,6 +580,7 @@ class SweBenchImageBuilder:
             [
                 "run",
                 "-d",
+                *ContainerLogOptions.args("swe-bench"),
                 "--init",
                 "--name",
                 name,

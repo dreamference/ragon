@@ -28,6 +28,7 @@ from typing import ClassVar, Final
 from dreamference.chat.docker_bridge import DockerBridge
 from dreamference.chat.searxng_sidecar import SEARXNG_CONTAINER_NAME
 from dreamference.chat.sidecar_network import SIDECAR_NETWORK, SidecarNetwork
+from dreamference.config.container_log_options import ContainerLogOptions
 
 IMAGE_SEARCH_CONTAINER_NAME: Final[str] = "dreamference-image-search"
 IMAGE_SEARCH_HOST_PORT: Final[int] = 8768
@@ -211,7 +212,7 @@ class ImageSearchSidecar:
             List[str]: The argv: as the invoking user, on the sidecar network, on loopback only.
         """
         return [
-            "docker", "run", "-d", "--name", IMAGE_SEARCH_CONTAINER_NAME,
+            "docker", "run", "-d", *ContainerLogOptions.args("image-search"), "--name", IMAGE_SEARCH_CONTAINER_NAME,
             "--restart", "unless-stopped", "--network", SIDECAR_NETWORK,
             "--user", f"{os.getuid()}:{os.getgid()}",
             "-v", f"{IMAGE_SEARCH_DATA_DIR}:/config",
@@ -233,7 +234,7 @@ class ImageSearchSidecar:
             List[str]: The argv, on the sidecar network, its weights in a named volume.
         """
         return [
-            "docker", "run", "-d", "--name", SIGLIP_CONTAINER_NAME,
+            "docker", "run", "-d", *ContainerLogOptions.args("image-search"), "--name", SIGLIP_CONTAINER_NAME,
             "--restart", "unless-stopped", "--network", SIDECAR_NETWORK,
             "-v", f"{SIGLIP_CONTAINER_NAME}-cache:/app/.cache",
             "-p", f"127.0.0.1:{SIGLIP_PORT}:{SIGLIP_PORT}",

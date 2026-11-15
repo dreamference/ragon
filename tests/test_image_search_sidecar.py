@@ -706,7 +706,7 @@ def test_a_start_without_a_secret_runs_nothing(monkeypatch, store):
             f"Could not create the Docker network {SIDECAR_NETWORK}.",
         ),
         (
-            {("docker", "run", "-d", "--name", IMAGE_SEARCH_CONTAINER_NAME): "pull access denied"},
+            {("docker", "run", "-d"): "pull access denied"},
             "Could not start the image search service: pull access denied",
         ),
     ],

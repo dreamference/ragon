@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Final
 
 from dreamference.config import DreamferenceConfig
+from dreamference.config.container_log_options import ContainerLogOptions
 from dreamference.runner.openhands_installer import OPENHANDS_IMAGE, OpenHandsInstaller
 from dreamference.runner.vllm_readiness_waiter import VLLMReadinessWaiter
 from dreamference.vllm_server import VLLMServerManager
@@ -109,6 +110,7 @@ class OpenHandsRunner:
             "docker",
             "run",
             "--rm",
+            *ContainerLogOptions.args("openhands"),
             "-it",
             "--name",
             container_name,
