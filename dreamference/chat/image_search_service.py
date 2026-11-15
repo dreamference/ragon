@@ -41,7 +41,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Final, Protocol
@@ -129,8 +129,8 @@ class _Picture(Protocol):
         """Scales to a size."""
         ...
 
-    def getdata(self) -> Iterable[int]:
-        """Yields the pixel values."""
+    def tobytes(self) -> bytes:
+        """Returns the raw pixel bytes (one per pixel in mode L)."""
         ...
 
 
@@ -349,7 +349,7 @@ def phash64(image: _Picture) -> int:
     """
     size = 32
     gray = image.convert("L").resize((size, size))
-    pixels = list(gray.getdata())
+    pixels = list(gray.tobytes())
     rows = [pixels[i * size : (i + 1) * size] for i in range(size)]
 
     cos = [
