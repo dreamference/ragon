@@ -14,9 +14,12 @@ import { registerScheme } from "./app-protocol";
 import { bootstrap } from "./bootstrap";
 import { dataFolder } from "./data-folder";
 import { applySwitches } from "./egress";
+import { installLogRedaction } from "./log-redact";
 import { versionText, wantsVersion } from "./version";
 
 function start(): void {
+  // Before the first line is written: every console line passes the log redaction.
+  installLogRedaction();
   applySwitches();
   registerScheme();
 
