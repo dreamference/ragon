@@ -56,6 +56,7 @@ nav:
       - ragon-admin: admin.md
       - Models: models.md
       - Benchmarks: benchmarks.md
+      - Node monitoring: monitoring.md
   - How it works:
       - Architecture: architecture.md
       - Privacy & security: privacy.md
