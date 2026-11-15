@@ -629,7 +629,8 @@ def test_the_release_marker_is_set_by_a_bridge_failure_and_cleared_by_a_green_ru
     assert gate.update_marker(1, md, ["signal: /new"], {"build-key": "k"}) == "set"
     text = gate.marker_path().read_text()
     assert f"report: {md}" in text and "signal: /new" in text and "build-key: k" in text
-    assert gate.update_marker(3, md, [], {}) == "kept" and gate.marker_path().exists()
+    assert gate.update_marker(3, md, [], {}) == "cleared" and not gate.marker_path().exists()
+    assert gate.update_marker(1, md, ["signal: /new"], {}) == "set"
     assert gate.update_marker(0, md, [], {}) == "cleared" and not gate.marker_path().exists()
 
 

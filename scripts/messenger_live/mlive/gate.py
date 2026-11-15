@@ -61,7 +61,7 @@ def installed_stamp() -> str | None:
 
 
 def update_marker(code: int, report: Path, failed: list[str], build: dict[str, str]) -> str:
-    """Writes the marker on a bridge failure (exit 1), removes it on a green run (exit 0).
+    """Writes the marker on a bridge failure (exit 1), removes it on a green run (exit 0) or when a messenger only needs the owner (exit 3).
 
     Args:
         code: The run's exit code.
@@ -84,7 +84,7 @@ def update_marker(code: int, report: Path, failed: list[str], build: dict[str, s
         lines += [f"{key}: {value}" for key, value in sorted(build.items())]
         marker.write_text("\n".join(lines) + "\n")
         return "set"
-    if code == 0 and marker.exists():
+    if code in (0, 3) and marker.exists():
         marker.unlink()
         return "cleared"
     return "kept"
