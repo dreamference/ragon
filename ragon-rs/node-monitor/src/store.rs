@@ -176,6 +176,31 @@ impl Store {
         self.conn.execute_batch("VACUUM;").map_err(err)
     }
 
+    /// The raw samples in `[from, to)` as one series per item: the worst rank in each `bucket`-second
+    /// span, as `(bucket start, rank)`, oldest first. Items sort by name.
+    pub fn series(&self, from: i64, to: i64, bucket: i64) -> Vec<(String, Vec<(i64, i64)>)> {
+        let bucket = bucket.max(1);
+        let Ok(mut stmt) = self.conn.prepare(
+            "SELECT item, (ts/?3)*?3, MAX(rank) FROM samples WHERE ts>=?1 AND ts<?2
+             GROUP BY item, ts/?3 ORDER BY item, ts/?3",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map(params![from, to, bucket], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+        }) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(String, Vec<(i64, i64)>)> = Vec::new();
+        for (item, ts, rank) in rows.flatten() {
+            match out.last_mut() {
+                Some((name, points)) if *name == item => points.push((ts, rank)),
+                _ => out.push((item, vec![(ts, rank)])),
+            }
+        }
+        out
+    }
+
     /// The worst rank recorded for `item` in `[from, to)`, by raw samples (tests, `history`).
     pub fn samples_between(&self, item: &str, from: i64, to: i64) -> i64 {
         self.conn
@@ -195,6 +220,21 @@ mod tests {
 
     fn item(name: &str, state: State) -> Item {
         Item::new(name, state, Weight::Item, "d")
+    }
+
+    #[test]
+    fn series_gives_the_worst_rank_per_bucket_for_each_item() {
+        let mut store = Store::in_memory().unwrap();
+        store.record(100, &[item("a", State::Ok), item("b", State::Ok)]).unwrap();
+        store.record(110, &[item("a", State::Down)]).unwrap();
+        store.record(130, &[item("a", State::Ok)]).unwrap();
+        let series = store.series(0, 1000, 60);
+        assert_eq!(series.len(), 2);
+        assert_eq!(series[0].0, "a");
+        assert_eq!(series[0].1.len(), 2);
+        assert!(series[0].1[0].1 > series[0].1[1].1, "the down sample wins its bucket");
+        assert_eq!(series[1].1.len(), 1);
+        assert!(store.series(2000, 3000, 60).is_empty());
     }
 
     #[test]

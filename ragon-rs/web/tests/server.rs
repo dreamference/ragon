@@ -2012,7 +2012,10 @@ fn fake_monitor(dir: &Path) -> PathBuf {
     let path = dir.join("ragon-node-monitor");
     std::fs::write(
         &path,
-        "#!/bin/sh\n[ \"$1 $2\" = \"status --json\" ] || exit 2\necho run >> \"$(dirname \"$0\")/runs\"\n\
+        "#!/bin/sh\nif [ \"$1\" = history ]; then\n\
+if [ -e \"$(dirname \"$0\")/nohistory\" ]; then printf '{\"series\":[]}'; else \
+printf '{\"series\":[{\"name\":\"engine\",\"points\":[[100,0],[160,2],[220,0]]},{\"name\":\"disk <root>\",\"points\":[[100,0],[160,1]]}]}'; fi\n\
+exit 0\nfi\n[ \"$1 $2\" = \"status --json\" ] || exit 2\necho run >> \"$(dirname \"$0\")/runs\"\n\
 printf '{\"node\":{\"state\":\"down\"},\"items\":[{\"name\":\"engine\",\"state\":\"ok\",\"detail\":\"healthy\"},\
 {\"name\":\"disk <root>\",\"state\":\"down\",\"detail\":\"2%% free\"}]}'\n",
     )
@@ -2049,6 +2052,28 @@ async fn the_status_page_and_its_json_come_from_the_monitor_and_are_cached_for_t
     let _ = call(&server, get("/api/monitor/status")).await;
     let runs = std::fs::read_to_string(scratch.dir.join("runs")).unwrap();
     assert_eq!(runs.lines().count(), 1, "the monitor ran more than once in ten seconds");
+
+    // One inline svg strip chart per series, named and escaped, with no script.
+    assert_eq!(page.matches("<svg").count(), 2, "{page}");
+    assert_eq!(page.matches("<polyline").count(), 2, "{page}");
+    assert!(page.contains("aria-label=\"disk &lt;root&gt;\""), "{page}");
+    assert!(!page.contains("No samples recorded yet"), "{page}");
+    assert!(!page.contains("<script"), "{page}");
+}
+
+#[tokio::test]
+async fn a_status_page_with_no_samples_says_so_instead_of_drawing_an_empty_chart() {
+    let scratch = scratch("monitor-empty");
+    std::fs::write(scratch.dir.join("nohistory"), "").unwrap();
+    let mut cfg = config(&scratch.dir, 3100, Vec::new());
+    cfg.monitor = Some(fake_monitor(&scratch.dir));
+    let server = Server::new(cfg).unwrap();
+    let cookie = sign_in(&server).await;
+    let (status, _, page) = call(&server, request("GET", "/status").header(header::COOKIE, &cookie).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("No samples recorded yet"), "{page}");
+    assert!(!page.contains("<svg") && !page.contains("<polyline"), "{page}");
+    assert!(page.contains("healthy"), "the item list still draws: {page}");
 }
 
 #[tokio::test]

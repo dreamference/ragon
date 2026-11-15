@@ -4,7 +4,7 @@ use ragon_node_monitor::{
 use std::path::PathBuf;
 
 const USAGE: &str =
-    "usage: ragon-node-monitor status [--json] [--port N] [--engine-port N] [--root DIR]\n       ragon-node-monitor run [--db FILE] [--port N] [--engine-port N] [--root DIR]";
+    "usage: ragon-node-monitor status [--json] [--port N] [--engine-port N] [--root DIR]\n       ragon-node-monitor history [--db FILE] [--hours N]\n       ragon-node-monitor run [--db FILE] [--port N] [--engine-port N] [--root DIR]";
 
 fn main() {
     std::process::exit(run(std::env::args().skip(1).collect()));
@@ -14,6 +14,7 @@ fn run(args: Vec<String>) -> i32 {
     match args.first().map(String::as_str) {
         Some("status") => {}
         Some("run") => return run_sampler(args),
+        Some("history") => return history(args),
         _ => return usage(),
     }
     let mut config = Config::default();
@@ -52,6 +53,38 @@ fn run(args: Vec<String>) -> i32 {
     } else {
         print!("{}", status_text(&items));
     }
+    0
+}
+
+/// `history`: the last hours of the store as JSON strip-chart series, at most 120 points each.
+/// No store yet is an empty list, not an error.
+fn history(args: Vec<String>) -> i32 {
+    let mut db: Option<PathBuf> = None;
+    let mut hours: i64 = 6;
+    let mut rest = args.into_iter().skip(1);
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--db" => match rest.next() {
+                Some(file) => db = Some(PathBuf::from(file)),
+                None => return usage(),
+            },
+            "--hours" => match rest.next().and_then(|v| v.parse::<i64>().ok()) {
+                Some(n) if (1..=48).contains(&n) => hours = n,
+                _ => return usage(),
+            },
+            _ => return usage(),
+        }
+    }
+    let mut series = Vec::new();
+    if let Some(db) = db.or_else(default_db).filter(|p| p.exists())
+        && let Ok(store) = Store::open(&db)
+    {
+        let to = now() + 1;
+        for (name, points) in store.series(to - hours * 3600, to, hours * 30) {
+            series.push(serde_json::json!({ "name": name, "points": points }));
+        }
+    }
+    println!("{}", serde_json::json!({ "series": series }));
     0
 }
 
