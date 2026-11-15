@@ -38,6 +38,16 @@ from dreamference.vllm_server.vllm_server_status import VLLMServerStatus
 
 _T = TypeVar("_T")
 
+
+def _say(*parts: object) -> None:
+    """Write one user-facing line to stdout (the file's single output helper).
+
+    Args:
+        *parts: Values joined by spaces, as ``print`` would.
+    """
+    sys.stdout.write(" ".join(str(part) for part in parts) + "\n")
+
+
 DEFAULT_MAX_MODEL_LEN: Final[int] = 16384
 DEFAULT_GPU_MEMORY_UTILIZATION: Final[float] = 0.50
 # Memory held back from the vLLM container so the host keeps a responsive desktop and enough
@@ -394,14 +404,14 @@ class VLLMServerManager:
         # then launch it believing it was theirs — which, now that recipes can pin their own image,
         # is a live possibility rather than a hypothetical.
         if IMAGE_PATH_SEPARATOR in docker_image:
-            print(f"📦 Docker image '{docker_image}' not found locally. Pulling...")
+            _say(f"📦 Docker image '{docker_image}' not found locally. Pulling...")
             try:
                 subprocess.run(["docker", "pull", docker_image], check=True)
             except (subprocess.CalledProcessError, OSError) as e:
-                print(f"❌ Failed to pull Docker image '{docker_image}': {e}")
+                _say(f"❌ Failed to pull Docker image '{docker_image}': {e}")
                 return False
             if self.is_image_present(docker_image):
-                print(f"✅ Pulled Docker image '{docker_image}'.")
+                _say(f"✅ Pulled Docker image '{docker_image}'.")
                 return True
             return False
 
@@ -412,15 +422,15 @@ class VLLMServerManager:
         # another local tag has to be built by hand under that tag; building the plain Dockerfile
         # under its name used to hand vLLM the wrong engine with the right label.
         if docker_image != DEFAULT_VLLM_IMAGE:
-            print(
+            _say(
                 f"❌ Docker image '{docker_image}' is not present, and it is not the image "
                 f"the project Dockerfile builds ({DEFAULT_VLLM_IMAGE})."
             )
-            print("💡 Build that image by hand and tag it as the recipe pins it.")
+            _say("💡 Build that image by hand and tag it as the recipe pins it.")
             return False
 
         if dockerfile_path.is_file():
-            print(
+            _say(
                 f"📦 Docker image '{docker_image}' not found locally. Building from {dockerfile_path}..."
             )
             try:
@@ -437,27 +447,27 @@ class VLLMServerManager:
                     check=True,
                 )
                 if res.returncode == 0 and self.is_image_present(docker_image):
-                    print(f"✅ Successfully built Docker image '{docker_image}'.")
+                    _say(f"✅ Successfully built Docker image '{docker_image}'.")
                     return True
             except subprocess.CalledProcessError as e:
-                print(f"❌ Failed to build Docker image '{docker_image}': {e}")
+                _say(f"❌ Failed to build Docker image '{docker_image}': {e}")
             except (OSError, ValueError) as e:
-                print(f"❌ Unexpected error building Docker image '{docker_image}': {e}")
+                _say(f"❌ Unexpected error building Docker image '{docker_image}': {e}")
 
         elif not dockerfile_path.is_file():
             # A release install has the package but not the repository's Dockerfile beside it.
-            print(
+            _say(
                 f"❌ Docker image '{docker_image}' is not present, and it is built from the "
                 "Dockerfile in Ragon's repository, which a release install does not have."
             )
-            print(
+            _say(
                 "💡 Clone the repository and run `docker build -t "
                 f"{docker_image} .` there, or use a model whose recipe pulls its image "
                 "(the default model does)."
             )
             return False
 
-        print(f"⚠️  Docker image '{docker_image}' is missing locally and could not be built.")
+        _say(f"⚠️  Docker image '{docker_image}' is missing locally and could not be built.")
         return False
 
     def probe_image(self, docker_image: str) -> dict[str, Any]:
@@ -579,7 +589,7 @@ class VLLMServerManager:
             return ["--guided-decoding-backend", backend]
 
         if backend in LEGACY_STRUCTURED_OUTPUT_BACKENDS:
-            print(
+            _say(
                 f"⚠️  Structured-outputs backend '{backend}' was removed in vLLM v{STRUCTURED_OUTPUTS_MIN_VERSION[0]}."
                 f"{STRUCTURED_OUTPUTS_MIN_VERSION[1]}. Supported backends are: "
                 f"{', '.join(SUPPORTED_STRUCTURED_OUTPUT_BACKENDS)}. Passing it through as requested."
@@ -635,12 +645,12 @@ class VLLMServerManager:
         """
         if not self.image_has_tensorizer(docker_image):
             if is_docker_launch:
-                print(
+                _say(
                     f"⚠️  Notice: Running vLLM via Docker container ({docker_image}) which "
                     f"does not include the 'tensorizer' package."
                 )
             else:
-                print(
+                _say(
                     "⚠️  Notice: 'tensorizer' package is not installed in vLLM "
                     "environment. (Install via: pip install 'vllm[tensorizer]')"
                 )
@@ -1238,7 +1248,7 @@ class VLLMServerManager:
 
         if problems:
             listed = "\n\n".join(f"{i}. {p}" for i, p in enumerate(problems, 1))
-            print(
+            _say(
                 f"\n❌ Refusing to load: {len(problems)} host safety "
                 f"{'check' if len(problems) == 1 else 'checks'} failed.\n\n"
                 f"{listed}\n\n"
@@ -1733,7 +1743,7 @@ class VLLMServerManager:
 
         cleared = False
         if previous and (VLLM_CACHE_HOME / "torch_compile_cache").exists():
-            print(
+            _say(
                 f"🧹 Speculative depth or target changed since the last launch "
                 f"({previous} -> {signature}); dropping the torch.compile cache, because vLLM's own "
                 f"cache key does not cover num_speculative_tokens."
@@ -1758,7 +1768,7 @@ class VLLMServerManager:
                 )
                 cleared = True
             except (subprocess.SubprocessError, OSError) as exc:
-                print(
+                _say(
                     f"⚠️  Could not clear the compile cache ({exc}). If this launch behaves oddly "
                     f"after a speculative-depth change, remove {VLLM_CACHE_HOME}/torch_compile_cache "
                     f"by hand."
@@ -2031,7 +2041,7 @@ class VLLMServerManager:
                 top_procs = "\n".join(ps_output.splitlines()[:11])
             except (OSError, subprocess.SubprocessError):
                 top_procs = "Could not retrieve process list."
-            print(f"\n❌ {headline}\n{detail}\n\nTop memory consuming processes:\n{top_procs}\n")
+            _say(f"\n❌ {headline}\n{detail}\n\nTop memory consuming processes:\n{top_procs}\n")
             sys.exit(1)
 
         # Weights are pinned by the driver and therefore unreclaimable, so they have to fit
@@ -2082,7 +2092,7 @@ class VLLMServerManager:
         evicted_gb = self._evict_model_page_cache(model)
         if evicted_gb:
             actual_free_gb = HardwareManager.detect_gb10_hardware().available_memory_gb
-            print(
+            _say(
                 f"🧹 Dropped ~{evicted_gb:.2f} GB of cached shards for '{model}' "
                 f"({actual_free_gb:.2f} GB now available)."
             )
@@ -2240,7 +2250,7 @@ class VLLMServerManager:
                 )
                 is None
             ):
-                print(
+                _say(
                     "❌ The recipe's chat template could not be prepared. Either it could not be written\n"
                     "   (reported above), or a patch no longer matches this checkpoint's template, which\n"
                     "   then differs from the one the registry entry was written for: update the patches in\n"
@@ -2323,20 +2333,20 @@ class VLLMServerManager:
             from dreamference.vllm_server.model_gate import ModelGate
 
             if gate and ModelGate.start(port, docker_image):
-                print(
+                _say(
                     f"🚦 Model gate on port {port}; the engine listens behind it on "
                     f"127.0.0.1:{ModelGate.engine_port(port)}."
                 )
             else:
                 if gate:
-                    print(
+                    _say(
                         f"⚠️  Without the model gate: the engine serves port {port} itself, and a "
                         "benchmark run waits for other requests instead of refusing them."
                     )
                     cmd = self.build_launch_command(**launch, gate=False)
                 ModelGate.remove(port)
 
-        print(f"🚀 Starting GB10 vLLM Server: {' '.join(cmd)}")
+        _say(f"🚀 Starting GB10 vLLM Server: {' '.join(cmd)}")
 
         env = os.environ.copy()
         token_val = hf_token or os.getenv("HF_TOKEN") or os.getenv("DREAMFERENCE_HF_TOKEN")
@@ -2355,9 +2365,9 @@ class VLLMServerManager:
         if token_val:
             env["HF_TOKEN"] = token_val
             env["HUGGING_FACE_HUB_TOKEN"] = token_val
-            print("   HuggingFace Token: Configured")
+            _say("   HuggingFace Token: Configured")
         else:
-            print("   HuggingFace Token: Not configured (cache-only mode)")
+            _say("   HuggingFace Token: Not configured (cache-only mode)")
 
         # Guard the load itself. The preflight checks are static and the cgroup cap only bounds
         # what the container can take; neither can see the host sliding into a reclaim livelock,
@@ -2368,7 +2378,7 @@ class VLLMServerManager:
         if cmd and cmd[0] == DOCKER_BINARY:
 
             def _report(reason: str, pressure: float, window_s: float) -> None:
-                print(
+                _say(
                     f"\n🛑 Aborted the load: memory stalled {pressure:.0f}% of the last "
                     f"{window_s:.0f}s ({reason}).\n"
                     f"   Every task on the host was blocked on memory — the state that precedes a\n"
@@ -2379,7 +2389,7 @@ class VLLMServerManager:
             self.watchdog = MemoryPressureWatchdog(container_name, on_trip=_report)
             if not self.watchdog.start():
                 self.watchdog = None
-                print("⚠️  Kernel does not expose /proc/pressure/memory; load is unguarded.")
+                _say("⚠️  Kernel does not expose /proc/pressure/memory; load is unguarded.")
             elif PsiGuardUnit.start(container_name):
                 # The unit outlives this process and guards the resident server; the thread
                 # was only the guard until it was up.
@@ -2456,7 +2466,7 @@ class VLLMServerManager:
         Safe no-op if container is not running.
         """
         container_name = f"dreamference-vllm-{port}"
-        print(f"🛑 Stopping vLLM container: {container_name}")
+        _say(f"🛑 Stopping vLLM container: {container_name}")
         # Disarm first, so the watchdog cannot race the shutdown and report a kill of its own.
         if self.watchdog is not None:
             self.watchdog.stop()
@@ -2469,7 +2479,7 @@ class VLLMServerManager:
         from dreamference.vllm_server.model_gate import ModelGate
 
         ModelGate.stop(port)
-        print(f"✅ Container {container_name} stopped.")
+        _say(f"✅ Container {container_name} stopped.")
 
     def remove_server(self, port: int = DEFAULT_MODEL_PORT) -> None:
         """Removes the vLLM Docker container for the given port.
@@ -2477,7 +2487,7 @@ class VLLMServerManager:
         Safe no-op if container does not exist.
         """
         container_name = f"dreamference-vllm-{port}"
-        print(f"🗑️ Removing vLLM container: {container_name}")
+        _say(f"🗑️ Removing vLLM container: {container_name}")
         subprocess.run(
             ["docker", "rm", "-f", container_name],
             stdout=subprocess.DEVNULL,
@@ -2486,12 +2496,12 @@ class VLLMServerManager:
         from dreamference.vllm_server.model_gate import ModelGate
 
         ModelGate.remove(port)
-        print(f"✅ Container {container_name} removed.")
+        _say(f"✅ Container {container_name} removed.")
 
     def show_request_logs(self, port: int = DEFAULT_MODEL_PORT) -> None:
         """Tails the vLLM Docker container logs for the given port."""
         container_name = f"dreamference-vllm-{port}"
-        print(f"📄 Tailing logs for vLLM container: {container_name} (Ctrl+C to exit)")
+        _say(f"📄 Tailing logs for vLLM container: {container_name} (Ctrl+C to exit)")
         subprocess.run(["docker", "logs", "-f", container_name])
 
     def get_new_logs(self) -> list[str]:

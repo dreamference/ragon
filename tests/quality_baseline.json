@@ -228,7 +228,6 @@
    "PLR0912": 2,
    "PLR0913": 2,
    "PLR0915": 2,
-   "T201": 33,
    "UP031": 1
   },
   "tests/test_ragon_slash_commands.py": {
@@ -257,5 +256,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 547
+ "total": 514
 }
