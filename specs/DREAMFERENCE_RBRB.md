@@ -22,7 +22,7 @@
 4. **Every commit says what Ragon spent on it.** Every commit the coordinator lands carries `Ragon-Tokens: <n>`, and `0` is allowed. This holds even when another model drove the change. A commit whose change Ragon made also carries `Made-with: ragon` (§3).
 5. **Both groups pass the same gates.** Ragon's commits and all other commits pass the same tests and the same reviews (§9). Ragon's work has extra checks of its own, and never fewer than the others'.
 6. **The public curve shows only what landed.** Every attempt is recorded in a private ledger (§4). Commits and lines count only landed commits. Tokens are the week's development tokens on both sides; §10 says what that means.
-7. **The target is private.** The weekly target share lives in the coordinator's configuration, never in a repository, and it only rises (§6).
+7. **The target is private.** The weekly target share lives in the coordinator's configuration, never in a repository, and it tracks the measured share above a floor (§6).
 8. **The public numbers come from the repository alone.** `scripts/rbrb.py` reads the git history and the committed input rows of `docs/rbrb.json`, and writes the rest of the file and the chart. It is deterministic and uses no network (§7).
 9. **Baseline: 0 % on 2026-11-12.** History before that date counts as 0. The first point (week 2026-W46, measured by hand, `method_version` 0) is the one exception, recorded with its limits (§7.1).
 
@@ -357,19 +357,20 @@ A `review_reject` is never retried with the same brief: the brief was wrong or t
 
 ### 6.1 The rule
 
-The target `T(w)` is the share the coordinator aims for in week `w`. It is recomputed every Monday for the new week:
+The target `T(w)` is the share the coordinator aims for in week `w`. It is recomputed every Monday for the new week and **tracks the measured share**:
 
 ```
-S4(w)  = rbrb_share over the four completed weeks before w (tokens summed, then divided)
-T(w)   = T(w-1)                                   if the quality band (§2.8) is not "met"
-T(w)   = max(T(w-1), min(S4(w), T(w-1) + Δ))      if it is "met"
-T(first week) = 0
+S(w-1) = rbrb_share of the week before w (tokens summed, then divided)
+T(w)   = max(F, S(w-1) - Δ)
 ```
 
-- **It never falls.** The target stays where it is when the band fails or is undecided.
-- **It follows what was achieved.** It rises at most `Δ` a week, and never above what Ragon actually achieved over four weeks.
-- **`S4(w)` is the weighted share** of §2.2, summed over the four weeks and then divided, and it counts all Ragon spend, failed attempts included. The landed share (`landed_ragon_tokens` over all tokens) is published beside it and is not used by the rule; whether a release gate should read it instead is an owner decision.
-- **`Δ`:** the default is 2 percentage points (open question 5).
+`F` is the floor, the configured `[rbrb] target_pct` (default 2 %), and `Δ` is 2 percentage points. So a week that closes at 8.0 % sets the next target to 6.0 %, with no hand edit; a week at 3.0 % sets it to the 2 % floor.
+
+- **The floor is the only hand-set number.** `target_pct` stops being the weekly target and becomes `F`.
+- **It follows what was achieved.** The target sits `Δ` below the last measured share, so the gate asks for nearly what Ragon just did and the share cannot stall at a stale hand-set number. It replaces the flat +2 points a week.
+- **`S(w-1)` is the weighted share** of §2.2 and counts all Ragon spend, failed attempts included. The landed share is published beside it and is not used by the rule.
+- **The quality band (§2.8) still gates routing** (§6.4); a failed band freezes `T` at its last value instead of letting it track.
+- `rbrb-gate --ratchet` computes `T(w)` this way, and the release chain's gate reads it instead of a hand-set target.
 
 ### 6.2 Cadence
 
@@ -653,7 +654,7 @@ The land queue's refusal (§3.3) is tested in the coordinator's own tools, which
 2. **The workflow's credentials.** No workflow commits as a bot today, and the bots' keys never enter the repository. **Default:** the docs App's key is stored as an encrypted Actions secret, and the workflow mints an installation token from it. **Fallback, if the owner prefers no key on GitHub:** the coordinator's Monday timer makes the same commit through `as_team.py` and the land queue, and the workflow runs `rbrb.py --check` only.
 3. **The engine repository in the commit share.** **Default:** no. The engine's tokens count (they are development tokens), and its commits are a separate history. They are reconsidered once the engine's commits carry the trailers too.
 4. **The land-test failure rate in the ratchet.** **Default:** no. It is shown, but only the revert rate (and no bypass) decides the band, because a land-test failure was caught before `main`.
-5. **The ratchet step `Δ`.** **Default:** 2 percentage points a week, capped by the four-week share (§6.1).
+5. **The ratchet step `Δ`.** **Default:** 2 percentage points below last week's measured share, never below the floor `target_pct` (§6.1).
 6. **Untagged interactive use of Ragon.** **Default:** excluded from `method_version` 1. It was in the hand-measured first point, and its `notes` say so.
 
 ---
