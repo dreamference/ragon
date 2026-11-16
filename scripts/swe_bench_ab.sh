@@ -33,6 +33,7 @@ WT=${WT:-$REPO/.claude/worktrees/swe-ab}
 PY=${PY:-$REPO/.venv/bin/python}
 LIST=${LIST:-$HOME/.cache/dreamference/swe-bench/fresh-50.txt}
 D=${D:-$HOME/.local/share/dreamference/swe-bench/ab}
+RUNS=${RUNS:-$(dirname "$D")/runs}
 NIGHT=${NIGHT:-1}
 PREFIX=${PREFIX:-n$NIGHT}
 UNIT=${UNIT:-ragon-swe-ab}
@@ -150,6 +151,25 @@ RAGON_PIN_SHA256=${RAGON_PIN_SHA256:-}
 log() { echo "$(date -Is) $*"; }
 pinned() { [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; }
 installed_ragon() { "$PY" -c "from dreamference.runner.codex_branded_builder import CodexBrandedBuilder; print(CodexBrandedBuilder.executable_path())"; }
+# The installed ragon-code's sha256 (what a run records in ragon-code.sha256); empty when none is installed.
+installed_code_sha() { "$PY" -c "import hashlib; from dreamference.swe_bench.swe_bench_code_index import SweBenchCodeIndex as C; b=C.host_binary(); print(hashlib.sha256(open(b,'rb').read()).hexdigest() if b else '')" 2>/dev/null; }
+# Fails, naming the directory and both shas, when runs/<PREFIX>-<arm>[-k] exists with a ragon-code.sha256
+# that is not the installed build's: the operator renames that directory (mv it to a new name).
+stale_run_dirs() {
+    local have dir last arm bad=0 name
+    have=$(installed_code_sha); [ -n "$have" ] || return 0
+    for arm in $ARMS; do
+        name=$(arm_name "$arm")
+        for dir in "$RUNS/$PREFIX-$name" "$RUNS/$PREFIX-$name"-[0-9]*; do
+            [ -f "$dir/ragon-code.sha256" ] || continue
+            last=$(tail -n 1 "$dir/ragon-code.sha256" | cut -d' ' -f1)
+            [ "$last" = "$have" ] && continue
+            echo "❌ Night $NIGHT not started: run directory $dir was made by another build (its ragon-code.sha256 ${last:0:12}, installed ${have:0:12}); rename it (mv $dir $dir-old) so the run name is free."
+            bad=1
+        done
+    done
+    return $bad
+}
 
 # The unit this `start` runs in, which is not a night the build would disturb: a chain arms its night from
 # its own unit (ragon-swe-chain17 was refused by its own name). CALLER_UNIT names it; without
@@ -456,6 +476,9 @@ start() {
     if ! grep -q -- '"tests-v2"' "$WT/dreamference/swe_bench/swe_bench_instance_run.py"; then
         echo "❌ $WT does not have the tests-v2 task rule: update it to origin/main."; exit 1
     fi
+    # A run dir left under a night's run name by another build makes `swe-bench run` refuse the name
+    # ("started with another ragon build or model") after the GPU is claimed: stop here instead.
+    stale_run_dirs || exit 1
     for arm in $ARMS; do
         arm_flags "$arm" > /dev/null || exit 2
     done

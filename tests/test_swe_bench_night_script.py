@@ -336,6 +336,7 @@ def start(
 case "$2" in
     *executable_path*) echo "{ragon}";;
     *INSTALL_DIR*) echo "{install}";;
+    *host_binary*) echo "$FAKE_CODE_SHA";;
     *SweBenchArmSmoke*) shift 2; echo "$* $PYTHONPATH" >> "{verdicts}"
         [ "$4" = "{smoke_fails}" ] && {{ echo "❌ Smoke check of arm $4: no answer from the model."; exit 1; }}
         echo "✅ Smoke check of arm $4"; exit 0;;
@@ -1598,3 +1599,25 @@ def test_a_misspelt_diverse_arm_ends_the_night_before_any_round(tmp_path, arm):
     status, recorded, folder = best_of_night(tmp_path, arms=arm)
     assert status == 2 and runs(recorded) == []
     assert (folder / "failed").exists() and not (folder / "done").exists()
+
+
+def test_start_refuses_a_run_dir_left_by_another_ragon_code_build(tmp_path):
+    runs = tmp_path / "runs"
+    stale = runs / "n7-default"
+    stale.mkdir(parents=True)
+    (stale / "ragon-code.sha256").write_text(f"{'a' * 64}  2026-11-15T00:36:00+0000\n")
+    result, recorded, verdicts, units, folder = start(
+        tmp_path, "default", RUNS=str(runs), FAKE_CODE_SHA="b" * 64
+    )
+    assert result.returncode == 1
+    assert f"run directory {stale} was made by another build" in result.stdout
+    assert "aaaaaaaaaaaa" in result.stdout and "bbbbbbbbbbbb" in result.stdout
+    assert units == [] and verdicts == []
+
+
+def test_start_accepts_a_run_dir_with_the_installed_ragon_code_sha(tmp_path):
+    runs = tmp_path / "runs"
+    (runs / "n7-default").mkdir(parents=True)
+    (runs / "n7-default" / "ragon-code.sha256").write_text(f"{'a' * 64}  x\n{'b' * 64}  y\n")
+    result, *_ = start(tmp_path, "default", RUNS=str(runs), FAKE_CODE_SHA="b" * 64)
+    assert "was made by another build" not in result.stdout
