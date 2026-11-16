@@ -24,7 +24,7 @@ use std::process::Command;
 use serde_json::Value;
 use serde_json::json;
 
-const USAGE: &str = "Usage: /night [list [--all]] | /night add [--test \"<cmd>\"] [--on <node>] [--best-of N] <task> | /night retry <id> | /night show <id> | /night apply <id> | /night drop <id> | /night report";
+const USAGE: &str = "Usage: /night [list [--all]] | /night add [--test \"<cmd>\"] [--on <node>] [--best-of N] <task> | /night retry <id> | /night show <id> | /night apply <id> [--attempt N] | /night drop <id> | /night report";
 
 /// Statuses after which a task is finished for the night: the startup line counts them.
 const FINISHED: &[&str] = &["done", "no-change", "stalled", "failed", "interrupted"];
@@ -48,6 +48,8 @@ pub enum Request {
     /// Brings a finished task's branch into the checkout it is asked from, as uncommitted changes
     /// (specs/DREAMFERENCE_RAGON_NIGHT_SHIFT.md §11.10).
     Apply(String),
+    /// `apply <id> --attempt N`: one kept attempt's diff (`logs/<id>-aN.diff`), all or nothing.
+    ApplyAttempt(String, u32),
     Drop(String),
     Report,
     Usage(String),
@@ -66,6 +68,13 @@ impl Request {
             "" | "list" if rest.is_empty() => Request::List,
             "list" if rest == "--all" => Request::ListAll,
             "report" if rest.is_empty() => Request::Report,
+            "apply" if rest.split_whitespace().count() == 3 => match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
+                [id, "--attempt", k] => match k.parse::<u32>() {
+                    Ok(k) if k > 0 => Request::ApplyAttempt(id.to_string(), k),
+                    _ => Request::Usage("--attempt needs an attempt number, 1 or more".to_string()),
+                },
+                _ => Request::Usage(USAGE.to_string()),
+            },
             "show" | "apply" | "drop" | "retry" => match rest.split_whitespace().collect::<Vec<_>>().as_slice() {
                 [id] if verb == "show" => Request::Show(id.to_string()),
                 [id] if verb == "apply" => Request::Apply(id.to_string()),
@@ -333,6 +342,7 @@ fn lines(dir: &Path, request: Request, cwd: &Path) -> Vec<String> {
         Request::Add { test, on, best_of, task } => add(dir, &repo, cwd, test, on, best_of, &task, None),
         Request::Show(id) => show(dir, &repo, &id),
         Request::Apply(id) => apply(dir, &repo, cwd, &id),
+        Request::ApplyAttempt(id, k) => apply_attempt(dir, &repo, cwd, &id, k),
         Request::Drop(id) => drop_task(dir, &repo, &id),
         Request::Report => report(dir, &repo),
     }
@@ -556,7 +566,107 @@ fn show(dir: &Path, repo: &Path, id: &str) -> Vec<String> {
             lines.extend(value_lines.map(|line| format!("    {line}")));
         }
     }
+    lines.extend(attempt_lines(&task));
     lines
+}
+
+/// Every attempt of a best-of-N task: diff stat, test result, points, whether it was chosen and
+/// why, and the kept diff (`/night apply <id> --attempt N` applies it).
+fn attempt_lines(task: &Value) -> Vec<String> {
+    let best = &task["result"]["best_of"];
+    let Some(attempts) = best["attempts"].as_array().filter(|a| !a.is_empty()) else {
+        return Vec::new();
+    };
+    let chosen = best["chosen"].as_u64();
+    let mut lines = vec![format!("Attempts ({} ran):", attempts.len())];
+    for entry in attempts {
+        let number = entry["attempt"].as_u64().unwrap_or(0);
+        let mut parts = vec![entry["status"].as_str().unwrap_or("?").to_string()];
+        if let Some(changes) = entry["changes"].as_str() {
+            parts.push(changes.to_string());
+        }
+        if let Some(result) = entry["test_result"].as_str() {
+            parts.push(format!("tests {result}"));
+        }
+        if let Some(points) = best["points"][format!("a{number}")].as_i64().or_else(|| best["points"][format!("a{number}")].as_f64().map(|p| p as i64)) {
+            parts.push(format!("{points} points"));
+        }
+        if chosen == Some(number) {
+            parts.push(format!("chosen: {}", best["reason"].as_str().unwrap_or("no reason kept")));
+        }
+        parts.push(match entry["diff"].as_str() {
+            Some(path) => format!("diff {path}"),
+            None => "no diff kept".to_string(),
+        });
+        lines.push(format!("  Attempt {number}: {}", parts.join(", ")));
+    }
+    lines
+}
+
+/// `/night apply <id> --attempt N`: the kept diff of one attempt, applied to the checkout `cwd` is
+/// in as uncommitted changes, all or nothing; a refusal names the conflicting files.
+fn apply_attempt(dir: &Path, repo: &Path, cwd: &Path, id: &str, k: u32) -> Vec<String> {
+    let Some(task) = find(dir, repo, id) else {
+        return vec![format!("No task {id} for this repository (see /night list).")];
+    };
+    let id = text(&task, "id");
+    let kept = task["result"]["best_of"]["attempts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|entry| entry["attempt"].as_u64() == Some(u64::from(k)))
+        .and_then(|entry| entry["diff"].as_str().map(PathBuf::from));
+    let path = kept.unwrap_or_else(|| dir.join("logs").join(format!("{id}-a{k}.diff")));
+    let Ok(diff) = std::fs::read(&path) else {
+        return vec![format!("{id} has no kept diff for attempt {k} ({}).", path.display())];
+    };
+    if diff.is_empty() {
+        return vec![format!("Attempt {k} of {id} left no change to apply.")];
+    }
+    let into = git(cwd, &["rev-parse", "--show-toplevel"]).map_or_else(|| cwd.to_path_buf(), PathBuf::from);
+    let run_apply = |extra: &[&str]| {
+        use std::io::Write;
+        let mut args = vec!["apply"];
+        args.extend_from_slice(extra);
+        args.extend(["--whitespace=nowarn", "-"]);
+        let mut child = ragon_safegit::command(&into, &args)
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped())
+            .spawn().ok()?;
+        let mut stdin = child.stdin.take()?;
+        let written = stdin.write_all(&diff);
+        drop(stdin);
+        written.ok()?;
+        child.wait_with_output().ok()
+    };
+    let check = run_apply(&["--check"]);
+    if !check.as_ref().is_some_and(|output| output.status.success()) {
+        let stderr = check.map(|output| String::from_utf8_lossy(&output.stderr).into_owned()).unwrap_or_default();
+        let mut files: Vec<String> = Vec::new();
+        for line in stderr.lines() {
+            let line = line.strip_prefix("error: ").unwrap_or(line);
+            let file = if let Some(rest) = line.strip_prefix("patch failed: ") {
+                rest.rsplit_once(':').map(|(file, _)| file)
+            } else {
+                line.split_once(": ").map(|(file, _)| file)
+            };
+            if let Some(file) = file.filter(|f| !f.is_empty() && !f.contains(' ')) {
+                if !files.iter().any(|seen| seen == file) {
+                    files.push(file.to_string());
+                }
+            }
+        }
+        let mut lines = vec![format!("Not applied: attempt {k} of {id} conflicts with {}. Nothing was changed.", into.display())];
+        if files.is_empty() {
+            lines.extend(stderr.lines().filter(|l| !l.trim().is_empty()).take(12).map(|l| format!("  {}", l.trim())));
+        } else {
+            lines.push(format!("Conflicting files: {}", files.join(", ")));
+        }
+        return lines;
+    }
+    if !run_apply(&[]).is_some_and(|output| output.status.success()) {
+        return vec![format!("Not applied: git apply failed in {}.", into.display())];
+    }
+    vec![format!("Applied attempt {k} of {id} to {} as uncommitted changes: review them with git diff, then commit.", into.display())]
 }
 
 /// `/night apply <id>`: the task's branch, from its base, applied to the checkout `cwd` is in as
@@ -964,6 +1074,28 @@ mod tests {
     }
 
     #[test]
+    fn apply_attempt_is_all_or_nothing_and_names_the_conflicting_files() {
+        let (repo, dir) = repo("attempt");
+        let lines = run(&dir, Request::from_line("add Make it return True"), &repo);
+        let id = lines[0].split_whitespace().nth(1).unwrap_or_default().to_string();
+        let logs = dir.join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(logs.join(format!("{id}-a2.diff")), "diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hi\n").unwrap();
+        std::fs::write(logs.join(format!("{id}-a3.diff")), "diff --git a/README b/README\n--- a/README\n+++ b/README\n@@ -1 +1 @@\n-nothing like this\n+x\n").unwrap();
+        let shown = run(&dir, Request::ApplyAttempt(id.clone(), 1), &repo);
+        assert!(shown[0].contains("no kept diff for attempt 1"), "{shown:?}");
+        let bad = run(&dir, Request::ApplyAttempt(id.clone(), 3), &repo);
+        assert!(bad[0].starts_with("Not applied"), "{bad:?}");
+        assert!(bad[1].contains("README"), "{bad:?}");
+        let ok = run(&dir, Request::ApplyAttempt(id.clone(), 2), &repo);
+        assert!(ok[0].starts_with("Applied attempt 2"), "{ok:?}");
+        assert!(repo.join("new.txt").exists());
+        assert_eq!(Request::from_line("apply t1 --attempt 2"), Request::ApplyAttempt("t1".into(), 2));
+        assert!(matches!(Request::from_line("apply t1 --attempt x"), Request::Usage(_)));
+        let _ = std::fs::remove_dir_all(repo.parent().unwrap_or(&repo));
+    }
+
+    #[test]
     fn parses_every_form_of_the_slash_command() {
         assert_eq!(Request::from_line(""), Request::List);
         assert_eq!(Request::from_line("list"), Request::List);
@@ -1142,7 +1274,11 @@ mod tests {
         let here = lines.iter().position(|line| line == &format!("{}:", repo_a.display())).unwrap_or(usize::MAX);
         let there = lines.iter().position(|line| line == "/elsewhere:").unwrap_or(usize::MAX);
         assert!(here < lines.len() && there < lines.len(), "{lines:?}");
-        assert!(lines[here + 1].starts_with("  ") && lines[here + 1].contains("One"));
+        // Ids added in the same minute differ only in a random suffix, so One and Two may come in
+        // either order; both belong under this repository's header.
+        let group = &lines[here + 1..here + 3];
+        assert!(group.iter().all(|line| line.starts_with("  ")), "{lines:?}");
+        assert!(group.iter().any(|line| line.contains("One")) && group.iter().any(|line| line.contains("Two")), "{lines:?}");
         assert!(lines[there + 1].contains("Other"));
         assert_eq!(list_all(&scratch("listall-empty").join("night"))[0], "No Night Shift tasks in any repository.");
     }

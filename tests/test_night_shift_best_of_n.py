@@ -1022,3 +1022,9 @@ def test_a_tasks_own_hints_win_over_the_settings_and_hints_wrap_round():
     assert StrategyHints.hint_for(2, ()) is None
     assert StrategyHints.append("task", None) == "task"
     assert 3 <= len(DEFAULT_HINTS) <= 8
+
+
+def test_the_report_why_line_names_the_deciding_stage_in_plain_words():
+    best = {"chosen": 2, "stage": "regression filter", "reason": "r", "attempts": []}
+    text = "\n".join(NightShiftReport._best_of_lines(best))
+    assert "  - Why: r (deciding stage: the tests removed every other attempt)" in text

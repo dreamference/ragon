@@ -19,6 +19,12 @@ RUNNING: Final[str] = "running"
 FIRST_REFINE: Final[str] = "v1"
 # Seconds in a minute, for wall times.
 MINUTE_S: Final[int] = 60
+STAGE_WORDS: Final[dict[str, str]] = {
+    "only candidate": "only one attempt left a change, so there was nothing to compare",
+    "regression filter": "the tests removed every other attempt",
+    "judge": "the judge compared the attempts that passed the tests",
+    "judge, all broke": "every attempt failed the tests, so the judge compared them all",
+}
 # C0 controls but tab and newline, DEL and C1: the agent writes the last message, the judge its
 # reason, and `ragon night report` prints the file to a terminal, where ESC starts a sequence that
 # can set the clipboard (OSC 52), hide text or retitle the window.
@@ -239,7 +245,9 @@ class NightShiftReport:
                 f"- Best of {best.get('n', '?')}: {ran}; chose attempt {chosen} by {best.get('stage', '?')}{scored}"
             ]
         if best.get("reason"):
-            lines.append(f"  - Why: {best['reason']}")
+            stage = STAGE_WORDS.get(str(best.get("stage") or ""))
+            tail = f" (deciding stage: {stage})" if stage else ""
+            lines.append(f"  - Why: {best['reason']}{tail}")
         if best.get("judge_calls"):
             errors = (
                 f", {best['judge_errors']} unreadable or failed" if best.get("judge_errors") else ""
