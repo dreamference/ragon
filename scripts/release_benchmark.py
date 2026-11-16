@@ -46,6 +46,11 @@ CAVEAT: Final[str] = (
 FORBIDDEN: Final[re.Pattern] = re.compile(
     r"/home/|/Users/|@|\b\d{1,3}(\.\d{1,3}){3}\b|\.local\b|gx10", re.IGNORECASE
 )
+HISTORY_LINK: Final[str] = (
+    "\n## Every number, with its history\n\n"
+    "The history of every published SWE-bench number, slice by slice: "
+    "[benchmarks/swe-bench-history.md](benchmarks/swe-bench-history.md)\n"
+)
 HEADER: Final[str] = """# Benchmarks
 
 Each release's result on SWE-bench Verified, against the default of the release before it: the
@@ -141,7 +146,7 @@ def render(items: list[dict]) -> str:
     """
     text = HEADER.format(caveat=CAVEAT)
     if not items:
-        return text + "No release has a published result yet.\n"
+        return text + "No release has a published result yet.\n" + HISTORY_LINK
     text += "| Release | Benchmark | Solved | Previous default | Difference | p-value | Wall time |\n| --- | --- | --- | --- | --- | --- | --- |\n"
     for e in items:
         p = "not available" if e["p_value"] is None else f"{e['p_value']:.3f}"
@@ -150,7 +155,7 @@ def render(items: list[dict]) -> str:
             f"{e['previous_version']}: {e['previous_solved']} of {e['tasks']} | "
             f"{e['solved'] - e['previous_solved']:+d} | {p} | {e['wall_hours']:g} h |\n"
         )
-    return text
+    return text + HISTORY_LINK
 
 
 def main(argv: list[str] | None = None) -> int:
