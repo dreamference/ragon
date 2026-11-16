@@ -217,7 +217,8 @@ FAKE_TOOLS = {
     "sudo": r"""
 log="$HOME/sudo.log"; nonint=0; validate=0
 while [ $# -gt 0 ]; do
-    case "$1" in -n) nonint=1; shift;; -v) validate=1; shift;; -u|-g) shift 2;; --) shift; break;; -*) shift;; *) break;; esac
+    case "$1" in -n) nonint=1; shift;; -v) validate=1; shift;;
+      -u|-g) shift 2;; --) shift; break;; -*) shift;; *) break;; esac
 done
 if [ "${FAKE_SUDO:-nopasswd}" != nopasswd ] && [ ! -f "$HOME/.sudo-stamp" ]; then
     if [ "$nonint" = 1 ]; then echo "sudo: a password is required" >&2; exit 1; fi
@@ -246,8 +247,10 @@ case "$1" in
 esac
 """,
     "getent": r"""[ "$1 $2" = "group docker" ] && [ -z "$FAKE_NO_DOCKER_GROUP" ] && echo "docker:x:999:" || exit 2""",
-    "usermod": r'''echo "usermod $*" >> "$HOME/root.log"; echo "$(cat "$HOME/groups-db" 2>/dev/null || echo tester) docker" > "$HOME/groups-db"''',
-    "loginctl": r'''echo "loginctl $*" >> "$HOME/root.log"; [ "$1" = enable-linger ] && mkdir -p "$RAGON_LINGER_DIR" && touch "$RAGON_LINGER_DIR/$2"''',
+    "usermod": r'''echo "usermod $*" >> "$HOME/root.log";
+    echo "$(cat "$HOME/groups-db" 2>/dev/null || echo tester) docker" > "$HOME/groups-db"''',
+    "loginctl": r'''echo "loginctl $*" >> "$HOME/root.log";
+    [ "$1" = enable-linger ] && mkdir -p "$RAGON_LINGER_DIR" && touch "$RAGON_LINGER_DIR/$2"''',
     "sg": r'''echo "sg $*" >> "$HOME/sg.log"; [ "$1" = docker ] && [ "$2" = -c ] && exec sh -c "$3"''',
     # A Mac's disk-image tools. `attach` "mounts" the dmg at its -mountpoint as a Ragon.app
     # whose Info.plist holds the dmg's bytes (FAKE_HDIUTIL_FAIL: the attach fails); each call is
@@ -296,7 +299,8 @@ exit 1
     "python3": r"""
 if [ "$1 $2" = "-m venv" ]; then
     if [ -n "$FAKE_NO_VENV" ] && [ ! -f "$HOME/venv-installed" ]; then
-        mkdir -p "$3"; echo "The virtual environment was not created successfully because ensurepip is not available." >&2; exit 1
+        mkdir -p "$3";
+        echo "The virtual environment was not created successfully because ensurepip is not available." >&2; exit 1
     fi
     mkdir -p "$3/bin"
     cat > "$3/bin/python" <<EOF

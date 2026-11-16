@@ -135,8 +135,7 @@
    "C901": 2,
    "D205": 4,
    "PLR1702": 2,
-   "PLR2004": 3,
-   "T201": 35
+   "PLR2004": 3
   },
   "dreamference/runner/codex_installer.py": {
    "D205": 1,
@@ -234,7 +233,6 @@
    "C901": 1
   },
   "tests/test_release_install.py": {
-   "E501": 4,
    "PLR0913": 1
   },
   "tests/test_swe_bench.py": {
@@ -256,5 +254,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 514
+ "total": 475
 }

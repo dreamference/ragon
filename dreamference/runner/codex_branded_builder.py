@@ -194,6 +194,12 @@ RUSTY_V8_PROFILE: Final[str] = "ptrcomp_sandbox_release"
 DOWNLOAD_TIMEOUT_SECONDS: Final[float] = 60.0
 
 
+def _say(text: str) -> None:
+    """Writes one build progress line to stdout and shows it at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
+
+
 class CodexBrandedBuilder:
     """Builds and installs the Ragon-branded Codex from the submodule plus the patch series."""
 
@@ -326,36 +332,36 @@ class CodexBrandedBuilder:
                 it could not be built.
         """
         if not Path(WEB_UI_DIR, "package.json").is_file():
-            print(f"❌ The Ragon UI's project is missing ({WEB_UI_DIR}); `ragon web` embeds it.")
+            _say(f"❌ The Ragon UI's project is missing ({WEB_UI_DIR}); `ragon web` embeds it.")
             return None
         npm = shutil.which("npm")
         if npm is None:
-            print(
+            _say(
                 "❌ npm is needed to build ragon: `ragon web` serves the Ragon UI from inside the binary."
             )
-            print("💡 Install Node.js 20 or later, then build again.")
+            _say("💡 Install Node.js 20 or later, then build again.")
             return None
         from dreamference.chat.desktop_runner import DesktopRunner
 
         environment = DesktopRunner._environment()
         # Again whenever the lock file changed since the last install (DesktopRunner.packages_current).
         if not DesktopRunner.packages_current(Path(WEB_UI_DIR)):
-            print("📦 Installing the Ragon UI's packages (desktop/ui)...")
+            _say("📦 Installing the Ragon UI's packages (desktop/ui)...")
             if (
                 subprocess.call(
                     [npm, "ci", "--no-audit", "--no-fund"], cwd=WEB_UI_DIR, env=environment
                 )
                 != 0
             ):
-                print("❌ npm ci failed in desktop/ui; see its output above.")
+                _say("❌ npm ci failed in desktop/ui; see its output above.")
                 return None
             DesktopRunner.mark_installed(Path(WEB_UI_DIR))
-        print("🔨 Building the Ragon UI for ragon web...")
+        _say("🔨 Building the Ragon UI for ragon web...")
         if subprocess.call([npm, "run", "build"], cwd=WEB_UI_DIR, env=environment) != 0:
-            print("❌ The Ragon UI did not build; see its output above.")
+            _say("❌ The Ragon UI did not build; see its output above.")
             return None
         if not Path(WEB_UI_DIST, "index.html").is_file():
-            print(f"❌ The UI's build wrote no index.html to {WEB_UI_DIST}.")
+            _say(f"❌ The UI's build wrote no index.html to {WEB_UI_DIST}.")
             return None
         return WEB_UI_DIST
 
@@ -421,8 +427,8 @@ class CodexBrandedBuilder:
         """
         commit = cls.source_commit()
         if commit is None:
-            print("❌ The codex submodule is not checked out.")
-            print("💡 Fetch it with: git submodule update --init codex")
+            _say("❌ The codex submodule is not checked out.")
+            _say("💡 Fetch it with: git submodule update --init codex")
             return False
 
         shutil.rmtree(source_dir, ignore_errors=True)
@@ -448,7 +454,7 @@ class CodexBrandedBuilder:
         extracted = cls.extract_archive(archive_stream, source_dir)
         archive_stream.close()
         if archive.wait() != 0 or not extracted:
-            print(f"❌ Could not export codex {commit[:12]} from the submodule.")
+            _say(f"❌ Could not export codex {commit[:12]} from the submodule.")
             return False
         # Before the patches, because 0002 makes the CLI depend on it.
         # Plain copy, not copy2: Cargo decides freshness by comparing source mtimes with its last
@@ -465,8 +471,8 @@ class CodexBrandedBuilder:
         for patch in cls.patches():
             # Checked first so a patch that does not fit leaves nothing half-applied behind it.
             if cls.git_apply(source_dir, "--check", patch).returncode != 0:
-                print(f"❌ {Path(patch).name} does not apply to codex {commit[:12]}.")
-                print(
+                _say(f"❌ {Path(patch).name} does not apply to codex {commit[:12]}.")
+                _say(
                     f"💡 The patches are written against {CODEX_RELEASE_TAG}; refresh them after a submodule bump."
                 )
                 return False
@@ -528,7 +534,7 @@ class CodexBrandedBuilder:
             bool: True if the manifest's `[workspace.package]` version was set.
         """
         if not re.fullmatch(r"\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?", version):
-            print(f"❌ {version!r} is not a version Cargo accepts (for example 0.9.0).")
+            _say(f"❌ {version!r} is not a version Cargo accepts (for example 0.9.0).")
             return False
         with Path(manifest).open() as handle:
             text = handle.read()
@@ -536,7 +542,7 @@ class CodexBrandedBuilder:
             r"^\[workspace\.package\]\n(?:(?!\[).*\n)*?version = \"[^\"]*\"", text, re.M
         )
         if section is None:
-            print(f"❌ No [workspace.package] version in {manifest}.")
+            _say(f"❌ No [workspace.package] version in {manifest}.")
             return False
         stamped = (
             section.group(0)[: section.group(0).rindex("version = ")] + f'version = "{version}"'
@@ -569,7 +575,7 @@ class CodexBrandedBuilder:
                         continue
                     archive.extract(member, destination, filter="fully_trusted")
         except (tarfile.TarError, OSError) as error:
-            print(f"❌ Could not unpack the exported source: {error}")
+            _say(f"❌ Could not unpack the exported source: {error}")
             return False
         return True
 
@@ -660,7 +666,7 @@ class CodexBrandedBuilder:
         with Path(source_dir, "codex-rs", "Cargo.toml").open() as handle:
             pinned = re.search(r'^v8 = "=([\d.]+)"', handle.read(), re.M)
         if pinned is None:
-            print("❌ Could not find the v8 version pinned in codex-rs/Cargo.toml.")
+            _say("❌ Could not find the v8 version pinned in codex-rs/Cargo.toml.")
             return None
         version = pinned.group(1)
         target = cls.host_target()
@@ -685,7 +691,7 @@ class CodexBrandedBuilder:
             )
         }.get(checksums_name)
         if manifest.returncode != 0 or trusted is None:
-            print(f"❌ The submodule pins no prebuilt V8 {version} for {target}.")
+            _say(f"❌ The submodule pins no prebuilt V8 {version} for {target}.")
             return None
 
         v8_dir = str(Path(BUILD_CACHE_DIR, "rusty_v8", version))
@@ -703,15 +709,15 @@ class CodexBrandedBuilder:
             path = str(Path(v8_dir, name))
             if Path(path).is_file() and sha256(path) == expected:
                 return path
-            print(f"📥 Fetching {name}...")
+            _say(f"📥 Fetching {name}...")
             try:
                 cls.download(f"{base_url}/{name}", path)
             except OSError as error:
-                print(f"❌ Could not download {name}: {error}")
+                _say(f"❌ Could not download {name}: {error}")
                 return None
             if sha256(path) != expected:
                 Path(path).unlink()
-                print(f"❌ {name} does not match its pinned checksum; discarded.")
+                _say(f"❌ {name} does not match its pinned checksum; discarded.")
                 return None
             return path
 
@@ -731,7 +737,7 @@ class CodexBrandedBuilder:
         archive_name = cls.v8_archive_name(target)
         binding_name = f"src_binding_{RUSTY_V8_PROFILE}_{target}.rs"
         if archive_name not in listed or binding_name not in listed:
-            print(f"❌ {checksums_name} does not list the V8 archive and bindings for {target}.")
+            _say(f"❌ {checksums_name} does not list the V8 archive and bindings for {target}.")
             return None
         archive = fetch(archive_name, listed[archive_name])
         binding = fetch(binding_name, listed[binding_name])
@@ -767,13 +773,13 @@ class CodexBrandedBuilder:
         """
         if cls.is_current():
             cls.link_onto_path()
-            print(
+            _say(
                 f"✅ ragon is installed from a release ({cls.executable_path()}); there is no "
                 "source here to build it from. `ragon update` installs a newer release."
             )
             return True
-        print("❌ ragon is not installed, and this is not a checkout, so it cannot be built here.")
-        print(
+        _say("❌ ragon is not installed, and this is not a checkout, so it cannot be built here.")
+        _say(
             "💡 Install the release's binaries with install.sh (see the README), or clone the "
             "repository and run `ragon-admin codex build` there."
         )
@@ -823,7 +829,7 @@ class CodexBrandedBuilder:
                     return
                 except OSError:
                     if not waited:
-                        print("⏳ Another ragon build is running; waiting for it to finish...")
+                        _say("⏳ Another ragon build is running; waiting for it to finish...")
                         waited = True
                     time.sleep(2)
         import fcntl
@@ -831,7 +837,7 @@ class CodexBrandedBuilder:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            print("⏳ Another ragon build is running; waiting for it to finish...")
+            _say("⏳ Another ragon build is running; waiting for it to finish...")
             fcntl.flock(handle, fcntl.LOCK_EX)
 
     @classmethod
@@ -908,11 +914,11 @@ class CodexBrandedBuilder:
             if cls.host_target().startswith("x86_64"):
                 # As upstream's Windows release job does for this target.
                 environment["LIBSQLITE3_FLAGS"] = "SQLITE_DISABLE_INTRINSIC"
-        print(
+        _say(
             f"🔨 Building ragon (upstream {CODEX_RELEASE_TAG}, {len(cls.patches())} patches){cls._through(cached)}..."
         )
         if subprocess.call(command, cwd=str(Path(source_dir, "codex-rs")), env=environment) != 0:
-            print("❌ The ragon build failed; see the cargo output above.")
+            _say("❌ The ragon build failed; see the cargo output above.")
             return False
 
         release_dir = str(Path(BUILD_CACHE_DIR, "target", "release"))
@@ -928,7 +934,7 @@ class CodexBrandedBuilder:
             handle.write(f"{key}\n")
 
         cls.link_onto_path()
-        print(f"✅ Installed {cls.executable_path()}")
+        _say(f"✅ Installed {cls.executable_path()}")
         return True
 
     @classmethod
@@ -1143,9 +1149,9 @@ class CodexBrandedBuilder:
         # Keyed before the build, as the Codex build is: an edit made while cargo runs is not in
         # this binary, so it must leave the crate stale.
         key = cls.crate_key(crate_dir)
-        print(f"🔨 Building {', '.join(bin_names)}{cls._through(cached)}...")
+        _say(f"🔨 Building {', '.join(bin_names)}{cls._through(cached)}...")
         if subprocess.call(command, cwd=crate_dir, env=environment) != 0:
-            print(f"❌ The {Path(crate_dir).name} build failed; see the cargo output above.")
+            _say(f"❌ The {Path(crate_dir).name} build failed; see the cargo output above.")
             return False
         bin_dir = str(Path(INSTALL_DIR, "bin"))
         Path(bin_dir).mkdir(exist_ok=True, parents=True)
@@ -1164,7 +1170,7 @@ class CodexBrandedBuilder:
         with Path(INSTALL_DIR, stamp_name).open("w") as handle:
             handle.write(f"{key}\n")
         cls.link_onto_path()
-        print(f"✅ Installed {', '.join(bin_names)} in {bin_dir}")
+        _say(f"✅ Installed {', '.join(bin_names)} in {bin_dir}")
         return True
 
     @classmethod
@@ -1227,7 +1233,7 @@ class CodexBrandedBuilder:
             from dreamference.runner.docs_index_setup import DocsIndexSetup
 
             if not DocsIndexSetup.install():
-                print(
+                _say(
                     "💡 `ragon-admin docs setup` retries the download; until then ragon-docs indexes nothing."
                 )
         return built
@@ -1286,7 +1292,7 @@ class CodexBrandedBuilder:
         """
         Path(link).parent.mkdir(exist_ok=True, parents=True)
         if os.path.lexists(link) and not Path(link).is_symlink():
-            print(f"⚠️ {link} exists and is not a link; leaving it. Run {target} directly.")
+            _say(f"⚠️ {link} exists and is not a link; leaving it. Run {target} directly.")
             return
         # This process's own staging name: linking runs outside the build lock, and a shared name
         # lets two processes remove or rename each other's link.
