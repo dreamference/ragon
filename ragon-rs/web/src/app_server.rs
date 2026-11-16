@@ -157,9 +157,13 @@ impl AppServer {
             let log = self.launch.log.clone();
             tokio::spawn(async move {
                 let mut file = tokio::fs::OpenOptions::new().create(true).append(true).open(&log).await.ok();
+                let redactor = ragon_log::Redactor::new(ragon_log::SECRETS_TXT, ragon_log::Env::from_system());
                 let mut lines = tokio::io::BufReader::new(stderr).lines();
                 let mut last = None;
                 while let Ok(Some(line)) = lines.next_line().await {
+                    // Redaction at the writer (specs/DREAMFERENCE_LOGGING.md §7): the file, every
+                    // tab and the exit message only ever see the masked line.
+                    let line = redactor.redact(&line, true);
                     if let Some(file) = file.as_mut() {
                         let _ = file.write_all(format!("{line}\n").as_bytes()).await;
                     }
@@ -298,6 +302,26 @@ mod tests {
         assert!(err.contains("exited"), "{err}");
         assert!(err.contains("model server missing"), "{err}");
         assert!(err.contains(log.to_str().unwrap()), "{err}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn stderr_lines_are_redacted_before_they_are_written() {
+        let root = scratch("redact");
+        let script = root.join("ragon");
+        // A token of the `github` shape in vectors/logging/secrets.txt.
+        let token = format!("ghp_{}", "a1".repeat(18));
+        std::fs::write(&script, format!("#!/bin/sh\necho \"saw {token} here\" >&2\nexit 1\n")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let log = root.join("app-server.log");
+        let server = AppServer::new(root.join("run").join("s.sock"), launch(script.to_str().unwrap(), log.clone()));
+        let err = server.connect().await.err().expect("must fail");
+        let kept = std::fs::read_to_string(&log).unwrap();
+        assert!(!kept.contains(&token), "{kept}");
+        assert!(kept.contains("saw [secret] here"), "{kept}");
+        assert!(!err.contains(&token), "{err}");
+        assert!(ragon_log::SECRETS_TXT.contains("github|gh|"));
         let _ = std::fs::remove_dir_all(root);
     }
 
