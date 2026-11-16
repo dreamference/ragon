@@ -1,0 +1,402 @@
+[
+ {
+  "name": "key-count-stays",
+  "level": "info",
+  "message": "index pass",
+  "fields": [
+   {
+    "type": "count",
+    "key": "key_count",
+    "value": 3
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO index pass key_count=3",
+  "component": "admin"
+ },
+ {
+  "name": "path-home-becomes-tilde",
+  "level": "info",
+  "message": "start",
+  "fields": [
+   {
+    "type": "path",
+    "key": "model_dir",
+    "value": "/home/jane/.cache/dreamference/models/qwen3.8-27b-nvfp4"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO start model_dir=~/.cache/dreamference/models/qwen3.8-27b-nvfp4",
+  "component": "admin"
+ },
+ {
+  "name": "url-user-info-query-fragment",
+  "level": "info",
+  "message": "sync round",
+  "fields": [
+   {
+    "type": "url",
+    "key": "url",
+    "value": "https://user:pw@api.example.test:8443/v1/x?token=abc#frag"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO sync round url=https://api.example.test:8443/v1/x",
+  "component": "admin"
+ },
+ {
+  "name": "url-loopback",
+  "level": "info",
+  "message": "request done",
+  "fields": [
+   {
+    "type": "url",
+    "key": "url",
+    "value": "http://127.0.0.1:8000/v1/chat/completions"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request done url=http://127.0.0.1:8000/v1/chat/completions",
+  "component": "admin"
+ },
+ {
+  "name": "addr-info",
+  "level": "info",
+  "message": "listening",
+  "fields": [
+   {
+    "type": "addr",
+    "key": "client",
+    "value": "192.0.2.50"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO listening client=[addr]",
+  "component": "admin"
+ },
+ {
+  "name": "addr-info-loopback",
+  "level": "info",
+  "message": "listening",
+  "fields": [
+   {
+    "type": "addr",
+    "key": "addr",
+    "value": "127.0.0.1"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO listening addr=127.0.0.1",
+  "component": "admin"
+ },
+ {
+  "name": "addr-info-ipv6",
+  "level": "info",
+  "message": "listening",
+  "fields": [
+   {
+    "type": "addr",
+    "key": "client",
+    "value": "2001:db8::99"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO listening client=[addr]",
+  "component": "admin"
+ },
+ {
+  "name": "addr-debug",
+  "level": "debug",
+  "message": "listening",
+  "fields": [
+   {
+    "type": "addr",
+    "key": "client",
+    "value": "192.0.2.50"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin DEBUG listening client=192.0.2.50",
+  "component": "admin"
+ },
+ {
+  "name": "addr-trace",
+  "level": "trace",
+  "message": "listening",
+  "fields": [
+   {
+    "type": "addr",
+    "key": "client",
+    "value": "2001:db8::99"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin TRACE listening client=2001:db8::99",
+  "component": "admin"
+ },
+ {
+  "name": "secret-key-api_key",
+  "level": "info",
+  "message": "start",
+  "fields": [
+   {
+    "type": "count",
+    "key": "api_key",
+    "value": 5
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO start api_key=[secret]",
+  "component": "admin"
+ },
+ {
+  "name": "secret-key-web_token",
+  "level": "info",
+  "message": "start",
+  "fields": [
+   {
+    "type": "count",
+    "key": "web_token",
+    "value": "abc"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO start web_token=[secret]",
+  "component": "admin"
+ },
+ {
+  "name": "secret-key-auth",
+  "level": "info",
+  "message": "start",
+  "fields": [
+   {
+    "type": "count",
+    "key": "auth",
+    "value": "x"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO start auth=[secret]",
+  "component": "admin"
+ },
+ {
+  "name": "secret-key-x_password",
+  "level": "info",
+  "message": "start",
+  "fields": [
+   {
+    "type": "count",
+    "key": "x_password",
+    "value": "y"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO start x_password=[secret]",
+  "component": "admin"
+ },
+ {
+  "name": "secret-key-token",
+  "level": "info",
+  "message": "start",
+  "fields": [
+   {
+    "type": "count",
+    "key": "token",
+    "value": 1
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO start token=[secret]",
+  "component": "admin"
+ },
+ {
+  "name": "secret-key-cookie",
+  "level": "info",
+  "message": "start",
+  "fields": [
+   {
+    "type": "count",
+    "key": "cookie",
+    "value": "c"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO start cookie=[secret]",
+  "component": "admin"
+ },
+ {
+  "name": "secret-key-credential",
+  "level": "info",
+  "message": "start",
+  "fields": [
+   {
+    "type": "count",
+    "key": "credential",
+    "value": "d"
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO start credential=[secret]",
+  "component": "admin"
+ }
+]

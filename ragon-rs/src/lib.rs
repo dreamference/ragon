@@ -60,6 +60,7 @@ pub mod help;
 pub mod home;
 pub mod images;
 pub mod ledger;
+pub mod log_vectors;
 pub mod loop_guard;
 pub mod mask;
 pub mod monitor;

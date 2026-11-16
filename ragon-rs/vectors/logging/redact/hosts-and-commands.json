@@ -1,0 +1,534 @@
+[
+ {
+  "name": "short-host-name",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "refused by node-a"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"refused by [host]\"",
+  "component": "admin"
+ },
+ {
+  "name": "other-home-dir",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "stat /home/bob/x /Users/bob/y failed"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"stat ~/x ~/y failed\"",
+  "component": "admin"
+ },
+ {
+  "name": "windows-home-dir",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "stat C:\\Users\\bob\\x failed"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"stat ~\\\\x failed\"",
+  "component": "admin"
+ },
+ {
+  "name": "email-in-error",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "sent to someone@example.test"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"sent to [email]\"",
+  "component": "admin"
+ },
+ {
+  "name": "addr-in-message-info",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "connect to 192.0.2.50 refused"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"connect to [addr] refused\"",
+  "component": "admin"
+ },
+ {
+  "name": "addr-in-message-debug",
+  "level": "debug",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "connect to 192.0.2.50 refused"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin DEBUG request failed error=E error_msg=\"connect to 192.0.2.50 refused\"",
+  "component": "admin"
+ },
+ {
+  "name": "addr-in-message-loopback",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "connect to 127.0.0.1 refused"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"connect to 127.0.0.1 refused\"",
+  "component": "admin"
+ },
+ {
+  "name": "addr-in-message-ipv6",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "connect to 2001:db8::99 refused"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"connect to [addr] refused\"",
+  "component": "admin"
+ },
+ {
+  "name": "url-in-message",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "GET https://u:p@api.example.test/a?x=1#y failed"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"GET https://api.example.test/a failed\"",
+  "component": "admin"
+ },
+ {
+  "name": "clean-message",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "connection refused"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"connection refused\"",
+  "component": "admin"
+ },
+ {
+  "name": "empty-error-value",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": ""
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"\"",
+  "component": "admin"
+ },
+ {
+  "name": "cmd-flag-equals",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "spawn failed with --api-key=hunter2 --port=80"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"spawn failed with --api-key=[secret] --port=80\"",
+  "component": "admin"
+ },
+ {
+  "name": "cmd-flag-space",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "spawn failed with --api-key hunter2 --port 80"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"spawn failed with --api-key [secret] --port 80\"",
+  "component": "admin"
+ },
+ {
+  "name": "cmd-flag-token",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "run --web-token=abc123"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"run --web-token=[secret]\"",
+  "component": "admin"
+ },
+ {
+  "name": "kv-pairs",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "login password=hunter2 user=x"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"login password=[secret] user=x\"",
+  "component": "admin"
+ },
+ {
+  "name": "kv-json",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "{\"api_key\": \"abc123\", \"n\": 1}"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"{\\\"api_key\\\": \\\"[secret]\\\", \\\"n\\\": 1}\"",
+  "component": "admin"
+ },
+ {
+  "name": "kv-keeps-prompt-tokens",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "prompt_tokens=18233 key_count=3"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"prompt_tokens=18233 key_count=3\"",
+  "component": "admin"
+ },
+ {
+  "name": "bearer-alone",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "got Bearer abcdef0123456789xyz back"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"got [secret] back\"",
+  "component": "admin"
+ },
+ {
+  "name": "private-key-block",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"[key]\"",
+  "component": "admin"
+ }
+]

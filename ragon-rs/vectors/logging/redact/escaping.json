@@ -1,0 +1,226 @@
+[
+ {
+  "name": "newline-quote-control",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "line one\nsays \"hi\"\u0007 and\ttab"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"line one\\nsays \\\"hi\\\"\\u{0007} and\\ttab\"",
+  "component": "admin"
+ },
+ {
+  "name": "backslash",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "a\\b"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"a\\\\b\"",
+  "component": "admin"
+ },
+ {
+  "name": "carriage-return",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "a\rb"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"a\\u{000D}b\"",
+  "component": "admin"
+ },
+ {
+  "name": "del",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "ab"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"a\\u{007F}b\"",
+  "component": "admin"
+ },
+ {
+  "name": "c1-control",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "ab"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"a\\u{0085}b\"",
+  "component": "admin"
+ },
+ {
+  "name": "bidi-control",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "a‮b⁦c"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"a\\u{202E}b\\u{2066}c\"",
+  "component": "admin"
+ },
+ {
+  "name": "escape-sequence",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "\u001b[31mred\u001b[0m"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"\\u{001B}[31mred\\u{001B}[0m\"",
+  "component": "admin"
+ },
+ {
+  "name": "non-ascii-text",
+  "level": "info",
+  "message": "request failed",
+  "fields": [
+   {
+    "type": "error",
+    "key": "error",
+    "value": {
+     "class": "E",
+     "message": "café"
+    }
+   }
+  ],
+  "env": {
+   "home": "/home/jane",
+   "host": "node-a",
+   "fqdn": "node-a.example.test",
+   "user": "jane",
+   "addrs": [
+    "192.0.2.7",
+    "2001:db8::7"
+   ],
+   "salt": "salt-one"
+  },
+  "expected": "admin INFO request failed error=E error_msg=\"café\"",
+  "component": "admin"
+ }
+]

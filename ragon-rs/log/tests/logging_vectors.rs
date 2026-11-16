@@ -7,10 +7,14 @@ use regex::Regex;
 use serde_json::Value as Json;
 
 /// The shared cases, in the order Python globs them.
-const CASES: [(&str, &str); 5] = [
+const CASES: [(&str, &str); 9] = [
     ("basics", include_str!("../../vectors/logging/redact/basics.json")),
     ("escapes", include_str!("../../vectors/logging/redact/escapes.json")),
+    ("escaping", include_str!("../../vectors/logging/redact/escaping.json")),
+    ("field-types", include_str!("../../vectors/logging/redact/field-types.json")),
+    ("hosts-and-commands", include_str!("../../vectors/logging/redact/hosts-and-commands.json")),
     ("rules", include_str!("../../vectors/logging/redact/rules.json")),
+    ("secret-shapes", include_str!("../../vectors/logging/redact/secret-shapes.json")),
     ("tokens", include_str!("../../vectors/logging/redact/tokens.json")),
     ("types", include_str!("../../vectors/logging/redact/types.json")),
 ];
