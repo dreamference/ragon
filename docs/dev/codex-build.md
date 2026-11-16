@@ -61,6 +61,37 @@ sccache --show-stats   # hits and misses since the server started
 
 On the GB10, under `flock ~/.ragon-build.lock nice -n 10` and `-j 12`, keep the disk above 150 GB free, and do not start a full Codex build while a SWE-bench night runs (`systemctl --user list-units 'ragon-swe-*'`).
 
+**One shared cache for the pool boxes** (every box that shares the cache). sccache has no LAN server of its own (`sccache-dist` distributes compiles, it is not a cache), so the shared cache is its WebDAV backend, served by nginx in a container on the cache box, from its drive: `docker run -d --name sccache-shared --restart unless-stopped -p 8089:8089 -v /mnt/ragon-store/cache/sccache-shared:/data -v /mnt/ragon-store/cache/sccache-shared-conf/default.conf:/etc/nginx/conf.d/default.conf:ro nginx:alpine`. The `nginx:alpine` build has `http_dav_module` but not the PROPFIND extension, and sccache's WebDAV client sends PROPFIND before writing, so the config answers it 404 and lets MKCOL make the folders:
+
+```nginx
+client_max_body_size 1g;
+server {
+  listen 8089;
+  allow 192.0.2.0/24;   # the LAN only (a documentation range here: use your own); no credentials
+  allow 127.0.0.1;
+  deny all;
+  location / {
+    root /data;
+    if ($request_method = PROPFIND) { return 404; }
+    dav_methods PUT DELETE MKCOL COPY MOVE;
+    create_full_put_path on;
+    dav_access user:rw group:rw all:r;
+  }
+}
+```
+
+(The folder is mode 777 because nginx in the container writes as its own user.) Each pool box has sccache v0.18.0 in `~/.cargo/bin` and this `~/.config/sccache/config` instead of the disk cache:
+
+```toml
+[cache.webdav]
+endpoint = "http://<the cache box's LAN address>:8089/"
+key_prefix = "pool"
+```
+
+The builder needs no change: it already puts `RUSTC_WRAPPER=sccache` in front when sccache is on PATH, and it sets `SCCACHE_DIR` only as an unused default under a WebDAV config. Keys include absolute source paths, so boxes share hits only when the user name and checkout paths match: the pool boxes do, the cache box (another user) keeps its local disk cache. A target directory is passed as `--target-dir`, never `CARGO_TARGET_DIR` (above). The cache is unbounded; prune the folder by age if the drive fills (`find ... -type f -atime +30 -delete`).
+
+**Measured** on one pool box, `ragon-docs-rs/` (204 cacheable rustc calls) into a fresh target directory, `-j 12`: no cache 35.7 s; shared cache after a first fill 22.6 s; warm, 204 of 204 hits, 9.4 s. The same build on a second pool box with the cache filled only by the first: 178 hits, 26 misses (build scripts whose `OUT_DIR` names the folder), 17 s. The cache held 277 MiB. The two-box fill shows a crate compiled on one box is a hit on the next.
+
 **Measured**, `cargo build --release --locked -j 12` of `ragon-docs-rs/` (261 rustc calls, 52 of them not cacheable: build scripts, the final link) into a fresh target directory each time: no cache 36.8 s; sccache with an empty cache 39.3 s (the cost of filling it, +7 %); sccache warm 15.7 s (177 hits, 26 misses: crates whose build script's `OUT_DIR` names the folder). The cache held 165 MiB afterwards. `codex build --force` (after the SWE-bench night): the re-export makes cargo recompile the 78 workspace crates (the third-party crates in the target directory stay fresh; switching the wrapper on did not rebuild them). Without the cache 7 m 43 s; through sccache, the cache filled, 68 of 78 hits, 10 misses (build scripts and the `codex` binary itself), 14 m 54 s, with the machine's load average at 16 to 26 from other builds. The hits do not show in the wall time: the Codex build is dominated by the thin-LTO link of `codex`, which no compile cache holds. The gain is in the crates and in test builds of the export; a `codex build` itself is not faster.
 
 ## Things found the hard way
