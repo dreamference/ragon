@@ -212,6 +212,7 @@ def test_the_launchers_member_crates_are_the_ones_the_overview_lists():
         "node-locator",
         "safegit",
         "loop-guard",
+        "log",
         "masking",
         "skills",
         "apps",

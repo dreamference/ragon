@@ -118,8 +118,12 @@ def _writer(spec="debug", sink=None, component="engine"):
 
 def _build_field(spec):
     kind, key, value = spec["type"], spec["key"], spec["value"]
+    if kind == "error" and "hex" in value:  # a message that is not UTF-8
+        return (LogField("error", key, {**value, "message": bytes.fromhex(value["hex"])}),)
     if kind == "error":
         return LogField.error(value, key)
+    if kind == "enum":
+        return LogField.enum(tuple(spec.get("allowed", ())), **{key: value})
     return getattr(LogField, {"id": "id_", "bytes": "bytes_"}.get(kind, kind))(**{key: value})
 
 
