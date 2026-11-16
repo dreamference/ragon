@@ -8,6 +8,7 @@ through the node's `/v1/models`. Only `install` reaches the network; `list`, `li
 import argparse
 import dataclasses
 import importlib
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -499,6 +500,10 @@ class AdapterCommand:
         try:
             stage_class = getattr(importlib.import_module(module), name)
         except (ImportError, AttributeError):
+            stage_class = None
+        # A stage is wired to the CLI by a classmethod `run(run) -> int`; a class whose `run`
+        # is an instance method has not been adapted to it yet.
+        if stage_class is None or not inspect.ismethod(getattr(stage_class, "run", None)):
             print(f"❌ The {stage} stage is not in this release yet: lane {lane} brings it.")
             return 1
         code = int(stage_class.run(run))

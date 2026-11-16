@@ -967,6 +967,24 @@ Check installed adapters again: signature, files and the served base.
 |---|---|
 | `name` | One adapter (default: all) |
 
+#### `ragon-admin adapter train`
+
+Train a LoRA adapter on a repository's own history (stages; --dry-run changes nothing).
+
+| Option | Description |
+|---|---|
+| `name` | The adapter's name (the run's folder name) |
+| `--repo` | The git repository to learn from. |
+| `--test-cmd` | The repository's test command. |
+| `--language` | The repository's main language. |
+| `--trainer` | Train on this host instead of locally: ssh://HOST (sends data off the node) |
+| `--budget-hours` | GPU hours to spend. |
+| `--rank` | LoRA rank. |
+| `--epochs` | Passes over the data. |
+| `--stage` | Run this stage alone. One of: `data`, `generate`, `train`, `eval`, `install`. |
+| `--resume` | Continue an existing run. |
+| `--dry-run` | Print the plan and change nothing. |
+
 ### `ragon-admin monitor`
 
 Show the node's health (forwards to ragon-node-monitor).
