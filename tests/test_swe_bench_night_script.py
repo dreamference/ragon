@@ -1606,7 +1606,7 @@ def test_start_refuses_a_run_dir_left_by_another_ragon_code_build(tmp_path):
     stale = runs / "n7-default"
     stale.mkdir(parents=True)
     (stale / "ragon-code.sha256").write_text(f"{'a' * 64}  2026-11-15T00:36:00+0000\n")
-    result, recorded, verdicts, units, folder = start(
+    result, _recorded, verdicts, units, _folder = start(
         tmp_path, "default", RUNS=str(runs), FAKE_CODE_SHA="b" * 64
     )
     assert result.returncode == 1
