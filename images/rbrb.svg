@@ -12,9 +12,9 @@
 <text x="50" y="88.0" text-anchor="end">75</text>
 <line x1="56" y1="44.0" x2="616" y2="44.0" stroke="#dddddd"/>
 <text x="50" y="48.0" text-anchor="end">100</text>
-<circle cx="336.0" cy="202.4" r="4" fill="#2a6fdb"/>
+<circle cx="336.0" cy="191.2" r="4" fill="#2a6fdb"/>
 <text x="336.0" y="222" text-anchor="middle">2026-W46</text>
-<text x="336.0" y="192.4" text-anchor="middle" font-size="13" font-weight="bold" fill="#111111">0.97 % (2026-W46)</text>
+<text x="336.0" y="181.2" text-anchor="middle" font-size="13" font-weight="bold" fill="#111111">8.00 % (2026-W46)</text>
 <text x="56" y="280" font-size="14" font-weight="bold" fill="#111111">Quality band: revert rate (%), Ragon vs others</text>
 <line x1="56" y1="454.0" x2="616" y2="454.0" stroke="#dddddd"/>
 <text x="50" y="458.0" text-anchor="end">0</text>
@@ -26,7 +26,9 @@
 <text x="50" y="338.0" text-anchor="end">9</text>
 <line x1="56" y1="294.0" x2="616" y2="294.0" stroke="#dddddd"/>
 <text x="50" y="298.0" text-anchor="end">12</text>
-<text x="320.0" y="374.0" text-anchor="middle">no revert data yet</text>
+<circle cx="336.0" cy="454.0" r="4" fill="#2a6fdb"/>
+<circle cx="336.0" cy="454.0" r="4" fill="#d9822b"/>
+<text x="336.0" y="472" text-anchor="middle">2026-W46</text>
 <rect x="56" y="485" width="10" height="10" fill="#2a6fdb"/>
 <text x="72" y="494">Ragon</text>
 <rect x="136" y="485" width="10" height="10" fill="#d9822b"/>

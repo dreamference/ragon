@@ -7,10 +7,20 @@ images/rbrb-badge.svg, shows the latest share.
 
 python scripts/rbrb.py            # write both svg files
 python scripts/rbrb.py --check    # exit 1 if a committed svg differs from the regenerated one
+python scripts/rbrb.py --closed-week  # print the newest closed ISO week (what the weekly job exports)
+python scripts/rbrb.py --ingest PATH   # upsert the week of the weekly export PATH, then write the files
+
+The weekly export (rbrb-gate --export) carries the counts only: week, ragon_generated, other_generated,
+ragon_tasks_attempted, ragon_tasks_landed. --ingest turns it into the week's point, takes the commit and revert
+counts of the week from git, and rewrites docs/rbrb.json, both svg files and the README "latest" line, so that
+nothing needs a hand. Input fields come from the export; commits and reverts are derived from git.
 """
 
 import argparse
+import datetime
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,6 +29,8 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "docs" / "rbrb.json"
 SVG = ROOT / "images" / "rbrb.svg"
 BADGE = ROOT / "images" / "rbrb-badge.svg"
+README = ROOT / "README.md"
+LATEST = re.compile(r"(<!-- rbrb:latest -->).*?(<!-- /rbrb:latest -->)", re.S)
 
 WIDTH, HEIGHT = 640, 460
 LEFT, RIGHT, TOP, BOTTOM = 56, 24, 44, 56
@@ -144,11 +156,123 @@ def render_badge(data: dict[str, Any]) -> str:
     )
 
 
+def week_bounds(week: str) -> tuple[datetime.date, datetime.date]:
+    """Monday and Sunday of an ISO week such as "2026-W46"."""
+    year, num = week.split("-W")
+    monday = datetime.date.fromisocalendar(int(year), int(num), 1)
+    return monday, monday + datetime.timedelta(days=6)
+
+
+def closed_week(today: datetime.date) -> str:
+    """The newest ISO week that is over on `today` (the week before today's), e.g. "2026-W46" on 2026-11-16.
+
+    The weekly timer runs at 00:30 UTC on Monday, when the date's own week has just begun and is empty: the
+    point to publish is the week that closed half an hour earlier.
+    """
+    year, num, _ = (today - datetime.timedelta(days=today.isoweekday())).isocalendar()
+    return f"{year}-W{num:02d}"
+
+
+def _git_count(args: list[str]) -> int:
+    out = subprocess.run(
+        ["git", "-C", str(ROOT), "log", "--format=%H", *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return len(out.split())
+
+
+def git_counts(week: str, ref: str = "HEAD") -> dict[str, int]:
+    """Commits and reverts of one week on `ref`: all, Ragon-made (Made-with: ragon), and reverts of each."""
+    monday, sunday = week_bounds(week)
+    window = [f"--since={monday}T00:00:00Z", f"--until={sunday}T23:59:59Z", ref]
+    made = ["--grep=^Made-with: ragon$"]
+    rev = ["--grep=^This reverts commit [0-9a-f]\\{40\\}\\.$"]
+    all_n = _git_count(window)
+    ragon_n = _git_count([*made, *window])
+    rev_all = _git_count([*rev, *window])
+    rev_ragon = _git_count([*rev, *made, "--all-match", *window])
+    return {
+        "ragon_commits": ragon_n,
+        "other_commits": all_n - ragon_n,
+        "ragon_reverted": rev_ragon,
+        "other_reverted": rev_all - rev_ragon,
+    }
+
+
+def ingest(data: dict[str, Any], export: dict[str, Any], counts: dict[str, int]) -> dict[str, Any]:
+    """Upsert the point and the quality row of the export's week; keeps points sorted, one per week."""
+    week = export["week"]
+    monday, sunday = week_bounds(week)
+    ragon, other = int(export["ragon_generated"]), int(export["other_generated"])
+    old = next((p for p in data["points"] if p["week"] == week), None)
+    point: dict[str, Any] = {
+        "week": week,
+        "from": str(monday),
+        "to": str(sunday),
+        "ragon_generated_tokens": ragon,
+        "other_generated_tokens": other,
+        "rbrb_share": round(ragon / (ragon + other), 4) if ragon + other else 0.0,
+        "ragon_tasks": {
+            "attempted": int(export.get("ragon_tasks_attempted", 0)),
+            "landed": int(export.get("ragon_tasks_landed", 0)),
+        },
+        "commits": {
+            "ragon": counts["ragon_commits"],
+            "all": counts["ragon_commits"] + counts["other_commits"],
+        },
+        "notes": (old or {}).get("final_notes", "")
+        or "Complete week, generated tokens only (method_version 0): the export carries no prompt or cached token counts yet, so no price-weighted point exists.",
+        "method_version": 0,
+    }
+    if old and "partial_note" in old:
+        point["partial_note"] = old["partial_note"]
+    elif old and old.get("to") != str(sunday):
+        point["partial_note"] = old["notes"]  # the hand-measured partial week, kept as a note
+    data["points"] = sorted([p for p in data["points"] if p["week"] != week] + [point], key=lambda p: p["week"])
+    # The band stays undecided until the 28-day rework rate exists (spec 2.8, condition 4): never "met" without it.
+    data["quality"] = [
+        {
+            "week": week,
+            "ragon_reverted": counts["ragon_reverted"],
+            "ragon_commits": counts["ragon_commits"],
+            "other_reverted": counts["other_reverted"],
+            "other_commits": counts["other_commits"],
+            "rework": None,
+            "band": "undecided",
+            "provisional": True,
+        }
+    ]
+    return data
+
+
+def latest_line(data: dict[str, Any]) -> str:
+    """The README's "latest" line, from the newest point."""
+    p = data["points"][-1]
+    return f"Latest value: **{share_percent(p):.2f} %** ({p['week']})."
+
+
+def update_readme(text: str, data: dict[str, Any]) -> str:
+    """Replace the marked "latest" block of the README text."""
+    return LATEST.sub(lambda m: m.group(1) + "\n" + latest_line(data) + "\n" + m.group(2), text)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="exit 1 if the committed svg is stale")
+    parser.add_argument("--ingest", metavar="PATH", help="upsert the week of a weekly export file")
+    parser.add_argument("--closed-week", action="store_true", help="print the newest closed ISO week")
     args = parser.parse_args(argv)
+    if args.closed_week:
+        print(closed_week(datetime.datetime.now(datetime.timezone.utc).date()))
+        return 0
     data = json.loads(DATA.read_text(encoding="utf-8"))
+    if args.ingest:
+        export = json.loads(Path(args.ingest).read_text(encoding="utf-8"))
+        data = ingest(data, export, git_counts(export["week"]))
+        DATA.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        README.write_text(update_readme(README.read_text(encoding="utf-8"), data), encoding="utf-8")
     outputs = {SVG: render(data), BADGE: render_badge(data)}
     if args.check:
         stale = [

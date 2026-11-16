@@ -32,7 +32,7 @@ def test_schema() -> None:
         "rbrb_share", "notes", "method_version",
     }  # fmt: skip
     for point in data["points"]:
-        assert set(point) == keys
+        assert keys <= set(point) <= keys | {"ragon_tasks", "commits", "partial_note"}
         assert isinstance(point["ragon_generated_tokens"], int)
         assert isinstance(point["other_generated_tokens"], int)
 
@@ -83,4 +83,48 @@ def test_badge_is_regenerated_byte_identical() -> None:
     module = _load()
     badge = (ROOT / "images" / "rbrb-badge.svg").read_text(encoding="utf-8")
     assert badge == module.render_badge(_data())
-    assert "0.97 %" in badge
+    assert f"{module.share_percent(_data()['points'][-1]):.2f} %" in badge
+
+
+def test_ingest_upserts_the_week_and_is_idempotent(tmp_path: Path) -> None:
+    module = _load()
+    data = _data()
+    export = {
+        "week": "2026-W47",
+        "ragon_generated": 100,
+        "other_generated": 900,
+        "ragon_tasks_attempted": 3,
+        "ragon_tasks_landed": 2,
+    }
+    counts = {"ragon_commits": 4, "other_commits": 6, "ragon_reverted": 1, "other_reverted": 0}
+    once = module.ingest(json.loads(json.dumps(data)), export, counts)
+    twice = module.ingest(json.loads(json.dumps(once)), export, counts)
+    assert once == twice
+    assert [p["week"] for p in once["points"]] == ["2026-W46", "2026-W47"]
+    new = once["points"][-1]
+    assert (new["from"], new["to"], new["rbrb_share"]) == ("2026-11-16", "2026-11-22", 0.1)
+    assert new["commits"] == {"ragon": 4, "all": 10}
+    assert once["quality"][0]["ragon_reverted"] == 1
+    assert once["quality"][0]["band"] == "undecided"
+    assert "partial_note" in once["points"][0]
+    readme = module.update_readme("a\n<!-- rbrb:latest -->\nold\n<!-- /rbrb:latest -->\nb\n", once)
+    assert "Latest value: **10.00 %** (2026-W47)." in readme and "old" not in readme
+    module.render(once)  # the chart still renders with the new fields
+
+
+def test_git_counts_reads_this_repository() -> None:
+    module = _load()
+    counts = module.git_counts("2026-W46")
+    assert set(counts) == {"ragon_commits", "other_commits", "ragon_reverted", "other_reverted"}
+    assert counts["other_commits"] >= 0
+
+
+def test_closed_week_is_the_week_before_today() -> None:
+    import datetime
+
+    module = _load()
+    # Monday 00:30 UTC of week 47 must publish week 46; any day of week 47 does
+    assert module.closed_week(datetime.date(2026, 11, 16)) == "2026-W46"
+    assert module.closed_week(datetime.date(2026, 11, 22)) == "2026-W46"
+    assert module.closed_week(datetime.date(2026, 11, 23)) == "2026-W47"
+    assert module.closed_week(datetime.date(2027, 1, 4)) == "2026-W53"  # across the year boundary
