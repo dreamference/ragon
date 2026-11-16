@@ -1,5 +1,7 @@
-# The log level spec (specs/DREAMFERENCE_LOGGING.md §4.2-4.3): one parser for RAGON_LOG and log.env, the same
-# grammar and vectors as dreamference/config/log_level_spec.py. Std only, so its tests run alone.
+# Ragon's log writer (specs/DREAMFERENCE_LOGGING.md §4 to §7): the level spec, one line format,
+# redaction at the writer, the sampler and file rotation. Its own crate so its tests and the shared
+# vectors in `vectors/` run without the rest of the launcher. regex, hmac and sha2 come from the
+# workspace; there is no logging or network crate.
 [package]
 name = "ragon-log"
 version = "0.1.0"
@@ -11,5 +13,12 @@ publish = false
 name = "ragon_log"
 path = "src/lib.rs"
 
-# Its own workspace root: the launcher manifest above inherits from the Codex workspace, not here.
-[workspace]
+[dependencies]
+flate2 = { workspace = true }
+hmac = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }

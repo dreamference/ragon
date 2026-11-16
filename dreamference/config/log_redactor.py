@@ -161,7 +161,10 @@ class LogRedactor:
         text = self._count("home", text, _OTHER_HOMES.sub("~", text))
         if len(self.host) >= 3:
             short = self.host.split(".")[0]
-            for name in {self.host, short} if len(short) >= 3 else {self.host}:
+            # The full name first: its short form would otherwise leave `[host].domain`.
+            for name in (
+                [self.host, short] if len(short) >= 3 and short != self.host else [self.host]
+            ):
                 text = self._count(
                     "host",
                     text,

@@ -1,6 +1,23 @@
-//! The log level spec (specs/DREAMFERENCE_LOGGING.md §4.2-4.3): the grammar that `RAGON_LOG`
-//! and `log.env` carry, and the precedence that picks the spec. Python reads the same grammar
-//! through `dreamference/config/log_level_spec.py`; both read `ragon-rs/vectors/log_level_cases.txt`.
+//! Ragon's log writer (specs/DREAMFERENCE_LOGGING.md): the level spec (§4.2-4.3) that `RAGON_LOG`
+//! and `log.env` carry and the precedence that picks it, the line format (§5), redaction at the
+//! writer (§7.4), the sampler (§7.5) and file rotation (§6). Python writes the same lines through
+//! `dreamference/config/log_line_formatter.py` and `log_redactor.py`; both read `ragon-rs/vectors/`.
+
+mod format;
+mod level;
+mod redact;
+mod sampler;
+mod sink;
+mod time;
+mod writer;
+
+pub use format::{Field, Formatter, Kind, MAX_LINE, Value, key, message, quote, render};
+pub use level::Level;
+pub use redact::{ADDR, Env, Redactor, SECRET, SECRETS_TXT, secret_like};
+pub use sampler::{Decision, Request, Sampler, Synthetic};
+pub use sink::{FileSink, JournaldSink, Rotation, Sink, StderrSink, under_journald};
+pub use time::{iso_ms, now_ms};
+pub use writer::{COMPONENTS_TXT, Logger, QUEUE, components, default_log_dir};
 
 use std::collections::BTreeMap;
 

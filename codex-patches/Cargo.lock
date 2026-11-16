@@ -10265,6 +10265,7 @@ dependencies = [
  "ragon-apps",
  "ragon-chat",
  "ragon-delegate",
+ "ragon-log",
  "ragon-loop-guard",
  "ragon-masking",
  "ragon-monitor",
@@ -10291,6 +10292,18 @@ dependencies = [
  "toml_edit 0.24.0+spec-1.1.0",
  "windows-sys 0.52.0",
  "zip",
+]
+
+[[package]]
+name = "ragon-log"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "hmac 0.12.1",
+ "regex",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
@@ -10390,6 +10403,7 @@ dependencies = [
  "hyper-util",
  "libc",
  "ragon-airgapped",
+ "ragon-log",
  "ragon-safegit",
  "qrcodegen",
  "rand 0.9.3",

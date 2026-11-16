@@ -36,6 +36,8 @@ ragon-airgapped = { path = "airgapped" }
 ragon-safegit = { path = "safegit" }
 # The loop guard's detector: three checks on streamed text (src/loop_guard.rs).
 ragon-loop-guard = { path = "loop-guard" }
+# The log writer: line format, redaction, sampler and rotation (specs/DREAMFERENCE_LOGGING.md §5 to §7).
+ragon-log = { path = "log" }
 # Ragon's apps for `/apps` (patch 0022) and as MCP tools (src/apps.rs).
 ragon-apps = { path = "apps" }
 # Observation masking: the rule Codex's core calls (patch 0021); the launcher sets its policy.
