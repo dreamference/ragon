@@ -29,10 +29,6 @@
    "PLR2004": 3,
    "RUF001": 1
   },
-  "dreamference/chat/desktop_installer.py": {
-   "E501": 1,
-   "T201": 17
-  },
   "dreamference/chat/gmail_search_service.py": {
    "C901": 1
   },
@@ -107,9 +103,6 @@
    "ANN401": 2,
    "D205": 1,
    "PLR2004": 2
-  },
-  "dreamference/runner/cline_installer.py": {
-   "T201": 6
   },
   "dreamference/runner/codex_branded_builder.py": {
    "C901": 2,
@@ -188,8 +181,7 @@
    "PLR0911": 1,
    "PLR0912": 2,
    "PLR0913": 2,
-   "PLR0915": 2,
-   "UP031": 1
+   "PLR0915": 2
   },
   "tests/test_ragon_slash_commands.py": {
    "C901": 1
@@ -216,5 +208,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 416
+ "total": 258
 }

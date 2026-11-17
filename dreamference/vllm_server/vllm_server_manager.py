@@ -1428,7 +1428,7 @@ class VLLMServerManager:
         )
         if not gate_open:
             return (
-                f"Its swap gate ({'-s %g' % swap_pct if swap_pct is not None else 'default -s 10'}) "
+                f"Its swap gate ({f'-s {swap_pct:g}' if swap_pct is not None else 'default -s 10'}) "
                 f"means it can never fire: it acts only when memory AND free swap are both low, "
                 f"and driver-pinned pages never reach swap, so free swap stays at 100%."
             )
