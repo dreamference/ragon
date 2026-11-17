@@ -46,7 +46,8 @@ from dreamference.runner.safe_git import SafeGit
 
 PREAMBLE: Final[
     str
-] = """This is a Night Shift task. It runs unattended overnight, in a git worktree of {repo} on branch {branch}, and nobody will answer questions: where something is unclear, make the reasonable choice and say which you made.
+] = """This is a Night Shift task. It runs unattended overnight, in a git worktree of {repo} on branch {branch}, and
+nobody will answer questions: where something is unclear, make the reasonable choice and say which you made.
 
 - Work only inside this worktree.
 - Make the change itself; do not stop at describing or planning it.
