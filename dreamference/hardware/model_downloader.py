@@ -10,6 +10,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Final
 
@@ -21,6 +22,15 @@ BYTES_PER_UNIT: Final[int] = 1024
 
 # `docker -v` ends the host path at the first colon, so no host path may hold one.
 VOLUME_SEPARATOR = ":"
+
+
+def _say(text: str) -> None:
+    """Write one line of user output to stdout.
+
+    Args:
+        text: The line, without its newline.
+    """
+    sys.stdout.write(f"{text}\n")
 
 
 class ModelDownloader:
@@ -214,7 +224,7 @@ class ModelDownloader:
 
         if not force and cls.is_model_tensorized(model_key):
             tpath = cls.get_tensorized_path(model_key)
-            print(f"✅ Model '{model_key}' is already saved in tensorize format ({tpath}).")
+            _say(f"✅ Model '{model_key}' is already saved in tensorize format ({tpath}).")
             return True
 
         # Serialization loads the whole checkpoint, so it carries the same freeze risk as serving
@@ -226,14 +236,14 @@ class ModelDownloader:
 
         # Ensure HF snapshot exists
         if not cls.is_model_downloaded(model_key):
-            print(f"📥 Pre-downloading HF weights for '{model_key}' prior to tensorization...")
+            _say(f"📥 Pre-downloading HF weights for '{model_key}' prior to tensorization...")
             if not cls.download_model(model_key, hf_token=hf_token, auto_tensorize=False):
-                print(f"❌ Failed to download HuggingFace model weights for '{model_key}'.")
+                _say(f"❌ Failed to download HuggingFace model weights for '{model_key}'.")
                 return False
 
         snapshot_dir = cls.get_model_snapshot_dir(model_key)
         if not snapshot_dir:
-            print(f"❌ Model snapshot directory not found for '{model_key}'.")
+            _say(f"❌ Model snapshot directory not found for '{model_key}'.")
             return False
 
         tdir = cls.get_tensorized_dir(model_key)
@@ -243,7 +253,7 @@ class ModelDownloader:
         tensors_file = tdir / "model.tensors"
         staging = tdir / "model.tensors.partial"
 
-        print(f"⚡ Converting '{model_key}' to tensorize format and saving to {tensors_file}...")
+        _say(f"⚡ Converting '{model_key}' to tensorize format and saving to {tensors_file}...")
 
         serialization_success = False
 
@@ -269,7 +279,7 @@ class ModelDownloader:
                     # ensure_docker_image pulls the image; when it could not, the next attempt runs.
                     if not VLLMServerManager().ensure_docker_image(DEFAULT_VLLM_IMAGE):
                         raise RuntimeError(f"{DEFAULT_VLLM_IMAGE} is not available")
-                    print(
+                    _say(
                         f"   Using {DEFAULT_VLLM_IMAGE} Docker container for model weight serialization..."
                     )
 
@@ -353,7 +363,7 @@ class ModelDownloader:
                 from tensorizer import TensorSerializer
                 from transformers import AutoModelForCausalLM
 
-                print("   Using local TensorSerializer (tensorizer Python library)...")
+                _say("   Using local TensorSerializer (tensorizer Python library)...")
                 with Progress(
                     SpinnerColumn(),
                     TextColumn("[progress.description]{task.description}"),
@@ -388,7 +398,7 @@ class ModelDownloader:
             except ImportError:
                 pass
             except Exception as e:
-                print(f"⚠️ TensorSerializer note: {e}")
+                _say(f"⚠️ TensorSerializer note: {e}")
 
         # Attempt 3: Try vLLM tensorize script module if available
         if not serialization_success:
@@ -414,7 +424,7 @@ class ModelDownloader:
             tensors_file.unlink(missing_ok=True)
             staging.unlink(missing_ok=True)
             # download_model goes on either way; the result says whether the file now exists.
-            print(
+            _say(
                 "⚠️  No tensorize attempt succeeded — skipping tensorize step (normal download will be used)."
             )
             return False
@@ -427,7 +437,7 @@ class ModelDownloader:
                 shutil.copy2(fpath, tdir / fpath.name)
 
         size_mb = tensors_file.stat().st_size / (1024 * 1024)
-        print(
+        _say(
             f"✅ Successfully saved '{model_key}' in tensorize format ({size_mb:.1f} MB -> {tensors_file})"
         )
         return True
@@ -530,11 +540,11 @@ class ModelDownloader:
         # Check cache FIRST before any downloads
         if cls.is_model_downloaded(model_key, revision):
             cache_size = cls._get_cache_size(model_key)
-            print(f"✅ Model '{model_key}' ({repo_id}) found in local cache ({cache_size}).")
+            _say(f"✅ Model '{model_key}' ({repo_id}) found in local cache ({cache_size}).")
             success = True
         else:
             at = f" at {revision[:12]}" if revision else ""
-            print(f"📥 Pre-downloading HuggingFace weights for '{model_key}' ({repo_id}){at}...")
+            _say(f"📥 Pre-downloading HuggingFace weights for '{model_key}' ({repo_id}){at}...")
             token_val = hf_token or os.getenv("HF_TOKEN") or os.getenv("DREAMFERENCE_HF_TOKEN")
 
             # 1. Attempt python huggingface_hub snapshot_download
@@ -543,12 +553,12 @@ class ModelDownloader:
 
                 snapshot_download(repo_id=repo_id, token=token_val, revision=revision)
                 cache_size = cls._get_cache_size(model_key)
-                print(f"✅ Successfully pre-downloaded {repo_id} ({cache_size})")
+                _say(f"✅ Successfully pre-downloaded {repo_id} ({cache_size})")
                 success = True
             except ImportError:
                 pass
             except Exception as e:
-                print(f"⚠️ HuggingFace snapshot_download note: {e}")
+                _say(f"⚠️ HuggingFace snapshot_download note: {e}")
 
             # 2. Attempt CLI fallback
             if not success and shutil.which("huggingface-cli"):
@@ -560,7 +570,7 @@ class ModelDownloader:
                 res = subprocess.run(cmd, env=env)
                 if res.returncode == 0:
                     cache_size = cls._get_cache_size(model_key)
-                    print(
+                    _say(
                         f"✅ Successfully pre-downloaded {repo_id} via huggingface-cli ({cache_size})"
                     )
                     success = True
@@ -571,7 +581,7 @@ class ModelDownloader:
             )  # best-effort; continues even if tensorizer missing
 
         if not success:
-            print(
+            _say(
                 f"💡 vLLM will attempt to fetch '{repo_id}' during initialization (cache-first mode)."
             )
         return success
@@ -676,7 +686,7 @@ class ModelDownloader:
             Dict[str, bool]: Dictionary mapping model keys to download success flags.
         """
         results: dict[str, bool] = {}
-        print("🚀 Pre-downloading all qualified NVIDIA GB10 LLM & Draft models...")
+        _say("🚀 Pre-downloading all qualified NVIDIA GB10 LLM & Draft models...")
         for key, spec in ModelMatrixRegistry.MATRIX.items():
             if spec.compatible_gb10 and ModelMatrixRegistry.is_offered(key):
                 results[key] = cls.download_model(
@@ -702,7 +712,7 @@ class ModelDownloader:
             ]
         )
         if cleared:
-            print("✅ Model cache cleared.")
+            _say("✅ Model cache cleared.")
         return cleared
 
     @classmethod
@@ -717,7 +727,7 @@ class ModelDownloader:
         """
         cleared = cls._remove_cache_dir(cls.get_tensorizer_cache_dir())
         if cleared:
-            print("✅ Tensorizer cache cleared.")
+            _say("✅ Tensorizer cache cleared.")
         return cleared
 
     @classmethod
@@ -737,16 +747,16 @@ class ModelDownloader:
             bool: True if the directory no longer exists (or, behind a link, is empty).
         """
         if not cache_dir.exists():
-            print(f"ℹ️  Cache directory not found: {cache_dir}")
+            _say(f"ℹ️  Cache directory not found: {cache_dir}")
             return True
-        print(f"🗑️  Clearing cache: {cache_dir}")
+        _say(f"🗑️  Clearing cache: {cache_dir}")
         if cache_dir.is_symlink():
             if cls._empty_dir(cache_dir):
                 return True
         else:
             shutil.rmtree(cache_dir, ignore_errors=True)
         if cache_dir.exists():
-            print(
+            _say(
                 f"⚠️  Some files in {cache_dir} could not be removed (written as root by a container)."
             )
             # `rm -rf` on a link removes the link alone and leaves the files.
@@ -754,7 +764,7 @@ class ModelDownloader:
                 command = f"sudo find {shlex.quote(f'{cache_dir}/')} -mindepth 1 -delete"
             else:
                 command = f"sudo rm -rf {shlex.quote(str(cache_dir))}"
-            print(f"💡 Remove them with: {command}")
+            _say(f"💡 Remove them with: {command}")
             return False
         return True
 

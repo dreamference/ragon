@@ -65,8 +65,7 @@
    "PLR0912": 1,
    "PLR0915": 1,
    "PLR1702": 2,
-   "RUF001": 1,
-   "T201": 23
+   "RUF001": 1
   },
   "dreamference/night_shift/night_shift_remote.py": {
    "E501": 1,
