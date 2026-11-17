@@ -7,7 +7,7 @@ import { TOKEN_SHAPES, installLogRedaction, redactLine } from "./log-redact";
 const VECTOR = path.resolve(__dirname, "../../../ragon-rs/vectors/logging/secrets.txt");
 const rows = fs
   .readFileSync(VECTOR, "utf8")
-  .split("\n")
+  .split(/\r?\n/)
   .filter((l) => l.trim() && !l.startsWith("#"))
   .map((l) => {
     const [name, keyword, ...rest] = l.split("|");
