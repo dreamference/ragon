@@ -159,7 +159,7 @@ class DreamferenceConfig:
         ragon_refine_version: str | None = None,
         log_level: str | None = None,
     ):
-        """Initializes DreamferenceConfig by loading file defaults and overriding with environment variables and parameters."""
+        """Loads file defaults and overrides them with environment and parameters."""
         self.config_file_path: Path = ConfigPathResolver.resolve_path(config_file)
         self.file_data: dict[str, Any] = ConfigFileStorageManager.load_config_dict(
             self.config_file_path

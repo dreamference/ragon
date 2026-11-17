@@ -47,7 +47,6 @@
   "dreamference/config/dreamference_config.py": {
    "ANN401": 2,
    "C901": 2,
-   "E501": 1,
    "PLR0912": 2,
    "PLR0913": 1,
    "PLR0915": 1,
@@ -206,5 +205,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 256
+ "total": 255
 }
