@@ -19,6 +19,7 @@ import pathlib
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import zipfile
 from dataclasses import asdict
@@ -35,6 +36,11 @@ FIXTURE_ANSWER = "petrels nest in burrows"
 INDEX_OK_LINE = "documents: ok"
 # The session name in the result file's name and body, beside `exec`, `tui`, `app` and `web`.
 DOCS_SESSION = "docs"
+
+
+def _say(text: str) -> None:
+    """Writes one line of the docs egress audit's report."""
+    sys.stdout.write(text + "\n")
 
 
 class DocsEgressAudit:
@@ -322,17 +328,17 @@ class DocsEgressAudit:
         from dreamference.runner.codex_branded_builder import INSTALL_DIR
 
         if shutil.which("strace") is None:
-            print(
+            _say(
                 "⚠️  Docs egress audit: trace failed\n   - strace is not installed: sudo apt-get install strace"
             )
             return 2
         ragon_docs = ragon_docs or str(pathlib.Path(INSTALL_DIR, "bin", "ragon-docs"))
         if not os.access(ragon_docs, os.X_OK):
-            print(
+            _say(
                 "⚠️  Docs egress audit: trace failed\n   - ragon-docs is not built: run `ragon-admin codex build` first."
             )
             return 2
-        print(
+        _say(
             "🚀 Tracing `ragon-docs index` and `ragon-docs search` over a fixture folder (throwaway home)..."
         )
         work_dir = tempfile.mkdtemp(prefix="ragon-docs-audit-")
@@ -342,20 +348,20 @@ class DocsEgressAudit:
             shutil.rmtree(work_dir, ignore_errors=True)
         verdict = cls.judge(trace, indexed, found)
         mark = {PASS: "✅", FAIL: "❌"}.get(verdict.status, "⚠️ ")
-        print(f"{mark} Docs egress audit: {verdict.status}")
+        _say(f"{mark} Docs egress audit: {verdict.status}")
         for problem in verdict.problems:
-            print(f"   - {problem}")
+            _say(f"   - {problem}")
         if verdict.status == TRACE_FAILED:
             for step, text in outputs.items():
-                print(f"   {step}: {text.strip()[-400:]}")
-        print(f"Network destinations: {', '.join(sorted(trace.destinations)) or 'none'}")
-        print(f"DNS queries: {', '.join(sorted(trace.dns_names)) or 'none'}")
-        print(f"Unix sockets: {', '.join(sorted(trace.unix_sockets)) or 'none'}")
+                _say(f"   {step}: {text.strip()[-400:]}")
+        _say(f"Network destinations: {', '.join(sorted(trace.destinations)) or 'none'}")
+        _say(f"DNS queries: {', '.join(sorted(trace.dns_names)) or 'none'}")
+        _say(f"Unix sockets: {', '.join(sorted(trace.unix_sockets)) or 'none'}")
         programs = ", ".join(
             f"{name} ({count})"
             for name, count in sorted(trace.processes.items(), key=lambda item: (-item[1], item[0]))
         )
-        print(f"Processes started: {programs or 'none'}")
+        _say(f"Processes started: {programs or 'none'}")
         if write_json:
-            print(f"💡 Full result: {cls.write_result(trace, verdict, ragon_docs)}")
+            _say(f"💡 Full result: {cls.write_result(trace, verdict, ragon_docs)}")
         return verdict.exit_code

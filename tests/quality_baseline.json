@@ -4,9 +4,6 @@
    "D415": 1,
    "PQ002": 1
   },
-  "dreamference/audit/docs_egress_audit.py": {
-   "T201": 11
-  },
   "dreamference/audit/egress_audit.py": {
    "BLE001": 1,
    "C901": 3,
@@ -236,5 +233,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 450
+ "total": 439
 }
