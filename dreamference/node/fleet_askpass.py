@@ -1,4 +1,5 @@
-"""Answers ssh's password prompt for a provisioning run that holds the passwords
+"""Answers ssh's password prompt for a provisioning run that holds the passwords.
+
 (specs/DREAMFERENCE_RAGON_FLEET.md §8.2).
 
 With several machines, every password is asked at the start so the slow part runs unattended.
@@ -33,9 +34,11 @@ class FleetAskpass:
     """Serves held passwords to `ssh` through `SSH_ASKPASS`, for one run."""
 
     def __init__(self, run_dir: Path, passwords: dict[str, str]) -> None:
-        """Args:
-        run_dir: The run's 0700 folder.
-        passwords: Password by host, as the run asked for them.
+        """Initializes the run's askpass socket and password table.
+
+        Args:
+            run_dir: The run's 0700 folder.
+            passwords: Password by host, as the run asked for them.
         """
         self.run_dir = run_dir
         self.passwords = passwords

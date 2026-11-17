@@ -75,7 +75,6 @@
    "PLR1702": 3
   },
   "dreamference/node/fleet_askpass.py": {
-   "D205": 2,
    "PLR1702": 1
   },
   "dreamference/node/node_job.py": {
@@ -200,5 +199,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 249
+ "total": 247
 }
