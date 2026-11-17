@@ -12,16 +12,16 @@ reads the tokens created by the Ragon OAuth flow, which the service itself store
 mounted folder when a connection completes in the browser.
 """
 
-import os
 import pathlib
+import sys
 from typing import Final
 
 from dreamference.chat.gmail_search_service import GmailSearchService
 
 # Where the credentials live on the host. The directory is bind-mounted into the search service's
 # container, so this path is also `/config` as far as that container is concerned.
-CREDENTIALS_DIR: Final[str] = os.path.expanduser("~/.config/dreamference/gmail")
-CREDENTIALS_FILE: Final[str] = os.path.join(CREDENTIALS_DIR, "credentials.json")
+CREDENTIALS_DIR: Final[str] = str(pathlib.Path("~/.config/dreamference/gmail").expanduser())
+CREDENTIALS_FILE: Final[str] = str(pathlib.Path(CREDENTIALS_DIR) / "credentials.json")
 
 
 class GmailCredentials:
@@ -37,7 +37,7 @@ class GmailCredentials:
         try:
             pathlib.Path(CREDENTIALS_DIR).mkdir(mode=0o700, exist_ok=True, parents=True)
         except OSError as exc:
-            print(f"❌ Could not create {CREDENTIALS_DIR}: {exc}")
+            sys.stdout.write(f"❌ Could not create {CREDENTIALS_DIR}: {exc}\n")
             return False
         return True
 
