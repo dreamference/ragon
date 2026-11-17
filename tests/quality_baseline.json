@@ -101,7 +101,6 @@
   },
   "dreamference/node/node_service_file.py": {
    "ANN401": 2,
-   "D205": 1,
    "PLR2004": 2
   },
   "dreamference/runner/codex_branded_builder.py": {
@@ -208,5 +207,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 258
+ "total": 257
 }

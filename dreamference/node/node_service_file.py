@@ -160,7 +160,9 @@ class NodeServiceFile:
 
     @classmethod
     def read(cls) -> dict[str, str] | None:
-        """Returns:
+        """Reads the installed file back.
+
+        Returns:
         Optional[Dict[str, str]]: The installed file's records, or None when the node is not
         advertised.
         """
