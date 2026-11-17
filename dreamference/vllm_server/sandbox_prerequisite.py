@@ -103,7 +103,7 @@ class SandboxPrerequisite:
             if needed:
                 cls._refuse(command, subcommand, "you turned off what needs it")
             return not needed
-        print(
+        cls._say(
             "⚠️  bubblewrap cannot create a sandbox from an ordinary login on this machine "
             "(AppArmor); `ragon-admin host setup` fixes it.",
             file=sys.stderr,
@@ -137,31 +137,31 @@ class SandboxPrerequisite:
 
         commands = cls.fix_commands()
         if commands is None:
-            print(
+            cls._say(
                 "❌ The sandbox is refused here for a reason other than Ubuntu's AppArmor "
                 "restriction, so there is no profile to install. `ragon-admin host check` "
                 "says what it found."
             )
             return False
         if shutil.which("sudo") is None:
-            print("❌ sudo is not installed. As root, run:")
+            cls._say("❌ sudo is not installed. As root, run:")
             for command in commands:
-                print(f"     {' '.join(command)}")
+                cls._say(f"     {' '.join(command)}")
             return False
         for command in commands:
             if not HostSafetySetup._run_as_root(command):
-                print(
+                cls._say(
                     "❌ That command failed, so the sandbox is still missing. "
                     "`ragon-admin host setup` tries again."
                 )
                 return False
         if HostSafetySetup.sandbox_works() is False:
-            print(
+            cls._say(
                 f"❌ The profile is installed, but bubblewrap is still refused. "
                 f"`sudo aa-status | grep {PROFILE_NAME}` shows whether it loaded."
             )
             return False
-        print(
+        cls._say(
             "✅ bubblewrap can now sandbox from any login: ragon's commands, Night Shift and node jobs."
         )
         cls._forget_saying_how_to_restore_night()
@@ -176,7 +176,7 @@ class SandboxPrerequisite:
         was_off = cls.turned_off()
         cls._forget()
         if was_off:
-            print(
+            cls._say(
                 "💡 Night Shift was turned off while bubblewrap could not sandbox; "
                 "`ragon-admin night enable` puts the timer back.",
                 file=file,
@@ -203,7 +203,7 @@ class SandboxPrerequisite:
             )
             + "\n"
         )
-        print(
+        cls._say(
             "Turned off: Night Shift (`night enable` and `night run` are refused).\n"
             "   Still affected: commands `ragon` runs in its sandbox outside the PyCharm terminal fail,\n"
             "   and jobs sent from other nodes are refused here.\n"
@@ -306,7 +306,7 @@ class SandboxPrerequisite:
         Returns:
             Path: `~/.cache/dreamference/apparmor/ragon-bwrap`.
         """
-        path = Path(os.path.expanduser("~/.cache/dreamference/apparmor")) / PROFILE_NAME
+        path = Path("~/.cache/dreamference/apparmor").expanduser() / PROFILE_NAME
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(cls.profile_text(bwrap))
         return path
@@ -319,7 +319,7 @@ class SandboxPrerequisite:
             Path: `~/.config/dreamference/sandbox.json`, present while the user has turned off
             what needs the sandbox.
         """
-        return Path(os.path.expanduser("~/.config/dreamference/sandbox.json"))
+        return Path("~/.config/dreamference/sandbox.json").expanduser()
 
     @classmethod
     def turned_off(cls) -> bool:
@@ -337,7 +337,7 @@ class SandboxPrerequisite:
 
     @classmethod
     def _ask(cls) -> str:
-        print(
+        cls._say(
             "\n⚠️  ragon's sandbox cannot start from an ordinary login on this machine.\n"
             "   Ubuntu lets only programs with an AppArmor profile create a user namespace\n"
             "   (kernel.apparmor_restrict_unprivileged_userns=1), and bubblewrap has none. Commands\n"
@@ -359,9 +359,15 @@ class SandboxPrerequisite:
             if answer == ANSWER_OFF:
                 return CHOICE_OFF
 
+    @staticmethod
+    def _say(text: str = "", file: TextIO | None = None) -> None:
+        """Writes one line to ``file`` (standard output by default), as ``print`` did."""
+        stream = file if file is not None else sys.stdout
+        stream.write(text + "\n")
+
     @classmethod
     def _refuse(cls, command: str, subcommand: str | None, reason: str) -> None:
-        print(
+        cls._say(
             f"❌ `ragon-admin {command} {subcommand}` needs bubblewrap's sandbox, which this machine "
             f"refuses from an ordinary login, and {reason}.\n"
             "   `ragon-admin host setup` fixes it (sudo asks for your password).",
@@ -387,7 +393,7 @@ class SandboxPrerequisite:
     @classmethod
     def _userns_restricted(cls) -> bool | None:
         try:
-            with open(USERNS_SYSCTL) as handle:
+            with Path(USERNS_SYSCTL).open() as handle:
                 return handle.read().strip() == SYSCTL_RESTRICTED
         except OSError:
             return None
