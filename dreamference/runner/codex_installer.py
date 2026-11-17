@@ -8,6 +8,7 @@ would put the unbranded agent back on screen with nothing to say it had happened
 
 import os
 import pathlib
+import sys
 from typing import Final
 
 from dreamference.runner.codex_branded_builder import CodexBrandedBuilder
@@ -49,12 +50,14 @@ class CodexInstaller:
         Returns:
             str: Absolute path of the folder, whether or not it exists yet.
         """
-        return os.environ.get("CODEX_HOME") or os.path.expanduser("~/.ragon")
+        return os.environ.get("CODEX_HOME") or str(pathlib.Path("~/.ragon").expanduser())
 
     @classmethod
     def is_installed(cls) -> bool:
-        """Checks that the branded build and the web commands its prompt names are installed and
-        match the current submodule, patches and sources.
+        """Checks that the build and the web commands its prompt names match the sources.
+
+        The branded build and the web commands must be installed and match the current
+        submodule, patches and sources.
 
         Returns:
             bool: True if no build is needed.
@@ -69,6 +72,6 @@ class CodexInstaller:
             bool: True if an up-to-date `ragon-codex` is installed afterwards.
         """
         if cls.is_installed():
-            print("✅ ragon is already built.")
+            sys.stdout.write("✅ ragon is already built.\n")
             return True
         return CodexBrandedBuilder.build()
