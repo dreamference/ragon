@@ -21,8 +21,8 @@ the old reading, every connect a destination.
 """
 
 import ipaddress
-import os
 import re
+from pathlib import Path
 from typing import Final
 
 from dreamference.audit.egress_trace import EgressTrace
@@ -320,7 +320,7 @@ class StraceParser:
         if not strings:
             return
         program, argv = strings[0], strings[1:]
-        name = os.path.basename(program)
+        name = Path(program).name
         trace.processes[name] = trace.processes.get(name, 0) + 1
         if name == PROGRAM_GIT or name.startswith("git-"):
             subcommand = (

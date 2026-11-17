@@ -21,8 +21,7 @@
   },
   "dreamference/audit/strace_parser.py": {
    "C901": 1,
-   "PLR0912": 1,
-   "PTH119": 1
+   "PLR0912": 1
   },
   "dreamference/audit/tui_session.py": {
    "C901": 1,
@@ -224,5 +223,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 417
+ "total": 416
 }
