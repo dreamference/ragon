@@ -128,11 +128,8 @@
   },
   "dreamference/swe_bench/swe_bench_command.py": {
    "ANN401": 1,
-   "D205": 1,
-   "E501": 2,
    "PLR0911": 1,
-   "PLR2004": 8,
-   "T201": 36
+   "PLR2004": 8
   },
   "dreamference/swe_bench/swe_bench_evaluator.py": {
    "C901": 2,

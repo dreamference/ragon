@@ -1,5 +1,6 @@
-"""`ragon-admin swe-bench {setup,build-images,smoke,run,eval,report,status,clean,pin-images,shard,merge}`
-(specs/DREAMFERENCE_RAGON_SWE_BENCH.md §3).
+"""`ragon-admin swe-bench {setup,build-images,smoke,run,eval,report,status,clean,pin-images,shard,merge}`.
+
+The commands are specified in specs/DREAMFERENCE_RAGON_SWE_BENCH.md §3.
 
 The parser and the dispatch live here so the CLI controller only registers and calls them.
 """
@@ -7,6 +8,7 @@ The parser and the dispatch live here so the CLI controller only registers and c
 import argparse
 import json
 import shutil
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -267,6 +269,11 @@ class SweBenchCommand:
             help="The shards' runs (copy a run made on another machine into this machine's runs directory first)",
         )
 
+    @staticmethod
+    def _say(text: str = "") -> None:
+        """Writes one line to standard output, as ``print`` did."""
+        sys.stdout.write(text + "\n")
+
     @classmethod
     def add_parser(cls, subparsers: Any) -> None:
         """Registers `swe-bench` and its subcommands.
@@ -359,7 +366,10 @@ class SweBenchCommand:
         run.add_argument(
             "--prompt",
             default=None,
-            help="The system prompt the agent starts with: default, offline (default without the web and email blocks), high-swe, or a custom one in $CODEX_HOME/system-prompts (default: the configured one)",
+            help=(
+                "The system prompt the agent starts with: default, offline (default without the web and email "
+                "blocks), high-swe, or a custom one in $CODEX_HOME/system-prompts (default: the configured one)"
+            ),
         )
         run.add_argument(
             "--mask",
@@ -370,7 +380,10 @@ class SweBenchCommand:
         run.add_argument(
             "--strip-names",
             action="store_true",
-            help="Take the files, modules, functions and classes the reference fix touches out of each issue's text before the agent sees it",
+            help=(
+                "Take the files, modules, functions and classes the reference fix touches out of each issue's "
+                "text before the agent sees it"
+            ),
         )
         run.add_argument(
             "--refine",
@@ -551,7 +564,7 @@ class SweBenchCommand:
             return cls.smoke(args.idle_minutes, args.ignore_open_sessions)
         if command == "run":
             if args.refine_version and not args.refine:
-                print("❌ --refine-version chooses the texts of --refine: give both.")
+                cls._say("❌ --refine-version chooses the texts of --refine: give both.")
                 return 2
             return SweBenchRunner.run(
                 dataset=args.dataset,
@@ -606,7 +619,7 @@ class SweBenchCommand:
             return cls.status()
         if command == "clean":
             return cls.clean(args.run, args.images)
-        print(USAGE)
+        cls._say(USAGE)
         return 2
 
     @classmethod
@@ -669,9 +682,9 @@ class SweBenchCommand:
             SweBenchDocker.run(["info", "--format", "{{.ServerVersion}}"], timeout=60).returncode
             != 0
         ):
-            print("❌ Docker is not answering.")
+            cls._say("❌ Docker is not answering.")
             return 1
-        print(
+        cls._say(
             f"🔧 Harness: swebench {swe_bench_settings.HARNESS_VERSION} in {SweBenchHarness.venv_dir()}"
         )
         if not SweBenchHarness.install():
@@ -679,14 +692,14 @@ class SweBenchCommand:
         meta = SweBenchHarness.download_dataset(dataset)
         if meta is None:
             return 1
-        print(
+        cls._say(
             f"✅ Dataset {meta.get('dataset')}: {meta.get('rows')} instances, revision {str(meta.get('revision'))[:12]}"
         )
         ids = [row["instance_id"] for row in SweBenchHarness.rows(dataset)]
         tags = SweBenchImages.tags(refresh=True)
         built = SweBenchImages.built_tags()
         with_image = [i for i in ids if SweBenchImages.image_for(i, tags, built)]
-        print(
+        cls._say(
             f"✅ {architecture} images: {len(with_image)} of {len(ids)} instances "
             f"({SweBenchRunner.image_source(dataset)}); the rest are not evaluable here"
             + (
@@ -697,29 +710,29 @@ class SweBenchCommand:
         )
         ragon_bin = SweBenchRuntime.installed_ragon()
         if not ragon_bin:
-            print("❌ ragon is not built: run `ragon-admin codex build` first.")
+            cls._say("❌ ragon is not built: run `ragon-admin codex build` first.")
             return 1
         runtime = SweBenchRuntime.ensure(ragon_bin, SweBenchHarness.tool("patchelf"))
         if runtime is None:
             return 1
-        print(
+        cls._say(
             f"✅ ragon runtime for the instance images: {SweBenchRuntime.directory()} ({runtime[:12]})"
         )
         disk = SweBenchEvaluator.disk_problem(settings)
         if disk:
-            print(f"⚠️  {disk}")
+            cls._say(f"⚠️  {disk}")
         if validate:
             wanted = instances or with_image
             wanted = wanted[:limit] if limit else wanted
-            print(
+            cls._say(
                 f"🔎 Validating {len(wanted)} instance(s): reference patch must resolve, a no-op patch must not..."
             )
             outcome = SweBenchEvaluator.validate(dataset, wanted, settings, force=force)
             good = [i for i, problem in outcome.items() if problem is None]
             for instance_id, problem in sorted(outcome.items()):
                 if problem:
-                    print(f"   {instance_id}: {problem}")
-            print(
+                    cls._say(f"   {instance_id}: {problem}")
+            cls._say(
                 f"✅ {len(good)} of {len(wanted)} validated; list: {SweBenchImages.validated_path()}"
             )
         return 0
@@ -738,7 +751,9 @@ class SweBenchCommand:
         """
         dataset = args.dataset
         if swe_bench_settings.SweBenchSettings.task_repo(dataset) is None:
-            print(f"❌ {dataset} has no task repository: its images are pulled (swe-bench setup).")  # noqa: T201 — CLI output
+            cls._say(
+                f"❌ {dataset} has no task repository: its images are pulled (swe-bench setup)."
+            )
             return 2
         if not SweBenchHarness.install() or SweBenchHarness.download_dataset(dataset) is None:
             return 1
@@ -746,20 +761,22 @@ class SweBenchCommand:
         if ids is None:
             return 2
         settings = swe_bench_settings.SweBenchSettings()
-        print(  # noqa: T201 — CLI output
+        cls._say(
             f"🔨 Building {len(ids)} image(s) in {swe_bench_settings.BUILDER_NAME} "
             f"(memory {settings.build_memory}, cores {settings.build_cpus or 'all'})..."
         )
         outcome = SweBenchImageBuilder.build(dataset, ids, settings, force=args.force)
         built = [i for i, problem in outcome.items() if problem is None]
-        print(f"✅ {len(built)} of {len(ids)} built; record: {SweBenchImageBuilder.record_path()}")  # noqa: T201 — CLI output
+        cls._say(
+            f"✅ {len(built)} of {len(ids)} built; record: {SweBenchImageBuilder.record_path()}"
+        )
         if args.validate and built:
             judged = SweBenchEvaluator.validate(dataset, built, settings, force=args.force)
             good = [i for i, problem in judged.items() if problem is None]
             for instance_id, problem in sorted(judged.items()):
                 if problem:
-                    print(f"   {instance_id}: {problem}")  # noqa: T201 — CLI output
-            print(  # noqa: T201 — CLI output
+                    cls._say(f"   {instance_id}: {problem}")
+            cls._say(
                 f"✅ {len(good)} of {len(built)} validated; list: {SweBenchImages.validated_path()}"
             )
         return 0 if len(built) == len(ids) else 1
@@ -782,7 +799,7 @@ class SweBenchCommand:
             wanted |= {line.strip() for line in lines if line.strip() and not line.startswith("#")}
         unknown = sorted(wanted - {row["instance_id"] for row in rows})
         if unknown:
-            print(f"❌ Not in {dataset}: {', '.join(unknown[:5])}")  # noqa: T201 — CLI output
+            cls._say(f"❌ Not in {dataset}: {', '.join(unknown[:5])}")
             return None
         languages = set(cls._ids(args.languages) or [])
         ids = sorted(
@@ -815,22 +832,24 @@ class SweBenchCommand:
             not SweBenchHarness.rows("verified")
             or SweBenchHarness.installed_version() != swe_bench_settings.HARNESS_VERSION
         ):
-            print("❌ Run `ragon-admin swe-bench setup` first.")
+            cls._say("❌ Run `ragon-admin swe-bench setup` first.")
             return 1
-        print(
+        cls._say(
             f"🔎 Smoke 1/2: grading {len(ids)} instances with their reference patch and with a no-op patch..."
         )
         outcome = SweBenchEvaluator.validate("verified", ids, settings, force=True)
         failed = {i: problem for i, problem in outcome.items() if problem}
         for instance_id, problem in failed.items():
-            print(f"   ❌ {instance_id}: {problem}")
+            cls._say(f"   ❌ {instance_id}: {problem}")
         if failed:
-            print("❌ Smoke failed: the grader cannot be trusted on this machine as it is.")
+            cls._say("❌ Smoke failed: the grader cannot be trusted on this machine as it is.")
             return 1
-        print(f"✅ All {len(ids)} resolve with the reference patch and none with the no-op patch.")
+        cls._say(
+            f"✅ All {len(ids)} resolve with the reference patch and none with the no-op patch."
+        )
 
         name = f"smoke-{time.strftime('%Y%m%d-%H%M%S')}"
-        print(f"🔎 Smoke 2/2: the agent on {ids[0]} (run {name})...")
+        cls._say(f"🔎 Smoke 2/2: the agent on {ids[0]} (run {name})...")
         code = SweBenchRunner.run(
             dataset="verified",
             instances=[ids[0]],
@@ -856,10 +875,10 @@ class SweBenchCommand:
         if ids[0] not in results:
             problems.append("the prediction was not graded")
         if problems:
-            print("❌ Smoke failed: " + "; ".join(problems) + ".")
+            cls._say("❌ Smoke failed: " + "; ".join(problems) + ".")
             return 1
         verdict = "resolved" if results[ids[0]].get("resolved") else "not resolved"
-        print(
+        cls._say(
             f"✅ The agent produced a prediction ({state.get('status')}, {state.get('wall_s')} s) "
             f"and it was graded: {verdict}."
         )
@@ -877,7 +896,7 @@ class SweBenchCommand:
             )
             + "\n"
         )
-        print("✅ Smoke passed; `ragon-admin swe-bench run` is unlocked.")
+        cls._say("✅ Smoke passed; `ragon-admin swe-bench run` is unlocked.")
         return 0
 
     # -- eval, report, status, clean -----------------------------------------------------------
@@ -886,7 +905,7 @@ class SweBenchCommand:
     def _store(cls, name: str | None) -> SweBenchRunStore | None:
         name = name or SweBenchRunStore.latest()
         if not name or SweBenchRunStore(name).manifest() is None:
-            print(
+            cls._say(
                 f"❌ No such run: {name or '(none yet)'}. `ragon-admin swe-bench status` lists them."
             )
             return None
@@ -914,7 +933,7 @@ class SweBenchCommand:
             int: 0 when the harness ran.
         """
         if image_chunk is not None and image_chunk < 0:
-            print(  # noqa: T201 — CLI output
+            cls._say(
                 f"❌ --image-chunk {image_chunk}: a number of instances, 0 for a whole repository."
             )
             return 1
@@ -927,7 +946,7 @@ class SweBenchCommand:
         available = NightShiftHost.mem_available_bytes()
         needed = settings.eval_workers * NightShiftHost.parse_size(settings.eval_memory) + 8 * GIB
         if available < needed:
-            print(
+            cls._say(
                 f"⚠️  Not graded: {available / GIB:.0f} GiB of memory is available and {settings.eval_workers} "
                 f"workers of {settings.eval_memory} plus the 8 GiB reserve need {needed / GIB:.0f}."
             )
@@ -961,13 +980,13 @@ class SweBenchCommand:
         resolved = sum(1 for result in results.values() if result.get("resolved"))
         if variant == DROP_TEST_HUNKS:
             changed = sum(1 for result in results.values() if result.get("dropped"))
-            print(
+            cls._say(
                 f"✅ {store.name}, test files dropped: {len(results)} graded, {resolved} resolved; "
                 f"{changed} patch(es) lost test files. `ragon-admin swe-bench report {store.name} --drop-test-hunks "
                 f"--against {store.name}` compares it with the plain grading."
             )
             return 0
-        print(
+        cls._say(
             f"✅ {store.name}: {len(results)} graded, {resolved} resolved. "
             f"`ragon-admin swe-bench report {store.name}` prints the report."
         )
@@ -998,7 +1017,7 @@ class SweBenchCommand:
             int: 0 when the shards were written.
         """
         if SweBenchShards.parse(f"1/{count}") is None:
-            print(f"❌ --shards {count}: from 1 to {swe_bench_shards.MAX_SHARDS}.")  # noqa: T201 — CLI output
+            cls._say(f"❌ --shards {count}: from 1 to {swe_bench_shards.MAX_SHARDS}.")
             return 1
 
         def read(path: Path) -> list[str] | None:
@@ -1009,7 +1028,7 @@ class SweBenchCommand:
                     if line.strip() and not line.startswith("#")
                 ]
             except OSError as error:
-                print(f"❌ {path}: {error}")  # noqa: T201 — CLI output
+                cls._say(f"❌ {path}: {error}")
                 return None
 
         ids = read(source)
@@ -1018,12 +1037,12 @@ class SweBenchCommand:
             return 1
         empty = [name for name, other in others.items() if not set(other or []) & set(ids)]
         if empty:
-            print(f"❌ --balance-by {', '.join(empty)}: no task of {source.name} is in it.")  # noqa: T201 — CLI output
+            cls._say(f"❌ --balance-by {', '.join(empty)}: no task of {source.name} is in it.")
             return 1
         rows = {row["instance_id"]: row for row in SweBenchHarness.rows(dataset)}
         unknown = sorted(set(ids) - set(rows))
         if not rows or unknown:
-            print(  # noqa: T201 — CLI output
+            cls._say(
                 f"❌ Not in {dataset}: "
                 f"{', '.join(unknown[:5]) or 'the dataset is not downloaded (swe-bench setup)'}."
             )
@@ -1036,7 +1055,7 @@ class SweBenchCommand:
             shard = [
                 line for line in path.read_text().splitlines() if line and not line.startswith("#")
             ]
-            print(f"✅ {path}: {len(shard)} tasks, {SweBenchShards.mix(shard, repos)}")  # noqa: T201 — CLI output
+            cls._say(f"✅ {path}: {len(shard)} tasks, {SweBenchShards.mix(shard, repos)}")
         return 0
 
     @classmethod
@@ -1056,9 +1075,9 @@ class SweBenchCommand:
         if store is None:
             return 1
         if against:
-            print(SweBenchReport.against(store, SweBenchRunStore(against), variant), end="")
+            sys.stdout.write(SweBenchReport.against(store, SweBenchRunStore(against), variant))
             return 0
-        print(SweBenchReport.write(store, variant), end="")
+        sys.stdout.write(str(SweBenchReport.write(store, variant)))
         return 0
 
     @classmethod
@@ -1069,42 +1088,42 @@ class SweBenchCommand:
             int: 0.
         """
         version = SweBenchHarness.installed_version()
-        print(
+        cls._say(
             f"Harness: {'swebench ' + version if version else 'not installed (ragon-admin swe-bench setup)'}"
         )
-        print(
+        cls._say(
             f"Smoke: {'passed' if SweBenchRunner.smoke_passed() else 'not passed with this harness version'}"
         )
-        print(
+        cls._say(
             f"Validated here: {len(SweBenchImages.validated())} instance(s); "
             f"rejected: {len(SweBenchImages.rejected())}"
         )
         for name in SweBenchRunStore.runs():
             summary = SweBenchReport.summary(SweBenchRunStore(name), details=False) or {}
-            print(
+            cls._say(
                 f"  {name}: {summary.get('finished', 0)} of {summary.get('validated', 0)} run, "
                 f"{summary.get('graded', 0)} graded, {summary.get('resolved', 0)} resolved"
             )
         images = SweBenchImages.local_images()
-        print(f"Images: {len(images)} instance image(s) present")
+        cls._say(f"Images: {len(images)} instance image(s) present")
         settings = swe_bench_settings.SweBenchSettings()
         if settings.image_cache_lists:
             cached = SweBenchImageCache.cached_images(settings)
             kept = sum(1 for entry in images if entry["image"] in cached)
-            print(  # noqa: T201 — CLI output
+            cls._say(
                 f"Image cache: {kept} of the {len(cached)} image(s) of {', '.join(settings.image_cache_lists)} "
                 f"present; floor {SweBenchImageCache.floor_bytes(settings) / 1024**3:.0f} GiB free"
             )
         swe_bench_settings.CACHE_DIR.mkdir(parents=True, exist_ok=True)
         free = shutil.disk_usage(swe_bench_settings.CACHE_DIR).free
-        print(
+        cls._say(
             f"Disk: {free / 1024**3:.0f} GiB free; reserve {swe_bench_settings.SweBenchSettings().disk_reserve}"
         )
         from dreamference.config import DreamferenceConfig
         from dreamference.vllm_server.model_gate import ModelGate
 
         for line in ModelGate.describe(DreamferenceConfig().vllm_host):
-            print(line)
+            cls._say(line)
         return 0
 
     @classmethod
@@ -1125,11 +1144,11 @@ class SweBenchCommand:
             SweBenchDocker.run(["rm", "-f", *containers], timeout=300)
         for run in [name] if name else SweBenchRunStore.runs():
             shutil.rmtree(SweBenchRunStore(run).directory / "scratch", ignore_errors=True)
-        print(
+        cls._say(
             f"🧹 Removed {len(containers)} container(s) and the scratch of {name or 'every run'}."
         )
         if images:
             present = [entry["image"] for entry in SweBenchImages.local_images()]
             removed = SweBenchImages.remove(present)
-            print(f"🧹 Removed {removed} of {len(present)} instance image(s).")
+            cls._say(f"🧹 Removed {removed} of {len(present)} instance image(s).")
         return 0
