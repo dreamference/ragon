@@ -26,6 +26,7 @@ needs Rust.
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Final
 
@@ -50,6 +51,12 @@ MISSING_NODE: Final[str] = "node"
 MISSING_NPM: Final[str] = "npm"
 MISSING_DPKG: Final[str] = "dpkg"
 USERNS_SYSCTL: Final[str] = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+
+
+def _say(text: str) -> None:
+    """Writes one line about the desktop toolchain for the person running the install, shown at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
 
 
 class DesktopInstaller:
@@ -137,10 +144,10 @@ class DesktopInstaller:
         if cls.has_rust():
             return True
         if not shutil.which("curl"):
-            print("❌ curl is needed to fetch rustup.")
+            _say("❌ curl is needed to fetch rustup.")
             return False
 
-        print("📦 Installing the Rust toolchain with rustup (this downloads a few hundred MB)...")
+        _say("📦 Installing the Rust toolchain with rustup (this downloads a few hundred MB)...")
         try:
             result = subprocess.run(
                 f"curl --proto '=https' --tlsv1.2 -sSf {RUSTUP_URL} | sh -s -- -y --no-modify-path",
@@ -149,10 +156,10 @@ class DesktopInstaller:
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            print(f"❌ rustup failed: {exc}")
+            _say(f"❌ rustup failed: {exc}")
             return False
         if result.returncode != 0:
-            print("❌ rustup exited non-zero.")
+            _say("❌ rustup exited non-zero.")
             return False
         return cls.has_rust()
 
@@ -291,16 +298,16 @@ class DesktopInstaller:
         if not binaries:
             return cls.userns_allowed()
         if not shutil.which("sudo") or not shutil.which("apparmor_parser"):
-            print(
+            _say(
                 "⚠️  Chromium's sandbox needs a user namespace, and this machine refuses one without an"
             )
-            print("   AppArmor profile; sudo or apparmor_parser is missing, so write it yourself:")
-            print(cls.apparmor_profile(binaries))
+            _say("   AppArmor profile; sudo or apparmor_parser is missing, so write it yourself:")
+            _say(cls.apparmor_profile(binaries))
             return False
-        print(
+        _say(
             "📦 Installing the AppArmor profile the desktop app's sandbox needs (sudo will ask for your password):"
         )
-        print(
+        _say(
             f"   sudo tee {APPARMOR_PROFILE_PATH} && sudo apparmor_parser -r -T -W {APPARMOR_PROFILE_PATH}"
         )
         try:
@@ -313,7 +320,7 @@ class DesktopInstaller:
                 check=False,
             )
             if written.returncode != 0:
-                print("❌ The profile was not written.")
+                _say("❌ The profile was not written.")
                 return False
             loaded = subprocess.run(
                 ["sudo", "apparmor_parser", "-r", "-T", "-W", APPARMOR_PROFILE_PATH],
@@ -321,7 +328,7 @@ class DesktopInstaller:
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            print(f"❌ Could not install the profile: {exc}")
+            _say(f"❌ Could not install the profile: {exc}")
             return False
         return loaded.returncode == 0
 
@@ -337,25 +344,26 @@ class DesktopInstaller:
         """
         missing = cls.missing_prerequisites(build)
         if not missing:
-            print(
+            _say(
                 "✅ The desktop build toolchain is complete (Node and npm"
                 + (" and dpkg)." if build else ").")
             )
             return True, missing
 
-        print("⚠️  The Ragon desktop toolchain is incomplete:")
+        _say("⚠️  The Ragon desktop toolchain is incomplete:")
         if MISSING_NODE in missing:
-            print(
-                f"   • Node.js {MIN_NODE_VERSION[0]}.{MIN_NODE_VERSION[1]} or later is needed (Electron, Vite and Forge run on it)."
+            _say(
+                f"   • Node.js {MIN_NODE_VERSION[0]}.{MIN_NODE_VERSION[1]} or later is needed "
+                "(Electron, Vite and Forge run on it)."
             )
         if MISSING_NPM in missing:
-            print("   • npm is needed to install the app's packages.")
+            _say("   • npm is needed to install the app's packages.")
         if MISSING_DPKG in missing:
-            print(
+            _say(
                 "   • dpkg and dpkg-deb are needed to make the .deb (a Debian or Ubuntu system has both)."
             )
         if MISSING_NODE in missing or MISSING_NPM in missing:
-            print(
+            _say(
                 "💡 Install Node.js from your distribution or nodejs.org, then `ragon-admin desktop install`."
             )
         return False, missing
