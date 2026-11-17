@@ -171,8 +171,7 @@
    "C901": 1,
    "PLR0911": 1,
    "PLR0912": 1,
-   "PLR0915": 1,
-   "T201": 33
+   "PLR0915": 1
   },
   "dreamference/vllm_server/diffusion_openai_service.py": {
    "BLE001": 3,

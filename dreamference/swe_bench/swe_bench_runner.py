@@ -11,6 +11,7 @@ import re
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timedelta
@@ -45,6 +46,19 @@ from dreamference.swe_bench.swe_bench_runtime import SweBenchRuntime
 from dreamference.swe_bench.swe_bench_shards import SweBenchShards
 from dreamference.vllm_server.model_gate import ModelGate
 from dreamference.vllm_server.model_gate_service import STATE_CLOSED
+
+
+def _say(text: str = "", *, flush: bool = False) -> None:
+    """Write one line of user output to stdout.
+
+    Args:
+        text: The line, without its newline.
+        flush: Flush stdout after the write.
+    """
+    sys.stdout.write(text + "\n")
+    if flush:
+        sys.stdout.flush()
+
 
 POLL_S: Final[float] = 5.0
 
@@ -308,16 +322,16 @@ class SweBenchRunner:
             index_runs = [job for job in jobs if job.startswith("an index run is active")]
             if not index_runs or len(index_runs) != len(jobs):
                 if waited:
-                    print(
+                    _say(
                         f"✅ The index run ended after {int(time.monotonic() - started)} s; going on.",
                         flush=True,
                     )
                 return not index_runs
             if time.monotonic() - started >= limit:
-                print(f"⚠️  Still active after {int(limit // 60)} min: {index_runs[0]}.", flush=True)
+                _say(f"⚠️  Still active after {int(limit // 60)} min: {index_runs[0]}.", flush=True)
                 return False
             if not waited:
-                print(
+                _say(
                     f"⏳ Waiting for {index_runs[0]} to end (up to {int(limit // 60)} min, "
                     f"checked every {poll} s)...",
                     flush=True,
@@ -657,10 +671,10 @@ class SweBenchRunner:
         """
         settings = settings or swe_bench_settings.SweBenchSettings()
         if code_index not in ARMS:
-            print(f"❌ --code-index is one of: {', '.join(ARMS)}.")
+            _say(f"❌ --code-index is one of: {', '.join(ARMS)}.")
             return 1
         if turn_end_compaction is not None and cls.turn_end_setting(turn_end_compaction) is None:
-            print(
+            _say(
                 f"❌ --turn-end-compaction {turn_end_compaction!r}: on, off or a percentage from 1 to 99."
             )
             return 1
@@ -668,36 +682,36 @@ class SweBenchRunner:
             from dreamference.config import DreamferenceConfig
 
             if DreamferenceConfig.parse_prompt_name(prompt) is None:
-                print(
+                _say(
                     f"❌ --prompt {prompt!r} is not a prompt's name (lowercase letters, digits, hyphens)."
                 )
                 return 1
             custom = cls.prompt_file(prompt)
             if custom is not None and not custom.is_file():
-                print(
+                _say(
                     f"❌ No prompt named {prompt}: it is not built in ({', '.join(BUILT_IN_PROMPTS)}) "
                     f"and {custom} does not exist."
                 )
                 return 1
         unknown_rules = sorted(set(task_rules or []) - set(TASK_RULES))
         if unknown_rules:
-            print(
+            _say(
                 f"❌ --task-rules takes: {', '.join(TASK_RULES)} (not {', '.join(unknown_rules)})."
             )
             return 1
         if not 0 <= strategy_hint <= len(DEFAULT_HINTS):
-            print(f"❌ --strategy-hint {strategy_hint}: 0 or 1 to {len(DEFAULT_HINTS)}.")  # noqa: T201 — CLI output
+            _say(f"❌ --strategy-hint {strategy_hint}: 0 or 1 to {len(DEFAULT_HINTS)}.")
             return 1
         unknown_hooks = sorted(set(hooks or []) - set(HOOK_SETS))
         if unknown_hooks:
-            print(f"❌ --hooks takes: {', '.join(HOOK_SETS)} (not {', '.join(unknown_hooks)}).")
+            _say(f"❌ --hooks takes: {', '.join(HOOK_SETS)} (not {', '.join(unknown_hooks)}).")
             return 1
         wanted_shard = SweBenchShards.parse(shard) if shard is not None else None
         if shard is not None and wanted_shard is None:
-            print(f"❌ --shard {shard!r}: I/K, the I-th of K shards (1 <= I <= K).")  # noqa: T201 — CLI output
+            _say(f"❌ --shard {shard!r}: I/K, the I-th of K shards (1 <= I <= K).")
             return 1
         if image_chunk is not None and image_chunk < 0:
-            print(  # noqa: T201 — CLI output
+            _say(
                 f"❌ --image-chunk {image_chunk}: a number of instances, 0 for a whole repository."
             )
             return 1
@@ -706,23 +720,23 @@ class SweBenchRunner:
             and not RUN_NAME.fullmatch(name)
             and SweBenchRunStore(name).manifest() is None
         ):
-            print(
+            _say(
                 f"❌ --name {name!r}: a run's name is letters, digits, '.', '_' and '-', because the grader "
                 "names Docker containers after it (join task rules with '-': n3-tests-v2-issue-v1)."
             )
             return 1
         if require_smoke and not cls.smoke_passed():
-            print(
+            _say(
                 "❌ No smoke has passed on this machine with this harness version: "
                 "run `ragon-admin swe-bench smoke` first."
             )
             return 1
         if not SweBenchHarness.rows(dataset):
-            print("❌ The dataset is not downloaded: run `ragon-admin swe-bench setup` first.")
+            _say("❌ The dataset is not downloaded: run `ragon-admin swe-bench setup` first.")
             return 1
         ragon_bin = SweBenchRuntime.installed_ragon()
         if not ragon_bin:
-            print("❌ ragon is not built: run `ragon-admin codex build` first.")
+            _say("❌ ragon is not built: run `ragon-admin codex build` first.")
             return 1
         from dreamference.config import DreamferenceConfig
 
@@ -731,7 +745,7 @@ class SweBenchRunner:
         store = SweBenchRunStore(name or cls.default_name())
         refusal = cls.resume_problem(store.manifest(), wanted_shard)
         if refusal:
-            print(f"❌ Run {store.name}: {refusal}")  # noqa: T201 — CLI output
+            _say(f"❌ Run {store.name}: {refusal}")
             return 1
         end = cls.until_time(until)
         # What a new run records; a resumed run keeps what its manifest says.
@@ -760,13 +774,13 @@ class SweBenchRunner:
         }
         with NightShiftQueue.runner_lock(NightShiftQueue.night_dir(), holder=LOCK_HOLDER) as held:
             if not held:
-                print(
+                _say(
                     f"⚠️  {NightShiftQueue.runner_holder() or 'Another run'} holds the runner lock."
                 )
                 return 1
             gateway = SweBenchDocker.ensure_network(swe_bench_settings.NETWORK_NAME)
             if gateway is None:
-                print(
+                _say(
                     f"❌ Could not create the internal Docker network {swe_bench_settings.NETWORK_NAME}."
                 )
                 return 1
@@ -788,11 +802,11 @@ class SweBenchRunner:
                     requested,
                 )
                 if reason:
-                    print(f"⚠️  Not run: {reason}.")
+                    _say(f"⚠️  Not run: {reason}.")
                     return 1
                 served = cls.host.served_model(vllm_host)
                 if served is None:
-                    print(f"⚠️  Not run: the model server at {vllm_host} is not answering.")
+                    _say(f"⚠️  Not run: the model server at {vllm_host} is not answering.")
                     return 1
                 parallel = cls._lane_parallel(vllm_host, settings, served)
                 runtime_hash = SweBenchRuntime.ensure(ragon_bin, SweBenchHarness.tool("patchelf"))
@@ -848,14 +862,14 @@ class SweBenchRunner:
         if hold.priority():
             # Nobody else can reach the model now: an open session cannot start a turn, so
             # the run only waits for requests already in flight to finish.
-            print(
+            _say(
                 "🚦 The model gate now refuses every request but this run's, until it ends "
                 "(`ragon-admin night pause` lets them through for a while).",
                 flush=True,
             )
             idle = 0
         elif hold.subnet and not hold.enforced:
-            print(
+            _say(
                 "💡 No model gate answers in front of the model server (it comes with the next "
                 "`ragon-admin server start`): this run waits for other requests, as before.",
                 flush=True,
@@ -888,7 +902,7 @@ class SweBenchRunner:
         metrics = cls.host.metrics(vllm_host) or {}
         max_parallel = cls.max_parallel(settings, served)
         if max_parallel < settings.max_parallel:
-            print(  # noqa: T201 — CLI output
+            _say(
                 f"💡 At most {max_parallel} instance(s) at once: the cap of {served[0]}'s registry entry "
                 f"(max_parallel is {settings.max_parallel}).",
                 flush=True,
@@ -916,12 +930,12 @@ class SweBenchRunner:
             try:
                 selected = cls.select(**selection)
             except (ValueError, OSError) as error:
-                print(f"❌ {error}")
+                _say(f"❌ {error}")
                 return None
             whole = list(selected)
             dataset = selection["dataset"]
             selected = cls.shard_of(dataset, whole, wanted_shard)
-            print(
+            _say(
                 f"🔎 Checking that {len(selected)} instance(s) grade correctly here "
                 "(reference patch resolves, no-op patch does not)..."
             )
@@ -946,7 +960,7 @@ class SweBenchRunner:
             manifest.get("runtime_hash") != runtime_hash
             or manifest.get("served_model") != served[0]
         ):
-            print(
+            _say(
                 f"❌ Run {store.name} was started with another ragon build or model "
                 f"({manifest.get('served_model')}); a run measures one configuration. Use a new --name."
             )
@@ -1034,7 +1048,7 @@ class SweBenchRunner:
                 hash_file.write(f"{code_hash}  {time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n")
             arm = manifest["code_index"]
             layer = "SCIP stores only" if arm == EXACT_TEXT else "universal layer"
-            print(
+            _say(
                 f"🗂️  Indexing {len(pending)} repositories on the host ({layer})...",
                 flush=True,
             )
@@ -1049,7 +1063,7 @@ class SweBenchRunner:
                 if pulled:
                     SweBenchImageCache.release([image], settings)
                 if record is None:
-                    print(
+                    _say(
                         f"❌ {instance_id} has no index after {cls.INDEX_RETRIES + 1} tries: "
                         "excluded from this run.",
                         flush=True,
@@ -1071,7 +1085,7 @@ class SweBenchRunner:
                     if arm == EXACT_TEXT
                     else ""
                 )
-                print(
+                _say(
                     f"   {instance_id}: index {'cached' if record['cached'] else 'built'} "
                     f"({record['seconds']:.0f} s{extra})",
                     flush=True,
@@ -1156,7 +1170,7 @@ class SweBenchRunner:
         lanes, lane_notes = cls.lanes(vllm_host, served, settings, parallel)
         relays = cls.lane_relays(gateway, lanes, model_url, vllm_host if remote else None)
         for note in lane_notes:
-            print(f"   {note}")
+            _say(f"   {note}")
         extra_env = cls._session_env(manifest, settings, run_prompt)
         # A custom prompt reaches the container's CODEX_HOME read-only: the agent cannot edit
         # the text a later session of the same instance would start from.
@@ -1178,7 +1192,7 @@ class SweBenchRunner:
         pending, left_out = cls._without_index(
             pending, indexes, manifest.get("code_index", CODE_INDEX_OFF) != CODE_INDEX_OFF
         )
-        print(
+        _say(
             f"🏁 SWE-bench run {store.name}: {len(pending)} instance(s) to run, "
             f"{len(finished)} done, {len(manifest.get('excluded', {}))} excluded"
             + left_out
@@ -1222,18 +1236,18 @@ class SweBenchRunner:
                 if evaluate:
                     cls._grade_group(store, manifest, settings, group, cycling and not stopped)
                 if stopped:
-                    print(f"⏸️  Stopped: {stopped}. Run the same command again to resume.")
+                    _say(f"⏸️  Stopped: {stopped}. Run the same command again to resume.")
                     break
         except KeyboardInterrupt:
             interrupted = True
-            print("\n⏸️  Interrupted; the instances that were running will run again on resume.")
+            _say("\n⏸️  Interrupted; the instances that were running will run again on resume.")
         finally:
             for relay in relays:
                 relay.close()
             if threading.current_thread() is threading.main_thread():
                 signal.signal(signal.SIGTERM, previous)
         done = len(store.finished())
-        print(
+        _say(
             f"✅ {done} of {len(manifest['instances'])} instance(s) have a prediction: "
             f"{store.predictions_path}"
         )
@@ -1662,7 +1676,7 @@ class SweBenchRunner:
         # Said once per kind of reason: the free-memory figure in it moves every poll.
         kind = re.sub(r"[\d.]+", "#", reason)
         if kind != waiting_for:
-            print(
+            _say(
                 f"⏳ {datetime.now():%H:%M} waiting to start the next instance: "
                 f"{reason.replace('the night run', 'this run')}.",
                 flush=True,
@@ -1682,13 +1696,13 @@ class SweBenchRunner:
                 },
             )
             run.store.append_prediction(run.instance_id, run.model_name, "")
-            print(f"   {run.instance_id}: error (the image could not be pulled)")
+            _say(f"   {run.instance_id}: error (the image could not be pulled)")
             return
         # The clock starts once the image is here: a pull is not the agent's time.
         run.started = time.time()
         run.deadline = run.started + run.settings.task_timeout_s
         status = run.run()
-        print(f"   {run.instance_id}: {status} ({int(time.time() - run.started)} s)", flush=True)
+        _say(f"   {run.instance_id}: {status} ({int(time.time() - run.started)} s)", flush=True)
 
     @classmethod
     def by_repository(
@@ -1725,7 +1739,7 @@ class SweBenchRunner:
             row["instance_id"]: str(row.get("repo", "")) for row in SweBenchHarness.rows(dataset)
         }
         selected = SweBenchShards.pick(whole, repos, *wanted)
-        print(  # noqa: T201 — CLI output
+        _say(
             f"🧩 Shard {wanted[0]} of {wanted[1]}: {len(selected)} of the {len(whole)} selected "
             f"instance(s), {SweBenchShards.mix(selected, repos)}."
         )
@@ -1777,7 +1791,7 @@ class SweBenchRunner:
             list[SweBenchRelay]: The relays opened.
         """
         if remote_host is not None:
-            print(  # noqa: T201 — CLI output
+            _say(
                 f"   The model server is another machine's ({remote_host}): reached through a relay "
                 "on the run's network gateway.",
                 flush=True,
@@ -1813,7 +1827,7 @@ class SweBenchRunner:
             for group in cls.image_chunks(instances, rows, chunk)
             if waiting.intersection(group)
         ]
-        print(  # noqa: T201 — CLI output
+        _say(
             f"🧩 Images one repository at a time, at most {chunk or 'all'} of one repository "
             f"on disk at once: {len(groups)} chunk(s) to run.",
             flush=True,
