@@ -29,6 +29,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 from typing import Final
@@ -108,6 +109,15 @@ DEFAULT_TEST_THREADS: Final[int] = 8
 UPSTREAM_TEMP_ROOT: Final[str] = "/tmp"
 
 
+def _say(message: str) -> None:
+    """Write one line of user output to stdout.
+
+    Args:
+        message: The text to show; a newline is appended.
+    """
+    sys.stdout.write(f"{message}\n")
+
+
 class CodexTestRunner:
     """Runs Codex's test suite on Ragon's patched tree, minus the tests that do not apply to it."""
 
@@ -176,17 +186,17 @@ class CodexTestRunner:
         target = CodexBrandedBuilder.host_target()
         expected = NEXTEST_SHA256.get(target)
         if expected is None:
-            print(f"❌ No pinned cargo-nextest {NEXTEST_VERSION} checksum for {target}.")
+            _say(f"❌ No pinned cargo-nextest {NEXTEST_VERSION} checksum for {target}.")
             return None
         pathlib.Path(TOOLS_DIR).mkdir(exist_ok=True, parents=True)
         archive = str(pathlib.Path(TOOLS_DIR, f"cargo-nextest-{NEXTEST_VERSION}.tar.gz"))
-        print(f"📥 Fetching cargo-nextest {NEXTEST_VERSION}...")
+        _say(f"📥 Fetching cargo-nextest {NEXTEST_VERSION}...")
         try:
             CodexBrandedBuilder.download(
                 NEXTEST_URL.format(version=NEXTEST_VERSION, target=target), archive
             )
         except OSError as exc:
-            print(f"❌ Could not download cargo-nextest: {exc}")
+            _say(f"❌ Could not download cargo-nextest: {exc}")
             return None
         digest = hashlib.sha256()
         with pathlib.Path(archive).open("rb") as handle:
@@ -194,7 +204,7 @@ class CodexTestRunner:
                 digest.update(chunk)
         if digest.hexdigest() != expected:
             pathlib.Path(archive).unlink()
-            print("❌ cargo-nextest failed its checksum; not using it.")
+            _say("❌ cargo-nextest failed its checksum; not using it.")
             return None
         with tarfile.open(archive) as tar:
             member = tar.getmember("cargo-nextest")
@@ -251,8 +261,8 @@ class CodexTestRunner:
                     target = str(pathlib.Path(workspace_dir, relative))
                     if not pathlib.Path(target).is_file():
                         # The test it belonged to was renamed or removed upstream.
-                        print(f"❌ codex-tests/snapshots/{relative} replaces no upstream snapshot.")
-                        print(
+                        _say(f"❌ codex-tests/snapshots/{relative} replaces no upstream snapshot.")
+                        _say(
                             "💡 Regenerate the overlay with `ragon-admin codex test --accept-snapshots`."
                         )
                         return False
@@ -268,7 +278,7 @@ class CodexTestRunner:
         )
         for patch in patches:
             if CodexBrandedBuilder.git_apply(source_dir, "--check", patch).returncode != 0:
-                print(
+                _say(
                     f"❌ codex-tests/patches/{pathlib.Path(patch).name} does not apply to the test export."
                 )
                 return False
@@ -365,11 +375,11 @@ class CodexTestRunner:
             for name in files
             if name.endswith(".pending-snap")
         ]
-        print(f"📸 {len(changed) - len(refused)} snapshot(s) accepted into codex-tests/snapshots/.")
+        _say(f"📸 {len(changed) - len(refused)} snapshot(s) accepted into codex-tests/snapshots/.")
         for relative in refused:
-            print(f"⚠️ Not accepted, differs from upstream by more than the name: {relative}")
+            _say(f"⚠️ Not accepted, differs from upstream by more than the name: {relative}")
         for relative in pending:
-            print(f"⚠️ Inline snapshot changed; edit it in codex-tests/patches/: {relative}")
+            _say(f"⚠️ Inline snapshot changed; edit it in codex-tests/patches/: {relative}")
         return 1 if refused or pending else 0
 
     @classmethod
@@ -394,10 +404,10 @@ class CodexTestRunner:
         free = shutil.disk_usage(BUILD_CACHE_DIR).free / 2**30
         needed = max(0.0, TEST_BUILD_DISK_GIB - size_gib(TEST_TARGET_DIR))
         if free < needed:
-            print(
+            _say(
                 f"❌ The upstream test build needs about {needed:.0f} GiB more disk; {free:.0f} GiB is free."
             )
-            print(f"💡 Free some space, or remove an old test build: {TEST_TARGET_DIR}")
+            _say(f"💡 Free some space, or remove an old test build: {TEST_TARGET_DIR}")
             return False
         return True
 
@@ -763,12 +773,12 @@ class CodexTestRunner:
                 "Run with TMPDIR=/tmp."
             )
         for warning in warnings:
-            print(warning)
+            _say(warning)
         with pathlib.Path(str(pathlib.Path(BUILD_CACHE_DIR, ".test.lock"))).open("w") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                print("❌ Another upstream test run is using the test tree.")
+                _say("❌ Another upstream test run is using the test tree.")
                 return 1
             if not CodexBrandedBuilder.prepare_source(TEST_SOURCE_DIR):
                 return 1
@@ -797,7 +807,7 @@ class CodexTestRunner:
                 )
                 status = cls.accept_snapshots(before) or status if accept_snapshots else status
                 for marker in sorted(set(cls.stray_project_markers()) - set(markers_before)):
-                    print(f"⚠️ A test left {marker} behind; remove it before the next run.")
+                    _say(f"⚠️ A test left {marker} behind; remove it before the next run.")
                 return status
             finally:
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -823,7 +833,7 @@ class CodexTestRunner:
         environment = cls.environment(rusty_v8, tools_dir, jobs, temp_dir, accept_snapshots)
         workspace_dir = str(pathlib.Path(TEST_SOURCE_DIR, "codex-rs"))
         skipped = sum(len(skips[kind]) for kind in skips)
-        print(
+        _say(
             f"🧪 Running the upstream tests on Ragon's tree ({skipped} skip-list entries, "
             f"see {os.path.relpath(SKIP_FILE, REPO_ROOT)})..."
         )
@@ -840,14 +850,14 @@ class CodexTestRunner:
                     cls.scoped(command, memory_max), cwd=workspace_dir, env=environment
                 )
                 if command[1] == CARGO_BUILD_SUBCOMMAND and code != 0:
-                    print(
+                    _say(
                         "❌ Building the upstream test binaries failed; see the cargo output above."
                     )
                     return code
                 status = status or code
         finally:
             os.umask(previous_umask)
-        print(
+        _say(
             "✅ Every upstream test that applies to Ragon passed."
             if status == 0
             else "❌ Some upstream tests failed; see the summary above."

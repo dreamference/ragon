@@ -121,8 +121,7 @@
   "dreamference/runner/codex_test_runner.py": {
    "PLR0911": 1,
    "PLR0913": 1,
-   "PLR1702": 3,
-   "T201": 18
+   "PLR1702": 3
   },
   "dreamference/runner/openhands_installer.py": {
    "BLE001": 3,
