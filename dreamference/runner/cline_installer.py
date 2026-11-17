@@ -7,11 +7,17 @@ and manages auto-installing the Cline VS Code extension (`saoudrizwan.claude-dev
 import logging
 import shutil
 import subprocess
+import sys
 
 LOGGER = logging.getLogger(__name__)
 
 # Official VS Code Marketplace extension ID for Cline
 CLINE_EXTENSION_ID: str = "saoudrizwan.claude-dev"
+
+
+def _say(message: str) -> None:
+    """Write one user-facing line to stdout."""
+    sys.stdout.write(f"{message}\n")
 
 
 class ClineInstaller:
@@ -71,22 +77,22 @@ class ClineInstaller:
             bool: True if extension is installed successfully.
         """
         if cls.is_cline_extension_installed():
-            print(f"✅ Cline extension ('{CLINE_EXTENSION_ID}') is already installed in VS Code.")
+            _say(f"✅ Cline extension ('{CLINE_EXTENSION_ID}') is already installed in VS Code.")
             return True
 
         code_bin = cls.get_vscode_executable()
         if not code_bin:
-            print("⚠️ VS Code CLI (`code` or `codium`) is not found in PATH.")
-            print("💡 Install VS Code or add `code` to PATH to use Cline.")
+            _say("⚠️ VS Code CLI (`code` or `codium`) is not found in PATH.")
+            _say("💡 Install VS Code or add `code` to PATH to use Cline.")
             return False
 
-        print(f"📦 Installing Cline VS Code extension ('{CLINE_EXTENSION_ID}')...")
+        _say(f"📦 Installing Cline VS Code extension ('{CLINE_EXTENSION_ID}')...")
         try:
             res = subprocess.run([code_bin, "--install-extension", CLINE_EXTENSION_ID], check=False)
             if res.returncode == 0 or cls.is_cline_extension_installed():
-                print("✅ Cline VS Code extension installed successfully!")
+                _say("✅ Cline VS Code extension installed successfully!")
                 return True
         except (OSError, subprocess.SubprocessError) as e:
-            print(f"⚠️ Failed to install Cline extension: {e}")
+            _say(f"⚠️ Failed to install Cline extension: {e}")
 
         return cls.is_cline_extension_installed()
