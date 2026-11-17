@@ -296,7 +296,8 @@ cd "${TESTBED:-/testbed}" || exit 3
 base=$(cat "$SCRATCH/base-tree")
 git cat-file -e "$base^{tree}" 2>/dev/null || base=HEAD
 git add -A >/dev/null 2>&1
-git -c core.quotePath=false diff --cached --numstat "$base" | awk -F'\t' '$1 == "-" && $2 == "-" {print $3}' > "$SCRATCH/binary-files"
+git -c core.quotePath=false diff --cached --numstat\
+    "$base" | awk -F'\t' '$1 == "-" && $2 == "-" {print $3}' > "$SCRATCH/binary-files"
 set -- .
 while IFS= read -r file; do set -- "$@" ":(exclude,literal)$file"; done < "$SCRATCH/binary-files"
 git -c core.fileMode=false diff --cached --no-color --no-ext-diff "$base" -- "$@" > "$SCRATCH/patch.diff"
