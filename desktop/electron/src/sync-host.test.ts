@@ -93,7 +93,9 @@ class Hub {
 
   push(command: Json): void {
     this.commands.push(command);
-    const held = this.held.shift();
+    // A held poll whose socket is gone (a closed client) would swallow the command: skip it.
+    let held = this.held.shift();
+    while (held && (held.destroyed || held.writableEnded)) held = this.held.shift();
     if (held) this.answer(held);
   }
 
@@ -399,7 +401,7 @@ describe("the sync host", () => {
     expect(r.hub.ack(1)).toMatchObject({ id: 1, ok: true });
     await until(() => r.received().some((message) => message.id === 7) && r.told.some((told) => told.text === "Approved from the phone"), 30000);
     expect(r.received()).toContainEqual({ id: 7, result: { decision: "accept" } });
-    expect(r.told).toContainEqual({ text: "Approved from the phone", thread: "t-1" });
+    await until(() => r.told.some((note) => note.text === "Approved from the phone" && note.thread === "t-1"));
 
     // Answered already: the policy has no request 7 waiting.
     r.hub.push({ id: 2, kind: "approve", thread: "t-1", request: 7, decision: "accept", by: "the phone" });
@@ -430,7 +432,7 @@ describe("the sync host", () => {
     expect(own().map((message) => message.method)).toEqual(["thread/resume", "turn/start"]);
     expect(own()[0].params.threadId).toBe("t-2");
     expect(own()[1].params).toEqual({ threadId: "t-2", input: [{ type: "text", text: "carry on", text_elements: [] }], model: "m-1" });
-    expect(r.told).toContainEqual({ text: "Message from the phone sent", thread: "t-2" });
+    await until(() => r.told.some((note) => note.text === "Message from the phone sent" && note.thread === "t-2"));
 
     // The turn runs now (turn/started): a second message steers it, with no resume.
     await until(() => r.hub.events.some((event) => event.message.method === "turn/started" && event.thread === "t-2"));
@@ -444,7 +446,7 @@ describe("the sync host", () => {
     await until(() => r.hub.ack(3) !== undefined);
     expect(r.hub.ack(3)).toMatchObject({ ok: true, thread: "t-2" });
     expect(own()[3]).toMatchObject({ method: "turn/interrupt", params: { threadId: "t-2", turnId: "turn-1" } });
-    expect(r.told).toContainEqual({ text: "Stopped from the phone", thread: "t-2" });
+    await until(() => r.told.some((note) => note.text === "Stopped from the phone" && note.thread === "t-2"));
     await until(() => r.hub.events.some((event) => event.message.method === "turn/completed" && event.thread === "t-2"));
     r.hub.push({ id: 4, kind: "stop", thread: "t-2", by: "the phone" });
     await until(() => r.hub.ack(4) !== undefined);
@@ -513,7 +515,7 @@ describe("the sync host", () => {
     // The answer reaches the scripted agent's log, and the notice is told, a moment after the ack on a slow host: await both.
     await until(() => r.received().some((message) => message.id === 14) && r.told.some((told) => told.text === "Declined from the phone"), 30000);
     expect(r.received()).toContainEqual({ id: 14, result: { decision: "decline" } });
-    expect(r.told).toContainEqual({ text: "Declined from the phone", thread: "t-1" });
+    await until(() => r.told.some((note) => note.text === "Declined from the phone" && note.thread === "t-1"));
     expect(r.told.some((told) => ["t-3", "t-5", "t-eph", "t-nowhere"].includes(told.thread ?? ""))).toBe(false);
   });
 
@@ -527,7 +529,7 @@ describe("the sync host", () => {
     const own = r.received().filter((message) => message.method === "thread/start" || message.method === "turn/start");
     expect(own[0].params.cwd).toBe("/home/user/proj");
     expect(own[1].params).toMatchObject({ threadId: "t-new-1", input: [{ type: "text", text: "hello there", text_elements: [] }] });
-    expect(r.told).toContainEqual({ text: "New thread from the phone", thread: "t-new-1" });
+    await until(() => r.told.some((note) => note.text === "New thread from the phone" && note.thread === "t-new-1"));
 
     r.hub.push({ id: 2, kind: "start", cwd: "/etc", text: "hi", by: "the phone" });
     await until(() => r.hub.ack(2) !== undefined);
