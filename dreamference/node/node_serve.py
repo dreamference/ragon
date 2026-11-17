@@ -67,6 +67,20 @@ AIRGAPPED_ON: Final[str] = "on"
 PARENT_SEGMENT: Final[str] = ".."
 
 
+def _say(message: str, stream=None, flush: bool = False) -> None:
+    """Prints one line of the node's output, to stderr when stream says so, flushed when asked.
+
+    The node's callers read these lines over the connection, so the text, the stream and the
+    flushing stay exactly as they were.
+
+    Args:
+        message: The line, without a trailing newline.
+        stream: The stream to write to; stderr when named, stdout otherwise.
+        flush: Flush the stream after the line.
+    """
+    print(message, file=stream, flush=flush)
+
+
 class NodeServe:
     """The node's side of a pairing."""
 
@@ -122,7 +136,7 @@ class NodeServe:
                 public_key, f"{cls.admin_executable()} node serve-job --key {tag}"
             )
         except (ValueError, IndexError):
-            print("❌ That is not a public key.")
+            _say("❌ That is not a public key.")
             return False
         NodeIdentity.ensure()
         path = cls.authorized_keys()
@@ -134,7 +148,7 @@ class NodeServe:
         staging.write_text("\n".join(kept) + "\n")
         Path(staging).chmod(0o600)
         Path(staging).replace(path)
-        print(f"✅ Authorised for Ragon node operations only ({path}).")
+        _say(f"✅ Authorised for Ragon node operations only ({path}).")
         return True
 
     @classmethod
@@ -185,7 +199,7 @@ class NodeServe:
         if code is None:
             code = cls.routed_operation(operation, arguments)
         if code is None:
-            print(REFUSAL, file=sys.stderr)
+            _say(REFUSAL, stream=sys.stderr)
             return 2
         return code
 
@@ -206,13 +220,13 @@ class NodeServe:
         if operation in ADMIN_COMMANDS and not arguments:
             return cls.run_admin(ADMIN_COMMANDS[operation])
         if operation == INFO_OPERATION and not arguments:
-            print(json.dumps(cls.info()))
+            _say(json.dumps(cls.info()))
             return 0
         if operation == SET_MODEL_OPERATION and len(arguments) == 1:
             return cls.set_model(arguments[0])
         if operation == UNPAIR_OPERATION and not arguments:
             removed = cls.unauthorize(key_tag or "")
-            print("unpaired" if removed else "no such key")
+            _say("unpaired" if removed else "no such key")
             return 0 if removed else 1
         return None
 
@@ -288,15 +302,15 @@ class NodeServe:
 
         match = GIT_PATH.fullmatch(path)
         if not match or PARENT_SEGMENT in path:
-            print(
+            _say(
                 "ragon-admin node serve-job: only a job repository (jobs/<name>.git) can be pushed to or fetched from.",
-                file=sys.stderr,
+                stream=sys.stderr,
             )
             return 2
         repo = NodeJob.repo_path(match.group(1))
         if not repo.is_dir():
             if service != GIT_RECEIVE:
-                print("ragon-admin node serve-job: no such job repository.", file=sys.stderr)
+                _say("ragon-admin node serve-job: no such job repository.", stream=sys.stderr)
                 return 2
             repo.parent.mkdir(parents=True, exist_ok=True)
             created = subprocess.run(
@@ -306,9 +320,9 @@ class NodeServe:
                 check=False,
             )
             if created.returncode != 0:
-                print(
+                _say(
                     f"could not create the job repository: {created.stderr.strip()[-200:]}",
-                    file=sys.stderr,
+                    stream=sys.stderr,
                 )
                 return 1
         return subprocess.run([service, str(repo)], check=False).returncode
@@ -331,7 +345,7 @@ class NodeServe:
         code = cls.job_by_id(operation, arguments)
         if code is not None:
             return code
-        print(REFUSAL, file=sys.stderr)
+        _say(REFUSAL, stream=sys.stderr)
         return 2
 
     @classmethod
@@ -352,9 +366,9 @@ class NodeServe:
             request = json.loads(base64.urlsafe_b64decode(encoded.encode()))
             record = NodeJob.submit(request, cls.admin_executable())
         except (ValueError, TypeError, RecursionError) as error:
-            print(f"❌ The node refused the job: {error}", file=sys.stderr)
+            _say(f"❌ The node refused the job: {error}", stream=sys.stderr)
             return 2
-        print(
+        _say(
             f"🚀 Job {record['id']} started on {socket.gethostname()} "
             f"(memory {record['memory']}, time {record['time']}, network "
             f"{'off' if record['airgapped'] == AIRGAPPED_ON else 'on'}).",
@@ -390,7 +404,7 @@ class NodeServe:
                 )
             }
             listed["prune_after"] = NodeJob.prune_after(settled)
-            print(json.dumps(listed))
+            _say(json.dumps(listed))
         return 0
 
     @classmethod
@@ -419,7 +433,7 @@ class NodeServe:
             return NodeJob.send_out(job_id)
         if operation == JOB_CANCEL and len(arguments) == 1:
             cancelled = NodeJob.cancel(job_id)
-            print("cancelled" if cancelled else "the job is not running")
+            _say("cancelled" if cancelled else "the job is not running")
             return 0 if cancelled else 1
         if (
             operation == JOB_LOGS
@@ -448,15 +462,15 @@ class NodeServe:
 
         if not MODEL_KEY.fullmatch(model_key) or model_key not in ModelMatrixRegistry.MATRIX:
             known = ", ".join(sorted(ModelMatrixRegistry.MATRIX))
-            print(
+            _say(
                 f"❌ {model_key!r} is not a model this node knows. Its models: {known}",
-                file=sys.stderr,
+                stream=sys.stderr,
             )
             return 2
         if ModelMatrixRegistry.is_diffusion(model_key):
-            print(
+            _say(
                 f"❌ {model_key} is a diffusion model and cannot be a node's main model.",
-                file=sys.stderr,
+                stream=sys.stderr,
             )
             return 2
         code = cls.run_admin(["main-model", "set", model_key])
@@ -538,5 +552,5 @@ class NodeServe:
                 check=False,
             ).returncode
         except OSError as error:
-            print(f"❌ could not run ragon-admin: {error}", file=sys.stderr)
+            _say(f"❌ could not run ragon-admin: {error}", stream=sys.stderr)
             return 1

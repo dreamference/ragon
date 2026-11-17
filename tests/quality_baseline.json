@@ -112,9 +112,6 @@
   "dreamference/node/node_pairing.py": {
    "T201": 20
   },
-  "dreamference/node/node_serve.py": {
-   "T201": 16
-  },
   "dreamference/node/node_service_file.py": {
    "ANN401": 2,
    "D205": 1,
@@ -233,5 +230,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 439
+ "total": 423
 }
