@@ -46,6 +46,12 @@ RELEASE_PREFIX: Final[str] = "release="
 RELEASE_REPO: Final[str] = os.environ.get("RAGON_RELEASE_REPO", "dreamference/ragon")
 
 
+def _say(text: str) -> None:
+    """Writes one line for the person building the bundle, and shows it at once."""
+    sys.stdout.write(text + "\n")
+    sys.stdout.flush()
+
+
 class FleetBundle:
     """Builds the folder `install.sh --from` installs."""
 
@@ -82,7 +88,7 @@ class FleetBundle:
             version = __version__
         empty = version is not None and not version.strip().lstrip("v")
         if empty or (source not in ("this", "release") and not source.startswith("release=")):
-            print(
+            _say(
                 f"❌ --from is `this` or `release[=X.Y.Z]` (a release needs a version after `=`), not `{source}`."
             )
             return None
@@ -102,7 +108,7 @@ class FleetBundle:
         binaries = Path(INSTALL_DIR) / "bin"
         missing = [name for name in REQUIRED_BINARIES if not (binaries / name).is_file()]
         if missing:
-            print(
+            _say(
                 f"❌ {', '.join(missing)} not installed here; run `ragon-admin codex build` first."
             )
             return None
@@ -153,7 +159,7 @@ class FleetBundle:
             check=False,
         )
         if wheel.returncode != 0 or not any(staging.glob("dreamference-*.whl")):
-            print(f"❌ Could not build a wheel of this checkout: {wheel.stderr.strip()[-300:]}")
+            _say(f"❌ Could not build a wheel of this checkout: {wheel.stderr.strip()[-300:]}")
             return None
         (staging / "VERSION").write_text(f"this-{digest[:12]}\n")
         shutil.rmtree(bundle, ignore_errors=True)
@@ -169,12 +175,12 @@ class FleetBundle:
             this machine's `gh` login, or None.
         """
         if shutil.which("gh") is None:
-            print("❌ --from release downloads with `gh`, which is not installed here.")
+            _say("❌ --from release downloads with `gh`, which is not installed here.")
             return None
         try:
             tag = cls._download(version)
         except OSError as error:
-            print(f"❌ {error}")
+            _say(f"❌ {error}")
             return None
         return Path(BUNDLE_ROOT) / f"bundle-{tag}"
 

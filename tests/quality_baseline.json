@@ -92,9 +92,6 @@
    "D205": 2,
    "PLR1702": 1
   },
-  "dreamference/node/fleet_bundle.py": {
-   "T201": 5
-  },
   "dreamference/node/node_job.py": {
    "BLE001": 2,
    "C901": 1,
@@ -230,5 +227,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 423
+ "total": 418
 }
