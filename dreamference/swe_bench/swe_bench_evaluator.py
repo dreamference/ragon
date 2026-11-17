@@ -8,6 +8,7 @@ what it found.
 
 import json
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Final
 
@@ -42,6 +43,11 @@ class SweBenchEvaluator:
         Path: Where the harness runs for validation.
         """
         return swe_bench_settings.CACHE_DIR / "validation"
+
+    @staticmethod
+    def _say(text: str) -> None:
+        """Write one line to standard output."""
+        sys.stdout.write(text + "\n")
 
     @classmethod
     def disk_problem(cls, settings: "swe_bench_settings.SweBenchSettings") -> str | None:
@@ -380,11 +386,11 @@ class SweBenchEvaluator:
                 else None
             )
             if disk:
-                print(f"⚠️  {instance_id} is not graded yet: {disk}")
+                cls._say(f"⚠️  {instance_id} is not graded yet: {disk}")
                 continue
             digest = SweBenchDocker.ensure_image(image) if image else None
             if digest is None or instance_id not in rows:
-                print(f"⚠️  {instance_id} is not graded yet: its image is not available")
+                cls._say(f"⚠️  {instance_id} is not graded yet: its image is not available")
                 continue
             digests[instance_id] = digest
             gradable.append(prediction)
