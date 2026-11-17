@@ -12,9 +12,6 @@
    "PLR0915": 2,
    "PLR1702": 2
   },
-  "dreamference/audit/egress_verdict.py": {
-   "D205": 1
-  },
   "dreamference/audit/preview_page.py": {
    "D105": 2,
    "D107": 1,
@@ -227,5 +224,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 418
+ "total": 417
 }
