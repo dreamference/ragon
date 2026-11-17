@@ -52,6 +52,9 @@ DEFAULT_IDENTITY: Final[str] = ".ssh/id_ed25519"
 PERMISSION_DENIED: Final[str] = "permission denied"
 
 
+ADDRESS_KEY: Final = "address"
+
+
 class NodePairing:
     """Creates the key, installs it on a node, and builds the SSH commands that use it."""
 
@@ -257,6 +260,7 @@ class NodePairing:
             Optional[str]: The address to connect to, or None when the node is not on the network.
         """
         node_id = record["node"]
+        cls._drop_stored_address(record)
         settled = cls._overlay_address(record) or cls._reused(node_id)
         if record.get("address_fixed") or settled is not None:
             return record["address"] if record.get("address_fixed") else settled
@@ -268,6 +272,7 @@ class NodePairing:
             for node in NodeBrowser.browse():
                 if node.get("node") == node_id:
                     address = node["address"]
+                    cls._refresh_name(record, node.get("name"))
                     break
             if address is not None or time.monotonic() >= deadline:
                 break
@@ -278,15 +283,39 @@ class NodePairing:
                     flush=True,
                 )
             time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
-        if address is not None and address != record.get("address"):
-            record["address"] = address
-            if cls.record_path(node_id).is_file():
-                cls._save(record)
         cls._resolved[node_id] = {
             "address": address,
             "until": time.monotonic() + cls.resolve_reuse_s,
         }
         return address
+
+    @classmethod
+    def _drop_stored_address(cls, record: dict[str, Any]) -> None:
+        """Rewrites a record that still carries an address, without it (a fixed one stays).
+
+        The owner's rule (2026-10-10): an address is never stored for a node; the node id is
+        browsed for at use time. Records written before carry one.
+
+        Args:
+            record: The paired node's record, changed in place.
+        """
+        if record.get("address_fixed") or record.pop("address", None) is None:
+            return
+        if cls.record_path(record["node"]).is_file():
+            cls._save(record)
+
+    @classmethod
+    def _refresh_name(cls, record: dict[str, Any], name: str | None) -> None:
+        """Takes the name the node advertises now, so a renamed node stays paired.
+
+        Args:
+            record: The paired node's record, changed in place.
+            name: The name the browse showed for the node's id.
+        """
+        if name and name != record.get("name"):
+            record["name"] = name
+            if cls.record_path(record["node"]).is_file():
+                cls._save(record)
 
     @classmethod
     def overlay_domain(cls) -> str:
@@ -354,7 +383,7 @@ class NodePairing:
         if address is None:
             raise LookupError(
                 f"{record.get('name') or record['node']} is not on the network: no node answering a "
-                f"browse carries its id, so its remembered address ({record['address']}) was not tried."
+                f"browse carries its id, so no address was tried."
             )
         return ["ssh", *cls.ssh_options(record), f"{record['user']}@{address}", request]
 
@@ -388,7 +417,7 @@ class NodePairing:
             if (
                 isinstance(record, dict)
                 and NODE_ID.fullmatch(str(record.get("node") or ""))
-                and record.get("address")
+                and record.get("name")
             ):
                 records.append(record)
         return sorted(records, key=lambda record: record.get("name", ""))
@@ -410,7 +439,7 @@ class NodePairing:
         for record in cls.paired():
             if wanted in (
                 record.get("name", "").lower(),
-                record["address"].lower(),
+                str(record.get("address") or "").lower(),
                 record["node"].lower(),
             ) or (
                 len(wanted) >= MIN_PARTIAL_ID_LENGTH and record["node"].lower().startswith(wanted)
@@ -455,7 +484,7 @@ class NodePairing:
         record = {
             "node": target["node"],
             "name": target["name"],
-            "address": target["address"],
+            "address": target["address"],  # for this pairing only; `_save` never writes it
             "user": user,
             "ssh_port": ssh_port,
         }
@@ -563,7 +592,6 @@ class NodePairing:
         record = {
             "node": lines[0],
             "name": lines[1],
-            "address": session.host,
             "user": session.user,
             "ssh_port": session.ssh_port,
         }
@@ -582,7 +610,9 @@ class NodePairing:
             )
             return None
         cls._save(record)
-        check = cls.run(record, "info")
+        # The machine is not advertised (that is why it was paired over a login): this one check
+        # goes to the host the login used, and nothing of it is stored.
+        check = cls.run(dict(record, address=session.host, address_fixed=True), "info")
         try:
             info = json.loads(check.stdout) if check.returncode == 0 else {}
         except ValueError:
@@ -780,6 +810,8 @@ class NodePairing:
 
     @classmethod
     def _save(cls, record: dict[str, Any]) -> None:
+        if not record.get("address_fixed"):
+            record = {key: value for key, value in record.items() if key != ADDRESS_KEY}
         path = cls.record_path(record["node"])
         path.parent.mkdir(parents=True, exist_ok=True)
         staging = path.with_name(f".{path.name}.{os.getpid()}.tmp")

@@ -104,7 +104,6 @@ def test_pairing_over_a_session_pins_the_host_key_authorises_the_key_and_saves_t
     assert record == {
         "node": NODE,
         "name": "spark-1",
-        "address": "spark-1.local",
         "user": "owner",
         "ssh_port": 22,
     }
@@ -526,3 +525,45 @@ def test_info_reports_unknown_memory_when_it_cannot_be_read(monkeypatch):
     monkeypatch.setattr(NodeServe, "linger", classmethod(lambda cls: None))
     info = NodeServe.info()
     assert info["mem_available"] is None and info["mem_total"] is None
+
+
+def _browse_shows(monkeypatch, *nodes):
+    from dreamference.node.node_browser import NodeBrowser
+
+    monkeypatch.setattr(NodeBrowser, "browse", classmethod(lambda cls, *a, **k: list(nodes)))
+    monkeypatch.setattr(NodePairing, "resolve_wait_s", 0.0)
+    NodePairing.forget_resolved()
+
+
+def test_a_record_with_an_ip_is_resolved_by_id_and_rewritten_without_the_address(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    record = {"node": NODE, "name": "spark-1", "address": "192.0.2.7", "user": "owner"}
+    NodePairing.nodes_dir().mkdir(parents=True)
+    NodePairing.record_path(NODE).write_text(json.dumps(record))
+    _browse_shows(monkeypatch, {"node": NODE, "name": "spark-1", "address": "192.0.2.99"})
+    assert NodePairing.resolve(record) == "192.0.2.99"
+    assert "address" not in json.loads(NodePairing.record_path(NODE).read_text())
+
+
+def test_a_renamed_node_stays_paired_and_the_record_takes_its_new_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    NodePairing.nodes_dir().mkdir(parents=True)
+    NodePairing.record_path(NODE).write_text(
+        json.dumps({"node": NODE, "name": "old-name", "user": "owner"})
+    )
+    _browse_shows(monkeypatch, {"node": NODE, "name": "new-name", "address": "192.0.2.5"})
+    record = NodePairing.find("old-name")
+    assert record is not None
+    command = NodePairing.ssh_command(record, "info")
+    assert "owner@192.0.2.5" in command
+    saved = json.loads(NodePairing.record_path(NODE).read_text())
+    assert saved["name"] == "new-name" and "address" not in saved
+
+
+def test_a_record_written_by_add_carries_no_address(advertised, pairing):
+    pairing["info"] = answer(0, json.dumps({"node": NODE}))
+    assert NodePairing.add("spark-1", user="owner")
+    saved = json.loads(NodePairing.record_path(NODE).read_text())
+    assert "address" not in saved and saved["node"] == NODE and saved["name"] == "spark-1"

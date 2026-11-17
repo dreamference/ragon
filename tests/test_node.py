@@ -1354,7 +1354,7 @@ def test_every_connection_uses_the_pairing_key_and_the_pinned_host_key(monkeypat
     assert f"UserKnownHostsFile={NodePairing.known_hosts()}" in options
     assert "ConnectTimeout=10" in options  # a node that is gone fails in seconds
     assert "accept-new" in " ".join(NodePairing.ssh_options(record, accept_new=True))
-    for name in ("spark-2", "SPARK-2", "192.168.50.106", "2222-bbbb", "2222"):
+    for name in ("spark-2", "SPARK-2", "2222-bbbb", "2222"):
         assert NodePairing.find(name)["node"] == "2222-bbbb", name
     assert NodePairing.find("spark-9") is None and NodePairing.find("222") is None
 
@@ -1377,8 +1377,8 @@ def test_a_paired_node_is_followed_to_its_new_address(monkeypatch):
             ]
         ),
     )
-    assert NodePairing.find("spark-2")["address"] == "192.168.50.200"
-    assert NodePairing.paired()[0]["address"] == "192.168.50.200"
+    assert "address" not in NodePairing.find("spark-2")
+    assert "address" not in NodePairing.paired()[0]  # never stored; the id is browsed for
 
 
 def test_managing_a_node_needs_the_pairing_and_sends_one_operation(monkeypatch, capsys):
@@ -2752,6 +2752,8 @@ def test_a_paired_node_serving_the_same_model_is_a_lane_and_every_other_is_named
                 "ssh_port": 22,
             }
         )
+    seen = {f"{n}{n}{n}{n}-x": f"192.168.50.10{n + 4}" for n in (3, 4, 5)}
+    seen["2222-bbbb"] = "192.168.50.106"
     # Every node is reached where the browse shows it, never at its recorded address.
     monkeypatch.setattr(
         NodeBrowser,
@@ -2761,7 +2763,7 @@ def test_a_paired_node_serving_the_same_model_is_a_lane_and_every_other_is_named
                 {
                     "name": record["name"],
                     "node": record["node"],
-                    "address": record["address"],
+                    "address": seen[record["node"]],
                     "port": "8000",
                 }
                 for record in NodePairing.paired()
@@ -2777,7 +2779,7 @@ def test_a_paired_node_serving_the_same_model_is_a_lane_and_every_other_is_named
 
     def run(cls, record, request, capture=True, input_text=None):
         asked.append((record["name"], request))
-        info = answers.get(record["address"])
+        info = answers.get(seen[record["node"]])
         return (
             subprocess.CompletedProcess([], 0, json.dumps(info) + "\n", "")
             if info
@@ -3430,7 +3432,7 @@ def test_every_connection_resolves_the_node_on_the_network_first(monkeypatch):
         ),
     )
     assert NodePairing.ssh_command(record, "info")[-2] == "owner@192.168.50.200"
-    assert NodePairing.paired()[0]["address"] == "192.168.50.200"  # remembered for next time
+    assert "address" not in NodePairing.paired()[0]  # not remembered
     # Other nodes answer and this one does not: it is off, and its old address may be another
     # machine's by now. Nothing is tried.
     NodePairing.forget_resolved()
@@ -3453,7 +3455,7 @@ def test_every_connection_resolves_the_node_on_the_network_first(monkeypatch):
     assert (
         answer.returncode == 255
         and "not on the network" in answer.stderr
-        and "192.168.50.200" in answer.stderr
+        and "no address was tried" in answer.stderr
     )
     with pytest.raises(LookupError):
         NodePairing.ssh_command(record, "info")
@@ -3501,9 +3503,7 @@ def test_every_connection_resolves_the_node_on_the_network_first(monkeypatch):
     )
     fixed = dict(record, address="10.10.0.2", address_fixed=True)
     assert NodePairing.ssh_command(fixed, "info")[-2] == "owner@10.10.0.2"
-    assert (
-        NodePairing.paired()[0]["address"] == "192.168.50.200"
-    )  # a fixed address is not remembered
+    assert "address" not in NodePairing.paired()[0]  # a fixed address is not remembered
 
 
 def test_a_lane_and_a_job_follow_the_node_to_its_new_address(monkeypatch):
