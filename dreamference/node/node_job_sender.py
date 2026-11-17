@@ -15,6 +15,7 @@ import json
 import os
 import random
 import subprocess
+import sys
 import tarfile
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,15 @@ IPV6_SEPARATOR: Final[str] = ":"
 SSH_CONNECTION_LOST: Final[int] = 255
 COMMAND_SEPARATOR: Final[str] = "--"
 OPTION_ASSIGN: Final[str] = "="
+
+
+def _say(text: str) -> None:
+    """Write one line of user output to stdout.
+
+    Args:
+        text: The line, without its newline.
+    """
+    sys.stdout.write(text + "\n")
 
 
 class NodeJobSender:
@@ -208,29 +218,29 @@ class NodeJobSender:
         """
         cwd = cwd or str(Path.cwd())
         if not command:
-            print("❌ Nothing to run: ragon-admin node run <node> -- <command>")
+            _say("❌ Nothing to run: ragon-admin node run <node> -- <command>")
             return 1
         record = NodePairing.find(name)
         if record is None:
-            print(f"❌ {name} is not a paired node. Pair once with: ragon-admin node add {name}")
+            _say(f"❌ {name} is not a paired node. Pair once with: ragon-admin node add {name}")
             return 1
         top = cls._git(cwd, "rev-parse", "--show-toplevel")
         head = cls._git(cwd, "rev-parse", "HEAD")
         if top.returncode != 0 or head.returncode != 0:
-            print("❌ A job runs in a git repository at a commit, and this directory has none.")
+            _say("❌ A job runs in a git repository at a commit, and this directory has none.")
             return 1
         repo, commit = top.stdout.strip(), head.stdout.strip()
         if cls._git(repo, "status", "--porcelain").stdout.strip():
-            print("⚠️  Uncommitted changes are not sent: the job runs at HEAD.")
+            _say("⚠️  Uncommitted changes are not sent: the job runs at HEAD.")
         request = cls.compose(
             repo, commit, command, memory, time_limit, test, gpu, setup, out, binds
         )
         try:
             url = cls.git_url(record, request["repo"])
         except LookupError as error:
-            print(f"❌ {error}")
+            _say(f"❌ {error}")
             return 1
-        print(
+        _say(
             f"📤 Sending {commit[:10]} to {record['name']} as job {request['id']} "
             f"(memory {request['memory']}, time {request['time']})..."
         )
@@ -240,14 +250,14 @@ class NodeJobSender:
             env=cls.git_environment(record),
         )
         if pushed.returncode != 0:
-            print(f"❌ Could not push to the node: {pushed.stderr.strip()[-300:]}")
+            _say(f"❌ Could not push to the node: {pushed.stderr.strip()[-300:]}")
             return 1
         cls._remember(request["id"], record, repo, request["repo"])
         payload = base64.urlsafe_b64encode(json.dumps(request).encode()).decode()
         code = NodePairing.run(record, f"job-submit {payload}", capture=False).returncode
         if code == SSH_CONNECTION_LOST:
             # The stream was lost, not the job: it carries on there.
-            print(
+            _say(
                 f"⚠️  The connection to {record['name']} ended; the job carries on there. "
                 f"`ragon-admin node logs {request['id']}` shows it, `node fetch` brings it back."
             )
@@ -323,24 +333,24 @@ class NodeJobSender:
         if name:
             found = NodePairing.find(name)
             if found is None:
-                print(f"❌ {name} is not a paired node.")
+                _say(f"❌ {name} is not a paired node.")
                 return 1
             records = [found]
         else:
             records = NodePairing.paired()
         if not records:
-            print("No node is paired (`ragon-admin node add <node>`).")
+            _say("No node is paired (`ragon-admin node add <node>`).")
             return 0
         for record in records:
             answer = NodePairing.run(record, "job-list")
             if answer.returncode != 0:
-                print(f"{record['name']}: not answering ({answer.stderr.strip()[-100:]})")
+                _say(f"{record['name']}: not answering ({answer.stderr.strip()[-100:]})")
                 continue
             listed = [
                 json.loads(line) for line in answer.stdout.splitlines() if line.startswith("{")
             ]
             if not listed:
-                print(f"{record['name']}: no jobs")
+                _say(f"{record['name']}: no jobs")
             for job in listed:
                 branch = f"  branch {job['branch']}" if job.get("branch") else ""
                 out = f"  {job['out_files']} --out file(s)" if job.get("out_files") else ""
@@ -349,7 +359,7 @@ class NodeJobSender:
                     if job.get("prune_after")
                     else ""
                 )
-                print(
+                _say(
                     f"{record['name']}  {job['id']}  {job['status']:<9}  {' '.join(job['command'])[:60]}"
                     f"{branch}{out}{prune}"
                 )
@@ -393,7 +403,7 @@ class NodeJobSender:
         sent = cls._sent(job_id)
         record = NodePairing.find(sent["node"]) if sent else None
         if record is None:
-            print(f"❌ No job {job_id} was sent from this machine to a node that is still paired.")
+            _say(f"❌ No job {job_id} was sent from this machine to a node that is still paired.")
             return 1
         return NodePairing.run(record, request, capture=capture).returncode
 
@@ -403,7 +413,7 @@ class NodeJobSender:
         record = NodePairing.find(sent["node"], browse=False) if sent else None
         if sent is None or record is None:
             if not quiet_when_absent:
-                print(
+                _say(
                     f"❌ No job {job_id} was sent from this machine to a node that is still paired."
                 )
             return False
@@ -412,7 +422,7 @@ class NodeJobSender:
             url = cls.git_url(record, sent["slug"])
         except LookupError as error:
             if not quiet_when_absent:
-                print(f"❌ {error}")
+                _say(f"❌ {error}")
             return False
         fetched = SafeGit.run(
             ["fetch", "--quiet", url, f"refs/heads/{branch}:refs/heads/{branch}"],
@@ -421,11 +431,11 @@ class NodeJobSender:
         )
         if fetched.returncode != 0:
             if not quiet_when_absent:
-                print(
+                _say(
                     f"No result branch for {job_id}: the job changed no file, or has not finished."
                 )
             return False
-        print(f"📥 The job's changes are on branch {branch} (review: git diff HEAD...{branch}).")
+        _say(f"📥 The job's changes are on branch {branch} (review: git diff HEAD...{branch}).")
         return True
 
     @classmethod
@@ -461,9 +471,9 @@ class NodeJobSender:
         process.wait()
         if process.returncode != 0 or not count:
             if not quiet_when_absent:
-                print(f"No --out files for {job_id}.")
+                _say(f"No --out files for {job_id}.")
             return False
-        print(f"📥 {count} --out file(s) of {job_id} are in {target}")
+        _say(f"📥 {count} --out file(s) of {job_id} are in {target}")
         return True
 
     @classmethod

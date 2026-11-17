@@ -98,8 +98,7 @@
    "ANN401": 1,
    "BLE001": 1,
    "PLR0911": 1,
-   "PLR0913": 2,
-   "T201": 20
+   "PLR0913": 2
   },
   "dreamference/node/node_pairing.py": {
    "T201": 20
