@@ -40,11 +40,6 @@
    "E501": 1,
    "T201": 17
   },
-  "dreamference/chat/gmail_credentials.py": {
-   "PTH111": 1,
-   "PTH118": 1,
-   "T201": 1
-  },
   "dreamference/chat/gmail_search_service.py": {
    "C901": 1
   },
@@ -137,19 +132,11 @@
    "PLR1702": 2,
    "PLR2004": 3
   },
-  "dreamference/runner/codex_installer.py": {
-   "D205": 1,
-   "PTH111": 1,
-   "T201": 1
-  },
   "dreamference/runner/codex_test_runner.py": {
    "PLR0911": 1,
    "PLR0913": 1,
    "PLR1702": 3,
    "T201": 18
-  },
-  "dreamference/runner/continue_installer.py": {
-   "T201": 6
   },
   "dreamference/runner/openhands_installer.py": {
    "BLE001": 3,
@@ -216,11 +203,6 @@
    "PLR1702": 3,
    "T201": 4
   },
-  "dreamference/vllm_server/sandbox_prerequisite.py": {
-   "PTH111": 2,
-   "PTH123": 1,
-   "T201": 10
-  },
   "dreamference/vllm_server/vllm_server_manager.py": {
    "C901": 3,
    "PLR0911": 1,
@@ -254,5 +236,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 475
+ "total": 450
 }

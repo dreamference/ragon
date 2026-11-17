@@ -7,10 +7,18 @@ and manages auto-installing the Continue extension (`Continue.continue`).
 import logging
 import shutil
 import subprocess
+import sys
+from typing import Final
 
 LOGGER = logging.getLogger(__name__)
 
-CONTINUE_EXTENSION_ID: str = "Continue.continue"
+CONTINUE_EXTENSION_ID: Final[str] = "Continue.continue"
+
+
+def _say(message: str) -> None:
+    """Writes one line of installer progress for the person running the command, shown at once."""
+    sys.stdout.write(message + "\n")
+    sys.stdout.flush()
 
 
 class ContinueInstaller:
@@ -70,26 +78,26 @@ class ContinueInstaller:
             bool: True if extension is installed successfully.
         """
         if cls.is_continue_extension_installed():
-            print(
+            _say(
                 f"✅ Continue extension ('{CONTINUE_EXTENSION_ID}') is already installed in VS Code."
             )
             return True
 
         code_bin = cls.get_vscode_executable()
         if not code_bin:
-            print("⚠️ VS Code CLI (`code` or `codium`) is not found in PATH.")
-            print("💡 Install VS Code or add `code` to PATH to use Continue.")
+            _say("⚠️ VS Code CLI (`code` or `codium`) is not found in PATH.")
+            _say("💡 Install VS Code or add `code` to PATH to use Continue.")
             return False
 
-        print(f"📦 Installing Continue extension ('{CONTINUE_EXTENSION_ID}')...")
+        _say(f"📦 Installing Continue extension ('{CONTINUE_EXTENSION_ID}')...")
         try:
             res = subprocess.run(
                 [code_bin, "--install-extension", CONTINUE_EXTENSION_ID], check=False
             )
             if res.returncode == 0 or cls.is_continue_extension_installed():
-                print("✅ Continue extension installed successfully!")
+                _say("✅ Continue extension installed successfully!")
                 return True
         except (OSError, subprocess.SubprocessError) as e:
-            print(f"⚠️ Failed to install Continue extension: {e}")
+            _say(f"⚠️ Failed to install Continue extension: {e}")
 
         return cls.is_continue_extension_installed()
