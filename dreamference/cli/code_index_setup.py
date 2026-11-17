@@ -413,5 +413,4 @@ class CodeIndexSetup:
                 )
                 continue
             ok = cls.install_tool(tool) and ok
-        ok = cls.install_npm_indexers() and ok
-        return ok
+        return cls.install_npm_indexers() and ok

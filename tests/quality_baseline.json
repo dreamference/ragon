@@ -37,8 +37,7 @@
    "PLR0911": 1,
    "PLR1702": 2,
    "PLR2004": 3,
-   "PQ001": 1,
-   "RET504": 1
+   "PQ001": 1
   },
   "dreamference/cli/dreamference_cli_controller.py": {
    "C901": 4,
@@ -207,5 +206,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 257
+ "total": 256
 }
