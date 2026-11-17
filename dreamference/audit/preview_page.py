@@ -100,7 +100,9 @@ class PreviewPage:
         self._server.server_close()
 
     def __enter__(self) -> "PreviewPage":
+        """Enter the context: start the page."""
         return self.start()
 
     def __exit__(self, *exc: object) -> None:
+        """Leave the context: stop the page."""
         self.stop()
