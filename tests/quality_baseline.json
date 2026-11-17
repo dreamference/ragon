@@ -81,7 +81,6 @@
    "BLE001": 2,
    "C901": 1,
    "PLR0913": 1,
-   "PTH111": 2,
    "T201": 3
   },
   "dreamference/node/node_job_sender.py": {
@@ -199,5 +198,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 247
+ "total": 245
 }

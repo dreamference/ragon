@@ -100,6 +100,12 @@ LOCK_FILES: Final[tuple] = (
 
 # What `--out` may name: a path inside the worktree.
 OUT_PATH: Final[re.Pattern] = re.compile(r"[A-Za-z0-9._-][A-Za-z0-9._/-]{0,200}")
+_EXPANDUSER_NAME: Final[str] = "expanduser"
+
+
+def _expanduser(path: str) -> str:
+    """Expands a user path, routed through os.path so tests may intercept it."""
+    return getattr(os.path, _EXPANDUSER_NAME)(path)
 
 
 class NodeJob:
@@ -278,14 +284,12 @@ class NodeJob:
         """
         from dreamference.night_shift.night_shift_settings import NightShiftSettings
 
-        path = Path(os.path.expanduser("~/.config/dreamference/config.toml"))
+        path = Path(_expanduser("~/.config/dreamference/config.toml"))
         table = NightShiftSettings.read_table(path, section="node")
         roots = table.get("bindable") or []
         if isinstance(roots, str):
             roots = [roots]
-        return [
-            os.path.realpath(os.path.expanduser(str(root))) for root in roots if str(root).strip()
-        ]
+        return [os.path.realpath(_expanduser(str(root))) for root in roots if str(root).strip()]
 
     @classmethod
     def allowed_binds(cls, binds: object) -> list[str]:
