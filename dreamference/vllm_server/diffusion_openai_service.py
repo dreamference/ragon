@@ -19,6 +19,7 @@ import ast
 import json
 import os
 import pathlib
+import sys
 import threading
 import time
 import uuid
@@ -70,6 +71,12 @@ DIFFUSION_SAMPLER_DEFAULTS: Final[dict[str, Any]] = {
 
 DEFAULT_MAX_NEW_TOKENS: Final[int] = 256
 MAX_MAX_NEW_TOKENS: Final[int] = 2048
+
+
+def _say(message: str) -> None:
+    """Writes one house-style log line: the [diffusion] prefix, flushed to stdout."""
+    sys.stdout.write(f"[diffusion] {message}\n")
+    sys.stdout.flush()
 
 
 class DiffusionModelRunner:
@@ -354,7 +361,7 @@ def build_handler(runner: "DiffusionModelRunner") -> type:
         server_version = "RagonDiffusion/1.0"
 
         def log_message(self, fmt: str, *args: object) -> None:
-            print(f"[diffusion] {self.address_string()} {fmt % args}", flush=True)
+            _say(f"{self.address_string()} {fmt % args}")
 
         def _json(self, status: int, payload: dict[str, Any]) -> None:
             body = json.dumps(payload).encode("utf-8")
@@ -471,7 +478,7 @@ def main() -> None:  # pragma: no cover - the container entrypoint
     threading.Thread(target=runner.load, name="diffusion-load", daemon=True).start()
 
     server = ThreadingHTTPServer((BIND_ADDRESS, port), build_handler(runner))
-    print(f"[diffusion] serving {model_id} on :{port}", flush=True)
+    _say(f"serving {model_id} on :{port}")
     server.serve_forever()
 
 
