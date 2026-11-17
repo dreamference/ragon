@@ -26,8 +26,7 @@
   "dreamference/audit/tui_session.py": {
    "C901": 1,
    "PLR1702": 3,
-   "PLR2004": 3,
-   "RUF001": 1
+   "PLR2004": 3
   },
   "dreamference/chat/gmail_search_service.py": {
    "C901": 1
@@ -202,5 +201,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 252
+ "total": 251
 }

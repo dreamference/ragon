@@ -162,7 +162,7 @@ class TuiSession:
         stage = "start"
         replied = False
         try:
-            if wait(lambda: ">_ Ragon" in text() and "›" in text(), READY_TIMEOUT_S):
+            if wait(lambda: ">_ Ragon" in text() and "\u203a" in text(), READY_TIMEOUT_S):
                 stage = "composer"
                 pump(SETTLE_AFTER_READY_S)
                 child.send(" ".join(prompt.split()))
