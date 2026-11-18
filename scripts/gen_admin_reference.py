@@ -9,6 +9,7 @@ CLI: rerun this after adding or changing a subcommand and commit the result.
 
 import argparse
 import os
+import pathlib
 import sys
 from typing import Final, List
 
@@ -16,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dreamference.cli.dreamference_cli_controller import DreamferenceCLIController  # noqa: E402
 
-OUTPUT: Final[str] = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "admin.md")
+OUTPUT: Final[str] = str(pathlib.Path(__file__).resolve().parent.parent / "docs" / "admin.md")
 
 HEADER: Final[str] = """# `ragon-admin` reference
 
@@ -47,7 +48,12 @@ def option_rows(parser: argparse.ArgumentParser) -> List[str]:
         if text and not text.endswith((".", ")")):
             text += "."
         if action.choices and not isinstance(action.choices, dict):
-            text += (" " if text else "") + "One of: " + ", ".join(f"`{c}`" for c in action.choices) + "."
+            text += (
+                (" " if text else "")
+                + "One of: "
+                + ", ".join(f"`{c}`" for c in action.choices)
+                + "."
+            )
         rows.append(f"| {name} | {text} |")
     return rows
 
@@ -66,7 +72,11 @@ def render(parser: argparse.ArgumentParser, path: List[str], depth: int, out: Li
             full = path + [name]
             out.append(f"{'#' * min(depth, 4)} `ragon-admin {' '.join(full)}`\n")
             if helps.get(name):
-                out.append(f"{helps[name].strip()}.\n" if not helps[name].strip().endswith(".") else f"{helps[name].strip()}\n")
+                out.append(
+                    f"{helps[name].strip()}.\n"
+                    if not helps[name].strip().endswith(".")
+                    else f"{helps[name].strip()}\n"
+                )
             if aliases:
                 out.append(f"Alias: {', '.join(f'`{a}`' for a in aliases)}.\n")
             rows = option_rows(sub)
