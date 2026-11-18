@@ -31,6 +31,7 @@ SVG = ROOT / "images" / "rbrb.svg"
 BADGE = ROOT / "images" / "rbrb-badge.svg"
 README = ROOT / "README.md"
 LATEST = re.compile(r"(<!-- rbrb:latest -->).*?(<!-- /rbrb:latest -->)", re.S)
+PARTIAL_NOTE_KEY = "partial_note"  # point key holding a hand-measured partial week
 
 WIDTH, HEIGHT = 640, 460
 LEFT, RIGHT, TOP, BOTTOM = 56, 24, 44, 56
@@ -226,11 +227,13 @@ def ingest(data: dict[str, Any], export: dict[str, Any], counts: dict[str, int])
         or "Complete week, generated tokens only (method_version 0): the export carries no prompt or cached token counts yet, so no price-weighted point exists.",
         "method_version": 0,
     }
-    if old and "partial_note" in old:
-        point["partial_note"] = old["partial_note"]
+    if old and PARTIAL_NOTE_KEY in old:
+        point[PARTIAL_NOTE_KEY] = old[PARTIAL_NOTE_KEY]
     elif old and old.get("to") != str(sunday):
-        point["partial_note"] = old["notes"]  # the hand-measured partial week, kept as a note
-    data["points"] = sorted([p for p in data["points"] if p["week"] != week] + [point], key=lambda p: p["week"])
+        point[PARTIAL_NOTE_KEY] = old["notes"]  # the hand-measured partial week, kept as a note
+    data["points"] = sorted(
+        [p for p in data["points"] if p["week"] != week] + [point], key=lambda p: p["week"]
+    )
     # The band stays undecided until the 28-day rework rate exists (spec 2.8, condition 4): never "met" without it.
     data["quality"] = [
         {
@@ -262,7 +265,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="exit 1 if the committed svg is stale")
     parser.add_argument("--ingest", metavar="PATH", help="upsert the week of a weekly export file")
-    parser.add_argument("--closed-week", action="store_true", help="print the newest closed ISO week")
+    parser.add_argument(
+        "--closed-week", action="store_true", help="print the newest closed ISO week"
+    )
     args = parser.parse_args(argv)
     if args.closed_week:
         print(closed_week(datetime.datetime.now(datetime.timezone.utc).date()))
