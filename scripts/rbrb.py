@@ -33,6 +33,10 @@ SVG = ROOT / "images" / "rbrb.svg"
 BADGE = ROOT / "images" / "rbrb-badge.svg"
 README = ROOT / "README.md"
 LATEST = re.compile(r"(<!-- rbrb:latest -->).*?(<!-- /rbrb:latest -->)", re.S)
+PARTIAL_NOTE_KEY = "partial_note"  # point key holding a hand-measured partial week
+TASKS_KEY = "ragon_tasks"  # point key holding the landed-task counts
+SHARE_AXIS_MAX_STEPS = 5  # share axis: at most this many ticks
+TASK_AXIS_MAX_STEPS = 4  # landed-task axis: at most this many ticks
 
 WIDTH, HEIGHT = 640, 656
 LEFT, RIGHT, TOP = 56, 24, 44
@@ -77,7 +81,7 @@ def revert_percent(entry: dict[str, Any], who: str) -> float:
 def axis(highest: float) -> tuple[float, int]:
     """The top of the share axis and its tick step: max(10, 1.5 x highest), rounded up to a clean step, at most 100."""
     target = max(10.0, 1.5 * highest)
-    step = next((s for s in STEPS if target / s <= 5), STEPS[-1])
+    step = next((s for s in STEPS if target / s <= SHARE_AXIS_MAX_STEPS), STEPS[-1])
     return min(100.0, float(-(-target // step) * step)), step
 
 
@@ -145,7 +149,7 @@ def _panel(
 def count_axis(highest: int) -> tuple[int, int]:
     """The top and the tick step of the landed-task axis: at least 5, at most four steps, a clean step."""
     target = max(5, highest)
-    step = next((c for c in (1, 2, 5, 10, 20, 25, 50, 100, 200, 500) if target / c <= 4), 1000)
+    step = next((c for c in (1, 2, 5, 10, 20, 25, 50, 100, 200, 500) if target / c <= TASK_AXIS_MAX_STEPS), 1000)
     return -(-target // step) * step, step
 
 
@@ -229,9 +233,9 @@ def render(data: dict[str, Any]) -> str:
             f'<polyline class="tg" points="{path}" fill="none" stroke-width="1.5" stroke-dasharray="2 3"/>'
         )
     landed = [
-        (x_of(p["week"]), int(p["ragon_tasks"]["landed"]), bool(p.get("provisional")))
+        (x_of(p["week"]), int(p[TASKS_KEY]["landed"]), bool(p.get("provisional")))
         for p in points
-        if "ragon_tasks" in p
+        if TASKS_KEY in p
     ]
     count_top, count_step = count_axis(max((c for _, c, _ in landed), default=0))
     out += _bars(TASKS_TOP, TASKS_H, count_top, count_step, landed)
@@ -393,10 +397,10 @@ def ingest(
             "when the week is closed."
         )
         point["provisional"] = True
-    if old and "partial_note" in old:
-        point["partial_note"] = old["partial_note"]
+    if old and PARTIAL_NOTE_KEY in old:
+        point[PARTIAL_NOTE_KEY] = old[PARTIAL_NOTE_KEY]
     elif old and old.get("to") != str(sunday):
-        point["partial_note"] = old["notes"]  # the hand-measured partial week, kept as a note
+        point[PARTIAL_NOTE_KEY] = old["notes"]  # the hand-measured partial week, kept as a note
     data["points"] = sorted(
         [p for p in data["points"] if p["week"] != week] + [point], key=lambda p: p["week"]
     )
