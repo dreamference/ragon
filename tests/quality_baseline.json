@@ -62,8 +62,7 @@
   "dreamference/night_shift/night_shift_remote.py": {
    "E501": 1,
    "PLR0911": 1,
-   "PLR1702": 1,
-   "T201": 7
+   "PLR1702": 1
   },
   "dreamference/night_shift/night_shift_task_run.py": {
    "ANN401": 1,
@@ -193,5 +192,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 229
+ "total": 222
 }

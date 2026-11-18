@@ -46,6 +46,19 @@ OP_STATUS: Final[str] = "night-status"
 OP_CANCEL: Final[str] = "night-cancel"
 RUNNING: Final[str] = "running"
 
+# The newline a printed line ends with: `print`'s default.
+LINE_END: Final[str] = "\n"
+
+
+def _say(text: str, error: bool = False) -> None:
+    """Write one line of the node's answer to stdout, or one of the refusal's to stderr.
+
+    Args:
+        text: The line, without its newline.
+        error: Write to stderr, the refusal's channel, rather than stdout.
+    """
+    (sys.stderr if error else sys.stdout).write(f"{text}{LINE_END}")
+
 
 class NightShiftRemote:
     """Both halves: the sender's hand-off and collection, and the node's `night-*` operations."""
@@ -327,9 +340,9 @@ class NightShiftRemote:
                 request = json.loads(base64.urlsafe_b64decode(arguments[0].encode()))
                 reply = cls.accept(request)
             except (ValueError, TypeError, RecursionError) as error:
-                print(json.dumps({"error": str(error)}))
+                _say(json.dumps({"error": str(error)}))
                 return 2
-            print(json.dumps(reply))
+            _say(json.dumps(reply))
             return 0
         if (
             operation in ("night-status", "night-cancel", "night-fetched")
@@ -338,10 +351,10 @@ class NightShiftRemote:
         ):
             task = NightShiftQueue.read(NightShiftQueue.night_dir(), arguments[0])
             if task is None or not task.get("remote"):
-                print(json.dumps({"error": "no such task from another node"}))
+                _say(json.dumps({"error": "no such task from another node"}))
                 return 1
             if operation == OP_STATUS:
-                print(
+                _say(
                     json.dumps(
                         {
                             "status": task.get("status"),
@@ -352,16 +365,16 @@ class NightShiftRemote:
                 )
                 return 0
             if operation == OP_CANCEL:
-                print(json.dumps({"status": cls.cancel(arguments[0])}))
+                _say(json.dumps({"status": cls.cancel(arguments[0])}))
                 return 0
             NightShiftQueue.update(
                 NightShiftQueue.night_dir(),
                 arguments[0],
                 lambda record: record.setdefault("fetched", NightShiftQueue.now()),
             )
-            print(json.dumps({"status": task.get("status")}))
+            _say(json.dumps({"status": task.get("status")}))
             return 0
-        print(REFUSAL, file=sys.stderr)
+        _say(REFUSAL, error=True)
         return 2
 
     @classmethod
