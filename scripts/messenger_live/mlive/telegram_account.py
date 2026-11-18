@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import subprocess
 from pathlib import Path
 from collections.abc import Callable
@@ -24,6 +25,12 @@ from .paths import cache_dir, config_dir, private_dir, telegram_dir
 from .tdlib import TdClient, TdError, ensure_library, update_chat_id
 
 DEVICE_NAME: Final = "ragon test"
+
+
+def _say(text: str) -> None:
+    """Write text to stdout and flush it."""
+    sys.stdout.write(text)
+    sys.stdout.flush()
 
 
 class NeedsOwner(Exception):
@@ -99,9 +106,8 @@ def write_qr(link: str, png: Path) -> None:
     `TERMINAL` (`-`) draws it in the terminal instead, for the owner at a shell on the node.
     """
     if png == TERMINAL:
-        print(
-            "\nScan this with Telegram → Settings → Devices → Link Desktop Device (renewed every 30 s):\n",
-            flush=True,
+        _say(
+            "\nScan this with Telegram → Settings → Devices → Link Desktop Device (renewed every 30 s):\n"
         )
         subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "2", link], check=True)
         return
