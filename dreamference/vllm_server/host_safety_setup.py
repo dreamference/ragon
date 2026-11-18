@@ -131,15 +131,15 @@ class HostSafetySetup:
         """
         steps = cls.steps()
         if not steps:
-            print(
+            cls._say(
                 "✅ Host setup: nothing to do. This machine has what a model load and ragon's sandbox need."
             )
             return True
-        print(f"⚠️  Host setup: {len(steps)} thing(s) to fix on this machine.\n")
+        cls._say(f"⚠️  Host setup: {len(steps)} thing(s) to fix on this machine.\n")
         for number, step in enumerate(steps, 1):
             cls._describe(number, step)
         if any(STEP_COMMANDS_KEY in step for step in steps):
-            print(
+            cls._say(
                 "💡 `ragon-admin host setup` runs the commands listed (sudo asks for your password)."
             )
         return False
@@ -775,7 +775,8 @@ class HostSafetySetup:
             text: The line.
         """
         try:
-            print(text, flush=True)
+            sys.stdout.write(f"{text}\n")
+            sys.stdout.flush()
         except OSError:  # BrokenPipeError among them
             with contextlib.suppress(OSError):
                 sys.stdout = Path(os.devnull).open("w")  # noqa: SIM115  # stays open: it is stdout now

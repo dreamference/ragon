@@ -160,8 +160,7 @@
   },
   "dreamference/vllm_server/host_safety_setup.py": {
    "ANN401": 2,
-   "PLR1702": 3,
-   "T201": 4
+   "PLR1702": 3
   },
   "dreamference/vllm_server/vllm_server_manager.py": {
    "C901": 3,
@@ -195,5 +194,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 237
+ "total": 233
 }
