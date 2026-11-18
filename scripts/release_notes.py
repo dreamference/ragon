@@ -82,7 +82,7 @@ def extract(text: str) -> List[str]:
             f"found {len(rules)} line(s) consisting of '---' alone; the description is the text "
             "between the first two"
         )
-    body = lines[rules[0] + 1:rules[1]]
+    body = lines[rules[0] + 1 : rules[1]]
     while body and not body[0].strip():
         body.pop(0)
     while body and not body[-1].strip():
@@ -178,7 +178,10 @@ def unfinished(lines: List[str]) -> Optional[str]:
     for number, line in enumerate(lines, start=1):
         for marker in UNFINISHED_MARKERS:
             if marker in line:
-                return f"the description still contains '{marker}' (line {number} after the first '---'): fill or remove it"
+                return (
+                    f"the description still contains '{marker}' (line {number}"
+                    " after the first '---'): fill or remove it"
+                )
     return None
 
 
@@ -215,8 +218,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("spec", nargs="?", type=Path, help="the notes spec")
-    source.add_argument("--version", help="the version; reads specs/DREAMFERENCE_RELEASE_<version>.md")
-    parser.add_argument("--out", type=Path, help="write the description here instead of standard output")
+    source.add_argument(
+        "--version", help="the version; reads specs/DREAMFERENCE_RELEASE_<version>.md"
+    )
+    parser.add_argument(
+        "--out", type=Path, help="write the description here instead of standard output"
+    )
     args = parser.parse_args(argv)
     path = args.spec if args.spec else spec_path(args.version)
     try:
