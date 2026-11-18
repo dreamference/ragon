@@ -314,6 +314,21 @@ def test_a_stalled_sink_never_blocks_the_caller_and_the_drop_count_is_reported()
     assert any("log lines dropped count=" in ln for ln in sink.lines)
 
 
+def test_log_writer_flush_drains_without_a_thread_and_waits_with_one_until_the_deadline():
+    writer, sink = _writer("info")
+    writer.queue.put((EPOCH, 2, "queued", ()))
+    writer.queue.put(None)
+    writer.flush()
+    assert sink.lines[-1].endswith("queued") and writer.queue.unfinished_tasks == 0
+    sink.gate = threading.Event()
+    writer.info("held")
+    writer.flush(timeout=0.05)
+    assert writer.queue.unfinished_tasks
+    sink.gate.set()
+    writer.flush()
+    assert sink.lines[-1].endswith("held")
+
+
 def test_rotation_keeps_every_line_and_compresses_only_past_the_first_rotation(tmp_path):
     now = [EPOCH]
     first = LogFileSink(tmp_path, "gate", max_bytes=300, clock=lambda: now[0])
