@@ -43,3 +43,17 @@ def test_setup_writes_the_unit_and_enables_it_only_when_the_binary_exists(tmp_pa
     assert NodeMonitorService.off() is True
     assert ("disable", "--now", UNIT) in calls
     assert module.UNIT == UNIT
+
+
+def test_monitor_systemctl_runs_the_command_and_reports_a_failure(monkeypatch):
+    sentinel = subprocess.CompletedProcess(["systemctl", "--user", "status"], 0, "ok", "")
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **kw: sentinel)
+    assert NodeMonitorService.systemctl("status") is sentinel
+
+    def broken(*_, **__):
+        raise subprocess.TimeoutExpired(["systemctl"], 120)
+
+    monkeypatch.setattr(module.subprocess, "run", broken)
+    result = NodeMonitorService.systemctl("status")
+    assert result.returncode == 1
+    assert "timed out" in result.stderr
