@@ -147,7 +147,10 @@ def render(items: list[dict]) -> str:
     text = HEADER.format(caveat=CAVEAT)
     if not items:
         return text + "No release has a published result yet.\n" + HISTORY_LINK
-    text += "| Release | Benchmark | Solved | Previous default | Difference | p-value | Wall time |\n| --- | --- | --- | --- | --- | --- | --- |\n"
+    text += (
+        "| Release | Benchmark | Solved | Previous default | Difference | p-value | Wall time |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n"
+    )
     for e in items:
         p = "not available" if e["p_value"] is None else f"{e['p_value']:.3f}"
         text += (
