@@ -98,7 +98,6 @@
   },
   "dreamference/runner/codex_branded_builder.py": {
    "C901": 2,
-   "D205": 4,
    "PLR1702": 2,
    "PLR2004": 3
   },
@@ -194,5 +193,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 233
+ "total": 229
 }

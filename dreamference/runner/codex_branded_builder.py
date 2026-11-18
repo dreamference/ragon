@@ -416,8 +416,9 @@ class CodexBrandedBuilder:
 
     @classmethod
     def prepare_source(cls, source_dir: str) -> bool:
-        """Exports the pinned commit into `source_dir`, adds the launcher crate, and applies the patch
-        series to that copy.
+        """Export the pinned commit into `source_dir`.
+
+        Adds the launcher crate, and applies the patch series to that copy.
 
         Args:
             source_dir (str): Scratch directory to create; any previous contents are removed.
@@ -521,10 +522,11 @@ class CodexBrandedBuilder:
 
     @classmethod
     def stamp_version(cls, manifest: str, version: str) -> bool:
-        """Sets the exported workspace's version, so that every place the binaries read
-        `CARGO_PKG_VERSION` -- `--version`, the session header, the status card, `exec`'s banner,
-        `doctor` -- reports Ragon's release rather than the upstream tag it was forked from. The
-        export is edited, never the submodule, and no patch is needed.
+        """Set the exported workspace's version.
+
+        So that every place the binaries read `CARGO_PKG_VERSION` -- `--version`, the session header, the
+        status card, `exec`'s banner, `doctor` -- reports Ragon's release rather than the upstream tag it
+        was forked from. The export is edited, never the submodule, and no patch is needed.
 
         Args:
             manifest (str): The exported `codex-rs/Cargo.toml`.
@@ -1212,8 +1214,10 @@ class CodexBrandedBuilder:
 
     @classmethod
     def build_docs_index(cls, force: bool = False) -> bool:
-        """Builds `ragon-docs` from `ragon-docs-rs/` unless it is current, then installs what it loads
-        at run time (PDFium, ONNX Runtime, the embedding model) if any of it is missing.
+        """Build `ragon-docs` from `ragon-docs-rs/` unless it is current.
+
+        Then install what it loads at run time (PDFium, ONNX Runtime, the embedding model) if any of it
+        is missing.
 
         Linux only: elsewhere there is nothing to build and this succeeds.
 
@@ -1253,10 +1257,10 @@ class CodexBrandedBuilder:
 
     @classmethod
     def link_onto_path(cls) -> None:
-        """Points `~/.local/bin/ragon`, `ragon-admin`, `ragon-search`, `ragon-fetch`, `ragon-code` and
-        `ragon-docs` at their executables.
+        """Point `~/.local/bin`'s `ragon` and friends at their executables.
 
-        `ragon` so it works from any shell; the others so the model can run the web and mail
+        `~/.local/bin` gets `ragon`, `ragon-admin`, `ragon-search`, `ragon-fetch`, `ragon-code` and
+        `ragon-docs`, so that `ragon` works from any shell and the model can run the web and mail
         commands its prompt names from the shell `ragon` gives it. A command is linked only once
         its binary is installed, so a link never dangles. Nothing on Windows, where the install
         directory itself is on PATH.
