@@ -188,7 +188,7 @@ class MatrixHomeserver:
         """Returns this machine's tailnet name.
 
         Returns:
-            Optional[str]: The name (`node.tail1234.ts.net`) when Tailscale is running and
+            str|None: The name (`node.tail1234.ts.net`) when Tailscale is running and
             signed in, else None.
         """
         try:
@@ -213,7 +213,7 @@ class MatrixHomeserver:
         """The node's overlay name, when remote access is set up on this machine.
 
         Returns:
-            Optional[str]: `ragon-<id>.netbird.selfhosted`, or None without remote access.
+            str|None: `ragon-<id>.netbird.selfhosted`, or None without remote access.
         """
         from dreamference.node.node_identity import NodeIdentity
         from dreamference.remote.remote_settings import RemoteSettings
@@ -228,7 +228,7 @@ class MatrixHomeserver:
         """The address the overlay interface holds here (the only one the TLS unit binds).
 
         Returns:
-            Optional[str]: The IPv4 address, or None when the overlay is not up.
+            str|None: The IPv4 address, or None when the overlay is not up.
         """
         result = cls._run(["ip", "-j", "-4", "addr", "show", "dev", OVERLAY_INTERFACE], timeout=30)
         if result.returncode != 0:
@@ -482,7 +482,7 @@ class MatrixHomeserver:
         """Creates an account through the registration-token flow.
 
         Returns:
-            Optional[Dict[str, Any]]: The server's answer (`user_id`, `access_token`), or None.
+            Dict[str, Any]|None: The server's answer (`user_id`, `access_token`), or None.
         """
         url = f"{PROXY_URL}/_matrix/client/v3/register"
         body: dict[str, Any] = {
@@ -601,7 +601,7 @@ class MatrixHomeserver:
             network: `overlay`, `tailscale` or None for the default.
 
         Returns:
-            Optional[str]: The overlay name or the tailnet name; None (after printing why) when
+            str|None: The overlay name or the tailnet name; None (after printing why) when
             the one asked for is not available.
         """
         if admin:
@@ -631,7 +631,7 @@ class MatrixHomeserver:
             name: The server name.
 
         Returns:
-            Optional[str]: The URL a phone signs in to; None (after printing why) on the overlay
+            str|None: The URL a phone signs in to; None (after printing why) on the overlay
             path when it could not be set up.
         """
         if name == cls.overlay_name():
