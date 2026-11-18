@@ -183,7 +183,7 @@ The decode rate is close to the bus. **No 4-bit format can beat that per byte, s
 
 - **Within a build:** two runs byte-identical; speculative equals non-speculative on all 16 agentlong turns; `--spec-check`, `--prefix-check` from `ragon-run`.
 - **Against the GB10:** METAL's L3 gate verbatim for the same checkpoint: 54 prompts, Fisher threshold 85 flips, flip gap ≤ 1.75 nats, top-5 100%, mean KL ≤ 0.0008 nats, perplexity ratio in [0.999, 1.001], acceptance within spread.
-- **Prefill** falls under L3's prefill positions; Metal emulates CUDA's activation quantisation for it. A prefill format that cannot meet L3 goes to LOWBIT §7's ladder and is the owner's call.
+- **Prefill** falls under L3's prefill positions; a backend that is not the reference one emulates the reference backend's activation quantisation for it. A prefill format that cannot meet L3 goes to LOWBIT §7's ladder and is the owner's call.
 
 ### 5.4 The unknowns, and the first milestone
 
