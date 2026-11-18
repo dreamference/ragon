@@ -214,3 +214,53 @@ def test_decode_speed_takes_the_median_of_the_kinds(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(eval_mod.subprocess, "run", fake_run)
     assert AdapterTrainEval.decode_speed("http://srv") == 95.0
+
+
+def test_holdout_runner_returns_none_without_repo(tmp_path: Path) -> None:
+    assert AdapterTrainEval.generate_holdout_runner(tmp_path, {}) is None
+
+
+def test_holdout_runner_calls_the_generate_stage_and_grades(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import dreamference.hardware.adapter_train_generate as gen_mod
+    import dreamference.hardware.adapter_train_tasks as tasks_mod
+
+    holdout_tasks = [("t1", "t2")]
+
+    def fake_collect(repo: Path) -> tuple:
+        assert repo == tmp_path / "repo"
+        return ([], holdout_tasks)
+
+    class FakeGenerate:
+        out_dir: ClassVar[Path | None] = None
+        tasks: ClassVar = [({"id": "t1"}, "holdout")]
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            type(self).out_dir = args[1]
+            self.repo = args[0]
+            self.host = args[4]
+            self.attempts = kwargs.get("attempts", 2)
+
+        def prepare_clone(self) -> None: ...
+
+        def detect_all(self) -> bool:
+            return True
+
+        def load_state(self, task_id: str) -> dict[str, Any]:
+            return {"detect": {"fail_to_pass": ["f"]}}
+
+        def attempt(self, spec, grading, number) -> dict[str, Any]:
+            return {"passed": True}
+
+    monkeypatch.setattr(tasks_mod.AdapterTrainTasks, "collect", staticmethod(fake_collect))
+    monkeypatch.setattr(gen_mod, "AdapterTrainGenerate", FakeGenerate)
+
+    runner = AdapterTrainEval.generate_holdout_runner(
+        tmp_path, {"repo": str(tmp_path / "repo"), "test_cmd": "pytest"}
+    )
+    assert runner is not None
+    result = runner("http://base", "base")
+
+    assert FakeGenerate.out_dir == tmp_path / "eval" / "base"
+    assert result["resolved"] and result["attempted"]
