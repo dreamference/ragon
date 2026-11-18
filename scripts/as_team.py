@@ -10,7 +10,9 @@ same guard before it leaves the machine.
     owners <path>... [--author TEAM]           the teams that own (or must review) these paths
     register [TEAM...]                         the phone's page on the LAN that registers the Apps
     whoami <team>                              the bot's login and the commit email GitHub links
-    commit <team> -m MSG [--ragon-tokens N] [--made-with ragon]   a local commit as the bot, dated in UTC (trailers: Ragon's token spend; a Ragon task's change)
+    commit <team> -m MSG [--ragon-tokens N] [--made-with ragon]
+                                                             a local commit as the bot, dated in UTC
+                                                             (trailers: Ragon's token spend; a Ragon task's change)
     publish <team> --branch B [--base REF]     replays REF..HEAD as GitHub-signed bot commits
     publish <team> --branch B --via git        pushes REF..HEAD re-authored as the team bot
     pr <team> --branch B --title T [--body-file F]   opens a pull request as the bot
@@ -303,7 +305,9 @@ def ragon_trailers(git: "Git", revisions: str) -> list[tuple[str, int | None, bo
         if not sha:
             continue
         found = TOKENS_LINE.findall(body)
-        rows.append((sha, int(found[-1]) if found else None, MADE_WITH_TRAILER in body.splitlines()))
+        rows.append(
+            (sha, int(found[-1]) if found else None, MADE_WITH_TRAILER in body.splitlines())
+        )
     return rows
 
 
@@ -1341,8 +1345,14 @@ def parser() -> argparse.ArgumentParser:
     commit = commands.add_parser("commit", help="commit what is staged, as the bot")
     commit.add_argument("team")
     commit.add_argument("-m", "--message", required=True)
-    commit.add_argument("--ragon-tokens", type=int, help="add `Ragon-Tokens: N`, the tokens Ragon generated for the change")
-    commit.add_argument("--made-with", help="`ragon`: add the trailer for a change that came from a Ragon task")
+    commit.add_argument(
+        "--ragon-tokens",
+        type=int,
+        help="add `Ragon-Tokens: N`, the tokens Ragon generated for the change",
+    )
+    commit.add_argument(
+        "--made-with", help="`ragon`: add the trailer for a change that came from a Ragon task"
+    )
     publish = commands.add_parser("publish", help="put base..HEAD on a GitHub branch as the bot")
     publish.add_argument("team")
     publish.add_argument("--branch", required=True)
@@ -1515,9 +1525,16 @@ def run_whoami(run: Run) -> None:
 
 def run_commit(run: Run) -> None:
     """Commit what is staged, as the bot."""
-    print(f"✅ {run.publisher().commit(
-            run.team, run.args.message, made_with=run.args.made_with, ragon_tokens=run.args.ragon_tokens
-        )}")
+    print(
+        f"✅ {
+            run.publisher().commit(
+                run.team,
+                run.args.message,
+                made_with=run.args.made_with,
+                ragon_tokens=run.args.ragon_tokens,
+            )
+        }"
+    )
 
 
 def run_publish(run: Run) -> None:
