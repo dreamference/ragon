@@ -1218,3 +1218,52 @@ def test_flush_runs_the_refresh_step_first_and_only_in_publishing_hours(
     assert steps == ["refresh"]
     assert as_team.main(["queue"], github=client, cwd=repo, clock=lambda: AT_NOON) == 0
     assert "rbrb refresh" in capsys.readouterr().out
+
+
+def _rbrb_origin(tmp_path: Path, repo: Path, script: str) -> Path:
+    """Give `repo` a bare origin and a stand-in refresh script that commits one file, as the real one would."""
+    origin = tmp_path / "origin.git"
+    git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "rbrb_refresh.py").write_text(script)
+    git(repo, "add", "scripts")
+    git(repo, "commit", "-q", "-m", "script")
+    git(repo, "remote", "add", "origin", str(origin))
+    git(repo, "push", "-q", "origin", "main")
+    return origin
+
+
+COMMITTING_SCRIPT = (
+    "import subprocess\n"
+    "open('point.txt', 'w').write('x')\n"
+    "subprocess.run(['git', 'add', 'point.txt'], check=True)\n"
+    "subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.com',"
+    " 'commit', '-q', '-m', 'docs: point'], check=True)\n"
+)
+
+
+def test_refresh_rbrb_commits_in_a_worktree_and_pushes_leaving_the_checkout_alone(
+    tmp_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    origin = _rbrb_origin(tmp_path, repo, COMMITTING_SCRIPT)
+    head = git(repo, "rev-parse", "HEAD")
+    as_team.refresh_rbrb(repo)
+    assert "pushed" in capsys.readouterr().out
+    assert git(repo, "rev-parse", "HEAD") == head
+    assert git(repo, "status", "--porcelain") == ""
+    assert git(origin, "log", "-1", "--format=%s", "main") == "docs: point"
+    assert len(git(repo, "worktree", "list").splitlines()) == 1
+    assert git(repo, "branch", "--list", "rbrb-refresh-*") == ""
+
+
+def test_refresh_rbrb_prints_one_line_when_the_push_is_refused(
+    tmp_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    origin = _rbrb_origin(tmp_path, repo, COMMITTING_SCRIPT)
+    (origin / "hooks" / "pre-receive").write_text("#!/bin/sh\nexit 1\n")
+    (origin / "hooks" / "pre-receive").chmod(0o755)
+    head = git(repo, "rev-parse", "HEAD")
+    as_team.refresh_rbrb(repo)
+    assert "push refused" in capsys.readouterr().out
+    assert git(repo, "rev-parse", "HEAD") == head
+    assert len(git(repo, "worktree", "list").splitlines()) == 1

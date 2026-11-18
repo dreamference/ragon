@@ -4,8 +4,9 @@ python scripts/rbrb_refresh.py            # export the running week, ingest it p
 python scripts/rbrb_refresh.py --commit   # the same, then commit the four files as the docs team bot
 
 Does nothing when `rbrb-gate` is not on PATH. Only the aggregate week numbers of the export are read (the ledger
-stays private). It never pushes: the commit reaches GitHub through the land queue at a publishing hour, and the
-as_team.py flush runs this script first so that every flush carries a fresh point as its own commit.
+stays private). It never pushes itself. The as_team.py flush runs this script first, inside a throwaway worktree on a branch
+rbrb-refresh-<stamp> from a fresh origin/main (never in the checkout), and the flush pushes the resulting commit to
+origin main with a fast-forward-only push; a refused push is retried by the next flush.
 """
 
 import argparse

@@ -49,10 +49,12 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -1400,7 +1402,9 @@ class Run:
     guard: MessageGuard
     git: Git
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
-    refresh: Callable[[], None] | None = None  # runs first in a flush (the command line sets the RBRB refresh)
+    refresh: Callable[[], None] | None = (
+        None  # runs first in a flush (the command line sets the RBRB refresh)
+    )
 
     @property
     def team(self) -> str:
@@ -1583,14 +1587,57 @@ def run_merge(run: Run) -> None:
     print(f"✅ merged as {merged.get('sha', '')}")
 
 
-RBRB_REFRESH_STEP: Final = "rbrb refresh (scripts/rbrb_refresh.py --commit: the running week so far, its own commit)"
+RBRB_REFRESH_STEP: Final = "rbrb refresh (scripts/rbrb_refresh.py --commit: the running week so far, its own commit, pushed by the flush from a throwaway worktree)"
 
 
-def refresh_rbrb() -> None:
-    """The flush's first step: refresh the RBRB point and commit it as the docs bot; a failure never stops the flush."""
-    script = REPO_ROOT / "scripts" / "rbrb_refresh.py"
-    done = subprocess.run([sys.executable, str(script), "--commit"], cwd=REPO_ROOT, capture_output=True, text=True)
-    print(f"rbrb refresh: {'ok' if done.returncode == 0 else 'failed'}")
+def refresh_rbrb(root: Path | None = None) -> None:
+    """The flush's first step: refresh the RBRB point in a throwaway worktree and push its commit itself.
+
+    The worktree sits on a branch ``rbrb-refresh-<UTC stamp>`` made from a fresh origin/main, so the checkout the flush
+    runs from keeps its HEAD, index and working tree. When the refresh committed, the commit goes to origin main with a
+    fast-forward-only push; a refusal or a network failure prints one line and the next flush retries. A failure never
+    stops the flush, and the worktree is removed in every case.
+
+    Args:
+        root: The checkout to branch the worktree from (the repository root by default).
+    """
+    root = root or REPO_ROOT
+
+    def git(*args: str, cwd: Path = root) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    branch = f"rbrb-refresh-{stamp}"
+    work = Path(tempfile.mkdtemp(prefix="rbrb-refresh-"))
+    tree = work / "tree"
+    try:
+        if git("fetch", "origin", "main").returncode != 0:
+            print("rbrb refresh: failed (fetch)")
+            return
+        if git("worktree", "add", "-b", branch, str(tree), "origin/main").returncode != 0:
+            print("rbrb refresh: failed (worktree)")
+            return
+        before = git("rev-parse", "HEAD", cwd=tree).stdout.strip()
+        script = tree / "scripts" / "rbrb_refresh.py"
+        done = subprocess.run(
+            [sys.executable, str(script), "--commit"], cwd=tree, capture_output=True, text=True
+        )
+        if done.returncode != 0:
+            print("rbrb refresh: failed")
+            return
+        if git("rev-parse", "HEAD", cwd=tree).stdout.strip() == before:
+            print("rbrb refresh: ok (nothing to commit)")
+            return
+        pushed = git("push", "origin", "HEAD:main", cwd=tree)
+        print(
+            "rbrb refresh: ok, pushed"
+            if pushed.returncode == 0
+            else "rbrb refresh: ok, push refused (next flush retries)"
+        )
+    finally:
+        git("worktree", "remove", "--force", str(tree))
+        git("branch", "-D", branch)
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def run_queue(run: Run) -> None:
