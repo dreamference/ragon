@@ -92,3 +92,7 @@ GEMINI.md
 .cursor/
 .cursorrules
 .windsurfrules
+
+# coverage.py data file (pytest --cov writes it into the checkout)
+.coverage
+.coverage.*
