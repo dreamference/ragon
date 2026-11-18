@@ -28,10 +28,10 @@ class ProxyBypass:
         """The host of a URL such as `http://192.168.1.20:8000/v1`, without scheme, port or brackets.
 
         Args:
-            url (Optional[str]): The URL; a bare `host:port` is accepted.
+            url (str|None): The URL; a bare `host:port` is accepted.
 
         Returns:
-            Optional[str]: The host, or None when there is none.
+            str|None: The host, or None when there is none.
         """
         if not url or not url.strip():
             return None
@@ -55,9 +55,9 @@ class ProxyBypass:
         of each URL, each once.
 
         Args:
-            upper (Optional[str]): `NO_PROXY` as it is.
-            lower (Optional[str]): `no_proxy` as it is.
-            urls (Tuple[Optional[str], ...]): The model server's URL and any other local endpoints.
+            upper (str|None): `NO_PROXY` as it is.
+            lower (str|None): `no_proxy` as it is.
+            urls (Tuple[str|None, ...]): The model server's URL and any other local endpoints.
 
         Returns:
             str: The comma-separated value.
@@ -79,7 +79,7 @@ class ProxyBypass:
 
         Args:
             env (MutableMapping[str, str]): `os.environ` or a child's environment.
-            *urls (Optional[str]): The model server's URL and any other local endpoints.
+            *urls (str|None): The model server's URL and any other local endpoints.
 
         Returns:
             MutableMapping[str, str]: `env`, for chaining.
