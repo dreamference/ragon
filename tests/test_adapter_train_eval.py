@@ -194,3 +194,23 @@ def test_eval_complete_returns_empty_string_when_content_is_none(
 
     monkeypatch.setattr(eval_mod.urllib.request, "urlopen", opener)
     assert AdapterTrainEval.complete("http://srv", "x") == ""
+
+
+def test_decode_speed_takes_the_median_of_the_kinds(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dreamference.hardware import adapter_train_eval as eval_mod
+
+    class FakeDone:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command: list[str], **_kwargs: Any) -> FakeDone:
+        out = Path(command[command.index("--out") + 1])
+        out.write_text(
+            json.dumps({"kinds": {"short": {"decode_tps": 100.0}, "long": {"decode_tps": 90.0}}}),
+            encoding="utf-8",
+        )
+        return FakeDone()
+
+    monkeypatch.setattr(eval_mod.subprocess, "run", fake_run)
+    assert AdapterTrainEval.decode_speed("http://srv") == 95.0
