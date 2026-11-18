@@ -2,6 +2,7 @@
 
 import fcntl
 import gzip
+import io
 import json
 import os
 import re
@@ -16,6 +17,7 @@ from dreamference.config.log_file_sink import LogFileSink
 from dreamference.config.log_level_spec import LogLevelSpec
 from dreamference.config.log_line_formatter import LogLineFormatter
 from dreamference.config.log_redactor import TOKEN_SHAPES, LogRedactor
+from dreamference.config.log_stream_sink import LogStreamSink
 from dreamference.config.log_writer import LogWriter
 from dreamference.config.setup_logging import setup_logging
 
@@ -420,3 +422,20 @@ def test_log_file_rotate_reopens_when_the_lock_is_held_elsewhere(tmp_path, monke
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
+
+
+def test_log_stream_sink_prefixes_the_priority_under_journald_and_defaults_to_stderr(capsys):
+    stream = io.StringIO()
+    sink = LogStreamSink(stream, journald=True)
+    sink.write("2026-01-01T00:00:00Z 1 ERROR boom")
+    sink.write("2026-01-01T00:00:00Z 1 TRACE deep")
+    sink.write("short")
+    sink.write("2026-01-01T00:00:00Z 1 BOGUS odd")
+    assert stream.getvalue().splitlines() == [
+        "<3>2026-01-01T00:00:00Z 1 ERROR boom",
+        "<7>2026-01-01T00:00:00Z 1 TRACE deep",
+        "<6>short",
+        "<6>2026-01-01T00:00:00Z 1 BOGUS odd",
+    ]
+    LogStreamSink().write("plain line")
+    assert capsys.readouterr().err == "plain line\n"
