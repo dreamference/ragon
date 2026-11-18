@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Moves Ragon's pin of ragon-serve's image: the engine commit, the image digest and the features.
 
-    scripts/pin_ragon_serve_image.py COMMIT DIGEST [--features kv-pages,sparse-head,paging-switch,fair-pairing] [--check]
+    scripts/pin_ragon_serve_image.py COMMIT DIGEST
+    [--features kv-pages,sparse-head,paging-switch,fair-pairing] [--check]
 
 COMMIT is the full ragon-engine commit `scripts/build_ragon_serve_image.sh` built the image from; DIGEST
 is the `sha256:...` digest GHCR gave `docker push`. The script rewrites QWEN38_RAGON_ENGINE_COMMIT,
 QWEN38_RAGON_IMAGE and QWEN38_RAGON_ENGINE_FEATURES in dreamference/hardware/model_matrix_registry.py
 and nothing else, so the pin moves in one reviewable diff; the prose around the constants and the
-tests that name the old commit (tests/test_ragon_serve_engine.py) are updated by hand. `--check` validates the arguments and prints the diff without
+tests that name the old commit (tests/test_ragon_serve_engine.py) are updated by hand.
+`--check` validates the arguments and prints the diff without
 writing. Never runs Docker or the network.
 """
 
@@ -50,7 +52,10 @@ def repin(text: str, commit: str, digest: str, features: list[str]) -> str:
     edits = (
         (r'(QWEN38_RAGON_ENGINE_COMMIT: Final\[str\] = ")[0-9a-f]{40}(")', commit),
         (r'(ghcr\.io/dreamference/ragon-serve@)sha256:[0-9a-f]{64}(")', digest),
-        (r"(QWEN38_RAGON_ENGINE_FEATURES: Final\[tuple\[str, \.\.\.\]\] = )\([^)]*\)()", tuple_text),
+        (
+            r"(QWEN38_RAGON_ENGINE_FEATURES: Final\[tuple\[str, \.\.\.\]\] = )\([^)]*\)()",
+            tuple_text,
+        ),
     )
     for pattern, value in edits:
         text, n = re.subn(pattern, lambda m, v=value: m.group(1) + v + m.group(2), text)
@@ -81,9 +86,7 @@ def main(argv: list[str]) -> int:
     )
     if not args.check:
         args.registry.write_text(new)
-        print(
-            "✅ pinned; now update the prose and the test constants"
-        )
+        print("✅ pinned; now update the prose and the test constants")
     return 0
 
 
