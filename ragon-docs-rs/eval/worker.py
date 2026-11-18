@@ -6,6 +6,7 @@ import resource
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 def is_rtl(ch):
     """Hebrew, Arabic, Syriac, Thaana, N'Ko and the Arabic presentation forms."""
@@ -141,7 +142,7 @@ def ordered_page(page):
 
 
 engine, path = sys.argv[1], sys.argv[2]
-RUST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rustpdf/target/release/rustpdf")
+RUST = os.path.join(str(Path(__file__).absolute().parent), "rustpdf/target/release/rustpdf")
 t0 = time.perf_counter()
 out = {"engine": engine}
 try:
