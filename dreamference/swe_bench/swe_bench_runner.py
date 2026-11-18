@@ -39,6 +39,9 @@ from dreamference.swe_bench.swe_bench_instance_run import (
     TASK_RULES,
     SweBenchInstanceRun,
 )
+from dreamference.swe_bench.swe_bench_instance_run import (
+    TURN_END_KEY as TURN_END_KEY,
+)
 from dreamference.swe_bench.swe_bench_name_stripper import SweBenchNameStripper
 from dreamference.swe_bench.swe_bench_relay import SweBenchRelay
 from dreamference.swe_bench.swe_bench_run_store import SweBenchRunStore
@@ -104,7 +107,6 @@ PROMPT_DIR: Final[str] = "system-prompts"
 # The turn-end compaction arm (spec §16): Codex's own key, pinned on every `ragon exec`
 # command line of the run, since the launcher leaves `exec` alone whatever its switch says
 # (ragon-rs/src/compaction.rs, `with_turn_end`); the switch is set beside it for the record.
-TURN_END_KEY: Final[str] = "model_post_turn_compact_threshold_percent"
 TURN_END_ENV: Final[str] = "DREAMFERENCE_RAGON_TURN_END_COMPACTION"
 AUTO_TURN_END: Final[str] = "auto"
 TURN_END_OFF: Final[str] = "off"
