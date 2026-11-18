@@ -1,9 +1,10 @@
 """Several candidate passages from one document: passages_one.py <corpus> <rel> [count] (question authoring)."""
-import os
+
 import random
 import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import evallib  # noqa: E402
 
 root, rel = sys.argv[1], sys.argv[2]
