@@ -1,4 +1,5 @@
 """List the questions a method misses at 10: misses.py <chunks.json> [<embedding-prefix>]."""
+
 import json
 import os
 import sys
@@ -21,7 +22,14 @@ if len(sys.argv) > 2:
 
 
 def rank(r, q):
-    return next((i for i, c in enumerate(r[:10]) if chunks[c]["doc"] == q["doc"] and evallib.is_hit(chunks[c]["text"], q["snippet"])), None)
+    return next(
+        (
+            i
+            for i, c in enumerate(r[:10])
+            if chunks[c]["doc"] == q["doc"] and evallib.is_hit(chunks[c]["text"], q["snippet"])
+        ),
+        None,
+    )
 
 
 for i, q in enumerate(qs):
