@@ -1,6 +1,8 @@
-"""Recompute ocr/truth.json's text from the source pages with the current ordered pass, leaving the
-degraded images alone (they carry unseeded noise): refresh_truth.py. Run after the right-to-left fix,
-which turned the Arabic ground truth from visual into logical order."""
+"""Recompute ocr/truth.json's text from the source pages with the current ordered pass.
+
+Leaving the degraded images alone (they carry unseeded noise): refresh_truth.py. Run after the
+right-to-left fix, which turned the Arabic ground truth from visual into logical order."""
+
 import json
 import os
 
@@ -8,7 +10,9 @@ import pypdfium2 as pdfium
 
 D = os.path.dirname(os.path.abspath(__file__))
 ns = {}
-exec(compile(open(f"{D}/worker.py").read().split("engine, path = sys.argv")[0], "worker", "exec"), ns)
+exec(
+    compile(open(f"{D}/worker.py").read().split("engine, path = sys.argv")[0], "worker", "exec"), ns
+)
 truth = json.load(open(f"{D}/ocr/truth.json"))
 changed = 0
 for fid, fx in truth.items():
