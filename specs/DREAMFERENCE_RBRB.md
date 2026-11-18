@@ -547,6 +547,8 @@ The section is on `main`, after the main feature sections and before "Star histo
 - a diff outside those three places;
 - a run on any branch but `main`.
 
+**The provisional in-week point.** So that the chart shows progress and not a single point, the publishing flush (the 09:05 and 21:05 UTC runs of `scripts/as_team.py flush`) first runs `scripts/rbrb_refresh.py`: when the gate is on the machine it exports the running ISO week, ingests it with `scripts/rbrb.py --ingest PATH --provisional` (the week's point gets `"provisional": true`), regenerates the chart, the badge and the README block, and commits only those files as the docs team bot with `Ragon-Tokens: 0`, as its own commit. The chart draws it as a hollow point labelled "<week> so far", joined to the last closed week by a dashed segment; the badge and the README's latest line show it beside the last closed week. The weekly ingest of the same week replaces it with the final value. The public curve still shows only what landed (§6): the provisional point reaches `main` only through the land queue, uses the same aggregate counts as any weekly point, and `rbrb.py --check` accepts it however old it is, because the flush refreshes it, not CI. A week the gate cannot export gets no point, never a zero.
+
 **What it cannot do:** it never writes input fields, because it has no access to the private sources. Credentials are open question 2.
 
 ---
