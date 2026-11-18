@@ -93,19 +93,67 @@ SYSTEM_PROMPT: Final[str] = (
 
 # (key, polarity, framings): +1 when "yes" is good for the candidate, -1 when it is bad.
 ATTRIBUTE_PROBES: Final[Tuple[Tuple[str, int, Tuple[str, ...]], ...]] = (
-    ("fixes", 1, ("Does candidate {n} fix the behaviour the issue reports?",
-                  "After applying candidate {n}, would the problem described in the issue be gone?")),
-    ("root_cause", 1, ("Does candidate {n} fix the root cause of the issue rather than a symptom?",)),
-    ("edge_cases", 1, ("Does candidate {n} handle every case and input the issue mentions, including edge cases?",)),
-    ("complete", 1, ("Does candidate {n} change every place in the code that must change for the fix?",)),
-    ("unrelated", -1, ("Does candidate {n} change behaviour that the issue does not ask to change?",)),
-    ("breaks", -1, ("Would candidate {n} make an existing test of the repository fail?",
-                    "Could candidate {n} break code that works today?")),
-    ("error", -1, ("Would the code candidate {n} changes raise an error when it runs, for example a NameError, "
-                   "a wrong import or a wrong call signature?",)),
-    ("tests_only", -1, ("Does candidate {n} change only tests or documentation, leaving the library code as it was?",)),
-    ("merge", 1, ("Would the repository's maintainers merge candidate {n} as the fix for this issue?",
-                  "Is candidate {n} a correct fix for the issue?")),
+    (
+        "fixes",
+        1,
+        (
+            "Does candidate {n} fix the behaviour the issue reports?",
+            "After applying candidate {n}, would the problem described in the issue be gone?",
+        ),
+    ),
+    (
+        "root_cause",
+        1,
+        ("Does candidate {n} fix the root cause of the issue rather than a symptom?",),
+    ),
+    (
+        "edge_cases",
+        1,
+        (
+            "Does candidate {n} handle every case and input the issue mentions, including edge cases?",
+        ),
+    ),
+    (
+        "complete",
+        1,
+        ("Does candidate {n} change every place in the code that must change for the fix?",),
+    ),
+    (
+        "unrelated",
+        -1,
+        ("Does candidate {n} change behaviour that the issue does not ask to change?",),
+    ),
+    (
+        "breaks",
+        -1,
+        (
+            "Would candidate {n} make an existing test of the repository fail?",
+            "Could candidate {n} break code that works today?",
+        ),
+    ),
+    (
+        "error",
+        -1,
+        (
+            "Would the code candidate {n} changes raise an error when it runs, for example a NameError, "
+            "a wrong import or a wrong call signature?",
+        ),
+    ),
+    (
+        "tests_only",
+        -1,
+        (
+            "Does candidate {n} change only tests or documentation, leaving the library code as it was?",
+        ),
+    ),
+    (
+        "merge",
+        1,
+        (
+            "Would the repository's maintainers merge candidate {n} as the fix for this issue?",
+            "Is candidate {n} a correct fix for the issue?",
+        ),
+    ),
 )
 CHECK_PROBE: Final[str] = "Once candidate {n} is applied, is this true: {check}"
 PAIRWISE_PROBES: Final[Tuple[str, ...]] = (
@@ -194,10 +242,14 @@ def edited_ranges(patch: str) -> Dict[str, List[Tuple[int, int]]]:
 def is_test_path(path: str) -> bool:
     """A test file, by its path: its source matters less than the library's."""
     parts = path.lower().split("/")
-    return any(p in ("tests", "test", "testing") for p in parts[:-1]) or parts[-1].startswith("test_")
+    return any(p in ("tests", "test", "testing") for p in parts[:-1]) or parts[-1].startswith(
+        "test_"
+    )
 
 
-def windows(ranges: Sequence[Tuple[int, int]], total: int, margin: int = SOURCE_MARGIN) -> List[Tuple[int, int]]:
+def windows(
+    ranges: Sequence[Tuple[int, int]], total: int, margin: int = SOURCE_MARGIN
+) -> List[Tuple[int, int]]:
     """The edited ranges widened by `margin` lines, clamped to the file and merged where they meet."""
     merged: List[Tuple[int, int]] = []
     for first, last in sorted((max(1, a - margin), min(total, b + margin)) for a, b in ranges):
@@ -210,8 +262,9 @@ def windows(ranges: Sequence[Tuple[int, int]], total: int, margin: int = SOURCE_
     return merged
 
 
-def source_context(patches: Sequence[str], read: Callable[[str], Optional[str]],
-                   limit: int = MAX_SOURCE_CHARS) -> str:
+def source_context(
+    patches: Sequence[str], read: Callable[[str], Optional[str]], limit: int = MAX_SOURCE_CHARS
+) -> str:
     """
     The base source around every hunk any candidate edits, numbered, library files first.
 
@@ -247,13 +300,16 @@ def source_context(patches: Sequence[str], read: Callable[[str], Optional[str]],
     return "\n".join(blocks)
 
 
-def github_reader(repo: str, commit: str, cache: Path, timeout: float = 30.0) -> Callable[[str], Optional[str]]:
+def github_reader(
+    repo: str, commit: str, cache: Path, timeout: float = 30.0
+) -> Callable[[str], Optional[str]]:
     """
     A reader of the repository's files at `commit`, from GitHub's raw files, cached on disk.
 
     Returns:
         Callable[[str], Optional[str]]: Path to its text; None when GitHub has no such file.
     """
+
     def read(path: str) -> Optional[str]:
         local = cache / repo / commit / path
         if local.is_file():
@@ -272,6 +328,7 @@ def github_reader(repo: str, commit: str, cache: Path, timeout: float = 30.0) ->
         local.parent.mkdir(parents=True, exist_ok=True)
         local.write_text(text)
         return text
+
     return read
 
 
@@ -288,7 +345,9 @@ def load_rows(dataset: Path, ids: Sequence[str]) -> Dict[str, Dict[str, str]]:
             continue
         row = json.loads(line)
         if row.get("instance_id") in wanted:
-            rows[row["instance_id"]] = {k: str(row.get(k) or "") for k in ("problem_statement", "repo", "base_commit")}
+            rows[row["instance_id"]] = {
+                k: str(row.get(k) or "") for k in ("problem_statement", "repo", "base_commit")
+            }
     missing = sorted(wanted - set(rows))
     if missing:
         raise SystemExit(f"❌ Not in {dataset}: {', '.join(missing)}")
@@ -300,29 +359,41 @@ def load_rows(dataset: Path, ids: Sequence[str]) -> Dict[str, Dict[str, str]]:
 
 def clip(text: str, limit: int) -> str:
     """Cuts a text at `limit` characters, saying so."""
-    return text if len(text) <= limit else text[:limit] + f"\n[... cut: {len(text) - limit} more characters]"
+    return (
+        text
+        if len(text) <= limit
+        else text[:limit] + f"\n[... cut: {len(text) - limit} more characters]"
+    )
 
 
 def shared_prefix(context: Context) -> str:
     """The user message's text up to the question: identical for every probe of the task."""
     parts = [f"<issue>\n{clip(context.issue, MAX_ISSUE_CHARS)}\n</issue>"]
     if context.source:
-        parts.append(f"<source note=\"the repository before any patch\">\n{context.source}\n</source>")
+        parts.append(
+            f'<source note="the repository before any patch">\n{context.source}\n</source>'
+        )
     for candidate in context.order:
         number = context.numbers[candidate.id]
-        parts.append(f"<candidate_{number}>\n{clip(candidate.patch, MAX_PATCH_CHARS)}\n</candidate_{number}>")
+        parts.append(
+            f"<candidate_{number}>\n{clip(candidate.patch, MAX_PATCH_CHARS)}\n</candidate_{number}>"
+        )
     return "\n\n".join(parts) + "\n\nQuestion: "
 
 
 def messages(context: Context, question: str) -> List[Dict[str, str]]:
     """One request's messages: the system prompt and the shared prefix, then the question."""
-    return [{"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": shared_prefix(context) + question}]
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": shared_prefix(context) + question},
+    ]
 
 
 def parse_checks(answer: str) -> List[str]:
     """The behaviours the checks question listed: lines starting with '- ', at most MAX_CHECKS."""
-    found = [line.strip()[2:].strip() for line in answer.splitlines() if line.strip().startswith("- ")]
+    found = [
+        line.strip()[2:].strip() for line in answer.splitlines() if line.strip().startswith("- ")
+    ]
     return [c for c in found if c][:MAX_CHECKS]
 
 
@@ -344,19 +415,39 @@ def build_probes(context: Context, checks: Sequence[str], rng: random.Random) ->
         n = context.numbers[candidate.id]
         for key, polarity, framings in ATTRIBUTE_PROBES:
             for index, framing in enumerate(framings):
-                probes.append(Probe(key=f"{key}.{index}:{candidate.id}", kind="attribute", candidate=candidate.id,
-                                    polarity=polarity, text=f"{framing.format(n=n)} {YES_NO}"))
+                probes.append(
+                    Probe(
+                        key=f"{key}.{index}:{candidate.id}",
+                        kind="attribute",
+                        candidate=candidate.id,
+                        polarity=polarity,
+                        text=f"{framing.format(n=n)} {YES_NO}",
+                    )
+                )
         for index, check in enumerate(checks):
-            probes.append(Probe(key=f"check.{index}:{candidate.id}", kind="check", candidate=candidate.id,
-                                text=f"{CHECK_PROBE.format(n=n, check=check)} {YES_NO}"))
+            probes.append(
+                Probe(
+                    key=f"check.{index}:{candidate.id}",
+                    kind="check",
+                    candidate=candidate.id,
+                    text=f"{CHECK_PROBE.format(n=n, check=check)} {YES_NO}",
+                )
+            )
     for x in context.order:
         for y in context.order:
             if x.id == y.id:
                 continue
             nx, ny = context.numbers[x.id], context.numbers[y.id]
             for index, framing in enumerate(PAIRWISE_PROBES):
-                probes.append(Probe(key=f"pair.{index}:{x.id}>{y.id}", kind="pairwise", pair=(x.id, y.id),
-                                    labels=(nx, ny), text=f"{framing.format(x=nx, y=ny)} {WHICH}"))
+                probes.append(
+                    Probe(
+                        key=f"pair.{index}:{x.id}>{y.id}",
+                        kind="pairwise",
+                        pair=(x.id, y.id),
+                        labels=(nx, ny),
+                        text=f"{framing.format(x=nx, y=ny)} {WHICH}",
+                    )
+                )
     rng.shuffle(probes)
     return probes
 
@@ -376,7 +467,7 @@ def token_mass(choice: Dict[str, Any], wanted: Callable[[str], Optional[str]]) -
         Dict[str, float]: Group to the summed probability of its tokens among the top logprobs;
         empty when the answer carried no logprobs.
     """
-    content = ((choice.get("logprobs") or {}).get("content") or [])
+    content = (choice.get("logprobs") or {}).get("content") or []
     if not content:
         return {}
     mass: Dict[str, float] = {}
@@ -405,9 +496,11 @@ def answer_of(probe: Probe, choice: Dict[str, Any]) -> Optional[float]:
     """
     if probe.kind == "pairwise":
         x, y = probe.labels
+
         def group(token: str) -> Optional[str]:
             word = token.strip()
             return word if word in (x, y) else None
+
         good, bad = x, y
     else:
         group, good, bad = yes_no, "yes", "no"
@@ -420,7 +513,9 @@ def answer_of(probe: Probe, choice: Dict[str, Any]) -> Optional[float]:
     return None if said is None else float(said == good)
 
 
-def candidate_scores(ids: Sequence[str], probes: Sequence[Probe]) -> Dict[str, Dict[str, Optional[float]]]:
+def candidate_scores(
+    ids: Sequence[str], probes: Sequence[Probe]
+) -> Dict[str, Dict[str, Optional[float]]]:
     """
     Each candidate's three parts and their mean.
 
@@ -430,7 +525,9 @@ def candidate_scores(ids: Sequence[str], probes: Sequence[Probe]) -> Dict[str, D
         ``pairwise`` (the mean P of winning over the probes it is in, as x or as y) and ``total``
         (the mean of the parts it has; None when it has none). Unreadable probes are left out.
     """
-    parts: Dict[str, Dict[str, List[float]]] = {i: {"attribute": [], "check": [], "pairwise": []} for i in ids}
+    parts: Dict[str, Dict[str, List[float]]] = {
+        i: {"attribute": [], "check": [], "pairwise": []} for i in ids
+    }
     for probe in probes:
         if probe.answer is None:
             continue
@@ -459,7 +556,9 @@ def top(scores: Dict[str, Dict[str, Optional[float]]], part: str = "total") -> L
     return sorted(i for i, v in values.items() if abs(v - best) < 1e-12)
 
 
-def choose(candidates: Sequence[Any], judge: Callable[[List[Any]], Dict[str, Any]]) -> Dict[str, Any]:
+def choose(
+    candidates: Sequence[Any], judge: Callable[[List[Any]], Dict[str, Any]]
+) -> Dict[str, Any]:
     """
     The regression filter, as chooser v1 has it, then the fan-out judge over the survivors.
 
@@ -474,16 +573,30 @@ def choose(candidates: Sequence[Any], judge: Callable[[List[Any]], Dict[str, Any
     if not candidates:
         return {"stage": "none", "survivors": [], "points": {}, "chosen": []}
     if len(candidates) == 1:
-        return {"stage": "only candidate", "survivors": [candidates[0].id], "points": {}, "chosen": [candidates[0].id]}
+        return {
+            "stage": "only candidate",
+            "survivors": [candidates[0].id],
+            "points": {},
+            "chosen": [candidates[0].id],
+        }
     survivors = [c for c in candidates if not c.breaks]
     if len(survivors) == 1:
-        return {"stage": "regression filter", "survivors": [survivors[0].id], "points": {},
-                "chosen": [survivors[0].id]}
+        return {
+            "stage": "regression filter",
+            "survivors": [survivors[0].id],
+            "points": {},
+            "chosen": [survivors[0].id],
+        }
     pool = survivors or list(candidates)
     record = judge(pool)
     scores = record["scores"]
-    return {"stage": STAGE if survivors else f"{STAGE}, all broke", "survivors": [c.id for c in survivors],
-            "points": {i: s["total"] for i, s in scores.items()}, "chosen": top(scores), "fanout": record}
+    return {
+        "stage": STAGE if survivors else f"{STAGE}, all broke",
+        "survivors": [c.id for c in survivors],
+        "points": {i: s["total"] for i, s in scores.items()},
+        "chosen": top(scores),
+        "fanout": record,
+    }
 
 
 # --------------------------------------------------------------------------- the server
@@ -528,9 +641,11 @@ class Server:
         """One chat completion's first choice."""
         if not self.model:
             self.model = str(json.loads(self.get("/v1/models"))["data"][0]["id"])
-        request = urllib.request.Request(self.root + "/v1/chat/completions",
-                                         data=json.dumps({"model": self.model, **payload}).encode(),
-                                         headers={"Content-Type": "application/json"})
+        request = urllib.request.Request(
+            self.root + "/v1/chat/completions",
+            data=json.dumps({"model": self.model, **payload}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
         with self.opener.open(request, timeout=self.timeout) as response:
             return (json.loads(response.read()).get("choices") or [{}])[0]
 
@@ -557,9 +672,11 @@ def answer_start(choice: Dict[str, Any]) -> Dict[str, Any]:
     ``</think>`` and any markdown (``**Yes.**``), so a reasoning model's probe reads like a one-token one.
     """
     content = list(((choice.get("logprobs") or {}).get("content") or []))
-    ends = [i for i, item in enumerate(content) if str(item.get("token") or "").strip() == "</think>"]
+    ends = [
+        i for i, item in enumerate(content) if str(item.get("token") or "").strip() == "</think>"
+    ]
     if ends:
-        content = content[ends[-1] + 1:]
+        content = content[ends[-1] + 1 :]
     while content and not str(content[0].get("token") or "").strip(" \n*#_`>-"):
         content = content[1:]
     message = dict(choice.get("message") or {})
@@ -570,8 +687,16 @@ def answer_start(choice: Dict[str, Any]) -> Dict[str, Any]:
 class OpenRouterServer:
     """A hosted model through OpenRouter, pinned to one provider: the same probes, the spend counted."""
 
-    def __init__(self, model: str, provider: str, key_file: Path, budget: float, timeout: float = 300.0,
-                 effort: Optional[str] = None, thinking_tokens: int = 512) -> None:
+    def __init__(
+        self,
+        model: str,
+        provider: str,
+        key_file: Path,
+        budget: float,
+        timeout: float = 300.0,
+        effort: Optional[str] = None,
+        thinking_tokens: int = 512,
+    ) -> None:
         """
         Args:
             model: OpenRouter's model id (``z-ai/glm-5.3``).
@@ -597,16 +722,23 @@ class OpenRouterServer:
         if self.effort:
             reasoning = {"effort": self.effort, "exclude": True}
             body["max_tokens"] = int(body.get("max_tokens") or 0) + self.thinking_tokens
-        return {"model": self.model, **body, "provider": {"order": [self.provider], "allow_fallbacks": False},
-                "reasoning": reasoning, "usage": {"include": True}}
+        return {
+            "model": self.model,
+            **body,
+            "provider": {"order": [self.provider], "allow_fallbacks": False},
+            "reasoning": reasoning,
+            "usage": {"include": True},
+        }
 
     def chat(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """One chat completion's first choice; retried on rate limits and gateway errors."""
         if self.cost >= self.budget:
             raise BudgetSpent(f"spent {self.cost:.4f} of {self.budget} USD")
-        request = urllib.request.Request(OPENROUTER + "/chat/completions", data=json.dumps(self.body(payload)).encode(),
-                                         headers={"Content-Type": "application/json",
-                                                  "Authorization": f"Bearer {self._key}"})
+        request = urllib.request.Request(
+            OPENROUTER + "/chat/completions",
+            data=json.dumps(self.body(payload)).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._key}"},
+        )
         for attempt in range(4):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -615,17 +747,19 @@ class OpenRouterServer:
             except urllib.error.HTTPError as error:
                 if error.code not in RETRIED or attempt == 3:
                     raise
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
             except OSError:  # a timeout or a dropped connection: a provider stalls now and then
                 if attempt == 3:
                     raise
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
         usage = answer.get("usage") or {}
         with self.lock:
             self.requests += 1
             self.cost += float(usage.get("cost") or 0.0)
             self.prompt += float(usage.get("prompt_tokens") or 0)
-            self.cached += float((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+            self.cached += float(
+                (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+            )
         return answer_start((answer.get("choices") or [{}])[0])
 
     def counters(self) -> Optional[Tuple[float, float]]:
@@ -635,11 +769,16 @@ class OpenRouterServer:
 
 
 PROBE_PARAMS: Final[Dict[str, Any]] = {
-    "max_tokens": 1, "temperature": 0.0, "logprobs": True, "top_logprobs": TOP_LOGPROBS,
+    "max_tokens": 1,
+    "temperature": 0.0,
+    "logprobs": True,
+    "top_logprobs": TOP_LOGPROBS,
     "chat_template_kwargs": {"enable_thinking": False},
 }
 CHECKS_PARAMS: Final[Dict[str, Any]] = {
-    "max_tokens": 400, "temperature": 0.0, "chat_template_kwargs": {"enable_thinking": False},
+    "max_tokens": 400,
+    "temperature": 0.0,
+    "chat_template_kwargs": {"enable_thinking": False},
 }
 
 
@@ -655,8 +794,15 @@ def fan_out(server: Any, context: Context, rng: random.Random, workers: int) -> 
     before = server.counters()
     started = time.monotonic()
     try:
-        checks_answer = str((server.chat({**CHECKS_PARAMS, "messages": messages(context, CHECKS_QUESTION)})
-                             .get("message") or {}).get("content") or "")
+        checks_answer = str(
+            (
+                server.chat({**CHECKS_PARAMS, "messages": messages(context, CHECKS_QUESTION)}).get(
+                    "message"
+                )
+                or {}
+            ).get("content")
+            or ""
+        )
     except (urllib.error.URLError, OSError, ValueError):
         checks_answer = ""
     checks = parse_checks(checks_answer)
@@ -665,7 +811,9 @@ def fan_out(server: Any, context: Context, rng: random.Random, workers: int) -> 
 
     def ask(probe: Probe) -> None:
         try:
-            probe.answer = answer_of(probe, server.chat({**PROBE_PARAMS, "messages": messages(context, probe.text)}))
+            probe.answer = answer_of(
+                probe, server.chat({**PROBE_PARAMS, "messages": messages(context, probe.text)})
+            )
         except (urllib.error.URLError, OSError, ValueError):
             probe.answer = None
 
@@ -678,11 +826,16 @@ def fan_out(server: Any, context: Context, rng: random.Random, workers: int) -> 
     hit = None
     if before and after and after[1] > before[1]:
         hit = (after[0] - before[0]) / (after[1] - before[1])
-    return {"scores": candidate_scores([c.id for c in context.order], probes), "checks": checks,
-            "answers": {p.key: p.answer for p in probes}, "probes": len(probes) + 1,
-            "unreadable": sum(1 for p in probes if p.answer is None), "seconds": round(seconds, 2),
-            "checks_seconds": round(checks_seconds, 2),
-            "cache_hit": None if hit is None else round(hit, 4)}
+    return {
+        "scores": candidate_scores([c.id for c in context.order], probes),
+        "checks": checks,
+        "answers": {p.key: p.answer for p in probes},
+        "probes": len(probes) + 1,
+        "unreadable": sum(1 for p in probes if p.answer is None),
+        "seconds": round(seconds, 2),
+        "checks_seconds": round(checks_seconds, 2),
+        "cache_hit": None if hit is None else round(hit, 4),
+    }
 
 
 def rotate(items: Sequence[Any], by: int) -> List[Any]:
@@ -696,8 +849,11 @@ def rotate(items: Sequence[Any], by: int) -> List[Any]:
 # --------------------------------------------------------------------------- main
 
 
-def run(args: argparse.Namespace, server_factory: Callable[[str, float], Any] = Server,
-        reader_factory: Callable[[str, str, Path], Callable[[str], Optional[str]]] = github_reader) -> Dict[str, Any]:
+def run(
+    args: argparse.Namespace,
+    server_factory: Callable[[str, float], Any] = Server,
+    reader_factory: Callable[[str, str, Path], Callable[[str], Optional[str]]] = github_reader,
+) -> Dict[str, Any]:
     """The test, as `main` runs it; the server and the source reader are replaceable for the tests."""
     chooser = chooser_module()
     runs = [chooser.load_run(args.runs_dir, name) for name in args.runs.split(",") if name]
@@ -705,9 +861,13 @@ def run(args: argparse.Namespace, server_factory: Callable[[str, float], Any] = 
         raise SystemExit("❌ Name at least two runs")
     tasks = chooser.select_tasks(runs, args.all)
     if args.limit:
-        tasks = tasks[:args.limit]
-    judged = [t for t in tasks if len([c for c in t.candidates if not c.breaks] or t.candidates) > 1]
-    print(f"{len(tasks)} task(s) from {', '.join(r['name'] for r in runs)}; {len(judged)} go to the fan-out judge")
+        tasks = tasks[: args.limit]
+    judged = [
+        t for t in tasks if len([c for c in t.candidates if not c.breaks] or t.candidates) > 1
+    ]
+    print(
+        f"{len(tasks)} task(s) from {', '.join(r['name'] for r in runs)}; {len(judged)} go to the fan-out judge"
+    )
     if args.dry_run:
         return {}
     if args.openrouter and not args.provider:
@@ -716,8 +876,15 @@ def run(args: argparse.Namespace, server_factory: Callable[[str, float], Any] = 
         raise SystemExit("❌ --server is required (the model server's URL, by node name)")
     rows = load_rows(args.dataset, [t.instance_id for t in judged])
     if args.openrouter:
-        server: Any = OpenRouterServer(args.openrouter, args.provider, args.key_file, args.budget, args.timeout,
-                                       args.effort, args.thinking_tokens)
+        server: Any = OpenRouterServer(
+            args.openrouter,
+            args.provider,
+            args.key_file,
+            args.budget,
+            args.timeout,
+            args.effort,
+            args.thinking_tokens,
+        )
         args.server = f"openrouter {args.openrouter} via {args.provider}"
     else:
         server = server_factory(args.server, args.timeout)
@@ -737,52 +904,83 @@ def run(args: argparse.Namespace, server_factory: Callable[[str, float], Any] = 
         if task.instance_id in done:
             choice = done[task.instance_id]
         else:
+
             def judge(pool: List[Any], task: Any = task) -> Dict[str, Any]:
                 row = rows[task.instance_id]
                 read = reader_factory(row["repo"], row["base_commit"], args.source_cache)
                 order = rotate(pool, args.order)
-                context = Context(issue=row["problem_statement"], order=order,
-                                  source=source_context([c.patch for c in order], read))
+                context = Context(
+                    issue=row["problem_statement"],
+                    order=order,
+                    source=source_context([c.patch for c in order], read),
+                )
                 spent = getattr(server, "cost", None)
-                record = fan_out(server, context, random.Random(f"{args.order}:{task.instance_id}"), args.workers)
+                record = fan_out(
+                    server, context, random.Random(f"{args.order}:{task.instance_id}"), args.workers
+                )
                 if spent is not None:
                     record["cost"] = round(server.cost - spent, 6)
                 record["numbers"] = context.numbers
                 record["prefix_chars"] = len(shared_prefix(context))
                 return record
+
             choice = choose(task.candidates, judge)
             with open(log, "a") as handle:
                 handle.write(json.dumps({"instance_id": task.instance_id, "choice": choice}) + "\n")
         choices[task.instance_id], scores[task.instance_id] = choice, chooser.score(task, choice)
         fanout = choice.get("fanout") or {}
-        timing = (f", {fanout['probes']} probes in {fanout['seconds']}s, cache hit {fanout['cache_hit']}"
-                  if fanout else "")
-        print(f"  {task.instance_id:<34} {choice['stage']}: chose {', '.join(choice['chosen']) or 'nothing'}, "
-              f"credit {scores[task.instance_id]['chooser']:.2f}{timing}", flush=True)
+        timing = (
+            f", {fanout['probes']} probes in {fanout['seconds']}s, cache hit {fanout['cache_hit']}"
+            if fanout
+            else ""
+        )
+        print(
+            f"  {task.instance_id:<34} {choice['stage']}: chose {', '.join(choice['chosen']) or 'nothing'}, "
+            f"credit {scores[task.instance_id]['chooser']:.2f}{timing}",
+            flush=True,
+        )
 
     summary = chooser.summarise(runs, tasks, scores, choices)
     fanned = [c["fanout"] for c in choices.values() if c.get("fanout")]
     hits = [f["cache_hit"] for f in fanned if f.get("cache_hit") is not None]
-    summary.update({
-        "chooser_name": "v3 fan-out", "order": args.order, "server": args.server, "model": getattr(server, "model", ""),
-        "per_task": {i: {**choices[i], **scores[i]} for i in choices},
-        "fanout": {"tasks": len(fanned), "probes": sum(f["probes"] for f in fanned),
-                   "unreadable": sum(f["unreadable"] for f in fanned),
-                   "seconds": round(sum(f["seconds"] for f in fanned), 1),
-                   "seconds_per_task": round(sum(f["seconds"] for f in fanned) / len(fanned), 2) if fanned else None,
-                   "cache_hit_mean": round(sum(hits) / len(hits), 4) if hits else None,
-                   "cache_hit_min": min(hits) if hits else None,
-                   "cost_usd": round(sum(f.get("cost") or 0.0 for f in fanned), 4) if args.openrouter else None},
-        "parts": part_credits(tasks, choices),
-    })
+    summary.update(
+        {
+            "chooser_name": "v3 fan-out",
+            "order": args.order,
+            "server": args.server,
+            "model": getattr(server, "model", ""),
+            "per_task": {i: {**choices[i], **scores[i]} for i in choices},
+            "fanout": {
+                "tasks": len(fanned),
+                "probes": sum(f["probes"] for f in fanned),
+                "unreadable": sum(f["unreadable"] for f in fanned),
+                "seconds": round(sum(f["seconds"] for f in fanned), 1),
+                "seconds_per_task": round(sum(f["seconds"] for f in fanned) / len(fanned), 2)
+                if fanned
+                else None,
+                "cache_hit_mean": round(sum(hits) / len(hits), 4) if hits else None,
+                "cache_hit_min": min(hits) if hits else None,
+                "cost_usd": round(sum(f.get("cost") or 0.0 for f in fanned), 4)
+                if args.openrouter
+                else None,
+            },
+            "parts": part_credits(tasks, choices),
+        }
+    )
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     f = summary["fanout"]
-    print(f"\nOn the {summary['tasks']} task(s): fan-out {summary['chooser']}, the regression filter alone "
-          f"{summary['filter_alone']}, a random run {summary['random_run']}, any run (oracle) {summary['oracle']}")
-    print(f"Fan-out: {f['tasks']} task(s), {f['probes']} probes ({f['unreadable']} unreadable), "
-          f"{f['seconds_per_task']}s a task, prefix-cache hit {f['cache_hit_mean']} (min {f['cache_hit_min']})")
+    print(
+        f"\nOn the {summary['tasks']} task(s): fan-out {summary['chooser']}, the regression filter alone "
+        f"{summary['filter_alone']}, a random run {summary['random_run']}, any run (oracle) {summary['oracle']}"
+    )
+    print(
+        f"Fan-out: {f['tasks']} task(s), {f['probes']} probes ({f['unreadable']} unreadable), "
+        f"{f['seconds_per_task']}s a task, prefix-cache hit {f['cache_hit_mean']} (min {f['cache_hit_min']})"
+    )
     print("By one part alone: " + ", ".join(f"{k} {v}" for k, v in summary["parts"].items()))
-    print(f"On all {summary['listed']}: best-of-{len(runs)} with this chooser {summary['projected']}")
+    print(
+        f"On all {summary['listed']}: best-of-{len(runs)} with this chooser {summary['projected']}"
+    )
     return summary
 
 
@@ -809,25 +1007,60 @@ def parser() -> argparse.ArgumentParser:
     """The command line."""
     chooser = chooser_module()
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--server", help="the model server's URL, by node name (http://node-b.local:8000)")
+    p.add_argument(
+        "--server", help="the model server's URL, by node name (http://node-b.local:8000)"
+    )
     p.add_argument("--runs", required=True, help="comma-separated run names, the single run first")
-    p.add_argument("--runs-dir", type=Path, default=chooser.DEFAULT_RUNS_DIR, help="where the runs are (read only)")
-    p.add_argument("--dataset", type=Path, default=chooser.DEFAULT_DATASET, help="the local dataset snapshot")
-    p.add_argument("--source-cache", type=Path,
-                   default=Path.home() / ".cache" / "dreamference" / "swe-bench" / "source-at-base",
-                   help="where the repositories' files at the base commit are cached")
-    p.add_argument("--out", type=Path, default=Path("swe-bench-chooser-fanout"), help="where results go")
-    p.add_argument("--order", type=int, default=0, help="rotates the candidates in the prefix and shuffles the questions")
+    p.add_argument(
+        "--runs-dir",
+        type=Path,
+        default=chooser.DEFAULT_RUNS_DIR,
+        help="where the runs are (read only)",
+    )
+    p.add_argument(
+        "--dataset", type=Path, default=chooser.DEFAULT_DATASET, help="the local dataset snapshot"
+    )
+    p.add_argument(
+        "--source-cache",
+        type=Path,
+        default=Path.home() / ".cache" / "dreamference" / "swe-bench" / "source-at-base",
+        help="where the repositories' files at the base commit are cached",
+    )
+    p.add_argument(
+        "--out", type=Path, default=Path("swe-bench-chooser-fanout"), help="where results go"
+    )
+    p.add_argument(
+        "--order",
+        type=int,
+        default=0,
+        help="rotates the candidates in the prefix and shuffles the questions",
+    )
     p.add_argument("--workers", type=int, default=16, help="concurrent probes")
     p.add_argument("--timeout", type=float, default=300.0, help="seconds to wait for one answer")
     p.add_argument("--openrouter", help="judge with this OpenRouter model instead of --server")
-    p.add_argument("--provider", help="the one OpenRouter provider (endpoint tag) to use, no fallbacks")
-    p.add_argument("--key-file", type=Path, default=Path("~/.config/dreamference/openrouter-key"),
-                   help="OpenRouter's API key (read in the process, never printed)")
-    p.add_argument("--effort", help="reasoning effort for a hosted model that cannot switch it off (minimal)")
-    p.add_argument("--thinking-tokens", type=int, default=512, help="max_tokens added when --effort is set")
-    p.add_argument("--budget", type=float, default=1.0, help="dollars after which the hosted judge stops")
-    p.add_argument("--all", action="store_true", help="judge every task, not only those where the runs disagree")
+    p.add_argument(
+        "--provider", help="the one OpenRouter provider (endpoint tag) to use, no fallbacks"
+    )
+    p.add_argument(
+        "--key-file",
+        type=Path,
+        default=Path("~/.config/dreamference/openrouter-key"),
+        help="OpenRouter's API key (read in the process, never printed)",
+    )
+    p.add_argument(
+        "--effort", help="reasoning effort for a hosted model that cannot switch it off (minimal)"
+    )
+    p.add_argument(
+        "--thinking-tokens", type=int, default=512, help="max_tokens added when --effort is set"
+    )
+    p.add_argument(
+        "--budget", type=float, default=1.0, help="dollars after which the hosted judge stops"
+    )
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help="judge every task, not only those where the runs disagree",
+    )
     p.add_argument("--limit", type=int, help="judge only the first N tasks")
     p.add_argument("--dry-run", action="store_true", help="list the tasks; contact no server")
     return p
