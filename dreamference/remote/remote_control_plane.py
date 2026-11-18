@@ -447,7 +447,7 @@ class RemoteControlPlane:
             seconds: How long to wait.
 
         Returns:
-            Optional[bool]: True when the instance still needs its first setup, False when it is
+            bool | None: True when the instance still needs its first setup, False when it is
             set up, None when it never answered.
         """
         deadline = time.monotonic() + seconds
@@ -474,7 +474,7 @@ class RemoteControlPlane:
             node_peer_name: The node's peer name, for the owner's address (`…@<name>.invalid`).
 
         Returns:
-            Optional[str]: The 365-day token, or None.
+            str | None: The 365-day token, or None.
         """
         password = secrets.token_urlsafe(24) + "aA1!"
         RemoteSettings.write_private("owner-password", password + "\n")
@@ -510,7 +510,7 @@ class RemoteControlPlane:
             user_id: The owner's id; looked up when not given.
 
         Returns:
-            Optional[str]: The new token, or None.
+            str | None: The new token, or None.
         """
         if user_id is None:
             status, users = cls._request(dns_name, "GET", "/api/users", token=token)
@@ -592,7 +592,7 @@ class RemoteControlPlane:
             minutes: How long the key may wait; management refuses it after that, spent or not.
 
         Returns:
-            Optional[str]: The key, or None.
+            str | None: The key, or None.
         """
         status, body = cls._request(
             dns_name,
@@ -622,7 +622,7 @@ class RemoteControlPlane:
             token: The node's management token.
 
         Returns:
-            Optional[List[Dict[str, Any]]]: Every peer (`id`, `name`, `dns_label`, `connected`,
+            List[Dict[str, Any]] | None: Every peer (`id`, `name`, `dns_label`, `connected`,
             `last_seen`, `os`), or None when management did not answer.
         """
         status, body = cls._request(dns_name, "GET", "/api/peers", token=token)
