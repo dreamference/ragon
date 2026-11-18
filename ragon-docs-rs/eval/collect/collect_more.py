@@ -1,5 +1,7 @@
-"""Second collection pass: the table-heavy U.S. government reports and 20 more Wikipedia articles
+"""Second collection pass: the table-heavy U.S. government reports and 20 more Wikipedia articles.
+
 (distractors, so the set reaches about 200 documents). Appends to the manifest; skips what is present."""
+
 import hashlib
 import json
 import os
@@ -22,28 +24,63 @@ def get(url):
 
 def add(rel, url, licence, source, data):
     open(os.path.join(ROOT, rel), "wb").write(data)
-    manifest.append({"path": rel, "url": url, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
-                     "licence": licence, "source": source})
+    manifest.append(
+        {
+            "path": rel,
+            "url": url,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": len(data),
+            "licence": licence,
+            "source": source,
+        }
+    )
     print(rel, len(data))
 
 
 for rel, url, src in [
-    ("pdf/eia-monthly-energy-review-2025-09.pdf", "https://www.eia.gov/totalenergy/data/monthly/archive/00352509.pdf",
-     "EIA Monthly Energy Review, September 2025 (tables)"),
-    ("pdf/census-p60-282.pdf", "https://www2.census.gov/library/publications/2024/demo/p60-282.pdf",
-     "U.S. Census Bureau P60-282 (tables)"),
+    (
+        "pdf/eia-monthly-energy-review-2025-09.pdf",
+        "https://www.eia.gov/totalenergy/data/monthly/archive/00352509.pdf",
+        "EIA Monthly Energy Review, September 2025 (tables)",
+    ),
+    (
+        "pdf/census-p60-282.pdf",
+        "https://www2.census.gov/library/publications/2024/demo/p60-282.pdf",
+        "U.S. Census Bureau P60-282 (tables)",
+    ),
 ]:
     if rel not in have:
         add(rel, url, USGOV, src, get(url))
 
-for t in ["Arctic", "Glacier", "Tide", "Lighthouse", "Fjord", "Salmon", "Whale", "Seal_(animal)", "Penguin",
-          "Albatross", "Database", "Compiler", "Operating_system", "Cryptographic_hash_function", "Email",
-          "Spreadsheet", "PDF", "Markdown", "Search_engine", "Information_retrieval"]:
+for t in [
+    "Arctic",
+    "Glacier",
+    "Tide",
+    "Lighthouse",
+    "Fjord",
+    "Salmon",
+    "Whale",
+    "Seal_(animal)",
+    "Penguin",
+    "Albatross",
+    "Database",
+    "Compiler",
+    "Operating_system",
+    "Cryptographic_hash_function",
+    "Email",
+    "Spreadsheet",
+    "PDF",
+    "Markdown",
+    "Search_engine",
+    "Information_retrieval",
+]:
     rel = f"html/{t}.html"
     if rel in have:
         continue
-    q = get("https://en.wikipedia.org/w/api.php?action=query&prop=revisions&rvprop=ids&format=json&titles="
-            + urllib.parse.quote(t))
+    q = get(
+        "https://en.wikipedia.org/w/api.php?action=query&prop=revisions&rvprop=ids&format=json&titles="
+        + urllib.parse.quote(t)
+    )
     page = next(iter(json.loads(q)["query"]["pages"].values()))
     r = page["revisions"][0]["revid"]
     url = f"https://en.wikipedia.org/api/rest_v1/page/html/{urllib.parse.quote(t)}/{r}"
