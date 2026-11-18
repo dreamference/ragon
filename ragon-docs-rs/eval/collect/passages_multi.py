@@ -1,9 +1,11 @@
 """One candidate passage per non-English document (200-500 characters of running text), with its locator."""
+
 import os
+from pathlib import Path
 import random
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import evallib  # noqa: E402
 
 root = sys.argv[1]
@@ -13,8 +15,12 @@ for f in sorted(os.listdir(f"{root}/html-multi")):
     paras = []
     for u in units:
         for line in u["text"].split("\n"):
-            if 200 <= len(line) <= 600 and sum(c.isalpha() for c in line) > 0.7 * len(line.replace(" ", "")) \
-                    and "Lua" not in line and "ISBN" not in line:
+            if (
+                200 <= len(line) <= 600
+                and sum(c.isalpha() for c in line) > 0.7 * len(line.replace(" ", ""))
+                and "Lua" not in line
+                and "ISBN" not in line
+            ):
                 paras.append((u["loc"], line))
-    loc, text = rng.choice(paras[2:min(len(paras), 40)] or paras)
+    loc, text = rng.choice(paras[2 : min(len(paras), 40)] or paras)
     print(f"### html-multi/{f} | {loc}\n{text[:420]}\n")
