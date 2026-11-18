@@ -48,36 +48,37 @@ Why benchmarks and not logits. On 2026-11-18 the HIP build passed every within-b
 ### 2.1 Reference runs and bands
 
 - **The reference** is the GB10 serving the release's engine and checkpoint, with the release's container images.
-- **N, the reference's runs.** A band is built from the reference's last N runs of a check on one image, N ≥ 3 runs; the default is N = 5 runs (§7, Q1). The band is the minimum and maximum of those runs.
+- **N, the reference's runs.** A band is built from the reference's last N runs of a check on one image, N ≥ 3 runs; the default is N = 5 runs (§7, O1). The band is the minimum and maximum of those runs.
 - **A new reference image** starts a new band. Until N runs exist on it, no platform is judged on that image; a platform release that cannot wait is judged on the previous image, with the platform running that same image.
 - **Platform runs.** The platform runs each run-to-run varying check three times on the reference's image; the median of the three counts.
 - **One-sided.** Only a result below the band is a miss for the slice and the format checks; a result above it is reported and is not a miss. The perplexity ratio is two-sided (§2.3).
-- **A screen, then a test.** A single result below the band minimum is not by itself proof of a loss: with equal quality, one platform run falls below the minimum of N reference runs about once in N + 1 tries (one in six at N = 5 runs), and the median of three falls below it about once in nine. So a slice result below the band is decided by `scripts/swe_bench_verdict.py`, the paired one-sided test of the 1.0 development gate, with all three platform runs as the candidate and all N reference runs as the baseline. The slice check misses only when that verdict is "worse".
+- **A screen, then a test.** A single result below the band minimum is not by itself proof of a loss: with equal quality, one platform run falls below the minimum of N reference runs about once in N + 1 tries (one in six at N = 5 runs), and the median of three falls below it about once in nine. So a slice result below the band goes to a second stage, a paired test where the burden of proof is on the loss: an exact one-sided McNemar test over the slice's tasks, the platform's median run against the reference's median run. The slice check misses only when that test shows the platform resolving fewer tasks at p = 0.05. The runner is a work item (the paired counts of `scripts/swe_bench_verdict.py` with a superiority test in place of its non-inferiority one, **TO VERIFY**). `scripts/swe_bench_verdict.py` itself is not used here: it is a non-inferiority test that puts the burden on the candidate (not worse by more than three instances per 100), it merges several reports given for one side into one run, and on 39 tasks it refuses equal quality most of the time; it stays D1's tool on its 100-instance slice.
+- **The format check** (C5) is screened the same way: a parse rate below the reference's lowest is a miss only when a one-sided two-proportion test over the pooled tool calls shows the platform's rate lower at p = 0.05 or below.
 
 ### 2.2 The checks
 
 | # | Check | Dataset | Command | Runs | Pass band | A miss means |
 |---|---|---|---|---|---|---|
-| Q1 | SWE-bench Verified, slice 1 | `docs/dev/swe-bench/verified357-1.txt`, 39 tasks | `ragon-admin swe-bench run --subset docs/dev/swe-bench/verified357-1.txt --eval --name <platform>-<image>-<k>`, run by a GB10 as harness with the platform's node serving (the Windows spec's G20 arrangement; how the run is pointed at the node under test is **TO VERIFY**); then `scripts/swe_bench_verdict.py --slice docs/dev/swe-bench/verified357-1.txt --baseline <reference runs> --candidate <platform runs>` | Reference N (default 5); platform 3 | Median of the platform's three resolved counts ≥ the band minimum; if below, the verdict is not "worse" (§2.1) | The platform's release is blocked |
-| Q2 | Perplexity ratio | VALIDATION §13's held-out mix | Work item: no perplexity runner for a non-CUDA backend is in the tree today (**TO VERIFY** against the engine's bench tools) | 1 each (greedy, teacher-forced, deterministic by §3) | Platform ÷ reference in [0.99, 1.01] (default, §7 Q2) | The platform's release is blocked |
-| Q3 | Drafter acceptance | agentlong, one stream, the release's verify shape | Tokens per step from the decode benchmark that reports tok/s (the invocation is **TO VERIFY**) | Reference N; platform 3 | Note, not a gate (default, §7 Q4): within the reference's band is the target; under 75% of the reference's mean requires a diagnostic of the drafter path against its reference arithmetic | A note in the release's table |
-| Q4 | Long-context retrieval | A needle at 120,000 tokens | `scripts/long_prompt_probe.py needle --tokens 120000 --depths <the reference's depths> --host <node> --out <file>` | 1 per depth | Every depth the reference retrieves, the platform retrieves | The platform's release is blocked |
-| Q5 | Tool-call format | The Q1 runs' sessions; the engine's structured-output server tests | Work item: a counter of tool calls that parse against their tool's schema, over all tool calls, read from the run's session logs | From Q1's runs | Platform's parse rate ≥ the lowest of the reference's runs in the band; the server tests pass | The platform's release is blocked |
+| C1 | SWE-bench Verified, slice 1 | `docs/dev/swe-bench/verified357-1.txt`, 39 tasks | `ragon-admin swe-bench run --subset docs/dev/swe-bench/verified357-1.txt --eval --name <platform>-<image>-<k>`, run by a GB10 as harness with the platform's node serving (the Windows spec's G20 arrangement; how the run is pointed at the node under test is **TO VERIFY**); below the band, the second stage of §2.1 (a work item) | Reference N (default 5); platform 3 | Median of the platform's three resolved counts ≥ the band minimum; if below, the paired test of §2.1 does not show a loss | The platform's release is blocked |
+| C2 | Perplexity ratio | VALIDATION §13's held-out mix | Work item: no perplexity runner for a non-CUDA backend is in the tree today (**TO VERIFY** against the engine's bench tools) | 1 each (greedy, teacher-forced, deterministic by §3) | Platform ÷ reference in [0.99, 1.01] (default, §7 O2) | The platform's release is blocked |
+| C3 | Drafter acceptance | agentlong, one stream, the release's verify shape | Tokens per step from the decode benchmark that reports tok/s (the invocation is **TO VERIFY**) | Reference N; platform 3 | Note, not a gate (default, §7 O4): within the reference's band is the target; under 75% of the reference's mean requires a diagnostic of the drafter path against its reference arithmetic | A note in the release's table |
+| C4 | Long-context retrieval | A needle at 120,000 tokens | `scripts/long_prompt_probe.py needle --tokens 120000 --depths <the reference's depths> --host <node> --out <file>` | 1 per depth | Every depth the reference retrieves, the platform retrieves | The platform's release is blocked |
+| C5 | Tool-call format | The C1 runs' sessions; the engine's structured-output server tests | Work item: a counter of tool calls that parse against their tool's schema, over all tool calls, read from the run's session logs | From C1's runs | Platform's parse rate ≥ the lowest of the reference's runs in the band, or not lower by the test of §2.1; the server tests pass | The platform's release is blocked |
 
 Example band, from the published run log (`docs/swe-bench-runs.json`): build 0.9.4 on the GB10 resolved 28, 26, 27 and 30 of 39 slice 1 tasks over four runs on 2026-11-10 and 2026-11-11, a band of 26 to 30 tasks. Bands in a release's table are computed by the same rule from the release's own runs.
 
 ### 2.3 Why these bands
 
 - **Slice 1.** Its spread on one build is four tasks of 39, about ten points: the slice catches a large loss and nothing finer. Its value is that it measures the thing users get, end to end, with the platform's own prefill, decode, drafter and tool-call formatting.
-- **Perplexity, ±1%.** The finer instrument. Numerical differences measured so far move it by 0.09% (HIP BF16, ratio 1.000911) to 0.22% (HIP FP8, 1.00224). The smallest known quality-changing shift, a weight format change, moves it by 4 to 9% (LOWBIT §3), and VALIDATION §13's quantisation gate accepts up to 2%. A band of ±1% sits four times above the measured noise and below the quantisation gate, so it passes a platform's own arithmetic and catches a wrong kernel long before the slice could see it. It is two-sided: a ratio far below one points to a different model or different data, not a better platform.
+- **Perplexity, ±1%.** The finer instrument. Numerical differences measured so far move it by 0.09% (HIP BF16, ratio 1.000911) to 0.22% (HIP FP8, 1.00224). The smallest known quality-changing shift, a weight format change, moves it by 4 to 9% (LOWBIT §3), and VALIDATION §13's quantisation gate accepts up to 2%. VALIDATION's gate pairs that 2% with at most one point lost per benchmark; slice 1's own spread on one build is about ten points (§2.3, first bullet), so a perplexity shift the slice could see is far outside ±1%. A band of ±1% therefore sits four times above the measured numerical noise and well inside what the slice can resolve: it passes a platform's own arithmetic and catches a wrong kernel long before the slice could see it. It is two-sided: a ratio far below one points to a different model or different data, not a better platform.
 - **Acceptance.** Speculation with exact rejection does not change the output distribution, so acceptance is speed, not quality: a lower acceptance makes a platform slower, never worse. It is kept in the table because it explains a speed miss. Measured on 2026-11-18: HIP 5.33 tokens per step against the GB10's 6.74, 79% of it.
 - **Retrieval at 120,000 tokens.** Long sessions are the product's main load, and a precision change in attention or the KV cache shows first at long range. The needle tool exists and is deterministic per platform.
 - **Tool-call format.** An agent that cannot parse its own tool calls fails tasks for reasons a perplexity number does not show. The reference's lowest rate over its band runs is the floor.
 
 ### 2.4 Quality misses and speed misses
 
-- **Quality** (Q1, Q2, Q4, Q5): a miss blocks the platform's release. RBRB §9 applies: a band is changed only by the owner.
-- **Speed** (decode tok/s, Q3): a miss is a note under the decode rule. On agentlong, greedy, one stream: 50 tok/s or more passes; from 40 to 50 tok/s the miss is recorded as a DECISION and the chain goes on, with the owner able to veto; under 40 tok/s is a STOP (owner, Q36). Measured on 2026-11-18: HIP speculative decode 53.5 tok/s with BF16 KV and 48.0 tok/s with FP8 KV.
+- **Quality** (C1, C2, C4, C5): a miss blocks the platform's release. RBRB §9 applies: a band is changed only by the owner.
+- **Speed** (decode tok/s, C3): a miss is a note under the decode rule. On agentlong, greedy, one stream: 50 tok/s or more passes; from 40 to 50 tok/s the miss is recorded as a DECISION and the chain goes on, with the owner able to veto; under 40 tok/s is a STOP (owner, Q36). Measured on 2026-11-18: HIP speculative decode 53.5 tok/s with BF16 KV and 48.0 tok/s with FP8 KV.
 
 ### 2.5 Relation to the 1.0 development gate
 
@@ -94,7 +95,7 @@ These are engineering checks. Each platform runs them against itself, on every b
 | Speculative equals non-speculative | Every agentlong turn identical, chain, tree and lookup | `ragon-run --spec-check` |
 | Prefill equivalence | A chunked or resumed prefill equals one from scratch | `ragon-run --prefix-check`, `--chunk-check` |
 | Batch invariance | A sequence batched equals itself alone | `ragon-run --batch-check` |
-| Kernel tests | Each kernel against the model's own reference arithmetic (an FP32 or FP64 host reference) within a stated tolerance; each kernel bit-identical across two runs | The backend's kernel test suite (`ctest` on HIP) |
+| Kernel tests | Each kernel against the model's own reference arithmetic (an FP32 or FP64 host reference): kernels that move, convert, add or reduce in a fixed order match it exactly, kernels through the hardware `exp`, `rsqrt`, `sin`/`cos`, `pow` or `log1p` within a stated tolerance; each kernel bit-identical across two runs | The backend's kernel test suite (`ctest` on HIP) |
 
 Measured on 2026-11-18, HIP: graph-check and prefix-check pass; speculative equal to non-speculative on 16 of 16 agentlong turns; run one equal to run two on 16 of 16 turns; kernel tests 23 of 23.
 
@@ -102,7 +103,7 @@ Measured on 2026-11-18, HIP: graph-check and prefix-check pass; speculative equa
 
 - **Cross-backend agreement.** The L3 measures (top-1 flips against a Fisher threshold, flip gaps, top-5 agreement, mean KL, the identical-turn share, perplexity agreement within [0.999, 1.001]) stay available as an optional diagnostic for a platform's engineers. They carry no limit, block nothing and appear in no release table.
 - **Bit-identical emulation of another backend.** No platform is asked to reproduce another backend's activation quantisation, summation order or recurrence form in order to match its logits. Work towards that end is not planned and not reviewed as progress.
-- **Kernel bytes equal to CUDA's.** A kernel's test compares it with the model's reference arithmetic, not with the GB10's output bytes; a fixed-order kernel that happens to give CUDA's bytes is not required to.
+- **Kernel bytes equal to CUDA's.** A kernel's test compares it with the host reference (§3: exact for fixed-order kernels, a stated tolerance for transcendental ones), not with the GB10's output bytes. Matching CUDA's bytes is not the target.
 
 ## 5. Comparison method
 
@@ -117,28 +118,28 @@ One table per release, in that release's notes and in the docs' benchmarks page,
 Rules:
 - The same slice lists and the same container images on every platform; a platform that cannot use the reference's image says so in its row and is not compared until it can.
 - Every run is reported, including a run that was repeated, with its reason (RBRB §0.6). No run is dropped for being low, and none is chosen for being high.
-- Q4 and Q5 are reported as pass or fail with their numbers in a note under the table.
+- C4 and C5 are reported as pass or fail with their numbers in a note under the table.
 - Numbers in the table are those the release's record writes (`scripts/release_benchmark.py record`); nightly results stay internal, as the docs' publication rule says.
 
 ## 6. Transition
 
-- **The specs this replaces in part** are the Windows node spec (§5.3, §5.4's decision point, §5.5's gates, §9), the Mac node spec (§5's exactness row, §8) and, in the engine repository, the METAL spec (§0 to §3, §5, §7 to §9) and the engine backend spec §7. Their replacement text is in Appendix A. This job does not edit them; a follow-up docs row applies the appendix.
+- **The specs this replaces in part** are the Windows node spec (§5.3, §5.4's decision point, §5.5's gates, §9), the Mac node spec (§5's exactness row, §8) and, in the engine repository, the METAL spec (§0 to §3, §5 to §9) and the engine backend spec §7. Their replacement text is in Appendix A. This job does not edit them; a follow-up docs row applies the appendix.
 - **The HIP exactness row**, blocked on 2026-11-18 on L3's KL and flip-gap lines, closes with this spec. The HIP build's within-platform checks (§3) all pass; its quality is now decided by the table of §2.
-- **The next lane** is slice 1 served by the Windows node: three runs on the GB10's current image, harnessed by a GB10, against the GB10's band on that image, followed by Q2 and Q4 as their runners exist.
+- **The next lane** is slice 1 served by the Windows node: three runs on the GB10's current image, harnessed by a GB10, against the GB10's band on that image, followed by C2 and C4 as their runners exist.
 - **The Mac** enters the table at its M1 milestone with the same checks.
 
 ## 7. Open questions for the owner
 
 | # | Question | Default |
 |---|---|---|
-| Q1 | N, the number of reference runs in a band, and how a platform's runs are judged | N = 5 runs on one image; the platform runs three times, its median is screened against the band minimum, and a result below is decided by the paired verdict (§2.1). A lone run judged against the minimum of N runs would fail about once in N + 1 tries at equal quality, so a single run is never the decision. |
-| Q2 | The perplexity band | [0.99, 1.01]: four times the measured numerical noise (0.09 to 0.22%), half the quantisation gate's 2% (§2.3) |
-| Q3 | Slice 1 alone, or slices 1 and 2, for the 1.0 platform gate | Slice 1 alone (39 tasks, one night). Slices 1 and 2 (145 tasks) would narrow the band at the cost of a second night per platform run; D1's 100-instance slice stays the GB10's own gate. |
-| Q4 | Is the acceptance band a gate or a note | A note: exact rejection keeps the output distribution, so acceptance is speed. Under 75% of the reference's mean triggers a diagnostic of the drafter path. |
+| O1 | N, the number of reference runs in a band, and how a platform's runs are judged | N = 5 runs on one image; the platform runs three times, its median is screened against the band minimum, and a result below is decided by the paired test of §2.1, where the burden of proof is on the loss. A lone run judged against the minimum of N runs would fail about once in N + 1 tries at equal quality, so a single run is never the decision. |
+| O2 | The perplexity band | [0.99, 1.01]: four times the measured numerical noise (0.09 to 0.22%), half the quantisation gate's 2% (§2.3) |
+| O3 | Slice 1 alone, or slices 1 and 2, for the 1.0 platform gate | Slice 1 alone (39 tasks, one night). Slices 1 and 2 (145 tasks) would narrow the band at the cost of a second night per platform run; D1's 100-instance slice stays the GB10's own gate. |
+| O4 | Is the acceptance band a gate or a note | A note: exact rejection keeps the output distribution, so acceptance is speed. Under 75% of the reference's mean triggers a diagnostic of the drafter path. |
 
 ## Appendix A. Replacement text
 
-For the follow-up docs row. Each entry is one replacement: the location, the current text (quoted, with "…" where unchanged text is left out) and the new text. Counts: Windows node spec 11, Mac node spec 4, METAL spec 17, engine backend spec 2.
+For the follow-up docs row. Each entry is one replacement: the location, the current text (quoted, with "…" where unchanged text is left out) and the new text. Counts: Windows node spec 12, Mac node spec 4, METAL spec 19, engine backend spec 2.
 
 ### A.1 Windows node spec (`specs/DREAMFERENCE_WINDOWS_NODE.md`)
 
@@ -162,7 +163,7 @@ Old: - **Against the GB10:** METAL's L3 gate verbatim for the same checkpoint: 5
      85 flips, flip gap ≤ 1.75 nats, top-5 100%, mean KL ≤ 0.0008 nats, perplexity ratio in [0.999, 1.001],
      acceptance within spread.
 New: - **Against the GB10:** the same quality, not the same results (PLATFORM_QUALITY). The release gate is
-     PLATFORM_QUALITY §2's quality table: SWE-bench slice 1 within the GB10's band, perplexity ratio in
+     PLATFORM_QUALITY §2's quality table: SWE-bench slice 1 at or above the GB10's band minimum, perplexity ratio in
      [0.99, 1.01], long-context retrieval and tool-call format at the GB10's rate. Drafter acceptance is a
      note. Logit agreement with CUDA (KL, flips) is an optional diagnostic with no limit (PLATFORM_QUALITY §4).
 ```
@@ -191,7 +192,7 @@ New: … with the thresholds that would say no: a whole-step estimate under 40 t
 Old: Speculative equals non-speculative on 16 agentlong turns; byte-identical runs; **≥ 50 tok/s agentlong
      greedy**; L3
 New: Speculative equals non-speculative on 16 agentlong turns; byte-identical runs; decode by the decode rule
-     (**≥ 50 tok/s** passes, 40–50 a recorded DECISION, < 40 STOP); perplexity ratio (PLATFORM_QUALITY Q2)
+     (**≥ 50 tok/s** passes, 40–50 a recorded DECISION, < 40 STOP); perplexity ratio (PLATFORM_QUALITY C2)
 ```
 
 **W-7.** §5.5, row W3, column "Gate".
@@ -216,21 +217,24 @@ New: | G4 | Decode, agentlong | The decode rule: **≥ 50 tok/s** greedy passes,
 **W-10.** §9, row G6.
 ```
 Old: | G6 | L3 against the GB10 | §5.3 |
-New: | G6 | Quality against the GB10 | PLATFORM_QUALITY §2: Q2, Q4 and Q5 pass; Q3 reported |
+New: | G6 | Quality against the GB10 | PLATFORM_QUALITY §2: C2 (perplexity) and C4 (retrieval) pass; C3 reported |
 ```
 
-**W-11.** §9, row G20 and the sentence after the table.
+**W-11.** §9, row G20.
 ```
 Old: | G20 | A SWE-bench night served by the Windows engine and run by a GB10, the node otherwise idle | No
      significant loss by McNemar (LOWBIT §7, rung 4) |
-     …
-     G20 uses a GB10 as harness, so Windows needs no SWE-bench code: the node only serves. It can run once
-     G4–G7 pass.
 New: | G20 | SWE-bench slice 1 served by the Windows engine and run by a GB10, three runs, the node otherwise
-     idle | PLATFORM_QUALITY Q1: the median within the GB10's band, or not worse by the paired verdict |
-     …
-     G20 uses a GB10 as harness, so Windows needs no SWE-bench code: the node only serves. It can run once
-     G4–G7 pass. Its runs feed Q5 (tool-call format).
+     idle | PLATFORM_QUALITY C1: the median at or above the GB10's band minimum, or no loss shown by the
+     paired test of §2.1; C5 (tool-call format) from the same runs |
+```
+
+**W-12.** §9, the sentence after the table.
+```
+Old: G20 uses a GB10 as harness, so Windows needs no SWE-bench code: the node only serves. It can run once
+     G4–G7 pass.
+New: G20 uses a GB10 as harness, so Windows needs no SWE-bench code: the node only serves. It can run once
+     G4–G7 pass, and it carries the tool-call format check (C5) because C5 reads its sessions.
 ```
 
 ### A.2 Mac node spec (`specs/DREAMFERENCE_MAC_NODE.md`)
@@ -253,20 +257,30 @@ New: | G4 | Decode, agentlong | The decode rule (≥ 50 tok/s passes, 40–50 a 
 **M-3.** §8, row G6.
 ```
 Old: | G6 | L3 against the GB10 | Metal spec §2 |
-New: | G6 | Quality against the GB10 | PLATFORM_QUALITY §2: Q2, Q4 and Q5 pass; Q3 reported |
+New: | G6 | Quality against the GB10 | PLATFORM_QUALITY §2: C2 (perplexity) and C4 (retrieval) pass; C3 reported |
 ```
 
 **M-4.** §8, row G20.
 ```
 Old: | G20 | A SWE-bench night served by the Mac and run by a GB10 | No significant loss (McNemar), the Metal
      spec's M7 |
-New: | G20 | SWE-bench slice 1 served by the Mac and run by a GB10, three runs | PLATFORM_QUALITY Q1: the
-     median within the GB10's band, or not worse by the paired verdict |
+New: | G20 | SWE-bench slice 1 served by the Mac and run by a GB10, three runs | PLATFORM_QUALITY C1: the
+     median at or above the GB10's band minimum, or no loss shown by the paired test of §2.1; C5
+     (tool-call format) from the same runs |
 ```
 
 ### A.3 METAL spec (engine repository, `specs/DREAMFERENCE_RAGON_ENGINE_METAL.md`)
 
-**E-1.** §0, bullet "Exactness".
+**E-1.** §0, bullet "Weights".
+```
+Old: … so the Metal build serves the same model; its logits differ from CUDA's only by summation order and
+     transcendental functions.
+New: … so the Metal build serves the same model; its logits differ from CUDA's by the Metal build's own
+     arithmetic (summation order, matrix-unit precision, prefill quantization, transcendental functions),
+     and its quality is judged by PLATFORM_QUALITY §2.
+```
+
+**E-2.** §0, bullet "Exactness".
 ```
 Old: … Across CUDA and Metal, bit identity is not promised; it is replaced by a statistical gate against the
      CUDA engine (§2).
@@ -274,7 +288,7 @@ New: … Across CUDA and Metal, neither bit identity nor logit agreement is a go
      same model to the same quality, judged by PLATFORM_QUALITY's benchmark table against the GB10 (§2).
 ```
 
-**E-2.** §1, row "The same exactness rules".
+**E-3.** §1, row "The same exactness rules".
 ```
 Old: | The same exactness rules | §2: within the Metal build, the CUDA engine's rules bit for bit; across builds,
      a stated statistical gate. |
@@ -282,19 +296,19 @@ New: | The same exactness rules, the same quality | §2: within the Metal build,
      bit; across builds, PLATFORM_QUALITY's quality table. |
 ```
 
-**E-3.** §2, heading.
+**E-4.** §2, heading.
 ```
 Old: ## 2. Exactness across CUDA and Metal
 New: ## 2. Exactness within Metal, quality against CUDA
 ```
 
-**E-4.** §2, row "L2, across Macs", last column.
+**E-5.** §2, row "L2, across Macs", last column.
 ```
 Old: The L3 gate run once per GPU family and per macOS major version; …
 New: The quality table (PLATFORM_QUALITY §2) run once per GPU family and per macOS major version; …
 ```
 
-**E-5.** §2, row "L3, across CUDA and Metal".
+**E-6.** §2, row "L3, across CUDA and Metal".
 ```
 Old: | L3, across CUDA and Metal | The Metal build against the CUDA engine on the same requests | The same weights
      bit for bit (§3.2), the same quantization points (…), the same algorithms; differences only in summation
@@ -305,7 +319,7 @@ New: | L3, across CUDA and Metal | The Metal build against the CUDA engine on th
      diagnostic |
 ```
 
-**E-6.** §2, the L3 gate and its five bullets.
+**E-7.** §2, the L3 gate and its five bullets.
 ```
 Old: **The L3 gate** (the reference is the CUDA engine at the release's commit, teacher-forced; …):
      - on the agreement study's 54 prompts …, every flip's gap ≤ 1.75 nats, top-5 agreement 100%;
@@ -313,7 +327,7 @@ Old: **The L3 gate** (the reference is the CUDA engine at the release's commit, 
      - perplexity on VALIDATION §13's held-out mix within a ratio of [0.999, 1.001] …;
      - acceptance (tokens per step) on agentlong within the run-to-run spread of the CUDA engine's …;
      - informational, not a gate: the share of agentlong turns whose greedy output is identical …
-New: **The release gate** is PLATFORM_QUALITY §2: SWE-bench slice 1 within the GB10's band, perplexity on
+New: **The release gate** is PLATFORM_QUALITY §2: SWE-bench slice 1 at or above the GB10's band minimum, perplexity on
      VALIDATION §13's held-out mix within a ratio of [0.99, 1.01] of the GB10's, long-context retrieval and
      tool-call format at the GB10's rate; acceptance on agentlong reported as a note.
      **The L3 diagnostic** (optional, no limit, PLATFORM_QUALITY §4): top-1 flips, flip gaps, top-5
@@ -321,16 +335,16 @@ New: **The release gate** is PLATFORM_QUALITY §2: SWE-bench slice 1 within the 
      54 prompts, and the share of identical agentlong turns.
 ```
 
-**E-7.** §3.2, "Does it change outputs against CUDA?".
+**E-8.** §3.2, "Does it change outputs against CUDA?".
 ```
 Old: … Outputs differ only as L3 allows (§2): summation order and transcendental functions. Quality is
      therefore gated as a numerical port, not as a format change: the L3 gate (agreement, KL, perplexity
      ratio) at M1 and at every release, and one SWE-bench night … at M7, …
 New: … Outputs differ by the Metal build's own arithmetic. Quality is gated as a numerical port, not as a
-     format change: PLATFORM_QUALITY's quality table at M1 (Q2) and at every release (all checks), …
+     format change: PLATFORM_QUALITY's quality table at M1 (C2) and at every release (all checks), …
 ```
 
-**E-8.** §3.8, the prefill paragraph.
+**E-9.** §3.8, the prefill paragraph.
 ```
 Old: … The Metal prefill keeps the same quantization points and emulates the products: activations quantized
      to NVFP4 or FP8 by the same rule, both operands decoded to FP16 (exactly, §3.2), multiplied with FP32
@@ -340,63 +354,67 @@ New: … The Metal prefill chooses its arithmetic for Apple's matrix units: weig
      quantization is not emulated; the quality table judges the result (PLATFORM_QUALITY §2). …
 ```
 
-**E-9.** §5, the acceptance sentence.
+**E-10.** §5, the acceptance sentence.
 ```
 Old: Acceptance depends only on the two models' numbers, which L3 keeps equal, so it is taken from the GB10
      unchanged: 6.749 tokens per step on agentlong …
 New: Acceptance depends on the two models' numbers on this hardware; the estimate takes the GB10's 6.749
-     tokens per step on agentlong … and M2 measures the Mac's own (PLATFORM_QUALITY Q3, a note).
+     tokens per step on agentlong … and M2 measures the Mac's own (PLATFORM_QUALITY C3, a note).
 ```
 
-**E-10.** §7, row M1, column "Exactness gate".
+**E-11.** §7, row M1, column "Exactness gate".
 ```
 Old: … greedy deterministic across repeats; the L3 gate against the CUDA engine (§2), perplexity ratio included
 New: … greedy deterministic across repeats; the perplexity ratio against the GB10 in [0.99, 1.01]
-     (PLATFORM_QUALITY Q2)
+     (PLATFORM_QUALITY C2)
 ```
 
-**E-11.** §7, row M2, column "Measurable target".
+**E-12.** §7, row M2, column "Measurable target".
 ```
 Old: Tokens per step on agentlong within the CUDA engine's run-to-run spread at the same verify shape; …
-New: Tokens per step on agentlong recorded against the GB10's band (PLATFORM_QUALITY Q3, a note); …
+New: Tokens per step on agentlong recorded against the GB10's band (PLATFORM_QUALITY C3, a note); …
 ```
 
-**E-12.** §7, row M4, columns "What" and "Exactness gate".
+**E-13.** §7, row M4, columns "What" and "Exactness gate".
 ```
 Old: Prefill GEMMs with CUDA's activation quantization emulated; … | `--chunk-check`, `--prefix-check`; the L3
      gate's prefill positions (the first token after the prompt)
 New: Prefill GEMMs in the Metal build's own arithmetic (§3.8); … | `--chunk-check`, `--prefix-check`;
-     long-context retrieval (PLATFORM_QUALITY Q4)
+     long-context retrieval (PLATFORM_QUALITY C4)
 ```
 
-**E-13.** §7, row M6, column "Exactness gate".
+**E-14.** §7, row M6, column "Exactness gate".
 ```
 Old: … prompts token-identical to the Linux build's on image requests; the L3 gate on image prompts
 New: … prompts token-identical to the Linux build's on image requests; the engine's server tests on image
      prompts
 ```
 
-**E-14.** §7, row M7, column "Exactness gate".
+**E-15.** §7, row M7, column "Exactness gate".
 ```
 Old: The L3 gate on the release candidate; the night with no significant loss (McNemar)
 New: The quality table on the release candidate (PLATFORM_QUALITY §2), slice 1 included
 ```
 
-**E-15.** §7, row M9, column "Exactness gate".
+**E-16.** §7, row M9, column "Exactness gate".
 ```
 Old: L1 checks and the L3 gate per GPU family
 New: L1 checks and the quality table per GPU family
 ```
 
-**E-16.** §8, tests table, row `ragon-l3-check`, and §6 risk row "A macOS update changes kernel bits (L2)".
+**E-17.** §6.2, tests table, row `ragon-l3-check`.
 ```
 Old: | — | `ragon-l3-check`: the L3 gate (§2) against the pinned CUDA reference; … |
-     … golden files keyed by OS build; the L3 gate re-run | Standing |
 New: | — | `ragon-l3-check`: the L3 diagnostic (§2, no limit) against the pinned CUDA reference; … |
-     … golden files keyed by OS build; the quality table re-run | Standing |
 ```
 
-**E-17.** §9, open question 1.
+**E-18.** §8, risks table, row "A macOS update changes kernel bits (L2)".
+```
+Old: … golden files keyed by OS build; the L3 gate re-run | Standing |
+New: … golden files keyed by OS build; the quality table re-run | Standing |
+```
+
+**E-19.** §9, open question 1.
 ```
 Old: 1. **Cross-platform exactness.** Accept L3 (same weights and quantization points, a statistical gate) as
      the definition of "the same model" across CUDA and Metal, with no attempt at bit identity? *Default: yes.*
@@ -407,6 +425,8 @@ New: 1. **Cross-platform exactness.** Decided by the owner on 2026-11-18: the sa
 
 ### A.4 Engine backend spec (engine repository, `specs/DREAMFERENCE_RAGON_ENGINE_BACKEND.md`, §7 HIP)
 
+The backend spec is not on the engine's main branch yet; it is on the backend-interface and HIP branches, and the follow-up row applies these entries to the version that lands.
+
 **B-1.** §7, the first paragraph's last sentence.
 ```
 Old: The entry points and their contracts are §2 unchanged; the exactness rules of AMD apply within the HIP
@@ -415,12 +435,14 @@ New: The entry points and their contracts are §2 unchanged; within the HIP buil
      of PLATFORM_QUALITY §3 apply bit for bit; against the GB10, PLATFORM_QUALITY §2's quality table decides.
 ```
 
-**B-2.** §7, bullet "The exactness rule for the HIP backend (coordinator, 2026-11-14)".
+**B-2.** §7, bullet "The exactness rule for the HIP backend (coordinator, 2026-11-14)". This bullet is on the later HIP branches only; apply it where present.
 ```
 Old: … every kernel gives identical bytes on every run of the same backend; kernels that move, convert, add or
      reduce in a fixed order give CUDA's bytes; kernels that go through the hardware `exp`, `rsqrt`,
      `sin`/`cos`, `pow` or `log1p` are held to the FP32/FP64 host reference's tolerance across backends. …
-New: … every kernel gives identical bytes on every run of the same backend; every kernel is held to the
-     FP32/FP64 host reference's stated tolerance. CUDA's bytes are not a requirement for any kernel
-     (owner, 2026-11-18, PLATFORM_QUALITY §4). …
+New: … every kernel gives identical bytes on every run of the same backend; kernels that move, convert, add or
+     reduce in a fixed order give the FP32/FP64 host reference's bytes exactly; kernels that go through the
+     hardware `exp`, `rsqrt`, `sin`/`cos`, `pow` or `log1p` are held to the host reference's stated
+     tolerance. The reference is the host's arithmetic, not CUDA's output bytes (owner, 2026-11-18,
+     PLATFORM_QUALITY §4). …
 ```
