@@ -1,6 +1,10 @@
-"""Fetch the embedding candidates and the chunking tokenizers into the scratch folder (the only networked
-step after fetch.py): download_models.py [<model> …] (default: every candidate). Prints each model's
-on-disk ONNX size."""
+"""Fetch the embedding candidates and the chunking tokenizers.
+
+(the only networked step after fetch.py):
+download_models.py [<model> …] (default: every candidate). Prints each model's
+on-disk ONNX size.
+"""
+
 import os
 import sys
 
@@ -16,7 +20,9 @@ Tokenizer.from_pretrained("intfloat/multilingual-e5-small")  # chunking (XLM-R f
 Tokenizer.from_pretrained("BAAI/bge-small-en-v1.5")  # the English runs' chunking
 for m in sys.argv[1:] or list(CANDIDATES):
     register(m)
-    e = TextEmbedding(m, cache_dir=f"{D}/models", providers=["CPUExecutionProvider"], lazy_load=True)
+    e = TextEmbedding(
+        m, cache_dir=f"{D}/models", providers=["CPUExecutionProvider"], lazy_load=True
+    )
     path = e.model._model_dir if hasattr(e.model, "_model_dir") else None
     size = 0
     if path:
