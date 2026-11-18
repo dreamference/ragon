@@ -44,6 +44,7 @@ use std::process::Command;
 use std::process::Stdio;
 use std::time::Duration;
 
+use crate::bridge::Delivery;
 use crate::gate;
 use crate::gate::Binding;
 use crate::gate::Mode;
@@ -54,11 +55,11 @@ use crate::state::Config;
 use crate::unit;
 use crate::unit::Instance;
 
-const USAGE: &str = "Usage: ragon signal setup [--name NAME] [--number +NUMBER [--voice]] [--port N] [--dry-run] | setup --refresh [--dry-run] | status [--name NAME] | start [--name NAME] | stop [--name NAME] | trust [--name NAME] | remove [--name NAME] [--dry-run] | unit [--name NAME]";
+const USAGE: &str = "Usage: ragon signal setup [--name NAME] [--number +NUMBER [--voice]] [--port N] [--dry-run] | setup --refresh [--dry-run] | status [--name NAME] | start [--name NAME] | stop [--name NAME] | trust [--name NAME] | remove [--name NAME] [--dry-run] | unit [--name NAME] | delivery [messages|edit] [--name NAME]";
 const BRIDGE_USAGE: &str = "       ragon-signal serve --state DIR [--runtime DIR]   (what the system unit runs; nobody types it)";
 
 /// The commands only the bridge's own account runs, through the `ragon-signal` binary.
-pub const BRIDGE_COMMANDS: &[&str] = &["serve", "init", "retool", "pair", "bind", "trust-owner", "account"];
+pub const BRIDGE_COMMANDS: &[&str] = &["serve", "init", "retool", "pair", "bind", "trust-owner", "account", "delivery-set"];
 
 /// How `run` was reached.
 #[derive(Clone, Debug)]
@@ -221,6 +222,8 @@ fn unexpected_argument(command: &str, rest: &[String]) -> Option<String> {
         "bind" | "trust-owner" | "account" => (&[], &["--state"]),
         "verify-signal-cli" => (&[], &["--file", "--signature"]),
         "trust" | "start" | "stop" | "unit" => (&[], &["--name"]),
+        "delivery" => (&[], &["--name"]),
+        "delivery-set" => (&[], &["--state"]),
         "status" => (&[], &["--name", "--runtime"]),
         "remove" => (&["--dry-run"], &["--name"]),
         "setup" => (&["--dry-run", "--refresh", "--voice"], &["--name", "--number", "--port"]),
@@ -232,7 +235,7 @@ fn unexpected_argument(command: &str, rest: &[String]) -> Option<String> {
             if words.next().is_none() {
                 return Some(format!("`ragon signal {command} {word}` needs a value"));
             }
-        } else if !switches.contains(&word.as_str()) {
+        } else if !switches.contains(&word.as_str()) && !(command.starts_with("delivery") && !word.starts_with("--")) {
             return Some(format!("`ragon signal {command}` takes no `{word}`"));
         }
     }
@@ -277,6 +280,8 @@ pub fn run(args: &[String], invocation: &Invocation) -> i32 {
             Ok(instance) => run_trust(&instance),
             Err(code) => code,
         },
+        Some("delivery-set") => run_delivery_set(&args[1..]),
+        Some("delivery") => run_delivery(&args[1..], &invocation.host),
         Some("remove") => run_remove(&args[1..], &invocation.host),
         Some("setup") if has(&args[1..], "--refresh") => run_refresh(&args[1..], invocation),
         Some("setup") => run_setup(&args[1..], invocation),
@@ -373,6 +378,7 @@ fn run_init(args: &[String]) -> i32 {
         vision: has(args, "--vision"),
         instance: flag(args, "--instance").or_else(|| previous.as_ref().and_then(|p| p.instance.clone())),
         user: flag(args, "--user").or_else(|| previous.as_ref().and_then(|p| p.user.clone())),
+        delivery: previous.as_ref().map(|p| p.delivery).unwrap_or_default(),
     };
     match config.save(&state_dir) {
         Ok(()) => 0,
@@ -1210,6 +1216,69 @@ fn run_trust(instance: &Instance) -> i32 {
     if status == 0 && started == 0 { 0 } else { 1 }
 }
 
+/// `delivery`: shows how this bridge delivers a turn, or sets it (`messages`, the default: every
+/// update a new message; `edit`: one message edited as the answer grows, §19.8) and restarts the
+/// bridge so it takes effect. The setting lives in the bridge's own bridge.json, so the bridge's
+/// account writes it (`delivery-set`).
+fn run_delivery(args: &[String], host: &Host) -> i32 {
+    let value = args.iter().find(|a| !a.starts_with("--") && Some(a.as_str()) != flag(args, "--name").as_deref());
+    if let Some(value) = value
+        && Delivery::parse(value).is_none()
+    {
+        eprintln!("`ragon signal delivery` takes messages or edit, not `{value}`.\n{USAGE}");
+        return 2;
+    }
+    let instance = match chosen_present(args, host, false) {
+        Ok(instance) => instance,
+        Err(code) => return code,
+    };
+    if let Some(found) = bridge_account_of(&instance)
+        && let Err(err) = setup::may_act(&instance, found.user.as_deref(), &current_user())
+    {
+        eprintln!("❌ {err}");
+        return 1;
+    }
+    let mut command = Command::new("sudo");
+    command.args(["-u", &instance.account(), unit::BRIDGE_PATH, "delivery-set", "--state", &instance.state_dir()]);
+    let Some(value) = value else {
+        return command.status().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+    };
+    command.arg(value);
+    if command.status().map(|s| s.code().unwrap_or(1)).unwrap_or(1) != 0 {
+        return 1;
+    }
+    systemctl(&["restart", &instance.unit_name()])
+}
+
+/// Runs as the bridge's account: prints the delivery mode, or sets it in bridge.json.
+fn run_delivery_set(args: &[String]) -> i32 {
+    let state_dir = PathBuf::from(flag(args, "--state").unwrap_or_else(|| unit::STATE_DIR.to_string()));
+    let mut config = match Config::load(&state_dir) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("{err}");
+            return 1;
+        }
+    };
+    let value = args.iter().enumerate().find(|(i, a)| !a.starts_with("--") && (*i == 0 || args[*i - 1] != "--state")).map(|(_, a)| a.as_str());
+    match value {
+        None => println!("delivery: {}", config.delivery.name()),
+        Some(value) => {
+            let Some(delivery) = Delivery::parse(value) else {
+                eprintln!("delivery is messages or edit, not `{value}`");
+                return 2;
+            };
+            config.delivery = delivery;
+            if let Err(err) = config.save(&state_dir) {
+                eprintln!("Could not write bridge.json: {err}");
+                return 1;
+            }
+            println!("delivery: {}", delivery.name());
+        }
+    }
+    0
+}
+
 /// §5.3 on the bridge's data: shows the owner's current safety number, and after the user has
 /// compared it with their phone, trusts that key and records its fingerprint.
 fn run_trust_owner(args: &[String]) -> i32 {
@@ -1364,6 +1433,13 @@ mod tests {
         assert!(unexpected_argument("remove", &args(&["--name"])).is_some(), "a flag with no value");
         assert!(unexpected_argument("remove", &args(&["--name", "work", "--dry-run"])).is_none());
         assert!(unexpected_argument("setup", &args(&["--number", "+15551234567", "--voice", "--port", "3100"])).is_none());
+        assert!(unexpected_argument("delivery", &args(&["edit", "--name", "work"])).is_none(), "the mode is a word");
+        assert!(unexpected_argument("delivery", &args(&["--bogus-flag"])).is_some());
+        assert_eq!(run(&args(&["delivery", "stream"]), &invocation_for_delivery()), 2, "only messages or edit");
+    }
+
+    fn invocation_for_delivery() -> Invocation {
+        Node::new("delivery").with("work").invocation()
     }
 
     #[test]

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 use serde_json::json;
 
+use crate::bridge::Delivery;
 use crate::bridge::ThreadRef;
 use crate::gate::Binding;
 use crate::gate::Mode;
@@ -63,6 +64,8 @@ pub struct Config {
     /// The Linux user whose `ragon web` this instance answers with (§18.1, decision 3), and the only
     /// one who may set it up again, trust or remove it. None before §18: anyone with sudo may.
     pub user: Option<String>,
+    /// How a turn is delivered: new messages (default), or edits of one message (§19.8).
+    pub delivery: Delivery,
 }
 
 impl Config {
@@ -85,6 +88,7 @@ impl Config {
             "vision": self.vision,
             "instance": self.instance,
             "user": self.user,
+            "delivery": self.delivery.name(),
         })
     }
 
@@ -127,6 +131,10 @@ impl Config {
             vision: value.get("vision").and_then(Value::as_bool).unwrap_or(false),
             instance: text("instance"),
             user: text("user"),
+            delivery: match text("delivery") {
+                None => Delivery::Messages,
+                Some(name) => Delivery::parse(&name).ok_or(format!("unknown delivery {name}; messages or edit"))?,
+            },
         })
     }
 
@@ -251,7 +259,20 @@ mod tests {
             vision: true,
             instance: Some("work".to_string()),
             user: Some("owner".to_string()),
+            delivery: Delivery::Edit,
         }
+    }
+
+    #[test]
+    fn delivery_defaults_to_messages_and_only_two_values_load() {
+        let mut json = sample().to_json();
+        assert_eq!(json["delivery"], "edit");
+        json.as_object_mut().unwrap().remove("delivery");
+        assert_eq!(Config::from_json(&json).unwrap().delivery, Delivery::Messages, "a bridge.json from before the setting");
+        json["delivery"] = serde_json::json!("messages");
+        assert_eq!(Config::from_json(&json).unwrap().delivery, Delivery::Messages);
+        json["delivery"] = serde_json::json!("stream");
+        assert!(Config::from_json(&json).is_err());
     }
 
     #[test]

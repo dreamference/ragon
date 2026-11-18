@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use futures::SinkExt;
 use futures::StreamExt;
+use ragon_signal::bridge::Delivery;
 use ragon_signal::gate::Mode;
 use ragon_signal::gate::Owner;
 use ragon_signal::state::Config;
@@ -165,6 +166,7 @@ async fn no_turn_starts_in_a_thread_at_airgapped_on() {
         vision: false,
         instance: None,
         user: None,
+        delivery: Delivery::Edit,
     }
     .save(&state)
     .unwrap();
@@ -217,6 +219,7 @@ async fn the_owners_question_is_answered_through_ragon_web_and_a_strangers_is_no
         vision: false,
         instance: None,
         user: None,
+        delivery: Delivery::Edit,
     }
     .save(&state)
     .unwrap();
@@ -299,6 +302,7 @@ async fn at_air_gap_on_the_owner_gets_nothing_not_even_a_receipt() {
         vision: false,
         instance: None,
         user: None,
+        delivery: Delivery::Edit,
     }
     .save(&state)
     .unwrap();
@@ -362,6 +366,7 @@ async fn linked_to_the_owners_account_only_note_to_self_is_read_and_answered_the
         vision: false,
         instance: None,
         user: None,
+        delivery: Delivery::Edit,
     }
     .save(&state)
     .unwrap();
@@ -448,6 +453,7 @@ async fn when_signal_cli_cannot_edit_the_answer_comes_whole() {
         vision: false,
         instance: None,
         user: None,
+        delivery: Delivery::Edit,
     }
     .save(&state)
     .unwrap();
@@ -465,5 +471,55 @@ async fn when_signal_cli_cannot_edit_the_answer_comes_whole() {
         assert!(tokio::time::Instant::now() < deadline, "the answer never came whole; signal-cli saw: {:?}", requests(&log));
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    daemon.abort();
+}
+
+#[tokio::test]
+async fn in_messages_delivery_the_answer_is_one_new_message_and_nothing_is_edited() {
+    let dir = Scratch(std::env::temp_dir().join(format!("ragon-signal-messages-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&dir.0);
+    let state = dir.0.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let log = dir.0.join("signal-cli.log");
+    let now = now_ms();
+    let messages = vec![json!({"jsonrpc":"2.0","method":"receive","params":{"envelope":{"sourceUuid":"me","sourceDevice":1,"timestamp":now,"serverReceivedTimestamp":now + 100,"serverDeliveredTimestamp":now + 200,"syncMessage":{"sentMessage":{"destinationNumber":"+15559999","destinationUuid":"me","message":"what is 2+2?","timestamp":now}}}}})];
+    let (seen_tx, _seen) = tokio::sync::mpsc::unbounded_channel();
+    let port = fake_ragon_web(seen_tx, "off").await;
+    Config {
+        mode: Mode::Linked { own_device: 4 },
+        account: "+15559999".to_string(),
+        own_uuid: Some("me".to_string()),
+        owner: Some(Owner { aci: "me".to_string(), fingerprint: String::new() }),
+        binding: None,
+        port,
+        node: "test-node".to_string(),
+        signal_cli: fake_signal_cli(&dir.0, &log, &messages),
+        signal_cli_env: vec![],
+        signal_cli_version: "0.14.9".to_string(),
+        vision: false,
+        instance: None,
+        user: None,
+        delivery: Delivery::Messages,
+    }
+    .save(&state)
+    .unwrap();
+    ragon_signal::state::save_cookie(&state, "ragon_device=test").unwrap();
+    let daemon = {
+        let state = state.clone();
+        tokio::spawn(async move { ragon_signal::serve::serve(&state, None).await })
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if requests(&log).iter().any(|r| r["method"] == "send" && r["params"]["message"] == "🐦 The answer is 4.") {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no answer; signal-cli saw: {:?}", requests(&log));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let sent = requests(&log);
+    let sends: Vec<&Value> = sent.iter().filter(|r| r["method"] == "send").collect();
+    assert_eq!(sends.len(), 1, "the whole answer, once, with no status line: {sends:?}");
+    assert!(sends[0]["params"].get("editTimestamp").is_none(), "nothing is edited: {sends:?}");
     daemon.abort();
 }

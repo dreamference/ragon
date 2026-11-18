@@ -37,6 +37,7 @@ use crate::rpc::SignalCli;
 use crate::state;
 use crate::state::Config;
 use crate::state::Conversation;
+use crate::bridge::Delivery;
 use crate::timing;
 use crate::timing::Timing;
 
@@ -147,6 +148,7 @@ pub async fn serve(state_dir: &Path, runtime_dir: Option<&Path>) -> Result<(), S
     bridge.last_activity_ms = conversation.last_activity_ms;
     // Note to Self shows no typing: a status line shows the work instead (§19.8).
     bridge.status_line = matches!(config.mode, Mode::Linked { .. });
+    bridge.delivery = config.delivery;
     let mut daemon = Daemon {
         state_dir: state_dir.to_path_buf(),
         runtime_dir: runtime_dir.map(Path::to_path_buf),
@@ -505,7 +507,8 @@ impl Daemon {
     async fn send_with(&mut self, message: &Styled, attachments: &[String]) -> Option<u64> {
         let params = self.send_params(message, attachments)?;
         let replaces = self.status.take_if(|line| line.closing);
-        if let Some(line) = replaces.filter(|line| attachments.is_empty() && !line.broken && line.edits <= STATUS_EDITS) {
+        // `messages` delivery never edits; a line left over from `edit` is not replaced.
+        if let Some(line) = replaces.filter(|line| self.config.delivery == Delivery::Edit && attachments.is_empty() && !line.broken && line.edits <= STATUS_EDITS) {
             match self.signal.call("send", rpc::as_edit(params.clone(), line.timestamp)).await {
                 Ok(result) => return rpc::sent_timestamp(&result).or(Some(line.timestamp)),
                 Err(err) => self.note_error(format!("could not replace the status line, sending the message instead: {err}")),
@@ -523,6 +526,9 @@ impl Daemon {
     /// The answer's message (§19.8): opened as a message (the status line, or the answer's first
     /// words), changed by edits while there are edits to spare and they work.
     async fn status_line(&mut self, line: StatusLine) {
+        if self.config.delivery != Delivery::Edit {
+            return;
+        }
         let message = match &line {
             StatusLine::Open(text) | StatusLine::Update(text) => Styled::plain(text),
             StatusLine::Stream(markdown) => {

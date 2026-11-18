@@ -102,6 +102,35 @@ pub const STATUS_EVERY_MS: u64 = 4_000;
 pub const STREAM_EVERY_MS: u64 = 3_000;
 pub const ACTIVITY_UPDATES: u32 = 3;
 pub const STATUS_UPDATES: u32 = 8;
+/// In `messages` delivery (the default): the one progress message of a turn, after this long
+/// without any of the answer.
+pub const MESSAGES_PROGRESS_MS: u64 = 20_000;
+
+/// How the bridge delivers a turn (`delivery` in bridge.json, `ragon signal delivery`): each update
+/// as a new message (default, no flicker), or by editing one message as the answer grows (§19.8).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Delivery {
+    #[default]
+    Messages,
+    Edit,
+}
+
+impl Delivery {
+    pub fn parse(text: &str) -> Option<Delivery> {
+        match text {
+            "messages" => Some(Delivery::Messages),
+            "edit" => Some(Delivery::Edit),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Delivery::Messages => "messages",
+            Delivery::Edit => "edit",
+        }
+    }
+}
 
 /// The one message an answer grows in (§19.8, the owner's decision: answers stream
 /// in by edits, as Telegram's do). In linked mode it opens at once as a status line, since Note to
@@ -393,6 +422,8 @@ pub struct Bridge {
     pub status_line: bool,
     /// Whether the answer streams into its message by edits (§19.8).
     pub stream: bool,
+    /// `messages` (default): no edit at all; `edit`: the status line and the streaming answer.
+    pub delivery: Delivery,
     status: Option<Status>,
     loaded: HashSet<String>,
     connected: bool,
@@ -472,6 +503,7 @@ impl Bridge {
             limits: Limits::default(),
             status_line: false,
             stream: true,
+            delivery: Delivery::Messages,
             status: None,
             loaded: HashSet::new(),
             connected: false,
@@ -484,6 +516,17 @@ impl Bridge {
             down_notified: false,
             lost_answer: false,
         }
+    }
+
+    /// Whether messages are edited as a turn goes (`edit` delivery).
+    fn edits(&self) -> bool {
+        self.delivery == Delivery::Edit
+    }
+
+    /// When a turn's first progress note is due, from `now`: a minute in `edit` delivery, where
+    /// the status line stands in for the notes first; 20 s of silence in `messages` delivery.
+    fn first_progress(&self, now: u64) -> u64 {
+        now + if self.edits() { FIRST_PROGRESS_MS } else { MESSAGES_PROGRESS_MS }
     }
 
     pub fn is_busy(&self) -> bool {
@@ -606,11 +649,11 @@ impl Bridge {
     /// thread opens (§19.8); earlier nothing showed until the thread was open.
     fn begin(&mut self, message: OwnerMessage, now: u64) -> Vec<Action> {
         let mut actions = Vec::new();
-        if self.status_line && self.status.is_none() {
+        if self.status_line && self.edits() && self.status.is_none() {
             self.status = Some(Status { last_ms: now, shown: String::new(), updates: 0, streamed: 0 });
             actions.push(Action::Status(StatusLine::Open(WORKING.to_string())));
         }
-        let typing = if self.status_line { None } else { Some(Action::Typing(true)) };
+        let typing = if self.status_line && self.edits() { None } else { Some(Action::Typing(true)) };
         match self.current.clone() {
             None => {
                 self.phase = Phase::Opening { message, fresh: true };
@@ -646,7 +689,7 @@ impl Bridge {
             turn: None,
             started_ms: now,
             last_typing_ms: now,
-            next_progress_ms: now + FIRST_PROGRESS_MS,
+            next_progress_ms: self.first_progress(now),
             answer: String::new(),
             activity: None,
             stopping: false,
@@ -913,7 +956,7 @@ impl Bridge {
                                 turn: None,
                                 started_ms: now,
                                 last_typing_ms: now,
-                                next_progress_ms: now + FIRST_PROGRESS_MS,
+                                next_progress_ms: self.first_progress(now),
                                 answer: String::new(),
                                 activity: None,
                                 stopping: false,
@@ -1177,10 +1220,24 @@ impl Bridge {
             }
             let elapsed = duration(now - *started_ms);
             let progress = now >= *next_progress_ms;
+            let written = answer.trim();
+            if self.delivery == Delivery::Messages {
+                // One progress message per turn, and only while none of the answer has come:
+                // fewer messages beat flicker.
+                if progress {
+                    *next_progress_ms = u64::MAX;
+                    if written.is_empty() {
+                        let mut text = format!("Still working ({elapsed})");
+                        if let Some(activity) = activity {
+                            text.push_str(&format!(": {activity}"));
+                        }
+                        actions.push(Action::Notice(text));
+                    }
+                }
+            } else {
             if progress {
                 *next_progress_ms = now + PROGRESS_EVERY_MS;
             }
-            let written = answer.trim();
             match &mut self.status {
                 // The answer streams in: its first words open the message (dedicated mode), and it
                 // changes every few seconds while edits are left (§19.8).
@@ -1219,6 +1276,7 @@ impl Bridge {
                     actions.push(Action::Notice(text));
                 }
                 _ => {}
+            }
             }
         }
         while self.approvals.front().is_some_and(|a| now >= a.deadline_ms) {
@@ -1303,7 +1361,14 @@ mod tests {
         OwnerMessage { text: text.to_string(), attachments: vec![], timestamp: ts }
     }
 
+    /// Under `edit` delivery: the streaming behaviour of §19.8 (the default is `messages`).
     fn connected() -> Bridge {
+        let mut b = connected_messages();
+        b.delivery = Delivery::Edit;
+        b
+    }
+
+    fn connected_messages() -> Bridge {
         let mut b = Bridge::new(None, vec![], Info { node: "gx10".to_string(), ..Info::default() });
         assert!(b.on_agent(AgentEvent::Connected, 0).is_empty());
         b
@@ -1717,6 +1782,78 @@ mod tests {
         b.on_agent(AgentEvent::TurnStarted { thread: "t1".to_string(), turn: "u2".to_string() }, now + 10);
         b.on_agent(AgentEvent::Delta { thread: "t1".to_string(), text: "Yes".to_string() }, now + 11);
         assert_eq!(statuses(&b.on_tick(now + 12)), vec![StatusLine::Stream("Yes".to_string())]);
+    }
+
+    fn no_edit_actions(actions: &[Action]) -> bool {
+        !actions.iter().any(|a| matches!(a, Action::Status(_)))
+    }
+
+    #[test]
+    fn messages_delivery_is_the_default_and_never_edits() {
+        assert_eq!(Delivery::default(), Delivery::Messages);
+        for linked in [false, true] {
+            let mut b = connected_messages();
+            b.status_line = linked;
+            let mut all = b.on_message(msg("birthplace of portugal?", 1), 0);
+            all.extend(b.on_agent(AgentEvent::ThreadReady { thread: "t1".to_string() }, 0));
+            all.extend(b.on_agent(AgentEvent::TurnStarted { thread: "t1".to_string(), turn: "u1".to_string() }, 0));
+            all.extend(b.on_agent(AgentEvent::Activity { thread: "t1".to_string(), text: "reading a page".to_string() }, 100));
+            for now in (1_000..40_000).step_by(1_000) {
+                all.extend(b.on_tick(now));
+            }
+            all.extend(b.on_agent(AgentEvent::Delta { thread: "t1".to_string(), text: "Guimarães.".to_string() }, 41_000));
+            for now in (41_000..120_000).step_by(1_000) {
+                all.extend(b.on_tick(now));
+            }
+            let done = b.on_agent(AgentEvent::TurnCompleted { thread: "t1".to_string(), error: None }, 121_000);
+            all.extend(done.clone());
+            assert!(no_edit_actions(&all), "no status line, no stream, no edit: {all:?}");
+            assert_eq!(replies(&done), vec!["Guimarães."], "the whole answer, once");
+            assert_eq!(replies(&all).len(), 1);
+        }
+    }
+
+    #[test]
+    fn messages_delivery_sends_one_progress_message_after_twenty_silent_seconds() {
+        let mut b = connected_messages();
+        b.on_message(msg("a long one", 1), 0);
+        b.on_agent(AgentEvent::ThreadReady { thread: "t1".to_string() }, 0);
+        b.on_agent(AgentEvent::TurnStarted { thread: "t1".to_string(), turn: "u1".to_string() }, 0);
+        b.on_agent(AgentEvent::Activity { thread: "t1".to_string(), text: "running `make`".to_string() }, 0);
+        for now in (1_000..MESSAGES_PROGRESS_MS).step_by(1_000) {
+            assert!(notices(&b.on_tick(now)).is_empty(), "silent for less than 20 s at {now}");
+        }
+        let first = b.on_tick(MESSAGES_PROGRESS_MS);
+        assert_eq!(notices(&first), vec!["Still working (20s): running `make`"]);
+        assert!(no_edit_actions(&first));
+        let mut later = Vec::new();
+        for now in (21_000..2 * 60_000).step_by(1_000) {
+            later.extend(b.on_tick(now));
+        }
+        assert!(notices(&later).is_empty(), "never a second one: {later:?}");
+        let done = b.on_agent(AgentEvent::TurnCompleted { thread: "t1".to_string(), error: None }, 2 * 60_000 + 1);
+        assert!(no_edit_actions(&done));
+    }
+
+    #[test]
+    fn messages_delivery_sends_no_progress_once_the_answer_is_coming() {
+        let mut b = connected_messages();
+        b.on_message(msg("q", 1), 0);
+        b.on_agent(AgentEvent::ThreadReady { thread: "t1".to_string() }, 0);
+        b.on_agent(AgentEvent::Delta { thread: "t1".to_string(), text: "partial".to_string() }, 5_000);
+        assert!(notices(&b.on_tick(MESSAGES_PROGRESS_MS)).is_empty());
+        assert!(notices(&b.on_tick(10 * 60_000)).is_empty());
+    }
+
+    #[test]
+    fn messages_delivery_gives_an_error_as_a_new_message() {
+        let mut b = connected_messages();
+        b.status_line = true;
+        b.on_message(msg("hi", 1), 0);
+        b.on_agent(AgentEvent::ThreadReady { thread: "t1".to_string() }, 0);
+        let done = b.on_agent(AgentEvent::TurnCompleted { thread: "t1".to_string(), error: Some("boom".to_string()) }, 1);
+        assert!(no_edit_actions(&done), "{done:?}");
+        assert!(!notices(&done).is_empty() || !replies(&done).is_empty(), "{done:?}");
     }
 
     #[test]

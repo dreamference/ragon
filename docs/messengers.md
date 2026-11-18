@@ -82,9 +82,13 @@ is not a preview.
 
 The bridge is linked to **your own Signal account** as one more device, the way Signal Desktop is.
 You write to Ragon in **Note to Self**, and its replies appear there too, each starting with 🐦.
-Note to Self shows no typing indicator, so the bridge answers at once with "🐦 Working on it…",
-which says what Ragon is doing and then becomes the answer as it is written (one message,
-edited; the finished answer is its last version). Signal raises no notification for messages from
+By default the bridge sends **each update as a new message and never edits one**: the whole
+answer arrives as one message, and a turn that is still silent after 20 seconds gets a single
+"Still working…" message. If you prefer the answer to grow in one edited message (a
+"🐦 Working on it…" line that says what Ragon is doing and becomes the answer, at the cost of
+some flicker), switch the bridge to edit delivery: `ragon signal delivery edit`
+(`ragon signal delivery messages` goes back; `ragon signal delivery` shows the current mode;
+add `--name NAME` when the node has several bridges). Signal raises no notification for messages from
 your own linked devices, so keep the chat open while you wait.
 The bridge reads Note to Self only. It drops every other message it receives without storing or
 answering it.
@@ -126,6 +130,8 @@ to Self only, but the keys it holds are keys to your whole account. They are kep
 ragon signal status             # running, paired, the air gap, strangers ignored, versions
 ragon signal stop               # stops the bridge now; it stays off until `ragon signal start`
 ragon signal start
+ragon signal delivery           # how answers are delivered: messages (default) or edit
+ragon signal delivery edit      # one message edited as the answer grows; `messages` goes back
 ragon signal setup --refresh    # after `ragon update`: installs the new bridge for its account
 ragon signal remove             # undoes setup and deletes the keys; your Ask threads stay
 ```
