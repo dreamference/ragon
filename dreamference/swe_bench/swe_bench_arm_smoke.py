@@ -15,7 +15,12 @@ import json
 import sys
 from typing import Any, Final
 
-from dreamference.swe_bench.swe_bench_run_store import SweBenchRunStore
+from dreamference.swe_bench.swe_bench_run_store import (
+    TURN_COMPLETED_TEXT as TURN_COMPLETED,
+)
+from dreamference.swe_bench.swe_bench_run_store import (
+    SweBenchRunStore,
+)
 
 # Statuses an instance that ran can end with (the patch is not judged).
 RAN: Final[tuple] = ("done", "empty", "stalled", "timeout")
@@ -36,7 +41,6 @@ MODEL_ITEMS: Final[tuple] = (
 # How much of a log line or a note a refusal quotes.
 QUOTE: Final[int] = 300
 # The `ragon exec --json` event types the check reads.
-TURN_COMPLETED: Final[str] = "turn.completed"
 TURN_FAILED: Final[str] = "turn.failed"
 STREAM_ERROR: Final[str] = "error"
 
