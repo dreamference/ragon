@@ -122,7 +122,7 @@ class SweBenchReport:
                 disk, leaves them out.
 
         Returns:
-            Optional[Dict[str, Any]]: The counts and per-instance verdicts; None when the run
+            Dict[str, Any]|None: The counts and per-instance verdicts; None when the run
             does not exist.
         """
         manifest = store.manifest()
@@ -443,7 +443,7 @@ class SweBenchReport:
             finished: The instances that have a prediction.
 
         Returns:
-            Optional[Dict[str, Any]]: None for a run without the refine arm.
+            Dict[str, Any]|None: None for a run without the refine arm.
         """
         if not manifest.get("refine"):
             return None
@@ -487,7 +487,7 @@ class SweBenchReport:
             finished: The instances that have a prediction.
 
         Returns:
-            Optional[Dict[str, Any]]: None for a run without the review turn.
+            Dict[str, Any]|None: None for a run without the review turn.
         """
         if not manifest.get("review_turn"):
             return None
@@ -529,7 +529,7 @@ class SweBenchReport:
         in the record arm).
 
         Returns:
-            Optional[Dict[str, Any]]: None for a run without the arm.
+            Dict[str, Any]|None: None for a run without the arm.
         """
         after = int(manifest.get("restart_after_compactions") or 0)
         if not after:
@@ -989,7 +989,7 @@ class SweBenchReport:
             finished: The instances that have a prediction.
 
         Returns:
-            Optional[Dict[str, Any]]: None for a run without hooks.
+            Dict[str, Any]|None: None for a run without hooks.
         """
         if not manifest.get("hooks"):
             return None
@@ -1082,7 +1082,7 @@ class SweBenchReport:
             variant: The grading series to report; None for the plain one.
 
         Returns:
-            Optional[str]: The report text; None when the run does not exist.
+            str|None: The report text; None when the run does not exist.
         """
         summary = cls.summary(store, variant)
         if summary is None:
@@ -1262,7 +1262,7 @@ class SweBenchReport:
             variant: The grading series to report; None for the plain one.
 
         Returns:
-            Optional[str]: The report text; None when the run does not exist.
+            str|None: The report text; None when the run does not exist.
         """
         text = cls.render(store, variant)
         if text is not None:
