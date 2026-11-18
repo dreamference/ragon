@@ -308,7 +308,7 @@ Discord reading.
 3. Run `ragon chat discord pair` and send the code it prints to the bot in a direct message, as
    `/pair <code>`, within 10 minutes. The code works once. Then run `ragon chat start`.
 
-The bot answers only you, and only in your direct messages with it. Anyone else is told once a day
+Discord is off until you run `ragon chat discord setup`; it ships with Ragon (0.9.9) but does nothing before that. The bot answers only you, and only in your direct messages with it: no server channels and no one else's conversations. Anyone else is told once a day
 that the bot is private; servers it is added to are left at once, except one you name as
 `discord_home_server` under `[chat]` so that you can message the bot. A status line with a **Stop**
 button shows while an answer is written, and approvals come as buttons.
