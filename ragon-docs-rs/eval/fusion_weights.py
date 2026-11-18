@@ -1,5 +1,7 @@
 """Weighted RRF: does down-weighting BM25 keep dense's recall and hybrid's precision?
+
 fusion_weights.py <chunks.json> <embedding-prefix> -> one line per BM25 weight (dense weight 1)."""
+
 import json
 import os
 import sys
@@ -30,8 +32,13 @@ def wrrf(b, d, wb, k=60, top=100):
 out = []
 for wb in (0.0, 0.25, 0.5, 0.75, 1.0):
     m = evallib.metrics([wrrf(b, d, wb) for b, d in zip(b_ranked, d_ranked)], questions, chunks)
-    row = {"bm25_weight": wb, "recall10": round(m["recall10"], 3), "recall5": round(m["recall5"], 3),
-           "mrr10": round(m["mrr10"], 3), "by_group": m["by_group"]}
+    row = {
+        "bm25_weight": wb,
+        "recall10": round(m["recall10"], 3),
+        "recall5": round(m["recall5"], 3),
+        "mrr10": round(m["mrr10"], 3),
+        "by_group": m["by_group"],
+    }
     out.append(row)
     print(json.dumps(row))
 tag = os.path.splitext(os.path.basename(sys.argv[1]))[0].replace("pdfium-ordered-", "")
