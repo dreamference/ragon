@@ -34,7 +34,9 @@ def test_schema() -> None:
     }  # fmt: skip
     for point in data["points"]:
         assert (
-            keys <= set(point) <= keys | {"ragon_tasks", "commits", "partial_note", "provisional"}
+            keys
+            <= set(point)
+            <= keys | {"ragon_tasks", "commits", "partial_note", "provisional", "target_pct"}
         )
         assert isinstance(point["ragon_generated_tokens"], int)
         assert isinstance(point["other_generated_tokens"], int)
@@ -61,14 +63,14 @@ def test_chart_has_two_lines_and_deterministic_badge() -> None:
     data = _w46()
     data["quality"] = [
         {
-            "week": "2026-W46",
+            "week": "2026-W47",
             "ragon_reverted": 0,
             "ragon_commits": 6,
             "other_reverted": 5,
             "other_commits": 402,
         },
         {
-            "week": "2026-W47",
+            "week": "2026-W48",
             "ragon_reverted": 1,
             "ragon_commits": 10,
             "other_reverted": 4,
@@ -218,3 +220,42 @@ def test_dump_json_keeps_counts_on_one_line_and_round_trips() -> None:
     assert json.loads(text) == data
     assert (ROOT / "docs" / "rbrb.json").read_text(encoding="utf-8") == text
     assert not [line for line in text.splitlines() if re.search(r": \d\d+$", line)]
+
+
+def test_landed_tasks_are_drawn_per_week_and_the_axis_is_clean() -> None:
+    module = _load()
+    svg = module.render(_data())
+    assert "Ragon tasks landed per week" in svg
+    assert svg.count('class="bar"') + svg.count('class="barh"') == len(_data()["points"])
+    assert module.count_axis(31) == (40, 10)
+    assert module.count_axis(0) == (6, 2)
+
+
+def test_quality_band_is_public_from_w47_and_decided_by_the_rates() -> None:
+    module = _load()
+    row = {"ragon_commits": 30, "ragon_reverted": 0, "other_commits": 50, "other_reverted": 1}
+    assert module.band(row) == "met"
+    assert module.band({**row, "ragon_reverted": 5}) == "failed"
+    assert module.band({**row, "ragon_commits": 19}) == "undecided"
+    data = module.ingest(_w46(), _export("2026-W46", 1, 9), _COUNTS)
+    assert data["quality"] == []  # a week before W47 gets no public row
+    data = module.ingest(
+        data, _export("2026-W47", 1, 9), {**_COUNTS, "ragon_commits": 25}, provisional=True
+    )
+    assert [q["week"] for q in data["quality"]] == ["2026-W47"]
+    assert data["quality"][0]["band"] == "met"
+    assert "band: met" in module.render(data)
+
+
+def test_the_target_is_stored_and_drawn_only_from_four_points() -> None:
+    module = _load()
+    data = _w46()
+    export = {**_export("2026-W47", 100, 900), "target_pct": 6.0}
+    data = module.ingest(data, export, _COUNTS, provisional=True)
+    assert all("target_pct" not in p for p in data["points"])  # two points: private
+    for week in ("2026-W48", "2026-W49", "2026-W50"):
+        data = module.ingest(data, {**export, "week": week}, _COUNTS)
+    assert [p.get("target_pct") for p in data["points"]] == [None, None, None, 6.0, 6.0]
+    assert 'class="tg"' in module.render(data) and ">target<" in module.render(data)
+    data["points"] = data["points"][-3:]  # three points: nothing is drawn even with stored values
+    assert 'class="tg"' not in module.render(data)
