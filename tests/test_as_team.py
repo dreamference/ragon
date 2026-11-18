@@ -1198,3 +1198,23 @@ def test_the_timer_runs_flush_at_the_publishing_hours(
     assert "OnCalendar=*-*-* 09,21:05:00 UTC" in units
     assert "as_team.py flush" in units
     assert "Environment=TZ=UTC" in units
+
+
+def test_flush_runs_the_refresh_step_first_and_only_in_publishing_hours(
+    keys: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    client, _session = github({**token_routes()})
+    steps: list[str] = []
+    refresh = lambda: steps.append("refresh")  # noqa: E731
+    assert (
+        as_team.main(["flush"], github=client, cwd=repo, clock=lambda: AT_NOON, refresh=refresh)
+        == 0
+    )
+    assert steps == []
+    assert (
+        as_team.main(["flush"], github=client, cwd=repo, clock=lambda: AT_NINE, refresh=refresh)
+        == 0
+    )
+    assert steps == ["refresh"]
+    assert as_team.main(["queue"], github=client, cwd=repo, clock=lambda: AT_NOON) == 0
+    assert "rbrb refresh" in capsys.readouterr().out

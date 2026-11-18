@@ -1400,6 +1400,7 @@ class Run:
     guard: MessageGuard
     git: Git
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    refresh: Callable[[], None] | None = None  # runs first in a flush (the command line sets the RBRB refresh)
 
     @property
     def team(self) -> str:
@@ -1582,10 +1583,21 @@ def run_merge(run: Run) -> None:
     print(f"✅ merged as {merged.get('sha', '')}")
 
 
+RBRB_REFRESH_STEP: Final = "rbrb refresh (scripts/rbrb_refresh.py --commit: the running week so far, its own commit)"
+
+
+def refresh_rbrb() -> None:
+    """The flush's first step: refresh the RBRB point and commit it as the docs bot; a failure never stops the flush."""
+    script = REPO_ROOT / "scripts" / "rbrb_refresh.py"
+    done = subprocess.run([sys.executable, str(script), "--commit"], cwd=REPO_ROOT, capture_output=True, text=True)
+    print(f"rbrb refresh: {'ok' if done.returncode == 0 else 'failed'}")
+
+
 def run_queue(run: Run) -> None:
     """Hold a command for the next publishing hour, or list what is held."""
     queue = PublishQueue()
     if not run.args.held:
+        print(f"flush step (before the held commands): {RBRB_REFRESH_STEP}")
         for entry in queue.entries():
             print(f"{entry.stem}  {' '.join(json.loads(entry.read_text())['argv'])}")
         return
@@ -1608,6 +1620,8 @@ def run_flush(run: Run) -> None:
     """
     if not run.args.now and not run.in_hours():
         return
+    if run.refresh:
+        run.refresh()
     queue = PublishQueue()
     for entry in queue.entries():
         held = json.loads(entry.read_text())
@@ -1668,6 +1682,7 @@ def main(
     github: GitHub | None = None,
     cwd: Path | None = None,
     clock: Callable[[], datetime] | None = None,
+    refresh: Callable[[], None] | None = None,
 ) -> int:
     """Run one command; 0 on success, 1 when refused.
 
@@ -1676,6 +1691,7 @@ def main(
         github: The API client (tests pass one with a fake session).
         cwd: The repository to read commits from (default: the current folder).
         clock: The current time, in UTC (tests pass a fixed one).
+        refresh: The step a flush runs first (the command line passes the RBRB refresh).
 
     Returns:
         The exit status.
@@ -1684,6 +1700,7 @@ def main(
     run = Run(args, TeamRegistry(), github or GitHub(), MessageGuard(), Git(cwd or Path.cwd()))
     if clock:
         run.clock = clock
+    run.refresh = refresh
     try:
         COMMANDS[args.command](run)
     except Refusal as refused:
@@ -1693,4 +1710,4 @@ def main(
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(refresh=refresh_rbrb))
