@@ -52,14 +52,18 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Final, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Final, Iterable, List, Sequence, Set, Tuple
 
 import numpy as np
 import yaml
 
 EXPERIMENTS_URL: Final[str] = "https://github.com/SWE-bench/experiments.git"
-DEFAULT_EXPERIMENTS_DIR: Final[Path] = Path.home() / ".cache" / "dreamference" / "swe-bench" / "experiments"
-DEFAULT_RUNS_DIR: Final[Path] = Path.home() / ".local" / "share" / "dreamference" / "swe-bench" / "runs"
+DEFAULT_EXPERIMENTS_DIR: Final[Path] = (
+    Path.home() / ".cache" / "dreamference" / "swe-bench" / "experiments"
+)
+DEFAULT_RUNS_DIR: Final[Path] = (
+    Path.home() / ".local" / "share" / "dreamference" / "swe-bench" / "runs"
+)
 SPARSE_PATTERNS: Final[Tuple[str, ...]] = (
     "/evaluation/verified/*/results/results.json",
     "/evaluation/verified/*/per_instance_details.json",
@@ -112,7 +116,7 @@ class Submission:
         return sum(1 for t in tasks if t in self.resolved)
 
     @property
-    def mid_size(self) -> Optional[str]:
+    def mid_size(self) -> str | None:
         """The 20-40B model this submission is built on, or None."""
         for pattern, label in MID_SIZE_MODELS:
             if re.search(pattern, self.name, re.IGNORECASE):
@@ -139,21 +143,42 @@ def fetch_experiments(target: Path) -> None:
     """
     if not (target / ".git").exists():
         target.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout", "--depth", "1",
-                        EXPERIMENTS_URL, str(target)], check=True)
-        subprocess.run(["git", "-C", str(target), "sparse-checkout", "init", "--no-cone"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "--filter=blob:none",
+                "--no-checkout",
+                "--depth",
+                "1",
+                EXPERIMENTS_URL,
+                str(target),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(target), "sparse-checkout", "init", "--no-cone"], check=True
+        )
     else:
-        subprocess.run(["git", "-C", str(target), "fetch", "--depth", "1", "origin", "main"], check=True)
+        subprocess.run(
+            ["git", "-C", str(target), "fetch", "--depth", "1", "origin", "main"], check=True
+        )
         subprocess.run(["git", "-C", str(target), "reset", "--hard", "origin/main"], check=True)
-    subprocess.run(["git", "-C", str(target), "sparse-checkout", "set", *SPARSE_PATTERNS], check=True)
+    subprocess.run(
+        ["git", "-C", str(target), "sparse-checkout", "set", *SPARSE_PATTERNS], check=True
+    )
     subprocess.run(["git", "-C", str(target), "checkout"], check=True)
 
 
 def experiments_commit(root: Path) -> str:
     """The experiments clone's HEAD commit and its date."""
     try:
-        out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%H %cs"],
-                             capture_output=True, text=True, check=True).stdout.strip()
+        out = subprocess.run(
+            ["git", "-C", str(root), "log", "-1", "--format=%H %cs"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
         return out
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "unknown"
@@ -174,7 +199,7 @@ def load_submissions(root: Path) -> Tuple[List[Submission], List[str], List[str]
     skipped: List[str] = []
     all_ids: Set[str] = set()
     for d in sorted(p for p in base.iterdir() if p.is_dir()):
-        resolved: Optional[Set[str]] = None
+        resolved: Set[str] | None = None
         if (d / "results" / "results.json").exists():
             data = json.loads((d / "results" / "results.json").read_text())
             resolved = set(data.get("resolved", []))
@@ -194,7 +219,9 @@ def load_submissions(root: Path) -> Tuple[List[Submission], List[str], List[str]
         model = str(model).replace("https://huggingface.co/", "")
         attempts = str((tags.get("system") or {}).get("attempts", "?"))
         checked = str(tags.get("checked")).split(" ")[0].lower()
-        subs.append(Submission(d.name, resolved, model, bool(tags.get("os_model")), attempts, checked))
+        subs.append(
+            Submission(d.name, resolved, model, bool(tags.get("os_model")), attempts, checked)
+        )
     for s in subs:
         all_ids.update(s.resolved)
     return subs, sorted(all_ids), skipped
@@ -227,8 +254,10 @@ def load_run(runs_dir: Path, name: str) -> LocalRun:
     d = runs_dir / name
     manifest = json.loads((d / "manifest.json").read_text())
     run = LocalRun(name, list(manifest["instances"]))
-    run.config = {k: manifest.get(k) for k in
-                  ("started", "prompt", "code_index", "masking", "refine", "issue_text")}
+    run.config = {
+        k: manifest.get(k)
+        for k in ("started", "prompt", "code_index", "masking", "refine", "issue_text")
+    }
     # Which refine texts the run used: a manifest written before refine-v2 existed ran v1.
     run.config["refine_version"] = manifest.get("refine_version") or "v1"
     grading = d / "eval" / "1" / "grading.json"
@@ -266,7 +295,9 @@ def _sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-x))
 
 
-def fit_rasch(matrix: np.ndarray, iters: int = 500, prior_sd: float = 3.0) -> Tuple[np.ndarray, np.ndarray]:
+def fit_rasch(
+    matrix: np.ndarray, iters: int = 500, prior_sd: float = 3.0
+) -> Tuple[np.ndarray, np.ndarray]:
     """Joint maximum a posteriori fit of a Rasch model.
 
     ``P(submission s solves task i) = sigmoid(theta_s - b_i)``. A weak Gaussian
@@ -283,7 +314,7 @@ def fit_rasch(matrix: np.ndarray, iters: int = 500, prior_sd: float = 3.0) -> Tu
     s, t = matrix.shape
     theta = np.zeros(s)
     b = np.zeros(t)
-    lam = 1.0 / prior_sd ** 2
+    lam = 1.0 / prior_sd**2
     for _ in range(iters):
         p = _sigmoid(theta[:, None] - b[None, :])
         w = p * (1 - p)
@@ -302,7 +333,7 @@ def ability_for(k: float, diffs: np.ndarray, prior_sd: float = 3.0) -> float:
 
     Uses the same weak prior as the joint fit, so 0 or all-solved stay finite.
     """
-    lam = 1.0 / prior_sd ** 2
+    lam = 1.0 / prior_sd**2
     theta = 0.0
     for _ in range(200):
         p = _sigmoid(theta - diffs)
@@ -351,8 +382,9 @@ class Model:
         return max(0.0, est - half), min(1.0, est + half)
 
 
-def build_model(subs: List[Submission], all_ids: List[str], tasks: List[str],
-                reg_floor: float) -> Model:
+def build_model(
+    subs: List[Submission], all_ids: List[str], tasks: List[str], reg_floor: float
+) -> Model:
     """Fit both estimators for one task subset and back-test them.
 
     Args:
@@ -379,11 +411,22 @@ def build_model(subs: List[Submission], all_ids: List[str], tasks: List[str],
     resid = overall[keep] - (intercept + slope * sub_frac[keep])
     resid_sd = float(np.std(resid, ddof=2))
 
-    model = Model(tasks, subs, all_ids, theta, b, (float(intercept), float(slope)), resid_sd,
-                  reg_floor, 0.0, 0.0)
+    model = Model(
+        tasks,
+        subs,
+        all_ids,
+        theta,
+        b,
+        (float(intercept), float(slope)),
+        resid_sd,
+        reg_floor,
+        0.0,
+        0.0,
+    )
     # Back-test both on the same population (overall >= floor).
-    rasch_err = [model.rasch_overall(s.subset_count(tasks)) - s.overall
-                 for s, k in zip(subs, keep) if k]
+    rasch_err = [
+        model.rasch_overall(s.subset_count(tasks)) - s.overall for s, k in zip(subs, keep) if k
+    ]
     model.rasch_rmse = float(np.sqrt(np.mean(np.square(rasch_err))))
     model.reg_rmse = float(np.sqrt(np.mean(np.square(resid))))
     return model
@@ -408,98 +451,189 @@ def system_rows(subs: Sequence[Submission], tasks: Sequence[str]) -> List[List[o
     rows = []
     for s in subs:
         k = s.subset_count(tasks)
-        rows.append([f"`{s.name}`", s.date, s.model, s.attempts, pct(s.overall),
-                     f"{k}/{n}", pct(k / n), f"{100 * (k / n - s.overall):+.1f}"])
+        rows.append(
+            [
+                f"`{s.name}`",
+                s.date,
+                s.model,
+                s.attempts,
+                pct(s.overall),
+                f"{k}/{n}",
+                pct(k / n),
+                f"{100 * (k / n - s.overall):+.1f}",
+            ]
+        )
     return rows
 
 
 SYSTEM_HEADER: Final[Tuple[str, ...]] = (
-    "submission", "date", "model", "attempts", "overall (500)", "subset", "subset %", "subset - overall (pp)")
+    "submission",
+    "date",
+    "model",
+    "attempts",
+    "overall (500)",
+    "subset",
+    "subset %",
+    "subset - overall (pp)",
+)
 
 
-def report(model: Model, runs: List[LocalRun], default_runs: List[str], top: int,
-           commit: str, skipped: List[str], label: str) -> Tuple[str, dict]:
+def report(
+    model: Model,
+    runs: List[LocalRun],
+    default_runs: List[str],
+    top: int,
+    commit: str,
+    skipped: List[str],
+    label: str,
+) -> Tuple[str, dict]:
     """Markdown report and a JSON summary for one task subset."""
     subs, tasks, n = model.subs, model.tasks, model.n
     out: List[str] = []
     js: dict = {"subset": label, "n": n, "experiments_commit": commit, "submissions": len(subs)}
 
     out.append(f"## Subset: {label} ({n} tasks)\n")
-    out.append(f"Published submissions with per-instance results: **{len(subs)}** "
-               f"(experiments commit `{commit}`; {len(skipped)} skipped, no per-instance results).\n")
+    out.append(
+        f"Published submissions with per-instance results: **{len(subs)}** "
+        f"(experiments commit `{commit}`; {len(skipped)} skipped, no per-instance results).\n"
+    )
 
     # Difficulty index.
     overall = np.array([s.overall for s in subs])
     subset = np.array([s.subset_count(tasks) / n for s in subs])
     strong = overall >= 0.6
     rows = []
-    for name, mask in (("all submissions", np.ones(len(subs), bool)),
-                       ("overall >= 40%", overall >= 0.4), ("overall >= 60%", strong)):
-        rows.append([name, int(mask.sum()), pct(overall[mask].mean()), pct(subset[mask].mean()),
-                     f"{subset[mask].mean() / overall[mask].mean():.2f}",
-                     f"{100 * (subset[mask] - overall[mask]).mean():+.1f}"])
+    for name, mask in (
+        ("all submissions", np.ones(len(subs), bool)),
+        ("overall >= 40%", overall >= 0.4),
+        ("overall >= 60%", strong),
+    ):
+        rows.append(
+            [
+                name,
+                int(mask.sum()),
+                pct(overall[mask].mean()),
+                pct(subset[mask].mean()),
+                f"{subset[mask].mean() / overall[mask].mean():.2f}",
+                f"{100 * (subset[mask] - overall[mask]).mean():+.1f}",
+            ]
+        )
     out.append("### Difficulty index\n")
-    out.append(md_table(["population", "submissions", "mean on all 500", "mean on subset",
-                         "ratio", "mean gap (pp)"], rows) + "\n")
-    js["difficulty"] = {r[0]: {"n": r[1], "overall": r[2], "subset": r[3], "ratio": r[4]} for r in rows}
+    out.append(
+        md_table(
+            [
+                "population",
+                "submissions",
+                "mean on all 500",
+                "mean on subset",
+                "ratio",
+                "mean gap (pp)",
+            ],
+            rows,
+        )
+        + "\n"
+    )
+    js["difficulty"] = {
+        r[0]: {"n": r[1], "overall": r[2], "subset": r[3], "ratio": r[4]} for r in rows
+    }
 
     # Systems.
     ranked = sorted(subs, key=lambda s: -s.overall)
     out.append(f"### Top {top} submissions by overall Verified score\n")
     out.append(md_table(SYSTEM_HEADER, system_rows(ranked[:top], tasks)) + "\n")
     open_w = [s for s in ranked if s.open_weights][:top]
-    out.append(f"### Best open-weight-model submissions (metadata `os_model: true`, top {len(open_w)})\n")
+    out.append(
+        f"### Best open-weight-model submissions (metadata `os_model: true`, top {len(open_w)})\n"
+    )
     out.append(md_table(SYSTEM_HEADER, system_rows(open_w, tasks)) + "\n")
     mid = [s for s in ranked if s.mid_size]
     out.append("### Submissions built on 20-40B models\n")
-    out.append(md_table(("model size",) + SYSTEM_HEADER,
-                        ([s.mid_size] + r for s, r in zip(mid, system_rows(mid, tasks)))) + "\n")
+    out.append(
+        md_table(
+            ("model size",) + SYSTEM_HEADER,
+            ([s.mid_size] + r for s, r in zip(mid, system_rows(mid, tasks))),
+        )
+        + "\n"
+    )
 
     # Per task.
     graded = [r for r in runs if r.graded]
     frac_all = {t: sum(t in s.resolved for s in subs) / len(subs) for t in tasks}
     strong_subs = [s for s in subs if s.overall >= 0.6]
-    frac_strong = {t: sum(t in s.resolved for s in strong_subs) / max(1, len(strong_subs)) for t in tasks}
+    frac_strong = {
+        t: sum(t in s.resolved for s in strong_subs) / max(1, len(strong_subs)) for t in tasks
+    }
     idx = {t: i for i, t in enumerate(model.all_ids)}
     out.append("### Per task\n")
-    out.append("Fraction of all submissions, and of those at or above 60% overall, that resolved each task; "
-               "Rasch difficulty (0 is the Verified average, higher is harder); then each local run "
-               "(`y` resolved, `.` not).\n")
+    out.append(
+        "Fraction of all submissions, and of those at or above 60% overall, that resolved each task; "
+        "Rasch difficulty (0 is the Verified average, higher is harder); then each local run "
+        "(`y` resolved, `.` not).\n"
+    )
     header = ["task", "all subs", ">=60% subs", "difficulty"] + [r.name for r in graded]
     rows = []
     for t in sorted(tasks, key=lambda t: -frac_all[t]):
-        rows.append([f"`{t}`", pct(frac_all[t]), pct(frac_strong[t]), f"{model.b[idx[t]]:+.2f}"]
-                    + ["y" if t in r.resolved else "." for r in graded])
+        rows.append(
+            [f"`{t}`", pct(frac_all[t]), pct(frac_strong[t]), f"{model.b[idx[t]]:+.2f}"]
+            + ["y" if t in r.resolved else "." for r in graded]
+        )
     if graded:
-        rows.append(["**resolved**", "", "", ""] + [f"**{len(r.resolved & set(tasks))}**" for r in graded])
+        rows.append(
+            ["**resolved**", "", "", ""] + [f"**{len(r.resolved & set(tasks))}**" for r in graded]
+        )
     out.append(md_table(header, rows) + "\n")
-    js["per_task"] = {t: {"all": frac_all[t], "strong": frac_strong[t], "difficulty": float(model.b[idx[t]])}
-                      for t in tasks}
+    js["per_task"] = {
+        t: {"all": frac_all[t], "strong": frac_strong[t], "difficulty": float(model.b[idx[t]])}
+        for t in tasks
+    }
 
     # Estimators.
     a, slope = model.reg_coef
     out.append("### From subset score to overall Verified score\n")
-    out.append(f"- Regression (submissions >= {pct(model.reg_floor)} overall, "
-               f"n={int((overall >= model.reg_floor).sum())}): overall = {a:.3f} + {slope:.3f} x subset; "
-               f"residual SD {pct(model.reg_resid_sd)}.\n"
-               f"- Rasch back-test on the same submissions (predict each one's overall score from its "
-               f"{n} subset tasks alone): RMSE {pct(model.rasch_rmse)} (regression: {pct(model.reg_rmse)}).\n")
+    out.append(
+        f"- Regression (submissions >= {pct(model.reg_floor)} overall, "
+        f"n={int((overall >= model.reg_floor).sum())}): overall = {a:.3f} + {slope:.3f} x subset; "
+        f"residual SD {pct(model.reg_resid_sd)}.\n"
+        f"- Rasch back-test on the same submissions (predict each one's overall score from its "
+        f"{n} subset tasks alone): RMSE {pct(model.rasch_rmse)} (regression: {pct(model.reg_rmse)}).\n"
+    )
     lookup_rows = []
     lo_k = max(0, int(0.3 * n))
     step = 1 if n <= 30 else 5
     for k in range(lo_k, n + 1, step):
         lo, hi = wilson(k, n)
         c_lo, c_hi = model.calibrated(k)
-        lookup_rows.append([f"{k}/{n}", pct(k / n), pct(model.rasch_overall(k)),
-                            pct(model.regression_overall(k)), f"{pct(c_lo)} - {pct(c_hi)}",
-                            f"{pct(model.rasch_overall(lo * n))} - {pct(model.rasch_overall(hi * n))}"])
-    out.append("Lookup: a local result of k/n corresponds to roughly this overall Verified score. "
-               "\"95% back-test\" is the Rasch estimate +/- 1.96 x the back-test RMSE, the error actually "
-               "seen when the published submissions are scored on these tasks alone; \"95% Wilson\" is the "
-               "Rasch estimate at the ends of the Wilson interval for k/n, which ignores what is known "
-               "about each task and is wider.\n")
-    out.append(md_table(["k/n", "subset %", "Rasch estimate", "regression estimate", "95% back-test",
-                         "95% Wilson"], lookup_rows) + "\n")
+        lookup_rows.append(
+            [
+                f"{k}/{n}",
+                pct(k / n),
+                pct(model.rasch_overall(k)),
+                pct(model.regression_overall(k)),
+                f"{pct(c_lo)} - {pct(c_hi)}",
+                f"{pct(model.rasch_overall(lo * n))} - {pct(model.rasch_overall(hi * n))}",
+            ]
+        )
+    out.append(
+        "Lookup: a local result of k/n corresponds to roughly this overall Verified score. "
+        '"95% back-test" is the Rasch estimate +/- 1.96 x the back-test RMSE, the error actually '
+        'seen when the published submissions are scored on these tasks alone; "95% Wilson" is the '
+        "Rasch estimate at the ends of the Wilson interval for k/n, which ignores what is known "
+        "about each task and is wider.\n"
+    )
+    out.append(
+        md_table(
+            [
+                "k/n",
+                "subset %",
+                "Rasch estimate",
+                "regression estimate",
+                "95% back-test",
+                "95% Wilson",
+            ],
+            lookup_rows,
+        )
+        + "\n"
+    )
 
     if graded:
         rows = []
@@ -510,48 +644,105 @@ def report(model: Model, runs: List[LocalRun], default_runs: List[str], top: int
             ra = model.rasch_overall(k)
             rg = model.regression_overall(k)
             c_lo, c_hi = model.calibrated(k)
-            refine = f"on ({r.config.get('refine_version') or 'v1'})" if r.config.get("refine") else "off"
-            rows.append([r.name, refine, f"{k}/{n}", f"{pct(lo)} - {pct(hi)}", pct(ra), pct(rg),
-                         f"{pct(c_lo)} - {pct(c_hi)}",
-                         f"{pct(model.rasch_overall(lo * n))} - {pct(model.rasch_overall(hi * n))}"])
-            js["runs"][r.name] = {"k": k, "n": n, "rasch": ra, "regression": rg,
-                                  "wilson": [lo, hi], "config": r.config}
+            refine = (
+                f"on ({r.config.get('refine_version') or 'v1'})"
+                if r.config.get("refine")
+                else "off"
+            )
+            rows.append(
+                [
+                    r.name,
+                    refine,
+                    f"{k}/{n}",
+                    f"{pct(lo)} - {pct(hi)}",
+                    pct(ra),
+                    pct(rg),
+                    f"{pct(c_lo)} - {pct(c_hi)}",
+                    f"{pct(model.rasch_overall(lo * n))} - {pct(model.rasch_overall(hi * n))}",
+                ]
+            )
+            js["runs"][r.name] = {
+                "k": k,
+                "n": n,
+                "rasch": ra,
+                "regression": rg,
+                "wilson": [lo, hi],
+                "config": r.config,
+            }
         out.append("### Local runs\n")
-        out.append(md_table(["run", "refine", "resolved", "95% Wilson (subset)", "Rasch overall",
-                             "regression overall", "95% back-test", "95% Wilson (overall)"], rows) + "\n")
+        out.append(
+            md_table(
+                [
+                    "run",
+                    "refine",
+                    "resolved",
+                    "95% Wilson (subset)",
+                    "Rasch overall",
+                    "regression overall",
+                    "95% back-test",
+                    "95% Wilson (overall)",
+                ],
+                rows,
+            )
+            + "\n"
+        )
         defaults = [len(r.resolved & set(tasks)) for r in graded if r.name in default_runs]
         if defaults:
             med = statistics.median(defaults)
             spread = (min(defaults), max(defaults))
-            js["default_median"] = {"k": med, "rasch": model.rasch_overall(med),
-                                    "regression": model.regression_overall(med), "spread": spread}
-            out.append(f"Default-mode rounds ({', '.join(default_runs)}): resolved "
-                       f"{', '.join(str(d) for d in defaults)}; median **{med:g}/{n}** "
-                       f"-> Rasch **{pct(model.rasch_overall(med))}**, regression "
-                       f"{pct(model.regression_overall(med))}; run-to-run range {spread[0]}-{spread[1]} -> "
-                       f"{pct(model.rasch_overall(spread[0]))} - {pct(model.rasch_overall(spread[1]))}.\n")
+            js["default_median"] = {
+                "k": med,
+                "rasch": model.rasch_overall(med),
+                "regression": model.regression_overall(med),
+                "spread": spread,
+            }
+            out.append(
+                f"Default-mode rounds ({', '.join(default_runs)}): resolved "
+                f"{', '.join(str(d) for d in defaults)}; median **{med:g}/{n}** "
+                f"-> Rasch **{pct(model.rasch_overall(med))}**, regression "
+                f"{pct(model.regression_overall(med))}; run-to-run range {spread[0]}-{spread[1]} -> "
+                f"{pct(model.rasch_overall(spread[0]))} - {pct(model.rasch_overall(spread[1]))}.\n"
+            )
         union = set().union(*(r.resolved & set(tasks) for r in graded))
         js["union"] = len(union)
-        out.append(f"Resolved by at least one local run (an any-of-{len(graded)} figure, comparable only "
-                   f"to multi-attempt submissions, never to pass@1): {len(union)}/{n}.\n")
+        out.append(
+            f"Resolved by at least one local run (an any-of-{len(graded)} figure, comparable only "
+            f"to multi-attempt submissions, never to pass@1): {len(union)}/{n}.\n"
+        )
 
     js["submission_names"] = [s.name for s in subs]
     return "\n".join(out), js
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--experiments", type=Path, default=DEFAULT_EXPERIMENTS_DIR,
-                    help="clone of SWE-bench/experiments (results files only)")
+    ap.add_argument(
+        "--experiments",
+        type=Path,
+        default=DEFAULT_EXPERIMENTS_DIR,
+        help="clone of SWE-bench/experiments (results files only)",
+    )
     ap.add_argument("--fetch", action="store_true", help="clone or update --experiments first")
     ap.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR)
-    ap.add_argument("--subset", type=Path, action="append", default=[],
-                    help="task-ID file (one per line, # comments); repeatable")
-    ap.add_argument("--subset-run", action="append", default=[],
-                    help="use this local run's manifest task IDs as a subset; repeatable")
+    ap.add_argument(
+        "--subset",
+        type=Path,
+        action="append",
+        default=[],
+        help="task-ID file (one per line, # comments); repeatable",
+    )
+    ap.add_argument(
+        "--subset-run",
+        action="append",
+        default=[],
+        help="use this local run's manifest task IDs as a subset; repeatable",
+    )
     ap.add_argument("--run", action="append", default=[], help="local run to place; repeatable")
-    ap.add_argument("--default-runs", default="",
-                    help="comma-separated runs whose median is reported as the default configuration")
+    ap.add_argument(
+        "--default-runs",
+        default="",
+        help="comma-separated runs whose median is reported as the default configuration",
+    )
     ap.add_argument("--top", type=int, default=15)
     ap.add_argument("--regression-floor", type=float, default=0.4)
     ap.add_argument("--json", type=Path, help="also write a JSON summary here")
@@ -565,7 +756,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     subs, all_ids, skipped = load_submissions(args.experiments)
     commit = experiments_commit(args.experiments)
     if len(all_ids) != VERIFIED_SIZE:
-        print(f"warning: found {len(all_ids)} Verified IDs, expected {VERIFIED_SIZE}", file=sys.stderr)
+        print(
+            f"warning: found {len(all_ids)} Verified IDs, expected {VERIFIED_SIZE}", file=sys.stderr
+        )
 
     runs = [load_run(args.runs_dir, r) for r in args.run]
     subsets: List[Tuple[str, List[str]]] = []
@@ -581,12 +774,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for label, tasks in subsets:
         missing = [t for t in tasks if t not in set(all_ids)]
         if missing:
-            print(f"warning: {len(missing)} task(s) of {label} are not in Verified: {missing[:3]}", file=sys.stderr)
+            print(
+                f"warning: {len(missing)} task(s) of {label} are not in Verified: {missing[:3]}",
+                file=sys.stderr,
+            )
             tasks = [t for t in tasks if t not in missing]
         own = [r for r in runs if set(r.tasks) == set(tasks)]
         other = [r.name for r in runs if r not in own]
         if other:
-            print(f"note: runs not on subset {label} (task IDs differ), left out: {other}", file=sys.stderr)
+            print(
+                f"note: runs not on subset {label} (task IDs differ), left out: {other}",
+                file=sys.stderr,
+            )
         model = build_model(subs, all_ids, tasks, args.regression_floor)
         text, js = report(model, own, default_runs, args.top, commit, skipped, label)
         print(text)
