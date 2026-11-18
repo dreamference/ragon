@@ -62,7 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     listing = ", ".join(missing)
     if args.allow_fewer:
         print(
-            f"::warning::Publishing with fewer assets than v{args.previous_version} (allowed by input): missing {listing}"
+            f"::warning::Publishing with fewer assets than v{args.previous_version} "
+            f"(allowed by input): missing {listing}"
         )
         return 0
     print(
