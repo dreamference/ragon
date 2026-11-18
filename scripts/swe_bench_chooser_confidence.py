@@ -42,11 +42,15 @@ from typing import Any, Callable, Dict, Final, List, Optional, Sequence
 SCRIPTS: Final[Path] = Path(__file__).resolve().parent
 WINDOW: Final[int] = 32
 LOW_SHARE: Final[float] = 0.10
-SYSTEM_PROMPT: Final[str] = "You are an expert software engineer. You fix issues in Python repositories."
+SYSTEM_PROMPT: Final[str] = (
+    "You are an expert software engineer. You fix issues in Python repositories."
+)
 REQUEST: Final[str] = "Write a patch, as a unified diff, that resolves the issue."
 # Qwen's chat template with thinking off, the assistant's turn opened on a diff block.
-TEMPLATE: Final[str] = ("<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n"
-                        "<|im_start|>assistant\n<think>\n\n</think>\n\n```diff\n")
+TEMPLATE: Final[str] = (
+    "<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n"
+    "<|im_start|>assistant\n<think>\n\n</think>\n\n```diff\n"
+)
 CONFIDENCE: Final[Sequence[str]] = ("mean", "low10", "win32")
 
 
@@ -78,15 +82,20 @@ def stats(logprobs: Sequence[float]) -> Dict[str, Optional[float]]:
     n = len(logprobs)
     if not n:
         return {"tokens": 0, "sum": None, "mean": None, "low10": None, "win32": None}
-    lowest = sorted(logprobs)[:max(1, math.ceil(n * LOW_SHARE))]
+    lowest = sorted(logprobs)[: max(1, math.ceil(n * LOW_SHARE))]
     width = min(WINDOW, n)
     running = sum(logprobs[:width])
     weakest = running
     for i in range(width, n):
         running += logprobs[i] - logprobs[i - width]
         weakest = min(weakest, running)
-    return {"tokens": n, "sum": sum(logprobs), "mean": sum(logprobs) / n,
-            "low10": sum(lowest) / len(lowest), "win32": weakest / width}
+    return {
+        "tokens": n,
+        "sum": sum(logprobs),
+        "mean": sum(logprobs) / n,
+        "low10": sum(lowest) / len(lowest),
+        "win32": weakest / width,
+    }
 
 
 def scaled(values: Dict[str, Optional[float]]) -> Dict[str, Optional[float]]:
@@ -95,11 +104,15 @@ def scaled(values: Dict[str, Optional[float]]) -> Dict[str, Optional[float]]:
     if not known:
         return dict(values)
     low, high = min(known), max(known)
-    return {k: None if v is None else (0.5 if high == low else (v - low) / (high - low)) for k, v in values.items()}
+    return {
+        k: None if v is None else (0.5 if high == low else (v - low) / (high - low))
+        for k, v in values.items()
+    }
 
 
-def selector_values(record: Dict[str, Any], selector: str,
-                    v3: Optional[Dict[str, float]] = None) -> Dict[str, Optional[float]]:
+def selector_values(
+    record: Dict[str, Any], selector: str, v3: Optional[Dict[str, float]] = None
+) -> Dict[str, Optional[float]]:
     """
     A selector's value per candidate (higher wins).
 
@@ -118,7 +131,10 @@ def selector_values(record: Dict[str, Any], selector: str,
     if selector.endswith("+v3"):
         base = scaled({i: f[selector[:-3]] for i, f in figures.items()})
         judged = scaled({i: (v3 or {}).get(i) for i in figures})
-        return {i: (None if base[i] is None or judged[i] is None else (base[i] + judged[i]) / 2) for i in figures}
+        return {
+            i: (None if base[i] is None or judged[i] is None else (base[i] + judged[i]) / 2)
+            for i in figures
+        }
     return {i: f[selector] for i, f in figures.items()}
 
 
@@ -164,7 +180,7 @@ def prompt_text(issue: str, source: str) -> str:
     fanout = fanout_module()
     parts = [f"<issue>\n{fanout.clip(issue, fanout.MAX_ISSUE_CHARS)}\n</issue>"]
     if source:
-        parts.append(f"<source note=\"the repository before any patch\">\n{source}\n</source>")
+        parts.append(f'<source note="the repository before any patch">\n{source}\n</source>')
     parts.append(REQUEST)
     return TEMPLATE.format(system=SYSTEM_PROMPT, user="\n\n".join(parts))
 
@@ -183,8 +199,11 @@ class ScoringServer:
 
     def post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
         """A POST's JSON answer."""
-        request = urllib.request.Request(self.inner.root + path, data=json.dumps(body).encode(),
-                                         headers={"Content-Type": "application/json"})
+        request = urllib.request.Request(
+            self.inner.root + path,
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+        )
         with self.inner.opener.open(request, timeout=self.inner.timeout) as response:
             return json.loads(response.read())
 
@@ -194,11 +213,18 @@ class ScoringServer:
 
     def logprobs(self, prefix: List[int], tail: List[int]) -> List[float]:
         """The log-probability of every `tail` token behind `prefix`."""
-        answer = self.post("/generate", {"input_ids": prefix + tail, "sampling_params": {"max_new_tokens": 0},
-                                         "return_logprob": True, "logprob_start_len": len(prefix) - 1})
+        answer = self.post(
+            "/generate",
+            {
+                "input_ids": prefix + tail,
+                "sampling_params": {"max_new_tokens": 0},
+                "return_logprob": True,
+                "logprob_start_len": len(prefix) - 1,
+            },
+        )
         entries = (answer.get("meta_info") or {}).get("input_token_logprobs") or []
         values = [float(e[0]) for e in entries if e and e[0] is not None]
-        return values[-len(tail):] if tail else []
+        return values[-len(tail) :] if tail else []
 
     def counters(self) -> Any:
         """The prefix cache's counters (the fan-out judge's)."""
@@ -241,8 +267,13 @@ def score_pool(server: Any, prefix_text: str, pool: Sequence[Any], workers: int)
     hit = None
     if before and after and after[1] > before[1]:
         hit = round((after[0] - before[0]) / (after[1] - before[1]), 4)
-    return {"candidates": {i: stats(found[i]) for i in ids}, "logprobs": {i: [round(v, 4) for v in found[i]] for i in ids},
-            "tokens": len(prefix), "seconds": round(seconds, 2), "cache_hit": hit}
+    return {
+        "candidates": {i: stats(found[i]) for i in ids},
+        "logprobs": {i: [round(v, 4) for v in found[i]] for i in ids},
+        "tokens": len(prefix),
+        "seconds": round(seconds, 2),
+        "cache_hit": hit,
+    }
 
 
 # --------------------------------------------------------------------------- main
@@ -259,8 +290,11 @@ def v3_totals(paths: Sequence[Path]) -> Dict[str, Dict[str, float]]:
     return {i: {c: sum(v) / len(v) for c, v in per.items()} for i, per in sums.items()}
 
 
-def length_bias(tasks: Sequence[Any], records: Dict[str, Dict[str, Any]],
-                choices: Dict[str, Dict[str, Dict[str, Any]]]) -> Dict[str, Any]:
+def length_bias(
+    tasks: Sequence[Any],
+    records: Dict[str, Dict[str, Any]],
+    choices: Dict[str, Dict[str, Dict[str, Any]]],
+) -> Dict[str, Any]:
     """
     Do short patches win? Per selector, the share of judged tasks where it chose the shortest patch,
     and over every judged candidate the rank correlation of tokens with each confidence figure.
@@ -275,7 +309,9 @@ def length_bias(tasks: Sequence[Any], records: Dict[str, Dict[str, Any]],
                 continue
             lengths = {i: f["tokens"] for i, f in record["candidates"].items()}
             n += 1
-            hits += sum(1 for i in choice["chosen"] if lengths.get(i) == min(lengths.values())) / len(choice["chosen"])
+            hits += sum(
+                1 for i in choice["chosen"] if lengths.get(i) == min(lengths.values())
+            ) / len(choice["chosen"])
         shortest_share[selector] = round(hits / n, 3) if n else None
     tokens: List[float] = []
     figures: Dict[str, List[float]] = {k: [] for k in ("sum", *CONFIDENCE)}
@@ -292,26 +328,47 @@ def length_bias(tasks: Sequence[Any], records: Dict[str, Dict[str, Any]],
                 figures[k].append(float(f[k]))
             resolved_len[bool(task.resolves.get(cid))].append(int(f["tokens"]))
     median = lambda v: sorted(v)[len(v) // 2] if v else None
-    return {"chose_the_shortest": shortest_share,
-            "spearman_tokens_vs": {k: None if (r := rank_correlation(tokens, v)) is None else round(r, 3)
-                                   for k, v in figures.items()},
-            "median_tokens": {"resolving": median(resolved_len[True]), "not_resolving": median(resolved_len[False])},
-            "candidates": len(tokens)}
+    return {
+        "chose_the_shortest": shortest_share,
+        "spearman_tokens_vs": {
+            k: None if (r := rank_correlation(tokens, v)) is None else round(r, 3)
+            for k, v in figures.items()
+        },
+        "median_tokens": {
+            "resolving": median(resolved_len[True]),
+            "not_resolving": median(resolved_len[False]),
+        },
+        "candidates": len(tokens),
+    }
 
 
-SELECTORS: Final[Sequence[str]] = ("mean", "low10", "win32", "sum", "shortest", "longest",
-                                   "mean+v3", "low10+v3", "win32+v3")
+SELECTORS: Final[Sequence[str]] = (
+    "mean",
+    "low10",
+    "win32",
+    "sum",
+    "shortest",
+    "longest",
+    "mean+v3",
+    "low10+v3",
+    "win32+v3",
+)
 
 
-def run(args: argparse.Namespace, server_factory: Callable[[str, float], Any] = ScoringServer,
-        reader_factory: Optional[Callable[[str, str, Path], Callable[[str], Optional[str]]]] = None) -> Dict[str, Any]:
+def run(
+    args: argparse.Namespace,
+    server_factory: Callable[[str, float], Any] = ScoringServer,
+    reader_factory: Optional[Callable[[str, str, Path], Callable[[str], Optional[str]]]] = None,
+) -> Dict[str, Any]:
     """The pass and every selector's summary; the server and the source reader are replaceable for the tests."""
     fanout = fanout_module()
     chooser = fanout.chooser_module()
     reader_factory = reader_factory or fanout.github_reader
     runs = [chooser.load_run(args.runs_dir, name) for name in args.runs.split(",") if name]
     tasks = chooser.select_tasks(runs, False)
-    judged = [t for t in tasks if len([c for c in t.candidates if not c.breaks] or t.candidates) > 1]
+    judged = [
+        t for t in tasks if len([c for c in t.candidates if not c.breaks] or t.candidates) > 1
+    ]
     print(f"{len(tasks)} task(s) from {', '.join(r['name'] for r in runs)}; {len(judged)} to score")
     args.out.mkdir(parents=True, exist_ok=True)
     log = args.out / "tasks.jsonl"
@@ -334,13 +391,20 @@ def run(args: argparse.Namespace, server_factory: Callable[[str, float], Any] = 
             row = rows[task.instance_id]
             read = reader_factory(row["repo"], row["base_commit"], args.source_cache)
             source = fanout.source_context([c.patch for c in pool], read)
-            record = {"instance_id": task.instance_id,
-                      **score_pool(server, prompt_text(row["problem_statement"], source), pool, args.workers)}
+            record = {
+                "instance_id": task.instance_id,
+                **score_pool(
+                    server, prompt_text(row["problem_statement"], source), pool, args.workers
+                ),
+            }
             records[task.instance_id] = record
             with open(log, "a") as handle:
                 handle.write(json.dumps(record) + "\n")
-            print(f"  {task.instance_id:<34} {len(pool)} patches, prefix {record['tokens']} tokens, "
-                  f"{record['seconds']}s, cache hit {record['cache_hit']}", flush=True)
+            print(
+                f"  {task.instance_id:<34} {len(pool)} patches, prefix {record['tokens']} tokens, "
+                f"{record['seconds']}s, cache hit {record['cache_hit']}",
+                flush=True,
+            )
 
     v3 = v3_totals(args.fanout)
     report: Dict[str, Any] = {"selectors": {}}
@@ -352,33 +416,55 @@ def run(args: argparse.Namespace, server_factory: Callable[[str, float], Any] = 
         for task in tasks:
             record = records.get(task.instance_id)
 
-            def judge(pool: List[Any], record: Optional[Dict[str, Any]] = record,
-                      task: Any = task) -> Dict[str, Any]:
-                values = selector_values(record, selector, v3.get(task.instance_id)) if record else {}
+            def judge(
+                pool: List[Any], record: Optional[Dict[str, Any]] = record, task: Any = task
+            ) -> Dict[str, Any]:
+                values = (
+                    selector_values(record, selector, v3.get(task.instance_id)) if record else {}
+                )
                 return {"scores": {c.id: {"total": values.get(c.id)} for c in pool}}
 
             choice = fanout.choose(task.candidates, judge)
             if "fanout" in choice:
                 choice["confidence"] = choice.pop("fanout")
-            choices[task.instance_id], scores[task.instance_id] = choice, chooser.score(task, choice)
+            choices[task.instance_id], scores[task.instance_id] = (
+                choice,
+                chooser.score(task, choice),
+            )
         summary = chooser.summarise(runs, tasks, scores, choices)
-        summary.update({"chooser_name": f"confidence {selector}", "server": args.server,
-                        "per_task": {i: {**choices[i], **scores[i]} for i in choices}})
+        summary.update(
+            {
+                "chooser_name": f"confidence {selector}",
+                "server": args.server,
+                "per_task": {i: {**choices[i], **scores[i]} for i in choices},
+            }
+        )
         (args.out / selector).mkdir(exist_ok=True)
         (args.out / selector / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-        report["selectors"][selector] = {k: summary[k] for k in ("chooser", "filter_alone", "random_run",
-                                                                  "oracle", "projected", "listed")}
+        report["selectors"][selector] = {
+            k: summary[k]
+            for k in ("chooser", "filter_alone", "random_run", "oracle", "projected", "listed")
+        }
         all_choices[selector] = choices
     timed = [r for r in records.values() if r.get("seconds") is not None]
     hits = [r["cache_hit"] for r in timed if r.get("cache_hit") is not None]
-    report["pass"] = {"tasks": len(timed), "seconds_per_task": round(sum(r["seconds"] for r in timed) / len(timed), 2)
-                      if timed else None, "prefix_tokens_mean": round(sum(r["tokens"] for r in timed) / len(timed))
-                      if timed else None, "cache_hit_mean": round(sum(hits) / len(hits), 4) if hits else None}
+    report["pass"] = {
+        "tasks": len(timed),
+        "seconds_per_task": round(sum(r["seconds"] for r in timed) / len(timed), 2)
+        if timed
+        else None,
+        "prefix_tokens_mean": round(sum(r["tokens"] for r in timed) / len(timed))
+        if timed
+        else None,
+        "cache_hit_mean": round(sum(hits) / len(hits), 4) if hits else None,
+    }
     report["length_bias"] = length_bias(tasks, records, all_choices)
     (args.out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     for selector, figures in report["selectors"].items():
-        print(f"  {selector:<10} {figures['chooser']} of the disagreeing tasks, "
-              f"{figures['projected']} of {figures['listed']} (oracle {figures['oracle']})")
+        print(
+            f"  {selector:<10} {figures['chooser']} of the disagreeing tasks, "
+            f"{figures['projected']} of {figures['listed']} (oracle {figures['oracle']})"
+        )
     print(json.dumps({"pass": report["pass"], "length_bias": report["length_bias"]}))
     return report
 
@@ -388,15 +474,33 @@ def parser() -> argparse.ArgumentParser:
     fanout = fanout_module()
     chooser = fanout.chooser_module()
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--server", help="the model server's URL, by node name (http://node-b.local:8000)")
+    p.add_argument(
+        "--server", help="the model server's URL, by node name (http://node-b.local:8000)"
+    )
     p.add_argument("--runs", required=True, help="comma-separated run names, the single run first")
-    p.add_argument("--runs-dir", type=Path, default=chooser.DEFAULT_RUNS_DIR, help="where the runs are (read only)")
-    p.add_argument("--dataset", type=Path, default=chooser.DEFAULT_DATASET, help="the local dataset snapshot")
-    p.add_argument("--source-cache", type=Path,
-                   default=Path.home() / ".cache" / "dreamference" / "swe-bench" / "source-at-base",
-                   help="where the repositories' files at the base commit are cached")
-    p.add_argument("--fanout", default="", help="the fan-out judge's summaries, comma-separated, for the +v3 selectors")
-    p.add_argument("--out", type=Path, default=Path("swe-bench-chooser-confidence"), help="where results go")
+    p.add_argument(
+        "--runs-dir",
+        type=Path,
+        default=chooser.DEFAULT_RUNS_DIR,
+        help="where the runs are (read only)",
+    )
+    p.add_argument(
+        "--dataset", type=Path, default=chooser.DEFAULT_DATASET, help="the local dataset snapshot"
+    )
+    p.add_argument(
+        "--source-cache",
+        type=Path,
+        default=Path.home() / ".cache" / "dreamference" / "swe-bench" / "source-at-base",
+        help="where the repositories' files at the base commit are cached",
+    )
+    p.add_argument(
+        "--fanout",
+        default="",
+        help="the fan-out judge's summaries, comma-separated, for the +v3 selectors",
+    )
+    p.add_argument(
+        "--out", type=Path, default=Path("swe-bench-chooser-confidence"), help="where results go"
+    )
     p.add_argument("--workers", type=int, default=4, help="concurrent patches")
     p.add_argument("--timeout", type=float, default=600.0, help="seconds to wait for one answer")
     return p
