@@ -108,8 +108,7 @@
    "PLR1702": 3
   },
   "dreamference/runner/openhands_installer.py": {
-   "BLE001": 3,
-   "T201": 4
+   "BLE001": 3
   },
   "dreamference/swe_bench/swe_bench_command.py": {
    "ANN401": 1,
@@ -121,8 +120,7 @@
    "D205": 2,
    "PLR0912": 1,
    "PLR0915": 1,
-   "PLR2004": 2,
-   "T201": 2
+   "PLR2004": 2
   },
   "dreamference/swe_bench/swe_bench_instance_run.py": {
    "ANN401": 1,
@@ -158,8 +156,7 @@
    "C901": 1,
    "PLR0913": 1,
    "PLR1702": 2,
-   "PLR2004": 4,
-   "T201": 2
+   "PLR2004": 4
   },
   "dreamference/vllm_server/host_safety_setup.py": {
    "ANN401": 2,
@@ -198,5 +195,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 245
+ "total": 237
 }

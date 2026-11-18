@@ -6,8 +6,14 @@ and manages pulling the official OpenHands docker image (`ghcr.io/all-hands-ai/o
 
 import shutil
 import subprocess
+import sys
 
 OPENHANDS_IMAGE: str = "ghcr.io/all-hands-ai/openhands:main"
+
+
+def _say(message: str) -> None:
+    """Write one user-facing line to stdout."""
+    sys.stdout.write(f"{message}\n")
 
 
 class OpenHandsInstaller:
@@ -54,17 +60,17 @@ class OpenHandsInstaller:
             bool: True if image is available.
         """
         if cls.is_image_downloaded():
-            print(f"✅ OpenHands container image ('{OPENHANDS_IMAGE}') is already pulled.")
+            _say(f"✅ OpenHands container image ('{OPENHANDS_IMAGE}') is already pulled.")
             return True
 
         if not cls.is_docker_available():
-            print("⚠️ Docker daemon is not running or current user lacks docker socket permissions.")
+            _say("⚠️ Docker daemon is not running or current user lacks docker socket permissions.")
             return False
 
-        print(f"📦 Pulling OpenHands container image ('{OPENHANDS_IMAGE}')...")
+        _say(f"📦 Pulling OpenHands container image ('{OPENHANDS_IMAGE}')...")
         try:
             res = subprocess.run(["docker", "pull", OPENHANDS_IMAGE], check=False)
             return res.returncode == 0
         except Exception as e:
-            print(f"⚠️ Failed to pull OpenHands image: {e}")
+            _say(f"⚠️ Failed to pull OpenHands image: {e}")
             return False
