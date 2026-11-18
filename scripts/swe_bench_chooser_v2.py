@@ -151,11 +151,11 @@ GIT_APPLY_CMDS: Final[Tuple[str, ...]] = (
 
 MAX_TESTS: Final[int] = 3
 MAX_TEST_CHARS: Final[int] = 20_000
-TEST_TIMEOUT_S: Final[int] = 120          # one test script
-SETUP_TIMEOUT_S: Final[int] = 900         # the grader's set-up (pip install -e . for some)
-START_TIMEOUT_S: Final[int] = 300         # docker run of a local image
-PULL_TIMEOUT_S: Final[int] = 1800         # one image, inside the task's cap
-OUTPUT_KEPT_CHARS: Final[int] = 4_000     # a test's output, as kept and as the judge sees it
+TEST_TIMEOUT_S: Final[int] = 120  # one test script
+SETUP_TIMEOUT_S: Final[int] = 900  # the grader's set-up (pip install -e . for some)
+START_TIMEOUT_S: Final[int] = 300  # docker run of a local image
+PULL_TIMEOUT_S: Final[int] = 1800  # one image, inside the task's cap
+OUTPUT_KEPT_CHARS: Final[int] = 4_000  # a test's output, as kept and as the judge sees it
 JUDGE_QUERIES: Final[int] = 3
 CONTAINER_LABEL: Final[str] = "ragon.swe-bench.chooser=v2"
 MARK: Final[str] = "@@CHOOSER"
@@ -166,7 +166,9 @@ WRITER_SYSTEM: Final[str] = (
     "anything: write the tests from the issue alone."
 )
 
-WRITER_TEMPLATE: Final[str] = """The repository {repo} (version {version}) is checked out at /testbed with its dependencies installed; `python` is the repository's interpreter. A user filed this issue:
+WRITER_TEMPLATE: Final[
+    str
+] = """The repository {repo} (version {version}) is checked out at /testbed with its dependencies installed; `python` is the repository's interpreter. A user filed this issue:
 
 <issue>
 {issue}
@@ -258,8 +260,9 @@ class Deadline:
 # --------------------------------------------------------------------------- the test writer
 
 
-def writer_payload(row: Dict[str, Any], model: str, args: argparse.Namespace, attempt: int,
-                   feedback: str = "") -> Dict[str, Any]:
+def writer_payload(
+    row: Dict[str, Any], model: str, args: argparse.Namespace, attempt: int, feedback: str = ""
+) -> Dict[str, Any]:
     """
     The test writer's request: the issue, the repository and its version, nothing else.
 
@@ -273,12 +276,22 @@ def writer_payload(row: Dict[str, Any], model: str, args: argparse.Namespace, at
     Returns:
         Dict[str, Any]: The chat completion payload.
     """
-    user = WRITER_TEMPLATE.format(repo=row.get("repo") or "", version=row.get("version") or "",
-                                  issue=v1.clip(str(row.get("problem_statement") or ""), v1.MAX_ISSUE_CHARS),
-                                  feedback=feedback)
-    payload = {"model": model, "max_tokens": args.max_tokens, "temperature": args.temperature,
-               "top_p": args.top_p,
-               "messages": [{"role": "system", "content": WRITER_SYSTEM}, {"role": "user", "content": user}]}
+    user = WRITER_TEMPLATE.format(
+        repo=row.get("repo") or "",
+        version=row.get("version") or "",
+        issue=v1.clip(str(row.get("problem_statement") or ""), v1.MAX_ISSUE_CHARS),
+        feedback=feedback,
+    )
+    payload = {
+        "model": model,
+        "max_tokens": args.max_tokens,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "messages": [
+            {"role": "system", "content": WRITER_SYSTEM},
+            {"role": "user", "content": user},
+        ],
+    }
     if args.seed is not None:
         payload["seed"] = args.seed + 1000 * attempt
     return payload
@@ -307,9 +320,11 @@ def parse_tests(answer: str) -> List[str]:
 
 def retry_feedback(tests: List[Dict[str, Any]]) -> str:
     """What the second request is told about the first one's tests."""
-    results = "\n".join(f"- test {n + 1}: exit status {t.get('base_exit')}, output: "
-                        f"{v1.clip(str(t.get('base_output') or '').strip(), 600) or '(none)'}"
-                        for n, t in enumerate(tests))
+    results = "\n".join(
+        f"- test {n + 1}: exit status {t.get('base_exit')}, output: "
+        f"{v1.clip(str(t.get('base_output') or '').strip(), 600) or '(none)'}"
+        for n, t in enumerate(tests)
+    )
     return RETRY_FEEDBACK.format(results=results or "- (no test could be read from the answer)")
 
 
@@ -331,10 +346,16 @@ def setup_preamble(row: Dict[str, Any]) -> str:
     kept: List[str] = []
     for line in script.splitlines():
         stripped = line.strip()
-        if (base and stripped.startswith(f"git checkout {base}")) or stripped.startswith("git apply"):
+        if (base and stripped.startswith(f"git checkout {base}")) or stripped.startswith(
+            "git apply"
+        ):
             break
-        if (stripped.startswith("#!") or stripped.startswith("set -") or stripped in ("git status", "git show")
-                or (stripped.startswith("git ") and " diff" in stripped)):
+        if (
+            stripped.startswith("#!")
+            or stripped.startswith("set -")
+            or stripped in ("git status", "git show")
+            or (stripped.startswith("git ") and " diff" in stripped)
+        ):
             continue
         kept.append(line)
     if not any(line.strip() for line in kept):
@@ -353,15 +374,21 @@ def container_script(preamble: str, tests: List[str], patch: Optional[str]) -> s
     for the unpatched repository), the grader's set-up, then each test with its own timeout. The
     results come back on standard output between `@@CHOOSER` marks.
     """
-    lines = ["set +eu", 'TESTBED="${TESTBED:-/testbed}"', 'WORK="${WORK:-/tmp/chooser-v2}"',
-             'mkdir -p "$WORK"', 'cd "$TESTBED" || exit 3']
+    lines = [
+        "set +eu",
+        'TESTBED="${TESTBED:-/testbed}"',
+        'WORK="${WORK:-/tmp/chooser-v2}"',
+        'mkdir -p "$WORK"',
+        'cd "$TESTBED" || exit 3',
+    ]
     for number, test in enumerate(tests, 1):
         lines.append(_file(f'"$WORK/test_{number}.py"', test))
     if patch is not None:
         commands = " ".join(f"'{command}'" for command in GIT_APPLY_CMDS)
         lines += [
             _file('"$WORK/candidate.diff"', patch),
-            f"commands=({commands})", "applied=''",
+            f"commands=({commands})",
+            "applied=''",
             'for i in "${!commands[@]}"; do',
             '  if [ "$i" -gt 0 ]; then git checkout -- . >/dev/null 2>&1; git clean -fd >/dev/null 2>&1; fi',
             '  if ${commands[$i]} "$WORK/candidate.diff" >> "$WORK/apply.log" 2>&1; then applied="${commands[$i]}"; break; fi',
@@ -371,9 +398,16 @@ def container_script(preamble: str, tests: List[str], patch: Optional[str]) -> s
             f'if [ -z "$applied" ]; then echo "{MARK} apply failed"; tail -c 1500 "$WORK/apply.log"; exit 0; fi',
             f'echo "{MARK} apply $applied"',
         ]
-    lines += ["{", preamble, '} > "$WORK/setup.log" 2>&1 < /dev/null', 'code=$?',
-              f'echo "{MARK} setup output"', 'tail -c 1500 "$WORK/setup.log"; echo', f'echo "{MARK} setup $code"',
-              'cd "$TESTBED" || exit 3']
+    lines += [
+        "{",
+        preamble,
+        '} > "$WORK/setup.log" 2>&1 < /dev/null',
+        "code=$?",
+        f'echo "{MARK} setup output"',
+        'tail -c 1500 "$WORK/setup.log"; echo',
+        f'echo "{MARK} setup $code"',
+        'cd "$TESTBED" || exit 3',
+    ]
     for number in range(1, len(tests) + 1):
         test = f'"$WORK/test_{number}.py"'
         lines += [
@@ -397,8 +431,12 @@ def parse_container(stdout: str, count: int) -> Dict[str, Any]:
         apply, `""` when there was no patch), `setup` (its exit status), and `tests`: per test,
         `compiled`, `exit` (None when it did not run) and `output`.
     """
-    result: Dict[str, Any] = {"applied": "", "setup": None, "setup_output": "",
-                              "tests": [{"compiled": False, "exit": None, "output": ""} for _ in range(count)]}
+    result: Dict[str, Any] = {
+        "applied": "",
+        "setup": None,
+        "setup_output": "",
+        "tests": [{"compiled": False, "exit": None, "output": ""} for _ in range(count)],
+    }
     current: Optional[int] = None
     collected: List[str] = []
     for line in stdout.splitlines():
@@ -406,7 +444,7 @@ def parse_container(stdout: str, count: int) -> Dict[str, Any]:
             if current is not None:
                 collected.append(line)
             continue
-        words = line[len(MARK):].split()
+        words = line[len(MARK) :].split()
         if words[:2] == ["apply", "failed"]:
             result["applied"] = None
         elif words[:1] == ["apply"]:
@@ -417,7 +455,12 @@ def parse_container(stdout: str, count: int) -> Dict[str, Any]:
             result["setup"] = int(words[1]) if words[1].lstrip("-").isdigit() else None
             result["setup_output"] = "\n".join(collected).strip()
             current = None
-        elif words[:1] == ["test"] and len(words) >= 3 and words[1].isdigit() and 1 <= int(words[1]) <= count:
+        elif (
+            words[:1] == ["test"]
+            and len(words) >= 3
+            and words[1].isdigit()
+            and 1 <= int(words[1]) <= count
+        ):
             entry = result["tests"][int(words[1]) - 1]
             if words[2] == "compile" and len(words) > 3:
                 entry["compiled"] = words[3] == "0"
@@ -439,7 +482,9 @@ class Containers:
         self.args = args
         self.count = 0
 
-    def run(self, preamble: str, tests: List[str], patch: Optional[str], deadline: Deadline) -> Dict[str, Any]:
+    def run(
+        self, preamble: str, tests: List[str], patch: Optional[str], deadline: Deadline
+    ) -> Dict[str, Any]:
         """
         One fresh container from the task's image: apply `patch` (None: the unpatched repository),
         set up as the grader does, run the tests, remove the container.
@@ -452,27 +497,60 @@ class Containers:
         SweBenchDocker.run(["rm", "-f", name], timeout=120)
         try:
             started = SweBenchDocker.run(
-                ["run", "-d", "--init", "--name", name, "--label", CONTAINER_LABEL,
-                 "--network", self.args.container_network,
-                 "--memory", self.args.memory, "--memory-swap", self.args.memory,
-                 "--cpus", str(self.args.cpus), "--pids-limit", "4096",
-                 "-e", f"PATH={CONTAINER_PATH}", "-w", "/testbed", self.image, "sleep", "infinity"],
-                timeout=deadline.bound(START_TIMEOUT_S))
+                [
+                    "run",
+                    "-d",
+                    "--init",
+                    "--name",
+                    name,
+                    "--label",
+                    CONTAINER_LABEL,
+                    "--network",
+                    self.args.container_network,
+                    "--memory",
+                    self.args.memory,
+                    "--memory-swap",
+                    self.args.memory,
+                    "--cpus",
+                    str(self.args.cpus),
+                    "--pids-limit",
+                    "4096",
+                    "-e",
+                    f"PATH={CONTAINER_PATH}",
+                    "-w",
+                    "/testbed",
+                    self.image,
+                    "sleep",
+                    "infinity",
+                ],
+                timeout=deadline.bound(START_TIMEOUT_S),
+            )
             if started.returncode == 124:
                 raise TaskTimeout()
             if started.returncode != 0:
-                return {"error": f"docker run failed: {started.stderr.strip()[-300:]}", "applied": None,
-                        "setup": None, "tests": []}
+                return {
+                    "error": f"docker run failed: {started.stderr.strip()[-300:]}",
+                    "applied": None,
+                    "setup": None,
+                    "tests": [],
+                }
             budget = SETUP_TIMEOUT_S + len(tests) * (TEST_TIMEOUT_S + 15) + 120
-            executed = SweBenchDocker.run(["exec", "-i", name, "bash", "-s"], timeout=deadline.bound(budget),
-                                          input_text=container_script(preamble, tests, patch))
+            executed = SweBenchDocker.run(
+                ["exec", "-i", name, "bash", "-s"],
+                timeout=deadline.bound(budget),
+                input_text=container_script(preamble, tests, patch),
+            )
             if executed.returncode == 124 and deadline.left() <= 1:
                 raise TaskTimeout()
             result = parse_container(executed.stdout or "", len(tests))
             if patch is None:
                 result["applied"] = ""
-            if executed.returncode not in (0,) and not any(t["exit"] is not None for t in result["tests"]):
-                result["error"] = f"docker exec exited {executed.returncode}: {(executed.stderr or '').strip()[-300:]}"
+            if executed.returncode not in (0,) and not any(
+                t["exit"] is not None for t in result["tests"]
+            ):
+                result["error"] = (
+                    f"docker exec exited {executed.returncode}: {(executed.stderr or '').strip()[-300:]}"
+                )
             return result
         finally:
             SweBenchDocker.run(["rm", "-f", name], timeout=120)
@@ -489,8 +567,12 @@ def vector_of(result: Dict[str, Any], kept: List[int]) -> List[bool]:
     return [index < len(tests) and tests[index].get("exit") == 0 for index in kept]
 
 
-def judge_pair(a: Any, b: Any, ask: Callable[[Any, Any, int], Optional[Tuple[float, float]]],
-               order_rng: random.Random) -> Dict[str, Any]:
+def judge_pair(
+    a: Any,
+    b: Any,
+    ask: Callable[[Any, Any, int], Optional[Tuple[float, float]]],
+    order_rng: random.Random,
+) -> Dict[str, Any]:
     """
     One pair, asked `JUDGE_QUERIES` times with the order swapped between calls; the majority wins.
 
@@ -517,9 +599,13 @@ def judge_pair(a: Any, b: Any, ask: Callable[[Any, Any, int], Optional[Tuple[flo
     return {"votes": votes, "winner": winner, "calls": calls}
 
 
-def decide(candidates: List[Any], vectors: Optional[Dict[str, List[bool]]],
-           ask: Callable[[Any, Any, int], Optional[Tuple[float, float]]], rng: random.Random,
-           timed_out: bool = False) -> Dict[str, Any]:
+def decide(
+    candidates: List[Any],
+    vectors: Optional[Dict[str, List[bool]]],
+    ask: Callable[[Any, Any, int], Optional[Tuple[float, float]]],
+    rng: random.Random,
+    timed_out: bool = False,
+) -> Dict[str, Any]:
     """
     Version 2's choice, the stages in order. Given no verdict on the issue.
 
@@ -535,8 +621,15 @@ def decide(candidates: List[Any], vectors: Optional[Dict[str, List[bool]]],
         Dict[str, Any]: `stage`, `survivors` (the filter's), `groups`, `pool` (the candidates
         still tied before the judge), `pairs` (the judge's), `points` and `chosen`.
     """
-    choice: Dict[str, Any] = {"stage": "none", "survivors": [], "groups": [], "pool": [], "pairs": [],
-                              "points": {}, "chosen": []}
+    choice: Dict[str, Any] = {
+        "stage": "none",
+        "survivors": [],
+        "groups": [],
+        "pool": [],
+        "pairs": [],
+        "points": {},
+        "chosen": [],
+    }
     if not candidates:
         return choice
     if len(candidates) == 1:
@@ -545,7 +638,9 @@ def decide(candidates: List[Any], vectors: Optional[Dict[str, List[bool]]],
     survivors = [c for c in candidates if not c.breaks]
     choice["survivors"] = [c.id for c in survivors]
     if len(survivors) == 1:
-        return dict(choice, stage="regression filter", pool=choice["survivors"], chosen=choice["survivors"])
+        return dict(
+            choice, stage="regression filter", pool=choice["survivors"], chosen=choice["survivors"]
+        )
     pool = survivors or candidates
     if timed_out:
         ids = [c.id for c in pool]
@@ -556,9 +651,15 @@ def decide(candidates: List[Any], vectors: Optional[Dict[str, List[bool]]],
         for candidate in pool:
             groups.setdefault(tuple(vectors.get(candidate.id) or ()), []).append(candidate)
         size = lambda members: sum(len(c.runs) for c in members)
-        choice["groups"] = [{"vector": [int(v) for v in key], "passes": sum(key), "runs": size(members),
-                             "candidates": [c.id for c in members]}
-                            for key, members in sorted(groups.items(), key=lambda kv: (-sum(kv[0]), -size(kv[1])))]
+        choice["groups"] = [
+            {
+                "vector": [int(v) for v in key],
+                "passes": sum(key),
+                "runs": size(members),
+                "candidates": [c.id for c in members],
+            }
+            for key, members in sorted(groups.items(), key=lambda kv: (-sum(kv[0]), -size(kv[1])))
+        ]
         most = max(sum(key) for key in groups)
         top = [members for key, members in groups.items() if sum(key) == most]
         if sum(len(members) for members in top) == 1:
@@ -575,7 +676,7 @@ def decide(candidates: List[Any], vectors: Optional[Dict[str, List[bool]]],
     ordered = sorted(pool, key=lambda c: c.id)
     try:
         for index, a in enumerate(ordered):
-            for b in ordered[index + 1:]:
+            for b in ordered[index + 1 :]:
                 pair = judge_pair(a, b, ask, rng)
                 choice["pairs"].append(pair)
                 if pair["winner"] is None:
@@ -586,14 +687,21 @@ def decide(candidates: List[Any], vectors: Optional[Dict[str, List[bool]]],
     except TaskTimeout:
         return dict(choice, stage="time cap", chosen=choice["pool"])
     top_points = max(points.values())
-    return dict(choice, stage=stage, points=points, chosen=sorted(i for i, p in points.items() if p == top_points))
+    return dict(
+        choice,
+        stage=stage,
+        points=points,
+        chosen=sorted(i for i, p in points.items() if p == top_points),
+    )
 
 
 def score(task: Any, choice: Dict[str, Any]) -> Dict[str, float]:
     """Version 1's scores, plus `tests_alone`: the share of the candidates still tied before the judge that resolve."""
     scores = v1.score(task, choice)
     pool = choice.get("pool") or choice.get("survivors") or [c.id for c in task.candidates]
-    scores["tests_alone"] = sum(1 for i in pool if task.resolves.get(i)) / len(pool) if pool else 0.0
+    scores["tests_alone"] = (
+        sum(1 for i in pool if task.resolves.get(i)) / len(pool) if pool else 0.0
+    )
     return scores
 
 
@@ -622,14 +730,18 @@ class FakeClient:
         if payload["messages"][0]["content"] == WRITER_SYSTEM:
             return self.TESTS
         text = payload["messages"][1]["content"]
-        rate = lambda tag: 1 + int(hashlib.sha256(text.split(f"<{tag}>")[1].encode()).hexdigest(), 16) % 10
+        rate = lambda tag: (
+            1 + int(hashlib.sha256(text.split(f"<{tag}>")[1].encode()).hexdigest(), 16) % 10
+        )
         return f"RATING_A: {rate('solution_A')}\nRATING_B: {rate('solution_B')}"
 
 
 class Runner:
     """Runs the test over the tasks, keeping every step on disk under `--out`."""
 
-    def __init__(self, args: argparse.Namespace, client: Any, model: str, rows: Dict[str, Dict[str, Any]]) -> None:
+    def __init__(
+        self, args: argparse.Namespace, client: Any, model: str, rows: Dict[str, Dict[str, Any]]
+    ) -> None:
         self.args, self.client, self.model, self.rows = args, client, model, rows
         self.tasks_dir = args.out / "tasks"
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
@@ -639,8 +751,9 @@ class Runner:
             for line in self.log.read_text().splitlines():
                 try:
                     record = json.loads(line)
-                    self.judged[(record["instance_id"], record["a"], record["b"], int(record["query"]))] = \
-                        tuple(record["ratings"]) if record.get("ratings") else None
+                    self.judged[
+                        (record["instance_id"], record["a"], record["b"], int(record["query"]))
+                    ] = tuple(record["ratings"]) if record.get("ratings") else None
                 except (ValueError, KeyError, TypeError):
                     continue
 
@@ -673,13 +786,19 @@ class Runner:
                 raise TaskTimeout()
             raise
 
-    def judge_for(self, task: Any, record: Dict[str, Any], deadline: Deadline) -> Callable[[Any, Any, int], Optional[Tuple[float, float]]]:
+    def judge_for(
+        self, task: Any, record: Dict[str, Any], deadline: Deadline
+    ) -> Callable[[Any, Any, int], Optional[Tuple[float, float]]]:
         """The judge call of one task: issue, kept tests, two diffs and their test results."""
-        issue = v1.clip(str(self.rows[task.instance_id].get("problem_statement") or ""), v1.MAX_ISSUE_CHARS)
+        issue = v1.clip(
+            str(self.rows[task.instance_id].get("problem_statement") or ""), v1.MAX_ISSUE_CHARS
+        )
         kept = record.get("kept") or []
         tests = record.get("tests") or []
-        shown_tests = "\n\n".join(f"test_{n + 1}.py:\n{tests[i]['code']}" for n, i in enumerate(kept)) \
+        shown_tests = (
+            "\n\n".join(f"test_{n + 1}.py:\n{tests[i]['code']}" for n, i in enumerate(kept))
             or "(no reproduction test failed on the unpatched repository, so none is shown)"
+        )
 
         def results(candidate_id: str) -> str:
             run = (record.get("candidates") or {}).get(candidate_id) or {}
@@ -689,30 +808,64 @@ class Runner:
                 return "(no tests)"
             lines = []
             for n, i in enumerate(kept):
-                entry = (run.get("tests") or [{}] * (i + 1))[i] if i < len(run.get("tests") or []) else {}
-                status = "PASSED" if entry.get("exit") == 0 else f"FAILED (exit status {entry.get('exit')})"
-                lines.append(f"test_{n + 1}.py: {status}\n{v1.clip(str(entry.get('output') or ''), OUTPUT_KEPT_CHARS)}")
+                entry = (
+                    (run.get("tests") or [{}] * (i + 1))[i]
+                    if i < len(run.get("tests") or [])
+                    else {}
+                )
+                status = (
+                    "PASSED"
+                    if entry.get("exit") == 0
+                    else f"FAILED (exit status {entry.get('exit')})"
+                )
+                lines.append(
+                    f"test_{n + 1}.py: {status}\n{v1.clip(str(entry.get('output') or ''), OUTPUT_KEPT_CHARS)}"
+                )
             return "\n\n".join(lines)
 
         def ask(a: Any, b: Any, query: int) -> Optional[Tuple[float, float]]:
             key = (task.instance_id, a.id, b.id, query)
             if key in self.judged:
                 return self.judged[key]
-            payload = {"model": self.model, "max_tokens": self.args.max_tokens, "temperature": self.args.temperature,
-                       "top_p": self.args.top_p,
-                       "messages": [{"role": "system", "content": JUDGE_SYSTEM},
-                                    {"role": "user", "content": JUDGE_TEMPLATE.format(
-                                        issue=issue, tests=shown_tests,
-                                        a=v1.clip(a.patch, v1.MAX_PATCH_CHARS), results_a=results(a.id),
-                                        b=v1.clip(b.patch, v1.MAX_PATCH_CHARS), results_b=results(b.id))}]}
+            payload = {
+                "model": self.model,
+                "max_tokens": self.args.max_tokens,
+                "temperature": self.args.temperature,
+                "top_p": self.args.top_p,
+                "messages": [
+                    {"role": "system", "content": JUDGE_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": JUDGE_TEMPLATE.format(
+                            issue=issue,
+                            tests=shown_tests,
+                            a=v1.clip(a.patch, v1.MAX_PATCH_CHARS),
+                            results_a=results(a.id),
+                            b=v1.clip(b.patch, v1.MAX_PATCH_CHARS),
+                            results_b=results(b.id),
+                        ),
+                    },
+                ],
+            }
             if self.args.seed is not None:
                 payload["seed"] = self.args.seed + query
             answer = self.chat(payload, deadline)
             self.judged[key] = v1.ratings(answer)
-            with open(self.log, "a") as handle:
-                handle.write(json.dumps({"instance_id": task.instance_id, "a": a.id, "b": b.id, "query": query,
-                                         "ratings": self.judged[key], "model": self.model,
-                                         "answer_tail": answer[-600:]}) + "\n")
+            with self.log.open("a") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "instance_id": task.instance_id,
+                            "a": a.id,
+                            "b": b.id,
+                            "query": query,
+                            "ratings": self.judged[key],
+                            "model": self.model,
+                            "answer_tail": answer[-600:],
+                        }
+                    )
+                    + "\n"
+                )
             return self.judged[key]
 
         return ask
@@ -727,23 +880,43 @@ class Runner:
         for attempt in range(self.args.generation_attempts):
             if attempt == len(generations):
                 feedback = retry_feedback(record.get("tests") or []) if attempt else ""
-                answer = self.chat(writer_payload(row, self.model, self.args, attempt, feedback), deadline)
-                generations.append({"attempt": attempt, "tests": parse_tests(answer), "answer_tail": answer[-1500:]})
+                answer = self.chat(
+                    writer_payload(row, self.model, self.args, attempt, feedback), deadline
+                )
+                generations.append(
+                    {
+                        "attempt": attempt,
+                        "tests": parse_tests(answer),
+                        "answer_tail": answer[-1500:],
+                    }
+                )
                 self.save(record)
             generation = generations[attempt]
             if generation.get("base") is None:
-                generation["base"] = containers.run(row["setup"], generation["tests"], None, deadline) \
-                    if generation["tests"] else {"applied": "", "setup": None, "tests": []}
+                generation["base"] = (
+                    containers.run(row["setup"], generation["tests"], None, deadline)
+                    if generation["tests"]
+                    else {"applied": "", "setup": None, "tests": []}
+                )
                 self.save(record)
             base_tests = generation["base"].get("tests") or []
             record["tests"] = []
             for number, code in enumerate(generation["tests"]):
                 ran = base_tests[number] if number < len(base_tests) else {}
-                record["tests"].append({"code": code, "base_compiled": bool(ran.get("compiled")),
-                                        "base_exit": ran.get("exit"), "base_output": ran.get("output") or ""})
+                record["tests"].append(
+                    {
+                        "code": code,
+                        "base_compiled": bool(ran.get("compiled")),
+                        "base_exit": ran.get("exit"),
+                        "base_output": ran.get("output") or "",
+                    }
+                )
             # Kept: compiles, and fails (a timeout too) on the repository as it is.
-            record["kept"] = [n for n, t in enumerate(record["tests"])
-                              if t["base_compiled"] and t["base_exit"] not in (None, 0)]
+            record["kept"] = [
+                n
+                for n, t in enumerate(record["tests"])
+                if t["base_compiled"] and t["base_exit"] not in (None, 0)
+            ]
             # The grader's set-up may fail here (no network for `pip install -e .`); the image's
             # environment is already installed, editable, so the tests still see the patch.
             record["setup_exit"] = generation["base"].get("setup")
@@ -791,7 +964,9 @@ class Runner:
                 try:
                     # The pull is the task's first bounded step (`ensure_image` waits up to an hour).
                     if pulled:
-                        SweBenchDocker.run(["pull", "-q", image], timeout=deadline.bound(PULL_TIMEOUT_S))
+                        SweBenchDocker.run(
+                            ["pull", "-q", image], timeout=deadline.bound(PULL_TIMEOUT_S)
+                        )
                     if SweBenchDocker.image_digest(image) is None:
                         if deadline.left() <= 1:
                             raise TaskTimeout()
@@ -811,9 +986,16 @@ class Runner:
         kept = record.get("kept") or []
         vectors = None
         if record.get("tests_done"):
-            vectors = {cid: vector_of(run, kept) for cid, run in (record.get("candidates") or {}).items()}
-        choice = decide(task.candidates, vectors, self.judge_for(task, record, deadline),
-                        random.Random(f"{self.args.seed}:{task.instance_id}"), timed_out=timed_out)
+            vectors = {
+                cid: vector_of(run, kept) for cid, run in (record.get("candidates") or {}).items()
+            }
+        choice = decide(
+            task.candidates,
+            vectors,
+            self.judge_for(task, record, deadline),
+            random.Random(f"{self.args.seed}:{task.instance_id}"),
+            timed_out=timed_out,
+        )
         choice["seconds"] = round(time.monotonic() - started)
         choice["kept_tests"] = len(kept)
         choice["vectors"] = {cid: [int(v) for v in vec] for cid, vec in (vectors or {}).items()}
@@ -823,18 +1005,30 @@ class Runner:
 # --------------------------------------------------------------------------- the report
 
 
-def side_by_side(tasks: List[Any], choices: Dict[str, Dict[str, Any]], scores: Dict[str, Dict[str, float]],
-                 v1_summary: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def side_by_side(
+    tasks: List[Any],
+    choices: Dict[str, Dict[str, Any]],
+    scores: Dict[str, Dict[str, float]],
+    v1_summary: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     """Per task: version 1's stage and credit (from its summary) beside version 2's."""
     previous = (v1_summary or {}).get("per_task") or {}
     rows = []
     for task in tasks:
         old = previous.get(task.instance_id) or {}
-        rows.append({"instance_id": task.instance_id, "v1_stage": old.get("stage"), "v1": old.get("chooser"),
-                     "v2_stage": choices[task.instance_id]["stage"], "v2": scores[task.instance_id]["chooser"],
-                     "tests_alone": scores[task.instance_id]["tests_alone"],
-                     "filter": scores[task.instance_id]["filter"], "random_run": scores[task.instance_id]["random_run"],
-                     "kept_tests": choices[task.instance_id].get("kept_tests", 0)})
+        rows.append(
+            {
+                "instance_id": task.instance_id,
+                "v1_stage": old.get("stage"),
+                "v1": old.get("chooser"),
+                "v2_stage": choices[task.instance_id]["stage"],
+                "v2": scores[task.instance_id]["chooser"],
+                "tests_alone": scores[task.instance_id]["tests_alone"],
+                "filter": scores[task.instance_id]["filter"],
+                "random_run": scores[task.instance_id]["random_run"],
+                "kept_tests": choices[task.instance_id].get("kept_tests", 0),
+            }
+        )
     return rows
 
 
@@ -854,25 +1048,42 @@ def by_stage(rows: List[Dict[str, Any]], version: str) -> Dict[str, Dict[str, fl
 def print_report(summary: Dict[str, Any]) -> None:
     """The printed form of `summary.json`."""
     rows = summary["side_by_side"]
-    print(f"\n{'task':<30} {'v1 stage':<20} {'v1':>4}  {'v2 stage':<22} {'v2':>4} {'tests':>5} {'kept':>4}")
+    print(
+        f"\n{'task':<30} {'v1 stage':<20} {'v1':>4}  {'v2 stage':<22} {'v2':>4} {'tests':>5} {'kept':>4}"
+    )
     fmt = lambda value: "  - " if value is None else f"{value:4.2f}"
     for row in rows:
-        print(f"{row['instance_id']:<30} {str(row['v1_stage'] or '-'):<20} {fmt(row['v1'])}  "
-              f"{row['v2_stage']:<22} {fmt(row['v2'])} {fmt(row['tests_alone'])} {row['kept_tests']:>4}")
+        print(
+            f"{row['instance_id']:<30} {str(row['v1_stage'] or '-'):<20} {fmt(row['v1'])}  "
+            f"{row['v2_stage']:<22} {fmt(row['v2'])} {fmt(row['tests_alone'])} {row['kept_tests']:>4}"
+        )
     v1s = summary.get("v1") or {}
-    print(f"\nOn the {summary['tasks']} task(s): v1 {v1s.get('chooser', '-')}, v2 {summary['chooser']} "
-          f"(stages 1-3 without the judge {summary['tests_alone']}); the regression filter alone "
-          f"{summary['filter_alone']}, a random run {summary['random_run']}, any run (oracle) {summary['oracle']}")
+    print(
+        f"\nOn the {summary['tasks']} task(s): v1 {v1s.get('chooser', '-')}, v2 {summary['chooser']} "
+        f"(stages 1-3 without the judge {summary['tests_alone']}); the regression filter alone "
+        f"{summary['filter_alone']}, a random run {summary['random_run']}, any run (oracle) {summary['oracle']}"
+    )
     for version in ("v1", "v2"):
         stages = summary["stages_" + version]
-        print(f"Decided by ({version}): " + (", ".join(f"{stage} {e['right']}/{e['tasks']}"
-                                                         for stage, e in sorted(stages.items())) or "-"))
-    print(f"On all {summary['listed']}: single runs {summary['single_runs']}; best-of-{len(summary['runs'])} "
-          f"v1 {v1s.get('projected', '-')}, v2 {summary['projected']} (every run resolved {summary['all_resolved']})")
+        print(
+            f"Decided by ({version}): "
+            + (
+                ", ".join(
+                    f"{stage} {e['right']}/{e['tasks']}" for stage, e in sorted(stages.items())
+                )
+                or "-"
+            )
+        )
+    print(
+        f"On all {summary['listed']}: single runs {summary['single_runs']}; best-of-{len(summary['runs'])} "
+        f"v1 {v1s.get('projected', '-')}, v2 {summary['projected']} (every run resolved {summary['all_resolved']})"
+    )
     if summary.get("timed_out"):
         print(f"Time cap reached: {', '.join(summary['timed_out'])}")
     if summary["flaky"]:
-        print(f"Graded both ways for the same patch text (flaky tests): {', '.join(summary['flaky'])}")
+        print(
+            f"Graded both ways for the same patch text (flaky tests): {', '.join(summary['flaky'])}"
+        )
 
 
 # --------------------------------------------------------------------------- main
@@ -898,12 +1109,16 @@ def load_rows(dataset: Path, ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
     try:
         lines = dataset.read_text().splitlines()
     except OSError:
-        raise SystemExit(f"❌ No dataset snapshot at {dataset} (ragon-admin swe-bench setup writes it)")
+        raise SystemExit(
+            f"❌ No dataset snapshot at {dataset} (ragon-admin swe-bench setup writes it)"
+        )
     for line in lines:
         if line.strip():
             row = json.loads(line)
             if row.get("instance_id") in wanted:
-                kept = {k: v for k, v in row.items() if k not in FORBIDDEN_FIELDS and k != "eval_script"}
+                kept = {
+                    k: v for k, v in row.items() if k not in FORBIDDEN_FIELDS and k != "eval_script"
+                }
                 rows[row["instance_id"]] = dict(kept, setup=setup_preamble(row))
     missing = sorted(wanted - set(rows))
     if missing:
@@ -921,28 +1136,40 @@ def run_test(args: argparse.Namespace, client_factory: Callable[[str, float], An
         wanted = set(args.only.split(","))
         tasks = [t for t in tasks if t.instance_id in wanted]
     if args.limit:
-        tasks = tasks[:args.limit]
+        tasks = tasks[: args.limit]
     images = {t.instance_id: image_of(t.instance_id, runs, args.runs_dir) for t in tasks}
     pools = [len([c for c in t.candidates if not c.breaks] or t.candidates) for t in tasks]
     pairs = sum(n * (n - 1) // 2 for n in pools if n > 1)
-    print(f"{len(tasks)} task(s) from {', '.join(r['name'] for r in runs)}; at most "
-          f"{len(tasks) * args.generation_attempts} test-writer call(s) and {pairs * JUDGE_QUERIES} judge call(s)")
+    print(
+        f"{len(tasks)} task(s) from {', '.join(r['name'] for r in runs)}; at most "
+        f"{len(tasks) * args.generation_attempts} test-writer call(s) and {pairs * JUDGE_QUERIES} judge call(s)"
+    )
     for task in tasks:
-        local = "local" if images[task.instance_id] and SweBenchDocker.image_digest(images[task.instance_id]) else "to pull"
-        print(f"  {task.instance_id:<34} [{local}] " +
-              ("; ".join(v1.describe(c) for c in task.candidates) or "no non-empty patch"))
+        local = (
+            "local"
+            if images[task.instance_id] and SweBenchDocker.image_digest(images[task.instance_id])
+            else "to pull"
+        )
+        print(
+            f"  {task.instance_id:<34} [{local}] "
+            + ("; ".join(v1.describe(c) for c in task.candidates) or "no non-empty patch")
+        )
     if args.dry_run:
         return 0
     if args.fake_model:
         client, model = FakeClient(), "fake-model"
     else:
         if not args.server:
-            raise SystemExit("❌ --server is required (the model server's URL, by node name), or --fake-model")
+            raise SystemExit(
+                "❌ --server is required (the model server's URL, by node name), or --fake-model"
+            )
         client = (client_factory or v1.Client)(args.server, args.timeout)
         model = args.model or client.model()
     rows = load_rows(args.dataset, [t.instance_id for t in tasks])
     args.out.mkdir(parents=True, exist_ok=True)
-    for stale in SweBenchDocker.run(["ps", "-aq", "--filter", f"label={CONTAINER_LABEL}"], timeout=60).stdout.split():
+    for stale in SweBenchDocker.run(
+        ["ps", "-aq", "--filter", f"label={CONTAINER_LABEL}"], timeout=60
+    ).stdout.split():
         SweBenchDocker.run(["rm", "-f", stale], timeout=120)
     runner = Runner(args, client, model, rows)
     choices, scores, timed_out = {}, {}, []
@@ -951,29 +1178,44 @@ def run_test(args: argparse.Namespace, client_factory: Callable[[str, float], An
         choices[task.instance_id], scores[task.instance_id] = choice, score(task, choice)
         if record.get("timed_out") or choice["stage"] == "time cap":
             timed_out.append(task.instance_id)
-        print(f"  {task.instance_id:<34} {choice['stage']}: chose {', '.join(choice['chosen']) or 'nothing'}, "
-              f"credit {scores[task.instance_id]['chooser']:.2f} ({choice['kept_tests']} test(s) kept, "
-              f"{choice['seconds']} s)", flush=True)
+        print(
+            f"  {task.instance_id:<34} {choice['stage']}: chose {', '.join(choice['chosen']) or 'nothing'}, "
+            f"credit {scores[task.instance_id]['chooser']:.2f} ({choice['kept_tests']} test(s) kept, "
+            f"{choice['seconds']} s)",
+            flush=True,
+        )
     summary = v1.summarise(runs, tasks, scores, choices)
     summary["tests_alone"] = round(sum(s["tests_alone"] for s in scores.values()), 2)
     v1_summary = v1.read_json(args.v1_summary) if args.v1_summary else None
     if v1_summary and v1_summary.get("runs") != summary["runs"]:
-        print(f"⚠️  {args.v1_summary} was made from {v1_summary.get('runs')}: not comparable, left out")
+        print(
+            f"⚠️  {args.v1_summary} was made from {v1_summary.get('runs')}: not comparable, left out"
+        )
         v1_summary = None
     rows_side = side_by_side(tasks, choices, scores, v1_summary)
     v1_here = None
     if v1_summary and all(row["v1"] is not None for row in rows_side):
         # Version 1 on the same tasks, projected onto the same list the same way.
         v1_total = round(sum(row["v1"] for row in rows_side), 2)
-        v1_here = {"chooser": v1_total, "projected": round(summary["projected"] - summary["chooser"] + v1_total, 2),
-                   "summary": str(args.v1_summary)}
-    summary.update({
-        "version": 2, "model": model, "server": "fake" if args.fake_model else args.server, "seed": args.seed,
-        "v1": v1_here,
-        "side_by_side": rows_side, "stages_v1": by_stage(rows_side, "v1"), "stages_v2": by_stage(rows_side, "v2"),
-        "timed_out": timed_out,
-        "per_task": {i: {**choices[i], **scores[i]} for i in choices},
-    })
+        v1_here = {
+            "chooser": v1_total,
+            "projected": round(summary["projected"] - summary["chooser"] + v1_total, 2),
+            "summary": str(args.v1_summary),
+        }
+    summary.update(
+        {
+            "version": 2,
+            "model": model,
+            "server": "fake" if args.fake_model else args.server,
+            "seed": args.seed,
+            "v1": v1_here,
+            "side_by_side": rows_side,
+            "stages_v1": by_stage(rows_side, "v1"),
+            "stages_v2": by_stage(rows_side, "v2"),
+            "timed_out": timed_out,
+            "per_task": {i: {**choices[i], **scores[i]} for i in choices},
+        }
+    )
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print_report(summary)
     return 0
@@ -982,29 +1224,82 @@ def run_test(args: argparse.Namespace, client_factory: Callable[[str, float], An
 def parser() -> argparse.ArgumentParser:
     """The command line: version 1's, plus the containers' and the time cap's."""
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--server", help="the model server's URL, by node name (http://node-b.local:8000)")
-    p.add_argument("--runs", default=v1.DEFAULT_RUNS, help=f"comma-separated run names (default {v1.DEFAULT_RUNS})")
-    p.add_argument("--runs-dir", type=Path, default=v1.DEFAULT_RUNS_DIR, help="where the runs are (read only)")
-    p.add_argument("--dataset", type=Path, default=v1.DEFAULT_DATASET, help="the local dataset snapshot")
-    p.add_argument("--out", type=Path, default=Path("swe-bench-chooser-v2"), help="where records and the summary go")
-    p.add_argument("--v1-summary", type=Path, default=DEFAULT_V1_SUMMARY, help="version 1's summary.json, for the comparison")
+    p.add_argument(
+        "--server", help="the model server's URL, by node name (http://node-b.local:8000)"
+    )
+    p.add_argument(
+        "--runs",
+        default=v1.DEFAULT_RUNS,
+        help=f"comma-separated run names (default {v1.DEFAULT_RUNS})",
+    )
+    p.add_argument(
+        "--runs-dir", type=Path, default=v1.DEFAULT_RUNS_DIR, help="where the runs are (read only)"
+    )
+    p.add_argument(
+        "--dataset", type=Path, default=v1.DEFAULT_DATASET, help="the local dataset snapshot"
+    )
+    p.add_argument(
+        "--out",
+        type=Path,
+        default=Path("swe-bench-chooser-v2"),
+        help="where records and the summary go",
+    )
+    p.add_argument(
+        "--v1-summary",
+        type=Path,
+        default=DEFAULT_V1_SUMMARY,
+        help="version 1's summary.json, for the comparison",
+    )
     p.add_argument("--model", help="the model id (default: the server's /v1/models)")
     p.add_argument("--max-tokens", type=int, default=16384)
     p.add_argument("--temperature", type=float, default=0.6)
     p.add_argument("--top-p", type=float, default=0.95)
-    p.add_argument("--seed", type=int, help="pins the sampling (if the server takes a seed) and the pair order")
+    p.add_argument(
+        "--seed", type=int, help="pins the sampling (if the server takes a seed) and the pair order"
+    )
     p.add_argument("--timeout", type=float, default=900.0, help="seconds to wait for one answer")
-    p.add_argument("--task-timeout", type=float, default=2400.0, help="seconds one task may take in all (default 40 min)")
-    p.add_argument("--generation-attempts", type=int, default=2, help="test-writer requests when no test is kept")
-    p.add_argument("--memory", default=DEFAULT_TASK_MEMORY, help=f"each container's memory cap (default {DEFAULT_TASK_MEMORY})")
-    p.add_argument("--cpus", type=int, default=DEFAULT_TASK_CPUS, help=f"each container's CPUs (default {DEFAULT_TASK_CPUS})")
-    p.add_argument("--container-network", default="none", help="the containers' network (default none)")
+    p.add_argument(
+        "--task-timeout",
+        type=float,
+        default=2400.0,
+        help="seconds one task may take in all (default 40 min)",
+    )
+    p.add_argument(
+        "--generation-attempts",
+        type=int,
+        default=2,
+        help="test-writer requests when no test is kept",
+    )
+    p.add_argument(
+        "--memory",
+        default=DEFAULT_TASK_MEMORY,
+        help=f"each container's memory cap (default {DEFAULT_TASK_MEMORY})",
+    )
+    p.add_argument(
+        "--cpus",
+        type=int,
+        default=DEFAULT_TASK_CPUS,
+        help=f"each container's CPUs (default {DEFAULT_TASK_CPUS})",
+    )
+    p.add_argument(
+        "--container-network", default="none", help="the containers' network (default none)"
+    )
     p.add_argument("--keep-images", action="store_true", help="keep the images this test pulled")
-    p.add_argument("--all", action="store_true", help="every task, not only those where the runs disagree")
+    p.add_argument(
+        "--all", action="store_true", help="every task, not only those where the runs disagree"
+    )
     p.add_argument("--only", help="comma-separated instance ids")
     p.add_argument("--limit", type=int, help="only the first N tasks")
-    p.add_argument("--dry-run", action="store_true", help="list the tasks; contact no server, start no container")
-    p.add_argument("--fake-model", action="store_true", help="the built-in fake model instead of a server (a smoke)")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="list the tasks; contact no server, start no container",
+    )
+    p.add_argument(
+        "--fake-model",
+        action="store_true",
+        help="the built-in fake model instead of a server (a smoke)",
+    )
     return p
 
 
