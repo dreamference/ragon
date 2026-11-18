@@ -22,7 +22,7 @@
 4. **Every commit says what Ragon spent on it.** Every commit the coordinator lands carries `Ragon-Tokens: <n>`, and `0` is allowed. This holds even when another model drove the change. A commit whose change Ragon made also carries `Made-with: ragon` (§3).
 5. **Both groups pass the same gates.** Ragon's commits and all other commits pass the same tests and the same reviews (§9). Ragon's work has extra checks of its own, and never fewer than the others'.
 6. **The public curve shows only what landed.** Every attempt is recorded in a private ledger (§4). Commits and lines count only landed commits. Tokens are the week's development tokens on both sides; §10 says what that means.
-7. **The target is private.** The weekly target share lives in the coordinator's configuration, never in a repository, and it tracks the measured share above a floor (§6).
+7. **The target is private until the curve has four points** (owner, 2026-11-18). The weekly target share lives in the coordinator's configuration and tracks the measured share above a floor (§6). Once `points` holds four rows, each newer export's `target_pct` is stored on its point and the chart draws the target as a line; before that no repository file holds it. The spread is not part of the chart.
 8. **The public numbers come from the repository alone.** `scripts/rbrb.py` reads the git history and the committed input rows of `docs/rbrb.json`, and writes the rest of the file and the chart. It is deterministic and uses no network (§7).
 9. **Baseline: 0 % on 2026-11-12.** History before that date counts as 0. The first point (week 2026-W46, measured by hand, `method_version` 0) is the one exception, recorded with its limits (§7.1).
 
@@ -490,7 +490,8 @@ The file has two kinds of fields:
 - `points` is sorted by week, with one row per week.
 - A week with no input row yet is absent. It is never zero-filled.
 - `landed_ragon_tokens` is the sum of the week's `Ragon-Tokens` trailers, so it is derived from git.
-- `quality` holds one row: the trailing eight-week window that ends with the newest point.
+- `quality` holds the rows from 2026-W47 on, one per week (the trailing eight-week window of the example above is the later form).
+- `target_pct` (optional, per point): stored only once `points` has four rows, from the export; absent before.
 
 ### 7.2 `images/rbrb.svg`
 
@@ -508,12 +509,16 @@ The chart is plain SVG text that `scripts/rbrb.py` writes, with no third-party p
 | Tick under the x axis | A week with `ragon_version_changed` |
 | Text, top right | The newest value with its week, e.g. "2026-W47: 1.75 %" |
 | Text, beneath | Ragon's revert rate against the others' over the eight-week window, with counts ("0 of 6 against 5 of 402"), and the band |
+| Bars, second panel | Ragon tasks landed per week (`ragon_tasks.landed`), the count above each bar, hollow for the running week (owner, 2026-11-18) |
+| Line, `target_pct` | The weekly target, drawn only when `points` has four rows or more |
 | Caption | "price-weighted tokens by Ragon as a share of all development tokens, per week" |
 
 **What it never shows:**
-- the target;
+- the target, before the curve has four points (from then on it is a dashed line through the points that store a `target_pct`);
 - any model's or tool's name other than Ragon's;
 - any person, host or job id.
+
+**The quality panel is public from 2026-W47** (owner, 2026-11-18): earlier weeks have no row. Its band reads `met`, `failed` or `undecided` from conditions 1 and 3 of §2.8 (revert rates, at least 20 Ragon-made commits); condition 4, the rework rate, joins the published band when the 28-day rate exists, and `rework` stays `null` until then.
 
 **Colours:** two theme-neutral colours that read in light and dark README themes.
 
@@ -559,7 +564,7 @@ The section is on `main`, after the main feature sections and before "Star histo
 2. **No person.** No name, user name or account appears in any artefact. Commits are made as team bots, dated in UTC.
 3. **No host.** No hostname, IP address, home path or node name appears in the public artefacts. The "node" and "the coordinator's machine" stay unnamed.
 4. **No job ids in public.** Job ids appear only in the private ledger and in the gate's usage log.
-5. **The private parts stay private.** The ledger, the gate's usage logs, the land queue's journal, the coordinator's usage ledger and the target never leave the coordinator's machine and the node. They are published only as weekly totals.
+5. **The private parts stay private.** The ledger, the gate's usage logs, the land queue's journal and the coordinator's usage ledger never leave the coordinator's machine and the node, and the target stays there until the curve has four points (decision 7). They are published only as weekly totals.
 6. **Enforced.** The message guard's denylists, which are kept outside the repository so that they never name what they forbid, check every commit message the bots send. The naming test (§12) checks the generated artefacts.
 
 ---

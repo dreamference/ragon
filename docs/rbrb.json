@@ -64,33 +64,13 @@
   ],
   "quality": [
     {
-      "week": "2026-W45",
-      "ragon_reverted": 0,
-      "ragon_commits": 0,
-      "other_reverted": 0,
-      "other_commits": 189,
-      "rework": null,
-      "band": "undecided",
-      "provisional": true
-    },
-    {
-      "week": "2026-W46",
-      "ragon_reverted": 0,
-      "ragon_commits": 80,
-      "other_reverted": 0,
-      "other_commits": 130,
-      "rework": null,
-      "band": "undecided",
-      "provisional": true
-    },
-    {
       "week": "2026-W47",
       "ragon_reverted": 0,
       "ragon_commits": 30,
       "other_reverted": 0,
       "other_commits": 53,
       "rework": null,
-      "band": "undecided",
+      "band": "met",
       "provisional": true
     }
   ]

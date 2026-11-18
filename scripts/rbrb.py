@@ -34,21 +34,28 @@ BADGE = ROOT / "images" / "rbrb-badge.svg"
 README = ROOT / "README.md"
 LATEST = re.compile(r"(<!-- rbrb:latest -->).*?(<!-- /rbrb:latest -->)", re.S)
 
-WIDTH, HEIGHT = 640, 530
+WIDTH, HEIGHT = 640, 656
 LEFT, RIGHT, TOP = 56, 24, 44
 INSET = 56  # space between the plot's edge and the first and last week, for the labels
 PANEL_H = 160  # height of the plot area of each of the two lines
-QUALITY_TOP = TOP + PANEL_H + 90
+TASKS_TOP = TOP + PANEL_H + 56
+TASKS_H = 80  # height of the landed-task bars
+QUALITY_TOP = TASKS_TOP + TASKS_H + 60
+QUALITY_FROM = "2026-W47"  # the quality band is public from this week (owner, 2026-11-18)
+TARGET_AT = 4  # the target is published, and drawn as a line, once the curve has this many points
+BAND_MIN_COMMITS = 20  # spec 2.8, condition 3
 CAPTION = "generated tokens by Ragon as a share of all development tokens, per ISO week (Monday to Sunday)"
 STEPS = (1, 2, 5, 10, 20, 25, 50)
 STYLE = (
     "<style>"
     ".bg{fill:#ffffff}.tx{fill:#444444}.hd{fill:#111111}.gr{stroke:#dddddd}"
     ".ln{stroke:#2a6fdb}.dot{fill:#2a6fdb}.ln2{stroke:#d9822b}.dot2{fill:#d9822b}"
+    ".tg{stroke:#8250df}.bar{fill:#2a6fdb}.barh{fill:#ffffff;stroke:#2a6fdb;stroke-width:2}"
     ".hollow{fill:#ffffff;stroke:#2a6fdb;stroke-width:2}"
     "@media (prefers-color-scheme: dark){"
     ".bg{fill:#0d1117}.tx{fill:#9da7b3}.hd{fill:#f0f6fc}.gr{stroke:#30363d}"
     ".ln{stroke:#58a6ff}.dot{fill:#58a6ff}.ln2{stroke:#e3a24b}.dot2{fill:#e3a24b}"
+    ".tg{stroke:#bc8cff}.bar{fill:#58a6ff}.barh{fill:#0d1117;stroke:#58a6ff}"
     ".hollow{fill:#0d1117;stroke:#58a6ff}}"
     "</style>"
 )
@@ -96,6 +103,7 @@ def _panel(
     top_value: float,
     step: float,
     series: list[tuple[str, list[tuple[float, float, bool]]]],
+    height: int = PANEL_H,
 ) -> list[str]:
     """One line panel: a title, a grid every `step`, and per (class suffix, [(x, value, hollow)]) series a line and points.
 
@@ -108,13 +116,13 @@ def _panel(
     ticks = int(top_value // step)
     for k in range(ticks + 1):
         value = k * step
-        y = top + PANEL_H * (1 - value / top_value)
+        y = top + height * (1 - value / top_value)
         out.append(f'<line class="gr" x1="{LEFT}" y1="{y:.1f}" x2="{WIDTH - RIGHT}" y2="{y:.1f}"/>')
         out.append(
             f'<text class="tx" x="{LEFT - 6}" y="{y + 4:.1f}" text-anchor="end">{value:g}</text>'
         )
     for suffix, values in series:
-        coords = [(x, top + PANEL_H * (1 - min(v, top_value) / top_value), h) for x, v, h in values]
+        coords = [(x, top + height * (1 - min(v, top_value) / top_value), h) for x, v, h in values]
         closed = [c for c in coords if not c[2]]
         if len(closed) > 1:
             path = " ".join(f"{x:.1f},{y:.1f}" for x, y, _ in closed)
@@ -134,6 +142,49 @@ def _panel(
     return out
 
 
+def count_axis(highest: int) -> tuple[int, int]:
+    """The top and the tick step of the landed-task axis: at least 5, at most four steps, a clean step."""
+    target = max(5, highest)
+    step = next((c for c in (1, 2, 5, 10, 20, 25, 50, 100, 200, 500) if target / c <= 4), 1000)
+    return -(-target // step) * step, step
+
+
+def _bars(
+    top: int, height: int, top_value: int, step: int, bars: list[tuple[float, int, bool]]
+) -> list[str]:
+    """The landed-task panel: a grid and one bar per week (hollow while the week is running) with its count."""
+    out = [
+        f'<text class="hd" x="{LEFT}" y="{top - 14}" font-size="14" font-weight="bold">Ragon tasks landed per week</text>'
+    ]
+    for k in range(top_value // step + 1):
+        y = top + height * (1 - k * step / top_value)
+        out.append(f'<line class="gr" x1="{LEFT}" y1="{y:.1f}" x2="{WIDTH - RIGHT}" y2="{y:.1f}"/>')
+        out.append(
+            f'<text class="tx" x="{LEFT - 6}" y="{y + 4:.1f}" text-anchor="end">{k * step}</text>'
+        )
+    for x, count, hollow in bars:
+        h = height * min(count, top_value) / top_value
+        cls = "barh" if hollow else "bar"
+        out.append(
+            f'<rect class="{cls}" x="{x - 12:.1f}" y="{top + height - h:.1f}" width="24" height="{h:.1f}"/>'
+        )
+        out.append(
+            f'<text class="hd" x="{x:.1f}" y="{top + height - h - 5:.1f}" text-anchor="middle" font-weight="bold">{count}</text>'
+        )
+    return out
+
+
+def band(entry: dict[str, Any]) -> str:
+    """The published quality band of a week: "met", "failed" or "undecided" (spec 2.8, conditions 1 and 3).
+
+    The rework condition joins when the 28-day rework rate exists; until then the band is read from the revert
+    rates alone, and an entry with fewer Ragon commits than the minimum stays undecided.
+    """
+    if entry["ragon_commits"] < BAND_MIN_COMMITS:
+        return "undecided"
+    return "met" if revert_percent(entry, "ragon") <= revert_percent(entry, "other") else "failed"
+
+
 def _label(x: float, y: float, text: str) -> str:
     anchor = "end" if x > WIDTH - RIGHT - INSET - 10 and x > WIDTH / 2 else "middle"
     return f'<text class="hd" x="{x:.1f}" y="{y:.1f}" text-anchor="{anchor}" font-size="12" font-weight="bold">{text}</text>'
@@ -142,7 +193,7 @@ def _label(x: float, y: float, text: str) -> str:
 def render(data: dict[str, Any]) -> str:
     """The two-panel chart as SVG text, deterministic for the same data."""
     points = data["points"]
-    quality = data.get("quality", [])
+    quality = [q for q in data.get("quality", []) if q["week"] >= QUALITY_FROM]
     weeks = sorted({p["week"] for p in points} | {q["week"] for q in quality})
     x_of = _x_for(weeks)
     shares = [share_percent(p) for p in points]
@@ -158,7 +209,32 @@ def render(data: dict[str, Any]) -> str:
         (x_of(p["week"]), s, bool(p.get("provisional")))
         for p, s in zip(points, shares, strict=True)
     ]
-    out += _panel(TOP, "RBRB: Ragon-Builds-Ragon share (%)", top, step, [("", series)])
+    targets = [
+        (x_of(p["week"]), p["target_pct"], False)
+        for p in points
+        if len(points) >= TARGET_AT and p.get("target_pct") is not None
+    ]
+    out += _panel(
+        TOP,
+        "RBRB: Ragon-Builds-Ragon share (%)",
+        top,
+        step,
+        [("", series)],
+    )
+    if len(targets) > 1:
+        path = " ".join(
+            f"{x:.1f},{TOP + PANEL_H * (1 - min(v, top) / top):.1f}" for x, v, _ in targets
+        )
+        out.append(
+            f'<polyline class="tg" points="{path}" fill="none" stroke-width="1.5" stroke-dasharray="2 3"/>'
+        )
+    landed = [
+        (x_of(p["week"]), int(p["ragon_tasks"]["landed"]), bool(p.get("provisional")))
+        for p in points
+        if "ragon_tasks" in p
+    ]
+    count_top, count_step = count_axis(max((c for _, c, _ in landed), default=0))
+    out += _bars(TASKS_TOP, TASKS_H, count_top, count_step, landed)
     for w in weeks:
         out.append(
             f'<text class="tx" x="{x_of(w):.1f}" y="{TOP + PANEL_H + 18}" text-anchor="middle">{w}</text>'
@@ -180,18 +256,27 @@ def render(data: dict[str, Any]) -> str:
         out.append(
             f'<text class="tx" x="{x_of(q["week"]):.1f}" y="{QUALITY_TOP + PANEL_H + 18}" text-anchor="middle">{q["week"]}</text>'
         )
+        out.append(
+            f'<text class="hd" x="{x_of(q["week"]):.1f}" y="{QUALITY_TOP + PANEL_H + 32}" text-anchor="middle" '
+            f'font-weight="bold">band: {band(q)}</text>'
+        )
     if not quality:
         out.append(
             f'<text class="tx" x="{WIDTH / 2:.1f}" y="{QUALITY_TOP + PANEL_H / 2:.1f}" text-anchor="middle">'
             "no revert data yet</text>"
         )
-    legend_y = QUALITY_TOP + PANEL_H + 40
+    legend_y = QUALITY_TOP + PANEL_H + 58
     out.append(f'<rect class="dot" x="{LEFT}" y="{legend_y - 9}" width="10" height="10"/>')
     out.append(f'<text class="tx" x="{LEFT + 16}" y="{legend_y}">Ragon</text>')
     out.append(f'<rect class="dot2" x="{LEFT + 80}" y="{legend_y - 9}" width="10" height="10"/>')
     out.append(f'<text class="tx" x="{LEFT + 96}" y="{legend_y}">other models</text>')
     out.append(f'<circle class="hollow" cx="{LEFT + 220}" cy="{legend_y - 4}" r="4"/>')
     out.append(f'<text class="tx" x="{LEFT + 230}" y="{legend_y}">running week so far</text>')
+    if targets:
+        out.append(
+            f'<line class="tg" x1="{LEFT + 360}" y1="{legend_y - 4}" x2="{LEFT + 380}" y2="{legend_y - 4}" stroke-width="1.5" stroke-dasharray="2 3"/>'
+        )
+        out.append(f'<text class="tx" x="{LEFT + 386}" y="{legend_y}">target</text>')
     out.append(f'<text class="tx" x="{LEFT}" y="{HEIGHT - 10}" font-size="10">{CAPTION}</text>')
     out.append("</g>")
     out.append("</svg>")
@@ -316,18 +401,23 @@ def ingest(
         [p for p in data["points"] if p["week"] != week] + [point], key=lambda p: p["week"]
     )
     # The band stays undecided until the 28-day rework rate exists (spec 2.8, condition 4): never "met" without it.
-    row = {
+    if len(data["points"]) >= TARGET_AT and export.get("target_pct") is not None:
+        # The target is private until the curve has TARGET_AT points (owner, 2026-11-18): only then is it stored.
+        point["target_pct"] = float(export["target_pct"])
+    row: dict[str, Any] = {
         "week": week,
         "ragon_reverted": counts["ragon_reverted"],
         "ragon_commits": counts["ragon_commits"],
         "other_reverted": counts["other_reverted"],
         "other_commits": counts["other_commits"],
         "rework": None,
-        "band": "undecided",
         "provisional": True,
     }
+    row["band"] = band(row)
+    # The quality band is public from QUALITY_FROM on: earlier weeks carry no row.
+    rows = [q for q in data.get("quality", []) if q["week"] != week and q["week"] >= QUALITY_FROM]
     data["quality"] = sorted(
-        [q for q in data.get("quality", []) if q["week"] != week] + [row], key=lambda q: q["week"]
+        rows + ([row] if week >= QUALITY_FROM else []), key=lambda q: q["week"]
     )
     return data
 
