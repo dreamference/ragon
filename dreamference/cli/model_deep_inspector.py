@@ -75,7 +75,7 @@ class ModelDeepInspector:
             model_alias (str): Model alias or repo ID.
 
         Returns:
-            Optional[Dict[str, Any]]: Parsed config, or None if the model is not downloaded.
+            dict[str, Any] | None: Parsed config, or None if the model is not downloaded.
         """
         from dreamference.hardware import ModelDownloader
 
@@ -100,7 +100,7 @@ class ModelDeepInspector:
             filename (str): File to read, e.g. 'generation_config.json'.
 
         Returns:
-            Optional[Dict[str, Any]]: Parsed JSON, or None if absent.
+            dict[str, Any] | None: Parsed JSON, or None if absent.
         """
         from dreamference.hardware import ModelDownloader
 
@@ -139,7 +139,7 @@ class ModelDeepInspector:
             vllm_host (str): Base URL of the running server.
 
         Returns:
-            Optional[Dict[str, Any]]: {'drafts', 'drafted', 'accepted', 'per_pos'}, or None.
+            dict[str, Any] | None: {'drafts', 'drafted', 'accepted', 'per_pos'}, or None.
         """
         try:
             import requests
@@ -253,7 +253,7 @@ class ModelDeepInspector:
 
         Args:
             model_alias (str): Target model alias or repo ID.
-            drafter_repo (Optional[str]): Speculative drafter repo, if the recipe names one.
+            drafter_repo (str | None): Speculative drafter repo, if the recipe names one.
 
         Returns:
             Dict[str, str]: Display-ready rows.
@@ -454,7 +454,7 @@ class ModelDeepInspector:
 
         Args:
             container (str): Running container name.
-            max_num_seqs (Optional[str]): Configured concurrency, to compare against capture sizes.
+            max_num_seqs (str | None): Configured concurrency, to compare against capture sizes.
 
         Returns:
             Dict[str, str]: Display-ready rows.
