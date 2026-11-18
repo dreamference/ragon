@@ -97,8 +97,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Final, List, Optional, Sequence, Tuple
 
-DEFAULT_RUNS_DIR: Final[Path] = Path.home() / ".local" / "share" / "dreamference" / "swe-bench" / "runs"
-DEFAULT_DATASET: Final[Path] = Path.home() / ".cache" / "dreamference" / "swe-bench" / "datasets" / "SWE-bench_Verified.jsonl"
+DEFAULT_RUNS_DIR: Final[Path] = (
+    Path.home() / ".local" / "share" / "dreamference" / "swe-bench" / "runs"
+)
+DEFAULT_DATASET: Final[Path] = (
+    Path.home() / ".cache" / "dreamference" / "swe-bench" / "datasets" / "SWE-bench_Verified.jsonl"
+)
 DEFAULT_RUNS: Final[str] = "n2-default,n3-default,n4-default"
 HARNESS_LOG_DIR: Final[str] = "logs/run_evaluation"
 
@@ -111,8 +115,15 @@ if str(SCRIPTS.parent) not in sys.path:
 
 from dreamference.night_shift.chooser_candidate import ChooserCandidate as Candidate  # noqa: E402
 from dreamference.night_shift.night_shift_chooser import (  # noqa: E402
-    MAX_ISSUE_CHARS, MAX_PATCH_CHARS, MIN_COMPARISONS, RATING, SWISS_WINDOW, SYSTEM_PROMPT, USER_TEMPLATE,
-    WEIGHT_FLOOR, NightShiftChooser,
+    MAX_ISSUE_CHARS,
+    MAX_PATCH_CHARS,
+    MIN_COMPARISONS,
+    RATING,
+    SWISS_WINDOW,
+    SYSTEM_PROMPT,
+    USER_TEMPLATE,
+    WEIGHT_FLOOR,
+    NightShiftChooser,
 )
 
 clip = NightShiftChooser.clip
@@ -129,7 +140,9 @@ class Task:
     instance_id: str
     candidates: List[Candidate]
     run_verdicts: Dict[str, bool]
-    resolves: Dict[str, bool] = field(default_factory=dict)  # candidate id -> resolved (scoring only)
+    resolves: Dict[str, bool] = field(
+        default_factory=dict
+    )  # candidate id -> resolved (scoring only)
     flaky: bool = False
 
 
@@ -145,8 +158,9 @@ def read_json(path: Path) -> Optional[Dict[str, Any]]:
     return value if isinstance(value, dict) else None
 
 
-def regression_record(directory: Path, run: str, number: int, model: str, instance_id: str,
-                      result: Dict[str, Any]) -> Tuple[bool, Optional[int]]:
+def regression_record(
+    directory: Path, run: str, number: int, model: str, instance_id: str, result: Dict[str, Any]
+) -> Tuple[bool, Optional[int]]:
     """
     What the regression filter may know about one graded patch: whether it applied and how many
     PASS_TO_PASS tests it broke. Taken from the grading record when it has the count, otherwise
@@ -158,8 +172,16 @@ def regression_record(directory: Path, run: str, number: int, model: str, instan
     applied = result.get("applied") is not False and not result.get("empty")
     if "p2p_failed" in result:
         return applied, int(result.get("p2p_failed") or 0)
-    report = read_json(directory / "eval" / str(number) / HARNESS_LOG_DIR / f"{run}-{number}"
-                       / model.replace("/", "__") / instance_id / "report.json")
+    report = read_json(
+        directory
+        / "eval"
+        / str(number)
+        / HARNESS_LOG_DIR
+        / f"{run}-{number}"
+        / model.replace("/", "__")
+        / instance_id
+        / "report.json"
+    )
     verdict = (report or {}).get(instance_id) or {}
     status = verdict.get("tests_status") if isinstance(verdict, dict) else None
     if not isinstance(status, dict) or "PASS_TO_PASS" not in status:
@@ -201,16 +223,22 @@ def load_run(runs_dir: Path, name: str) -> Dict[str, Any]:
         if isinstance(record, dict) and record.get("instance_id"):
             patches[record["instance_id"]] = str(record.get("model_patch") or "")
             models[record["instance_id"]] = str(record.get("model_name_or_path") or "")
-    numbers = sorted(int(entry.name) for entry in (directory / "eval").glob("*") if entry.name.isdigit())
+    numbers = sorted(
+        int(entry.name) for entry in (directory / "eval").glob("*") if entry.name.isdigit()
+    )
     if not numbers:
         raise SystemExit(f"❌ {name} has no grading: run `ragon-admin swe-bench eval {name}` first")
     grading = read_json(directory / "eval" / str(numbers[-1]) / "grading.json") or {}
     results = grading.get("results") or {}
     model = str(manifest.get("model_name_or_path") or "")
     return {
-        "name": name, "instances": list(manifest.get("instances") or []), "patches": patches,
-        "regression": {i: regression_record(directory, name, numbers[-1], models.get(i) or model, i, r)
-                       for i, r in results.items()},
+        "name": name,
+        "instances": list(manifest.get("instances") or []),
+        "patches": patches,
+        "regression": {
+            i: regression_record(directory, name, numbers[-1], models.get(i) or model, i, r)
+            for i, r in results.items()
+        },
         "resolved": {i: bool(r.get("resolved")) for i, r in results.items()},
     }
 
@@ -229,7 +257,9 @@ def load_issues(dataset: Path, ids: Sequence[str]) -> Dict[str, str]:
     try:
         lines = dataset.read_text().splitlines()
     except OSError:
-        raise SystemExit(f"❌ No dataset snapshot at {dataset} (ragon-admin swe-bench setup writes it)")
+        raise SystemExit(
+            f"❌ No dataset snapshot at {dataset} (ragon-admin swe-bench setup writes it)"
+        )
     for line in lines:
         if line.strip():
             row = json.loads(line)
@@ -264,7 +294,9 @@ def select_tasks(runs: List[Dict[str, Any]], every: bool = False) -> List[Task]:
     """
     lists = {tuple(sorted(run["instances"])) for run in runs}
     if len(lists) != 1:
-        raise SystemExit("❌ The runs cover different task lists; a chooser over them would compare nothing")
+        raise SystemExit(
+            "❌ The runs cover different task lists; a chooser over them would compare nothing"
+        )
     tasks = []
     for instance_id in sorted(lists.pop()):
         if not all(instance_id in run["resolved"] for run in runs):
@@ -286,9 +318,15 @@ def select_tasks(runs: List[Dict[str, Any]], every: bool = False) -> List[Task]:
             if broken is not None:
                 candidate.p2p_failed = max(candidate.p2p_failed or 0, broken)
             resolved.setdefault(cid, []).append(verdicts[run["name"]])
-        tasks.append(Task(instance_id=instance_id, candidates=sorted(candidates.values(), key=lambda c: c.runs),
-                          run_verdicts=verdicts, resolves={cid: all(v) for cid, v in resolved.items()},
-                          flaky=any(len(set(v)) > 1 for v in resolved.values())))
+        tasks.append(
+            Task(
+                instance_id=instance_id,
+                candidates=sorted(candidates.values(), key=lambda c: c.runs),
+                run_verdicts=verdicts,
+                resolves={cid: all(v) for cid, v in resolved.items()},
+                flaky=any(len(set(v)) > 1 for v in resolved.values()),
+            )
+        )
     return tasks
 
 
@@ -316,7 +354,9 @@ class Client:
             answers with a refusal; the test must not go on against it).
         """
         data = None if payload is None else json.dumps(payload).encode()
-        request = urllib.request.Request(self.base + path, data=data, headers={"Content-Type": "application/json"})
+        request = urllib.request.Request(
+            self.base + path, data=data, headers={"Content-Type": "application/json"}
+        )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 return json.loads(response.read())
@@ -352,16 +392,24 @@ def score(task: Task, choice: Dict[str, Any]) -> Dict[str, float]:
         of the survivors that resolve, i.e. the filter alone and a fair coin; all candidates when
         none survived), `random_run` (the share of runs that resolved).
     """
+
     def share(ids: List[str]) -> float:
         return sum(1 for i in ids if task.resolves.get(i)) / len(ids) if ids else 0.0
 
     pool = choice["survivors"] or [c.id for c in task.candidates]
-    return {"chooser": share(choice["chosen"]), "filter": share(pool),
-            "random_run": sum(task.run_verdicts.values()) / len(task.run_verdicts)}
+    return {
+        "chooser": share(choice["chosen"]),
+        "filter": share(pool),
+        "random_run": sum(task.run_verdicts.values()) / len(task.run_verdicts),
+    }
 
 
-def summarise(runs: List[Dict[str, Any]], tasks: List[Task], scores: Dict[str, Dict[str, float]],
-              choices: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def summarise(
+    runs: List[Dict[str, Any]],
+    tasks: List[Task],
+    scores: Dict[str, Dict[str, float]],
+    choices: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
     """
     The test's figures, over the judged tasks and projected onto the whole list.
 
@@ -380,12 +428,20 @@ def summarise(runs: List[Dict[str, Any]], tasks: List[Task], scores: Dict[str, D
     total = lambda key, among: round(sum(scores[t.instance_id][key] for t in among), 2)
     projected = sum(1 for i in all_resolved if i not in judged_ids) + total("chooser", tasks)
     return {
-        "runs": [run["name"] for run in runs], "tasks": len(tasks), "disagreeing": len(disagree),
-        "chooser": total("chooser", tasks), "filter_alone": total("filter", tasks),
-        "random_run": total("random_run", tasks), "oracle": sum(1 for t in tasks if any(t.run_verdicts.values())),
-        "stages": stages, "listed": len(listed),
-        "single_runs": {run["name"]: sum(1 for i in listed if run["resolved"].get(i)) for run in runs},
-        "all_resolved": len(all_resolved), "projected": round(projected, 2),
+        "runs": [run["name"] for run in runs],
+        "tasks": len(tasks),
+        "disagreeing": len(disagree),
+        "chooser": total("chooser", tasks),
+        "filter_alone": total("filter", tasks),
+        "random_run": total("random_run", tasks),
+        "oracle": sum(1 for t in tasks if any(t.run_verdicts.values())),
+        "stages": stages,
+        "listed": len(listed),
+        "single_runs": {
+            run["name"]: sum(1 for i in listed if run["resolved"].get(i)) for run in runs
+        },
+        "all_resolved": len(all_resolved),
+        "projected": round(projected, 2),
         "flaky": sorted(t.instance_id for t in tasks if t.flaky),
     }
 
@@ -406,21 +462,30 @@ def describe(candidate: Candidate) -> str:
     return f"{candidate.id} [{'+'.join(candidate.runs)}] {state}"
 
 
-def run_test(args: argparse.Namespace, client_factory: Callable[[str, float], Client] = Client) -> int:
+def run_test(
+    args: argparse.Namespace, client_factory: Callable[[str, float], Client] = Client
+) -> int:
     """The test, as `main` runs it; the client is replaceable for the tests."""
     runs = [load_run(args.runs_dir, name) for name in args.runs.split(",") if name]
     if len(runs) < 2:
         raise SystemExit("❌ Name at least two runs")
     tasks = select_tasks(runs, args.all)
     if args.limit:
-        tasks = tasks[:args.limit]
-    pools = {t.instance_id: len([c for c in t.candidates if not c.breaks] or t.candidates) for t in tasks}
+        tasks = tasks[: args.limit]
+    pools = {
+        t.instance_id: len([c for c in t.candidates if not c.breaks] or t.candidates) for t in tasks
+    }
     judged = [t for t in tasks if pools[t.instance_id] > 1]
     calls = sum(pools[t.instance_id] * (pools[t.instance_id] - 1) // 2 for t in judged)
-    print(f"{len(tasks)} task(s) from {', '.join(r['name'] for r in runs)}; {len(judged)} go to the judge, "
-          f"{calls} judge call(s) at most")
+    print(
+        f"{len(tasks)} task(s) from {', '.join(r['name'] for r in runs)}; {len(judged)} go to the judge, "
+        f"{calls} judge call(s) at most"
+    )
     for task in tasks:
-        print(f"  {task.instance_id:<34} " + ("; ".join(describe(c) for c in task.candidates) or "no non-empty patch"))
+        print(
+            f"  {task.instance_id:<34} "
+            + ("; ".join(describe(c) for c in task.candidates) or "no non-empty patch")
+        )
     if args.dry_run:
         return 0
     if not args.server:
@@ -438,25 +503,44 @@ def run_test(args: argparse.Namespace, client_factory: Callable[[str, float], Cl
                 record = json.loads(line)
             except ValueError:
                 continue
-            done[(record["instance_id"], record["a"], record["b"])] = \
+            done[(record["instance_id"], record["a"], record["b"])] = (
                 tuple(record["ratings"]) if record.get("ratings") else None
+            )
 
-    def judge_for(instance_id: str) -> Callable[[Candidate, Candidate], Optional[Tuple[float, float]]]:
+    def judge_for(
+        instance_id: str,
+    ) -> Callable[[Candidate, Candidate], Optional[Tuple[float, float]]]:
         def compare(a: Candidate, b: Candidate) -> Optional[Tuple[float, float]]:
             key = (instance_id, a.id, b.id)
             if key in done:
                 return done[key]
-            payload = {"model": model, "max_tokens": args.max_tokens, "temperature": args.temperature,
-                       "top_p": args.top_p,
-                       "messages": NightShiftChooser.messages(issues[instance_id], a.patch, b.patch)}
+            payload = {
+                "model": model,
+                "max_tokens": args.max_tokens,
+                "temperature": args.temperature,
+                "top_p": args.top_p,
+                "messages": NightShiftChooser.messages(issues[instance_id], a.patch, b.patch),
+            }
             if args.seed is not None:
                 payload["seed"] = args.seed
             answer = client.chat(payload)
             done[key] = ratings(answer)
             with open(log, "a") as handle:
-                handle.write(json.dumps({"instance_id": instance_id, "a": a.id, "b": b.id, "ratings": done[key],
-                                         "model": model, "answer_tail": answer[-600:]}) + "\n")
+                handle.write(
+                    json.dumps(
+                        {
+                            "instance_id": instance_id,
+                            "a": a.id,
+                            "b": b.id,
+                            "ratings": done[key],
+                            "model": model,
+                            "answer_tail": answer[-600:],
+                        }
+                    )
+                    + "\n"
+                )
             return done[key]
+
         return compare
 
     choices, scores = {}, {}
@@ -464,40 +548,79 @@ def run_test(args: argparse.Namespace, client_factory: Callable[[str, float], Cl
         rng = random.Random(f"{args.seed}:{task.instance_id}")
         choice = choose(task.candidates, judge_for(task.instance_id), rng, args.swiss_rounds)
         choices[task.instance_id], scores[task.instance_id] = choice, score(task, choice)
-        print(f"  {task.instance_id:<34} {choice['stage']}: chose {', '.join(choice['chosen']) or 'nothing'}, "
-              f"credit {scores[task.instance_id]['chooser']:.2f}")
+        print(
+            f"  {task.instance_id:<34} {choice['stage']}: chose {', '.join(choice['chosen']) or 'nothing'}, "
+            f"credit {scores[task.instance_id]['chooser']:.2f}"
+        )
     summary = summarise(runs, tasks, scores, choices)
-    summary.update({"model": model, "server": args.server, "per_task": {
-        i: {**choices[i], **scores[i]} for i in choices}})
+    summary.update(
+        {
+            "model": model,
+            "server": args.server,
+            "per_task": {i: {**choices[i], **scores[i]} for i in choices},
+        }
+    )
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    print(f"\nOn the {summary['tasks']} task(s): chooser {summary['chooser']}, the regression filter alone "
-          f"{summary['filter_alone']}, a random run {summary['random_run']}, any run (oracle) {summary['oracle']}")
-    print("Chosen by: " + ", ".join(f"{stage} {count}" for stage, count in sorted(summary["stages"].items())))
-    print(f"On all {summary['listed']}: single runs {summary['single_runs']}; best-of-{len(runs)} with this chooser "
-          f"{summary['projected']} (every run resolved {summary['all_resolved']})")
+    print(
+        f"\nOn the {summary['tasks']} task(s): chooser {summary['chooser']}, the regression filter alone "
+        f"{summary['filter_alone']}, a random run {summary['random_run']}, any run (oracle) {summary['oracle']}"
+    )
+    print(
+        "Chosen by: "
+        + ", ".join(f"{stage} {count}" for stage, count in sorted(summary["stages"].items()))
+    )
+    print(
+        f"On all {summary['listed']}: single runs {summary['single_runs']}; best-of-{len(runs)} with this chooser "
+        f"{summary['projected']} (every run resolved {summary['all_resolved']})"
+    )
     if summary["flaky"]:
-        print(f"Graded both ways for the same patch text (flaky tests): {', '.join(summary['flaky'])}")
+        print(
+            f"Graded both ways for the same patch text (flaky tests): {', '.join(summary['flaky'])}"
+        )
     return 0
 
 
 def parser() -> argparse.ArgumentParser:
     """The command line."""
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--server", help="the model server's URL, by node name (http://node-b.local:8000)")
-    p.add_argument("--runs", default=DEFAULT_RUNS, help=f"comma-separated run names (default {DEFAULT_RUNS})")
-    p.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR, help="where the runs are (read only)")
-    p.add_argument("--dataset", type=Path, default=DEFAULT_DATASET, help="the local dataset snapshot")
-    p.add_argument("--out", type=Path, default=Path("swe-bench-chooser"), help="where judgments and the summary go")
+    p.add_argument(
+        "--server", help="the model server's URL, by node name (http://node-b.local:8000)"
+    )
+    p.add_argument(
+        "--runs", default=DEFAULT_RUNS, help=f"comma-separated run names (default {DEFAULT_RUNS})"
+    )
+    p.add_argument(
+        "--runs-dir", type=Path, default=DEFAULT_RUNS_DIR, help="where the runs are (read only)"
+    )
+    p.add_argument(
+        "--dataset", type=Path, default=DEFAULT_DATASET, help="the local dataset snapshot"
+    )
+    p.add_argument(
+        "--out",
+        type=Path,
+        default=Path("swe-bench-chooser"),
+        help="where judgments and the summary go",
+    )
     p.add_argument("--model", help="the model id (default: the server's /v1/models)")
     p.add_argument("--max-tokens", type=int, default=16384)
     p.add_argument("--temperature", type=float, default=0.6)
     p.add_argument("--top-p", type=float, default=0.95)
-    p.add_argument("--seed", type=int, help="pins the pairing, and the sampling if the server takes a seed")
-    p.add_argument("--swiss-rounds", type=int, default=1, help="Swiss rounds after two comparisons each (V1)")
+    p.add_argument(
+        "--seed", type=int, help="pins the pairing, and the sampling if the server takes a seed"
+    )
+    p.add_argument(
+        "--swiss-rounds", type=int, default=1, help="Swiss rounds after two comparisons each (V1)"
+    )
     p.add_argument("--timeout", type=float, default=900.0, help="seconds to wait for one answer")
-    p.add_argument("--all", action="store_true", help="judge every task, not only those where the runs disagree")
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help="judge every task, not only those where the runs disagree",
+    )
     p.add_argument("--limit", type=int, help="judge only the first N tasks")
-    p.add_argument("--dry-run", action="store_true", help="list the tasks and candidates; contact no server")
+    p.add_argument(
+        "--dry-run", action="store_true", help="list the tasks and candidates; contact no server"
+    )
     return p
 
 
