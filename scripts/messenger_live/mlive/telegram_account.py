@@ -107,7 +107,7 @@ def write_qr(link: str, png: Path) -> None:
     """
     if png == TERMINAL:
         _say(
-            "\nScan this with Telegram → Settings → Devices → Link Desktop Device (renewed every 30 s):\n"
+            "\nScan this with Telegram → Settings → Devices → Link Desktop Device (renewed every 30 s):\n\n"
         )
         subprocess.run(["qrencode", "-t", "ANSIUTF8", "-m", "2", link], check=True)
         return
