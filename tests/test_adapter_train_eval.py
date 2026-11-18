@@ -152,3 +152,45 @@ def test_grade_holdout_stops_when_the_window_closes() -> None:
             return None
 
     assert AdapterTrainEval.grade_holdout(Closed())["stopped"]
+
+
+def test_eval_complete_returns_chat_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    from dreamference.hardware import adapter_train_eval as eval_mod
+
+    calls: list[str] = []
+
+    class Reply(io.BytesIO):
+        pass
+
+    def opener(url, timeout):
+        if isinstance(url, str):
+            calls.append(url)
+            return Reply(json.dumps({"data": [{"id": "m1"}]}).encode())
+        calls.append(str(getattr(url, "full_url", url)))
+        return Reply(json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode())
+
+    monkeypatch.setattr(eval_mod.urllib.request, "urlopen", opener)
+    result = AdapterTrainEval.complete("http://srv", "say hi")
+    assert result == "hello"
+    assert calls == ["http://srv/v1/models", "http://srv/v1/chat/completions"]
+
+
+def test_eval_complete_returns_empty_string_when_content_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+
+    from dreamference.hardware import adapter_train_eval as eval_mod
+
+    class Reply(io.BytesIO):
+        pass
+
+    def opener(url, timeout):
+        if isinstance(url, str):
+            return Reply(json.dumps({"data": [{"id": "m1"}]}).encode())
+        return Reply(json.dumps({"choices": [{"message": {"content": None}}]}).encode())
+
+    monkeypatch.setattr(eval_mod.urllib.request, "urlopen", opener)
+    assert AdapterTrainEval.complete("http://srv", "x") == ""
