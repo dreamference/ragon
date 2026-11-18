@@ -1,7 +1,9 @@
 """The log level: one grammar (LOGGING §4.2) and one precedence (§4.3) in Python and in Rust."""
 
+import fcntl
 import gzip
 import json
+import os
 import re
 import threading
 from pathlib import Path
@@ -368,3 +370,38 @@ def test_no_product_code_builds_its_own_log_handler():
         text = path.read_text()
         offenders += [f"{path.name}: {b}" for b in banned if b in text]
     assert offenders == [], "move these to the writer (LOGGING §11.2): " + ", ".join(offenders)
+
+
+def test_log_file_rotate_shifts_compressed_files_and_deletes_the_oldest(tmp_path, monkeypatch):
+    import dreamference.config.log_file_sink as sink_module
+
+    now = [EPOCH]
+    sink = sink_module.LogFileSink(tmp_path, "rotate", max_bytes=100, clock=lambda: now[0])
+    sink.write("a" * 100)  # rotates at 100 bytes
+    assert (tmp_path / "rotate.1.log").exists() and (tmp_path / "rotate.lock").exists()
+    assert sink.path.exists() and sink.path.stat().st_size == 0  # _open() opened a new file
+
+    now[0] += 2
+    sink.write("b" * 100)  # second rotation: .2.log.gz appears, .1.log is re-created
+    assert (tmp_path / "rotate.2.log.gz").exists() and (tmp_path / "rotate.1.log").exists()
+    assert sink.path.exists() and sink.path.stat().st_size == 0
+
+    now[0] += 2
+    sink.write("c" * 100)  # third rotation: .2.log.gz shifts to .3.log.gz
+    assert (tmp_path / "rotate.3.log.gz").exists() and (tmp_path / "rotate.2.log.gz").exists()
+    assert sink.path.exists() and sink.path.stat().st_size == 0
+
+
+def test_log_file_rotate_reopens_when_the_lock_is_held_elsewhere(tmp_path, monkeypatch):
+    import dreamference.config.log_file_sink as sink_module
+
+    now = [EPOCH]
+    sink = sink_module.LogFileSink(tmp_path, "blocked", max_bytes=100, clock=lambda: now[0])
+    sink.write("a" * 100)  # rotation already happened; the file is empty and _fd is None
+    lock_fd = os.open(tmp_path / "blocked.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        assert sink.rotate() is False  # the lock is held elsewhere
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
