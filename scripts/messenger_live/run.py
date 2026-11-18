@@ -27,6 +27,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Final
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -52,6 +53,8 @@ INSTALL_TIMER = "install-timer"
 AFTER_MERGE_COMMAND = "after-merge"
 # What gate.update_marker() answers when the release marker did not change.
 MARKER_KEPT = "kept"
+# The `source` of installed_build() when the latest release is installed and tested.
+SOURCE_RELEASE: Final = "release"
 
 
 def _say(text: str) -> None:
@@ -165,7 +168,7 @@ def tested_build(cache: Path) -> dict[str, str]:
 def installed_build(source: str) -> dict[str, str]:
     """What the run tests: the version of `bridge.RAGON`, where it came from, its build key if any."""
     build = {"source": source}
-    if source != "release":
+    if source != SOURCE_RELEASE:
         build["build-key"] = gate.installed_stamp() or "none"
     try:
         version = subprocess.run(
