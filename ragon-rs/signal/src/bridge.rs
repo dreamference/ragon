@@ -1857,6 +1857,28 @@ mod tests {
     }
 
     #[test]
+    fn messages_delivery_gives_each_turn_its_own_single_progress_message() {
+        let mut b = connected_messages();
+        let mut at = 0;
+        for turn in 0..2 {
+            b.on_message(msg(&format!("question number {turn}"), 1 + turn), at);
+            if turn == 0 {
+                b.on_agent(AgentEvent::ThreadReady { thread: "t1".to_string() }, at);
+            }
+            let mut all = Vec::new();
+            for now in (at..at + 90_000).step_by(1_000) {
+                all.extend(b.on_tick(now));
+            }
+            assert_eq!(notices(&all).len(), 1, "turn {turn}: one progress message, not a stream: {all:?}");
+            assert!(no_edit_actions(&all));
+            at += 90_000;
+            let done = b.on_agent(AgentEvent::TurnCompleted { thread: "t1".to_string(), error: None }, at);
+            assert!(no_edit_actions(&done));
+            at += 1_000;
+        }
+    }
+
+    #[test]
     fn without_streaming_the_answer_comes_whole() {
         let mut b = connected();
         b.stream = false;
