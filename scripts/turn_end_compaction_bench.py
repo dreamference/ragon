@@ -71,10 +71,11 @@ import tempfile
 import threading
 import time
 import urllib.request
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Final, Iterable
+from typing import Any, Final
 
 ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 SCRIPTS: Final[Path] = ROOT / "scripts"
@@ -83,7 +84,9 @@ SCRIPTS: Final[Path] = ROOT / "scripts"
 # 94,144 with the default model on this machine's server; turn-end compaction sits at 53% of it (70% before the earlier run),
 # expressed as a percentage of Codex's usable window (95% of the model's window).
 DEFAULT_LIMIT: Final[int] = 94_144
-TURN_END_SHARE_PERCENT: Final[int] = 53  # 70 until the earlier run; 53 gives 20 on the default model
+TURN_END_SHARE_PERCENT: Final[int] = (
+    53  # 70 until the earlier run; 53 gives 20 on the default model
+)
 EFFECTIVE_WINDOW_PERCENT: Final[int] = 95
 MAX_LIMIT_PERCENT_OF_WINDOW: Final[int] = 90
 DEFAULT_WINDOW: Final[int] = 262_144
@@ -128,13 +131,16 @@ MISSED_MARGIN_PERCENT: Final[int] = 5
 COMPACTION_PROMPT_MARK: Final[str] = "CONTEXT CHECKPOINT COMPACTION"
 TITLE_REQUEST_MARK: Final[str] = "task title"
 STRAY_TOOL_CALL: Final[str] = "<tool_call>"
-TEST_SUMMARY: Final[re.Pattern] = re.compile(r"(\d+) (passed|failed|errors?|skipped|xfailed|xpassed)")
+TEST_SUMMARY: Final[re.Pattern] = re.compile(
+    r"(\d+) (passed|failed|errors?|skipped|xfailed|xpassed)"
+)
 DEFAULT_OUT_PARENT: Final[Path] = Path.home() / ".cache" / "dreamference" / "turn-end-compaction"
 SOURCE_CACHE: Final[Path] = DEFAULT_OUT_PARENT / "sources"
 
 
 # --------------------------------------------------------------------------------------------------
 # The launcher's arithmetic
+
 
 def turn_end_percent(window: int, limit: int) -> int | None:
     """The percentage the launcher gives `model_post_turn_compact_threshold_percent` (compaction.rs).
@@ -171,6 +177,7 @@ def turn_end_threshold_tokens(window: int, percent: int) -> int:
 # --------------------------------------------------------------------------------------------------
 # Reading a rollout
 
+
 def parse_time_ms(stamp: str) -> int | None:
     """Epoch milliseconds of a rollout timestamp (`2020-10-01T18:02:28.753Z`), or None."""
     if not stamp:
@@ -206,7 +213,9 @@ def read_records(path: Path) -> list[dict[str, Any]]:
 
 def find_rollout(codex_home: Path) -> Path | None:
     """The session's rollout under `codex_home/sessions` (the most recently written, if several)."""
-    found = sorted((codex_home / "sessions").rglob("rollout-*.jsonl"), key=lambda path: path.stat().st_mtime)
+    found = sorted(
+        (codex_home / "sessions").rglob("rollout-*.jsonl"), key=lambda path: path.stat().st_mtime
+    )
     return found[-1] if found else None
 
 
@@ -233,8 +242,11 @@ def is_model_output(record: dict[str, Any]) -> bool:
 def is_final_answer(record: dict[str, Any]) -> bool:
     """Whether a record is an assistant message (as opposed to a tool call or its output)."""
     payload = _payload(record)
-    return record.get("type") == "response_item" and payload.get("type") == "message" \
+    return (
+        record.get("type") == "response_item"
+        and payload.get("type") == "message"
         and payload.get("role") == "assistant"
+    )
 
 
 def message_text(payload: dict[str, Any]) -> str:
@@ -314,13 +326,23 @@ def turns_of(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         event = _event(record)
         payload = _payload(record)
         if event == "task_started":
-            turn = {"turn_id": payload.get("turn_id"), "start_i": record["_i"], "end_i": None,
-                    "status": "running", "started_ms": record["_ms"], "ended_ms": None, "wall_s": None,
-                    "context_at_end": None, "reason": None}
+            turn = {
+                "turn_id": payload.get("turn_id"),
+                "start_i": record["_i"],
+                "end_i": None,
+                "status": "running",
+                "started_ms": record["_ms"],
+                "ended_ms": None,
+                "wall_s": None,
+                "context_at_end": None,
+                "reason": None,
+            }
             turns.append(turn)
             by_id[str(payload.get("turn_id"))] = turn
         elif event in ("task_complete", "turn_aborted"):
-            turn = by_id.get(str(payload.get("turn_id"))) or (turns[-1] if turns and turns[-1]["end_i"] is None else None)
+            turn = by_id.get(str(payload.get("turn_id"))) or (
+                turns[-1] if turns and turns[-1]["end_i"] is None else None
+            )
             if turn is None:
                 continue
             turn["end_i"] = record["_i"]
@@ -351,7 +373,9 @@ def _turn_at(turns: list[dict[str, Any]], index: int) -> dict[str, Any] | None:
     return None
 
 
-def compactions_of(records: list[dict[str, Any]], turns: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def compactions_of(
+    records: list[dict[str, Any]], turns: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """Every compaction in a rollout, classified and timed.
 
     A compaction is a `compacted` record. Its wall time comes from the `ContextCompaction` item that
@@ -373,11 +397,16 @@ def compactions_of(records: list[dict[str, Any]], turns: list[dict[str, Any]] | 
             the compaction request; None when the rollout holds no usage of its own), `stray_tool_call`.
     """
     turns = turns_of(records) if turns is None else turns
-    items = [record for record in records if _event(record) == "item_completed"
-             and (_payload(record).get("item") or {}).get("type") == "ContextCompaction"]
+    items = [
+        record
+        for record in records
+        if _event(record) == "item_completed"
+        and (_payload(record).get("item") or {}).get("type") == "ContextCompaction"
+    ]
     found = []
     for number, (index, record) in enumerate(
-            ((record["_i"], record) for record in records if record.get("type") == "compacted"), start=1):
+        ((record["_i"], record) for record in records if record.get("type") == "compacted"), start=1
+    ):
         payload = _payload(record)
         # The `ContextCompaction` item that completes with it: the nearest one not yet taken.
         item = min(items, key=lambda candidate: abs(candidate["_i"] - index), default=None)
@@ -389,22 +418,37 @@ def compactions_of(records: list[dict[str, Any]], turns: list[dict[str, Any]] | 
             started_ms = completed_ms = None
         if started_ms is None:
             # No item: the compaction began after the last record that is not part of it.
-            earlier = [other for other in records[:index] if other.get("type") not in ("token_usage_record",)
-                       and _event(other) != "token_count"]
-            if earlier and is_final_answer(earlier[-1]) and earlier[-1]["_ms"] and record["_ms"] \
-                    and record["_ms"] - earlier[-1]["_ms"] < 1000:
+            earlier = [
+                other
+                for other in records[:index]
+                if other.get("type") not in ("token_usage_record",)
+                and _event(other) != "token_count"
+            ]
+            if (
+                earlier
+                and is_final_answer(earlier[-1])
+                and earlier[-1]["_ms"]
+                and record["_ms"]
+                and record["_ms"] - earlier[-1]["_ms"] < 1000
+            ):
                 earlier = earlier[:-1]  # a mid-turn summary is recorded just before `compacted`
             started_ms = earlier[-1]["_ms"] if earlier else record["_ms"]
             completed_ms = record["_ms"]
         turn = _turn_at(turns, index)
         lower = turn["start_i"] if turn else 0
         upper = turn["end_i"] if turn and turn["end_i"] is not None else len(records)
-        before = [other for other in records[lower:index] if is_model_output(other)
-                  and other["_ms"] is not None and other["_ms"] < started_ms]
+        before = [
+            other
+            for other in records[lower:index]
+            if is_model_output(other) and other["_ms"] is not None and other["_ms"] < started_ms
+        ]
         # Only the local path's mid-turn and pre-turn compactions record their summary as an assistant
         # message before `compacted`; a post-turn one commits it only on success (compact.rs).
-        summary_recorded = any(is_final_answer(other) for other in records[lower:index]
-                               if other["_ms"] is not None and other["_ms"] >= started_ms)
+        summary_recorded = any(
+            is_final_answer(other)
+            for other in records[lower:index]
+            if other["_ms"] is not None and other["_ms"] >= started_ms
+        )
         if not before:
             kind = "pre-turn"
         elif not summary_recorded and is_final_answer(before[-1]):
@@ -413,37 +457,56 @@ def compactions_of(records: list[dict[str, Any]], turns: list[dict[str, Any]] | 
             kind = "mid-turn"
         usage_record = payload.get("latest_token_usage_record") or {}
         usage = usage_record.get("usage") or {}
-        is_compaction_usage = bool(usage_record.get("response_id")) \
-            and usage_record.get("response_id") == payload.get("compaction_response_id")
-        prior = [tokens for other in records[:index] if other["_ms"] is not None and other["_ms"] <= started_ms
-                 and (tokens := context_tokens(other)) and tokens[0] > 0]
-        context_before = int(usage.get("input_tokens") or 0) if is_compaction_usage else (prior[-1][1] if prior else None)
+        is_compaction_usage = bool(usage_record.get("response_id")) and usage_record.get(
+            "response_id"
+        ) == payload.get("compaction_response_id")
+        prior = [
+            tokens
+            for other in records[:index]
+            if other["_ms"] is not None
+            and other["_ms"] <= started_ms
+            and (tokens := context_tokens(other))
+            and tokens[0] > 0
+        ]
+        context_before = (
+            int(usage.get("input_tokens") or 0)
+            if is_compaction_usage
+            else (prior[-1][1] if prior else None)
+        )
         # The compaction request's own usage: how much of its prompt the server's prefix cache served
         # (on, 0 in 12 of 13: the request had no tools, and the template puts them first).
         input_tokens = int(usage.get("input_tokens") or 0) if is_compaction_usage else None
         cached_tokens = int(usage.get("cached_input_tokens") or 0) if is_compaction_usage else None
-        following = [tokens for other in records[index + 1:] if (tokens := context_tokens(other))]
+        following = [tokens for other in records[index + 1 :] if (tokens := context_tokens(other))]
         summary = str(payload.get("message", ""))
-        found.append({
-            "number": number,
-            "turn_id": turn["turn_id"] if turn else None,
-            "kind": kind,
-            "started_ms": started_ms,
-            "completed_ms": completed_ms,
-            "wall_s": round((completed_ms - started_ms) / 1000, 1) if started_ms and completed_ms else None,
-            "context_before": context_before,
-            "context_after": following[0][1] if following else None,
-            "summary_chars": len(summary),
-            "summary_output_tokens": int(usage.get("output_tokens") or 0) if is_compaction_usage else None,
-            "input_tokens": input_tokens,
-            "cached_tokens": cached_tokens,
-            "cache_hit": round(cached_tokens / input_tokens, 3) if input_tokens else None,
-            "stray_tool_call": STRAY_TOOL_CALL in summary,
-        })
+        found.append(
+            {
+                "number": number,
+                "turn_id": turn["turn_id"] if turn else None,
+                "kind": kind,
+                "started_ms": started_ms,
+                "completed_ms": completed_ms,
+                "wall_s": round((completed_ms - started_ms) / 1000, 1)
+                if started_ms and completed_ms
+                else None,
+                "context_before": context_before,
+                "context_after": following[0][1] if following else None,
+                "summary_chars": len(summary),
+                "summary_output_tokens": int(usage.get("output_tokens") or 0)
+                if is_compaction_usage
+                else None,
+                "input_tokens": input_tokens,
+                "cached_tokens": cached_tokens,
+                "cache_hit": round(cached_tokens / input_tokens, 3) if input_tokens else None,
+                "stray_tool_call": STRAY_TOOL_CALL in summary,
+            }
+        )
     return found
 
 
-def missed_turn_ends(turns: list[dict[str, Any]], compactions: list[dict[str, Any]], threshold: int) -> list[str]:
+def missed_turn_ends(
+    turns: list[dict[str, Any]], compactions: list[dict[str, Any]], threshold: int
+) -> list[str]:
     """Completed turns that ended above the turn-end threshold with no compaction in them.
 
     In the "on" arm each is a sign the setting did not reach Codex (or input was queued at that
@@ -458,12 +521,21 @@ def missed_turn_ends(turns: list[dict[str, Any]], compactions: list[dict[str, An
         list[str]: The turn ids.
     """
     compacted = {compaction["turn_id"] for compaction in compactions}
-    return [str(turn["turn_id"]) for turn in turns if turn["status"] == "complete"
-            and (turn["context_at_end"] or 0) >= threshold and turn["turn_id"] not in compacted]
+    return [
+        str(turn["turn_id"])
+        for turn in turns
+        if turn["status"] == "complete"
+        and (turn["context_at_end"] or 0) >= threshold
+        and turn["turn_id"] not in compacted
+    ]
 
 
-def probe_outcome(records: list[dict[str, Any]], turns: list[dict[str, Any]], compactions: list[dict[str, Any]],
-                  probe: dict[str, Any]) -> dict[str, Any]:
+def probe_outcome(
+    records: list[dict[str, Any]],
+    turns: list[dict[str, Any]],
+    compactions: list[dict[str, Any]],
+    probe: dict[str, Any],
+) -> dict[str, Any]:
     """What happened to a message typed while a turn-end compaction ran.
 
     Args:
@@ -482,19 +554,33 @@ def probe_outcome(records: list[dict[str, Any]], turns: list[dict[str, Any]], co
             never reached the model).
     """
     sent = int(probe["sent_ms"])
-    running = [c for c in compactions if c["started_ms"] and c["started_ms"] - 1000 <= sent
-               and (c["completed_ms"] is None or sent <= c["completed_ms"] + 1000)]
+    running = [
+        c
+        for c in compactions
+        if c["started_ms"]
+        and c["started_ms"] - 1000 <= sent
+        and (c["completed_ms"] is None or sent <= c["completed_ms"] + 1000)
+    ]
     compaction = running[0] if running else None
-    compacting_turn = next((turn for turn in turns if compaction and turn["turn_id"] == compaction["turn_id"]), None)
+    compacting_turn = next(
+        (turn for turn in turns if compaction and turn["turn_id"] == compaction["turn_id"]), None
+    )
     if compacting_turn is None:
-        compacting_turn = next((turn for turn in reversed(turns) if turn["started_ms"] and turn["started_ms"] <= sent), None)
+        compacting_turn = next(
+            (turn for turn in reversed(turns) if turn["started_ms"] and turn["started_ms"] <= sent),
+            None,
+        )
     needle = " ".join(str(probe["text"]).split())[:60]
     delivered = None
     for record in records:
         if record["_ms"] is None or record["_ms"] < sent - 1000:
             continue
         payload = _payload(record)
-        if record.get("type") == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
+        if (
+            record.get("type") == "response_item"
+            and payload.get("type") == "message"
+            and payload.get("role") == "user"
+        ):
             if needle and needle in " ".join(message_text(payload).split()):
                 delivered = record
                 break
@@ -515,7 +601,11 @@ def probe_outcome(records: list[dict[str, Any]], turns: list[dict[str, Any]], co
         verdict = "interrupted"
     else:
         verdict = "waited"
-    taken_ms = (delivered_turn["started_ms"] if delivered_in == "next turn" else delivered["_ms"]) if delivered else None
+    taken_ms = (
+        (delivered_turn["started_ms"] if delivered_in == "next turn" else delivered["_ms"])
+        if delivered
+        else None
+    )
     return {
         "key": probe.get("key"),
         "compaction": compaction["number"] if compaction else None,
@@ -541,10 +631,18 @@ def inputs_missing(records: list[dict[str, Any]], typed: dict[int, str]) -> list
     Returns:
         list[int]: The indices missing, in order.
     """
-    seen = [" ".join(message_text(_payload(record)).split()) for record in records
-            if record.get("type") == "response_item" and _payload(record).get("type") == "message"
-            and _payload(record).get("role") == "user"]
-    return [index for index, text in sorted(typed.items()) if not any(" ".join(text.split()) in message for message in seen)]
+    seen = [
+        " ".join(message_text(_payload(record)).split())
+        for record in records
+        if record.get("type") == "response_item"
+        and _payload(record).get("type") == "message"
+        and _payload(record).get("role") == "user"
+    ]
+    return [
+        index
+        for index, text in sorted(typed.items())
+        if not any(" ".join(text.split()) in message for message in seen)
+    ]
 
 
 def audit_verdicts(rollout: Path) -> list[dict[str, Any]]:
@@ -570,11 +668,20 @@ def audit_verdicts(rollout: Path) -> list[dict[str, Any]]:
         elif not lost:
             verdict = "kept all" if any(of for _, of in kept.values()) else "nothing to keep"
         else:
-            verdict = "lost " + "; ".join(f"{group} {len(items)}/{kept[group][1]}" for group, items in lost.items())
+            verdict = "lost " + "; ".join(
+                f"{group} {len(items)}/{kept[group][1]}" for group, items in lost.items()
+            )
             if finding["ledger_covered"]:
                 verdict += f" (ledger covered {finding['ledger_covered']})"
-        verdicts.append({"kept": kept, "lost": lost, "ledger_covered": finding["ledger_covered"],
-                         "stray_tool_call": finding["stray_tool_call"], "verdict": verdict})
+        verdicts.append(
+            {
+                "kept": kept,
+                "lost": lost,
+                "ledger_covered": finding["ledger_covered"],
+                "stray_tool_call": finding["stray_tool_call"],
+                "verdict": verdict,
+            }
+        )
     return verdicts
 
 
@@ -612,8 +719,12 @@ def drops_of(codex_home: Path | None) -> dict[str, int]:
     return found
 
 
-def analyze_session(rollout: Path, threshold: int | None, probe: dict[str, Any] | None,
-                    codex_home: Path | None = None) -> dict[str, Any]:
+def analyze_session(
+    rollout: Path,
+    threshold: int | None,
+    probe: dict[str, Any] | None,
+    codex_home: Path | None = None,
+) -> dict[str, Any]:
     """Everything the report needs from one session's rollout.
 
     Args:
@@ -635,19 +746,30 @@ def analyze_session(rollout: Path, threshold: int | None, probe: dict[str, Any] 
         verdicts = [{"verdict": f"audit failed: {error}"}] * len(compactions)
     for compaction, verdict in zip(compactions, verdicts):
         compaction["audit"] = verdict
-    peaks = [tokens[1] for record in records if (tokens := context_tokens(record)) and tokens[0] > 0]
-    counts = {kind: sum(1 for c in compactions if c["kind"] == kind) for kind in ("pre-turn", "mid-turn", "turn-end")}
+    peaks = [
+        tokens[1] for record in records if (tokens := context_tokens(record)) and tokens[0] > 0
+    ]
+    counts = {
+        kind: sum(1 for c in compactions if c["kind"] == kind)
+        for kind in ("pre-turn", "mid-turn", "turn-end")
+    }
     return {
         "rollout": str(rollout),
-        "turns": [{key: turn[key] for key in ("turn_id", "status", "reason", "wall_s", "context_at_end")} for turn in turns],
+        "turns": [
+            {key: turn[key] for key in ("turn_id", "status", "reason", "wall_s", "context_at_end")}
+            for turn in turns
+        ],
         "compactions": compactions,
         "counts": counts,
         "peak_context": max(peaks) if peaks else None,
         "usable_window": model_window(records),
         "missed_turn_ends": missed_turn_ends(turns, compactions, threshold) if threshold else [],
         # Clearly above it: my reading of the context and Codex's estimate can differ near the line.
-        "missed_turn_ends_clear": missed_turn_ends(turns, compactions, threshold * (100 + MISSED_MARGIN_PERCENT) // 100)
-        if threshold else [],
+        "missed_turn_ends_clear": missed_turn_ends(
+            turns, compactions, threshold * (100 + MISSED_MARGIN_PERCENT) // 100
+        )
+        if threshold
+        else [],
         "probe": probe_outcome(records, turns, compactions, probe) if probe else None,
         "drops": drops_of(codex_home),
     }
@@ -655,6 +777,7 @@ def analyze_session(rollout: Path, threshold: int | None, probe: dict[str, Any] 
 
 # --------------------------------------------------------------------------------------------------
 # Tasks
+
 
 @dataclass
 class Task:
@@ -668,8 +791,14 @@ class Task:
     sources: list[str] = field(default_factory=list)
 
 
-NIGHT_SHIFT_BASE: Final[str] = "ac160aca0b3b0c6bbd49588bc5963d16d8e2373c" # main: Phase 0's base
-NIGHT_SHIFT_PATHS: Final[tuple] = ("dreamference", "tests/conftest.py", "tests/test_night_shift.py", "setup.py", ".gitignore")
+NIGHT_SHIFT_BASE: Final[str] = "ac160aca0b3b0c6bbd49588bc5963d16d8e2373c"  # main: Phase 0's base
+NIGHT_SHIFT_PATHS: Final[tuple] = (
+    "dreamference",
+    "tests/conftest.py",
+    "tests/test_night_shift.py",
+    "setup.py",
+    ".gitignore",
+)
 NIGHT_SHIFT_ACCEPTANCE: Final[Path] = SCRIPTS / "turn_end_compaction_night_shift_acceptance.py"
 CLICK_URL: Final[str] = "https://github.com/pallets/click.git"
 CLICK_TAG: Final[str] = "8.1.7"
@@ -744,8 +873,13 @@ CLICK_TURNS: Final[list] = [
 
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     """Runs git in `repo` with a fixed identity."""
-    return subprocess.run(["git", "-c", "user.name=bench", "-c", "user.email=bench@localhost", *args],
-                          cwd=repo, check=check, capture_output=True, text=True)
+    return subprocess.run(
+        ["git", "-c", "user.name=bench", "-c", "user.email=bench@localhost", *args],
+        cwd=repo,
+        check=check,
+        capture_output=True,
+        text=True,
+    )
 
 
 def setup_night_shift(repo: Path, cache: Path) -> None:
@@ -756,8 +890,11 @@ def setup_night_shift(repo: Path, cache: Path) -> None:
         cache: Unused: the source is this checkout's own history.
     """
     repo.mkdir(parents=True)
-    archive = subprocess.run(["git", "-C", str(ROOT), "archive", NIGHT_SHIFT_BASE, *NIGHT_SHIFT_PATHS],
-                             check=True, capture_output=True)
+    archive = subprocess.run(
+        ["git", "-C", str(ROOT), "archive", NIGHT_SHIFT_BASE, *NIGHT_SHIFT_PATHS],
+        check=True,
+        capture_output=True,
+    )
     subprocess.run(["tar", "-x", "-C", str(repo)], input=archive.stdout, check=True)
     git(repo, "init", "-q")
     git(repo, "add", "-A")
@@ -770,11 +907,17 @@ def click_mirror(cache: Path) -> Path:
     if not (mirror / ".git").is_dir():
         cache.mkdir(parents=True, exist_ok=True)
         shutil.rmtree(mirror, ignore_errors=True)
-        subprocess.run(["git", "clone", "-q", "--depth", "1", "--branch", CLICK_TAG, CLICK_URL, str(mirror)],
-                       check=True, capture_output=True, timeout=300)
+        subprocess.run(
+            ["git", "clone", "-q", "--depth", "1", "--branch", CLICK_TAG, CLICK_URL, str(mirror)],
+            check=True,
+            capture_output=True,
+            timeout=300,
+        )
     head = git(mirror, "rev-parse", "HEAD").stdout.strip()
     if head != CLICK_COMMIT:
-        raise RuntimeError(f"click {CLICK_TAG} is {head}, expected {CLICK_COMMIT}: refusing to measure on other code")
+        raise RuntimeError(
+            f"click {CLICK_TAG} is {head}, expected {CLICK_COMMIT}: refusing to measure on other code"
+        )
     return mirror
 
 
@@ -789,15 +932,28 @@ def setup_click(repo: Path, cache: Path) -> None:
     subprocess.run(["git", "clone", "-q", str(mirror), str(repo)], check=True, capture_output=True)
     config = repo / "setup.cfg"
     text = config.read_text()
-    text = text.replace("filterwarnings =\n    error\n", "filterwarnings =\n    default\npythonpath = src\n")
+    text = text.replace(
+        "filterwarnings =\n    error\n", "filterwarnings =\n    default\npythonpath = src\n"
+    )
     config.write_text(text)
     # 8.1.7's light-import test lists the standard modules `import click` may load, and Python 3.12
     # loads others (`collections.abc`, `__future__`): a failure the task did not cause, and one the
     # agent would stop to chase. Skipped in the base.
     imports = repo / "tests" / "test_imports.py"
-    imports.write_text("import pytest\n" + imports.read_text().replace(
-        "def test_light_imports", '@pytest.mark.skip(reason="bench base: depends on the interpreter")\ndef test_light_imports', 1))
-    git(repo, "commit", "-qam", "bench base: pytest imports src/, warnings are not errors, Python 3.12 imports")
+    imports.write_text(
+        "import pytest\n"
+        + imports.read_text().replace(
+            "def test_light_imports",
+            '@pytest.mark.skip(reason="bench base: depends on the interpreter")\ndef test_light_imports',
+            1,
+        )
+    )
+    git(
+        repo,
+        "commit",
+        "-qam",
+        "bench base: pytest imports src/, warnings are not errors, Python 3.12 imports",
+    )
 
 
 def _pytest_counts(output: str) -> dict[str, int]:
@@ -810,16 +966,27 @@ def _pytest_counts(output: str) -> dict[str, int]:
 
 def _run_pytest(repo: Path, python: str, *args: str) -> dict[str, Any]:
     try:
-        done = subprocess.run([python, "-m", "pytest", *args, "-q", "-p", "no:cacheprovider"], cwd=repo,
-                              capture_output=True, text=True, timeout=900, stdin=subprocess.DEVNULL)
+        done = subprocess.run(
+            [python, "-m", "pytest", *args, "-q", "-p", "no:cacheprovider"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=900,
+            stdin=subprocess.DEVNULL,
+        )
     except subprocess.TimeoutExpired:
         return {"rc": None, "counts": {}, "tail": "timed out"}
     output = done.stdout + done.stderr
-    return {"rc": done.returncode, "counts": _pytest_counts(output), "tail": output.strip().splitlines()[-1:] or [""]}
+    return {
+        "rc": done.returncode,
+        "counts": _pytest_counts(output),
+        "tail": output.strip().splitlines()[-1:] or [""],
+    }
 
 
 def grade_with(acceptance: Path, own: tuple) -> Callable[[Path, str], dict[str, Any]]:
     """A grader: the hidden acceptance tests (copied in after the session, then removed), and the agent's own."""
+
     def grade(repo: Path, python: str) -> dict[str, Any]:
         hidden_path = repo / "tests" / "test_bench_hidden.py"
         shutil.copy(acceptance, hidden_path)
@@ -827,22 +994,40 @@ def grade_with(acceptance: Path, own: tuple) -> Callable[[Path, str], dict[str, 
             hidden = _run_pytest(repo, python, str(hidden_path.relative_to(repo)))
         finally:
             hidden_path.unlink(missing_ok=True)
-        return {"hidden": hidden, "own": _run_pytest(repo, python, *own),
-                "changed_files": [line[3:] for line in git(repo, "status", "--porcelain", check=False).stdout.splitlines()]}
+        return {
+            "hidden": hidden,
+            "own": _run_pytest(repo, python, *own),
+            "changed_files": [
+                line[3:]
+                for line in git(repo, "status", "--porcelain", check=False).stdout.splitlines()
+            ],
+        }
+
     return grade
 
 
 TASKS: Final[dict] = {
-    "night-shift": Task("night-shift", "Night Shift: five changes with tests (Phase 0's task, in six turns)",
-                        NIGHT_SHIFT_TURNS, setup_night_shift,
-                        grade_with(NIGHT_SHIFT_ACCEPTANCE, ("tests/test_night_shift.py",))),
-    "click": Task("click", "click 8.1.7: a module move, a feature and an option, with tests",
-                  CLICK_TURNS, setup_click, grade_with(CLICK_ACCEPTANCE, ("tests",)), [CLICK_URL]),
+    "night-shift": Task(
+        "night-shift",
+        "Night Shift: five changes with tests (Phase 0's task, in six turns)",
+        NIGHT_SHIFT_TURNS,
+        setup_night_shift,
+        grade_with(NIGHT_SHIFT_ACCEPTANCE, ("tests/test_night_shift.py",)),
+    ),
+    "click": Task(
+        "click",
+        "click 8.1.7: a module move, a feature and an option, with tests",
+        CLICK_TURNS,
+        setup_click,
+        grade_with(CLICK_ACCEPTANCE, ("tests",)),
+        [CLICK_URL],
+    ),
 }
 
 
 # --------------------------------------------------------------------------------------------------
 # The TUI
+
 
 class RolloutTail:
     """Reads a session's rollout as it grows, so the driver can see turns start and end."""
@@ -914,8 +1099,10 @@ class TuiSession:
         empty cell that follows a wide character (the model answers in Chinese at times).
         """
         columns = range(self.screen.columns)
-        return "\n".join("".join(self.screen.buffer[y][x].data for x in columns).rstrip()
-                         for y in range(self.screen.lines))
+        return "\n".join(
+            "".join(self.screen.buffer[y][x].data for x in columns).rstrip()
+            for y in range(self.screen.lines)
+        )
 
     def wait_for(self, predicate: Callable[[str], bool], timeout: float) -> bool:
         """Pumps until `predicate(screen)` holds; False on timeout or exit."""
@@ -950,7 +1137,9 @@ def ragon_binary(explicit: str | None) -> Path:
     candidate = explicit or shutil.which("ragon") or str(Path.home() / ".local" / "bin" / "ragon")
     path = Path(candidate).expanduser()
     if not path.exists():
-        raise SystemExit(f"❌ no ragon at {path}: build it (ragon-admin codex build) or pass --ragon")
+        raise SystemExit(
+            f"❌ no ragon at {path}: build it (ragon-admin codex build) or pass --ragon"
+        )
     return path
 
 
@@ -980,9 +1169,14 @@ def binary_info(path: Path) -> dict[str, Any]:
             tail = chunk[-64:]
     stat = real.stat()
     host = real.with_name("codex-code-mode-host")
-    return {"path": str(path), "resolved": str(real), "sha256": digest.hexdigest()[:16],
-            "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
-            "code_mode_host_beside": host.is_file(), **known}
+    return {
+        "path": str(path),
+        "resolved": str(real),
+        "sha256": digest.hexdigest()[:16],
+        "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+        "code_mode_host_beside": host.is_file(),
+        **known,
+    }
 
 
 @dataclass
@@ -1000,25 +1194,37 @@ class SessionPlan:
         return f"{self.task.name}-{self.arm}-{self.rep}"
 
 
-def session_env(plan: SessionPlan, host: str, home: Path | None, code_tools: bool, docs: bool,
-                summary_words: int = SUMMARY_WORDS) -> dict[str, str]:
+def session_env(
+    plan: SessionPlan,
+    host: str,
+    home: Path | None,
+    code_tools: bool,
+    docs: bool,
+    summary_words: int = SUMMARY_WORDS,
+) -> dict[str, str]:
     """The environment of one session: throwaway homes, the target server, masking off, the arm's
     switches (turn-end for "on" and "drop", drop-old-outputs for "drop"), and the summary cap in
     every arm (0 leaves Codex's own prompt)."""
     env = dict(os.environ)
-    for key in [key for key in env if key.startswith(("DREAMFERENCE_RAGON_", "CODEX_")) or key == "RAGON_NODE"]:
+    for key in [
+        key
+        for key in env
+        if key.startswith(("DREAMFERENCE_RAGON_", "CODEX_")) or key == "RAGON_NODE"
+    ]:
         env.pop(key)
-    env.update({
-        "CODEX_HOME": str(plan.root / "home"),
-        "DREAMFERENCE_CONFIG_PATH": str(plan.root / "dreamference.toml"),
-        "DREAMFERENCE_VLLM_HOST": host,
-        MASK_ENV: "0",
-        TURN_END_ENV: "1" if plan.arm in TURN_END_ARMS else "0",
-        DROP_ENV: "1" if plan.arm == "drop" else "0",
-        SUMMARY_WORDS_ENV: str(summary_words),
-        "DREAMFERENCE_RAGON_GMAIL": "0",
-        "TERM": "xterm-256color",
-    })
+    env.update(
+        {
+            "CODEX_HOME": str(plan.root / "home"),
+            "DREAMFERENCE_CONFIG_PATH": str(plan.root / "dreamference.toml"),
+            "DREAMFERENCE_VLLM_HOST": host,
+            MASK_ENV: "0",
+            TURN_END_ENV: "1" if plan.arm in TURN_END_ARMS else "0",
+            DROP_ENV: "1" if plan.arm == "drop" else "0",
+            SUMMARY_WORDS_ENV: str(summary_words),
+            "DREAMFERENCE_RAGON_GMAIL": "0",
+            "TERM": "xterm-256color",
+        }
+    )
     if not code_tools:
         env["DREAMFERENCE_RAGON_CODE_TOOLS"] = "0"
     if not docs:
@@ -1031,8 +1237,16 @@ def session_env(plan: SessionPlan, host: str, home: Path | None, code_tools: boo
 def session_args(arm: str, limit: int, percent: int | None, sandbox: str) -> list[str]:
     """`ragon`'s arguments: no approvals, the sandbox, the pinned limit and the arm's turn-end percentage
     (passed to Codex directly; the launcher leaves a percentage on the command line alone)."""
-    return ["-a", "never", "-s", sandbox, "-c", f"{LIMIT_KEY}={limit}",
-            "-c", f"{TURN_END_KEY}={percent if arm in TURN_END_ARMS and percent else 0}"]
+    return [
+        "-a",
+        "never",
+        "-s",
+        sandbox,
+        "-c",
+        f"{LIMIT_KEY}={limit}",
+        "-c",
+        f"{TURN_END_KEY}={percent if arm in TURN_END_ARMS and percent else 0}",
+    ]
 
 
 def prepare_session(plan: SessionPlan, python: str, cache: Path) -> Path:
@@ -1055,12 +1269,21 @@ def prepare_session(plan: SessionPlan, python: str, cache: Path) -> Path:
     home.mkdir()
     # Only the trust entry: the launcher writes the provider itself (test_a_fresh_home_opens_on_the_composer).
     (home / "config.toml").write_text(f'[projects."{repo}"]\ntrust_level = "trusted"\n')
-    (plan.root / "dreamference.toml").write_text("# Empty on purpose: the bench runs on the product's defaults.\n")
+    (plan.root / "dreamference.toml").write_text(
+        "# Empty on purpose: the bench runs on the product's defaults.\n"
+    )
     return repo
 
 
-def wait_turns_done(session: TuiSession, tail: RolloutTail, before: int, timeout: float, settle: float,
-                    on_compacting: Callable[[], None] | None, events: list) -> str:
+def wait_turns_done(
+    session: TuiSession,
+    tail: RolloutTail,
+    before: int,
+    timeout: float,
+    settle: float,
+    on_compacting: Callable[[], None] | None,
+    events: list,
+) -> str:
     """Waits until the turn just submitted, and any turn it queued, has ended and the TUI is idle.
 
     Args:
@@ -1108,12 +1331,29 @@ def wait_turns_done(session: TuiSession, tail: RolloutTail, before: int, timeout
     return "timeout"
 
 
-def run_session(plan: SessionPlan, *, ragon: Path, host: str, limit: int, window: int, python: str, cache: Path,
-                sandbox: str = "workspace-write", home: Path | None = None, code_tools: bool = True,
-                docs: bool = True, turn_timeout: float = 1800, session_timeout: float = 5400,
-                think_s: float = 3.0, settle: float = 4.0, ready_timeout: float = 300,
-                turns: list[str] | None = None, percent: int | None = None,
-                summary_words: int = SUMMARY_WORDS, stop_by: float | None = None) -> dict[str, Any]:
+def run_session(
+    plan: SessionPlan,
+    *,
+    ragon: Path,
+    host: str,
+    limit: int,
+    window: int,
+    python: str,
+    cache: Path,
+    sandbox: str = "workspace-write",
+    home: Path | None = None,
+    code_tools: bool = True,
+    docs: bool = True,
+    turn_timeout: float = 1800,
+    session_timeout: float = 5400,
+    think_s: float = 3.0,
+    settle: float = 4.0,
+    ready_timeout: float = 300,
+    turns: list[str] | None = None,
+    percent: int | None = None,
+    summary_words: int = SUMMARY_WORDS,
+    stop_by: float | None = None,
+) -> dict[str, Any]:
     """Runs one scripted TUI session and returns its measurements.
 
     Args:
@@ -1150,20 +1390,33 @@ def run_session(plan: SessionPlan, *, ragon: Path, host: str, limit: int, window
     env = session_env(plan, host, home, code_tools, docs, summary_words)
     events: list[dict[str, Any]] = []
     result: dict[str, Any] = {
-        "label": plan.label, "task": plan.task.name, "arm": plan.arm, "rep": plan.rep,
-        "args": args, "limit": limit, "window": window, "turn_end_percent": percent if plan.arm in TURN_END_ARMS else 0,
-        "drop_old_outputs": plan.arm == "drop", "summary_words": summary_words,
-        "turn_end_threshold": threshold, "probe_key": plan.probe_key, "repo": str(repo), "events": events,
+        "label": plan.label,
+        "task": plan.task.name,
+        "arm": plan.arm,
+        "rep": plan.rep,
+        "args": args,
+        "limit": limit,
+        "window": window,
+        "turn_end_percent": percent if plan.arm in TURN_END_ARMS else 0,
+        "drop_old_outputs": plan.arm == "drop",
+        "summary_words": summary_words,
+        "turn_end_threshold": threshold,
+        "probe_key": plan.probe_key,
+        "repo": str(repo),
+        "events": events,
         "binary": binary_info(ragon),
-        "started": datetime.now().isoformat(timespec="seconds"), "status": "running",
+        "started": datetime.now().isoformat(timespec="seconds"),
+        "status": "running",
     }
     session = TuiSession(str(ragon), args, repo, env, plan.root / "pty.log")
     tail = RolloutTail(plan.root / "home")
     probe: dict[str, Any] = {}
     begin = time.monotonic()
     try:
-        ready = session.wait_for(lambda text: all(marker in text for marker in READY_MARKERS)
-                                 or SIGN_IN_MARKER in text, ready_timeout)
+        ready = session.wait_for(
+            lambda text: all(marker in text for marker in READY_MARKERS) or SIGN_IN_MARKER in text,
+            ready_timeout,
+        )
         if not ready or SIGN_IN_MARKER in session.text():
             result["status"] = "not ready"
             return result
@@ -1198,14 +1451,38 @@ def run_session(plan: SessionPlan, *, ragon: Path, host: str, limit: int, window
                 (plan.root / "probe-screen.txt").write_text(session.text())
                 text = texts[consumed["next"]]
                 session.type_text(text, PROBE_KEYS[plan.probe_key])
-                probe.update({"sent_ms": int(time.time() * 1000), "key": plan.probe_key, "text": text,
-                              "turn_index": consumed["next"]})
-                events.append({"t": time.time(), "event": "probe", "index": consumed["next"], "key": plan.probe_key})
+                probe.update(
+                    {
+                        "sent_ms": int(time.time() * 1000),
+                        "key": plan.probe_key,
+                        "text": text,
+                        "turn_index": consumed["next"],
+                    }
+                )
+                events.append(
+                    {
+                        "t": time.time(),
+                        "event": "probe",
+                        "index": consumed["next"],
+                        "key": plan.probe_key,
+                    }
+                )
                 consumed["next"] += 1
 
-            timeout = turn_timeout if stop_by is None else max(min(turn_timeout, stop_by - time.time()), 30.0)
-            outcome = wait_turns_done(session, tail, before, timeout, settle,
-                                      maybe_probe if plan.arm in TURN_END_ARMS else None, events)
+            timeout = (
+                turn_timeout
+                if stop_by is None
+                else max(min(turn_timeout, stop_by - time.time()), 30.0)
+            )
+            outcome = wait_turns_done(
+                session,
+                tail,
+                before,
+                timeout,
+                settle,
+                maybe_probe if plan.arm in TURN_END_ARMS else None,
+                events,
+            )
             index = consumed["next"]
             events.append({"t": time.time(), "event": "turn end", "outcome": outcome})
             if outcome in ("exited", "no start"):
@@ -1223,7 +1500,9 @@ def run_session(plan: SessionPlan, *, ragon: Path, host: str, limit: int, window
     if rollout is not None:
         result.update(analyze_session(rollout, threshold, probe or None, plan.root / "home"))
         typed = sorted({event["index"] for event in events if event["event"] in ("turn", "probe")})
-        result["inputs_missing"] = inputs_missing(read_records(rollout), {index: texts[index] for index in typed})
+        result["inputs_missing"] = inputs_missing(
+            read_records(rollout), {index: texts[index] for index in typed}
+        )
         result["inputs_intact"] = not result["inputs_missing"]
     result["grade"] = plan.task.grade(repo, python)
     return result
@@ -1234,8 +1513,11 @@ def run_session(plan: SessionPlan, *, ragon: Path, host: str, limit: int, window
 
 DRY_RUN_TURNS: Final[list] = [
     # As long as the real turns (600-950 characters), so the composer's handling of a long paste is tested.
-    "DRYRUN-1 Say done. " + " ".join(f"Filler sentence {n} checks that a long paste reaches the model whole."
-                                     for n in range(1, 15)),
+    "DRYRUN-1 Say done. "
+    + " ".join(
+        f"Filler sentence {n} checks that a long paste reaches the model whole."
+        for n in range(1, 15)
+    ),
     "DRYRUN-2 Run one command, then say done.",
     "DRYRUN-3 Say goodbye.",
 ]
@@ -1278,10 +1560,23 @@ class FakeModelServer:
             def do_GET(self) -> None:  # noqa: N802 - the stdlib's name
                 path = self.path.rstrip("/")
                 if path == "/v1/models":
-                    model = {"id": "fake-model", "object": "model", "owned_by": "sglang", "max_model_len": server.window}
-                    self.reply(200, json.dumps({"object": "list", "data": [model]}).encode(), "application/json")
+                    model = {
+                        "id": "fake-model",
+                        "object": "model",
+                        "owned_by": "sglang",
+                        "max_model_len": server.window,
+                    }
+                    self.reply(
+                        200,
+                        json.dumps({"object": "list", "data": [model]}).encode(),
+                        "application/json",
+                    )
                 elif path == "/metrics":
-                    self.reply(200, b'sglang:max_total_num_tokens{model_name="fake-model"} 156907.0\n', "text/plain")
+                    self.reply(
+                        200,
+                        b'sglang:max_total_num_tokens{model_name="fake-model"} 156907.0\n',
+                        "text/plain",
+                    )
                 else:
                     self.reply(404, b"{}", "application/json")
 
@@ -1318,35 +1613,60 @@ class FakeModelServer:
             self.httpd.server_close()
 
     @staticmethod
-    def sse(item: dict[str, Any], input_tokens: int, output_tokens: int, cached_tokens: int = 0) -> bytes:
+    def sse(
+        item: dict[str, Any], input_tokens: int, output_tokens: int, cached_tokens: int = 0
+    ) -> bytes:
         """One streamed response holding `item`, with the given usage."""
         rid = f"resp-{time.time_ns()}"
-        usage = {"input_tokens": input_tokens, "input_tokens_details": {"cached_tokens": cached_tokens},
-                 "output_tokens": output_tokens, "output_tokens_details": {"reasoning_tokens": 0},
-                 "total_tokens": input_tokens + output_tokens}
-        events = [{"type": "response.created", "response": {"id": rid}},
-                  {"type": "response.output_item.done", "item": item},
-                  {"type": "response.completed", "response": {"id": rid, "usage": usage}}]
-        return "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
+        usage = {
+            "input_tokens": input_tokens,
+            "input_tokens_details": {"cached_tokens": cached_tokens},
+            "output_tokens": output_tokens,
+            "output_tokens_details": {"reasoning_tokens": 0},
+            "total_tokens": input_tokens + output_tokens,
+        }
+        events = [
+            {"type": "response.created", "response": {"id": rid}},
+            {"type": "response.output_item.done", "item": item},
+            {"type": "response.completed", "response": {"id": rid, "usage": usage}},
+        ]
+        return "".join(
+            f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events
+        ).encode()
 
     @staticmethod
     def message(text: str) -> dict[str, Any]:
         """An assistant message item."""
-        return {"type": "message", "role": "assistant", "id": f"msg-{time.time_ns()}",
-                "content": [{"type": "output_text", "text": text}]}
+        return {
+            "type": "message",
+            "role": "assistant",
+            "id": f"msg-{time.time_ns()}",
+            "content": [{"type": "output_text", "text": text}],
+        }
 
     def shell_call(self, request: dict[str, Any]) -> dict[str, Any] | None:
         """A call of the request's shell tool running `echo dry-run`, or None when it offers none."""
-        names = [str(tool.get("name") or (tool.get("function") or {}).get("name") or "")
-                 for tool in request.get("tools") or [] if isinstance(tool, dict)]
+        names = [
+            str(tool.get("name") or (tool.get("function") or {}).get("name") or "")
+            for tool in request.get("tools") or []
+            if isinstance(tool, dict)
+        ]
         self.tools = names
         name = next((candidate for candidate in SHELL_TOOLS if candidate in names), None)
         if name is None:
             return None
-        arguments = {"shell_command": {"command": "echo dry-run"}, "exec_command": {"cmd": "echo dry-run"},
-                     "shell": {"command": ["bash", "-lc", "echo dry-run"]}}[name]
-        return {"type": "function_call", "id": f"fc-{time.time_ns()}", "call_id": f"call-{time.time_ns()}",
-                "name": name, "arguments": json.dumps(arguments)}
+        arguments = {
+            "shell_command": {"command": "echo dry-run"},
+            "exec_command": {"cmd": "echo dry-run"},
+            "shell": {"command": ["bash", "-lc", "echo dry-run"]},
+        }[name]
+        return {
+            "type": "function_call",
+            "id": f"fc-{time.time_ns()}",
+            "call_id": f"call-{time.time_ns()}",
+            "name": name,
+            "arguments": json.dumps(arguments),
+        }
 
     def respond(self, request: dict[str, Any]) -> bytes:
         """The streamed answer to one `/v1/responses` request."""
@@ -1360,7 +1680,9 @@ class FakeModelServer:
                 self.requests.append({"t": received, "kind": "title", "tools": tools})
             return self.sse(self.message("Dry run"), 500, 5)
         with self.lock:
-            previous = next((r["tools"] for r in reversed(self.requests) if r["kind"] != "title"), None)
+            previous = next(
+                (r["tools"] for r in reversed(self.requests) if r["kind"] != "title"), None
+            )
         cache = (lambda tokens: max(tokens - 1000, 0)) if previous == tools else (lambda tokens: 0)
         key = ""
         for item in reversed(items):
@@ -1370,10 +1692,20 @@ class FakeModelServer:
                     key = found.group(0)
                     break
         with self.lock:
-            self.requests.append({"t": received, "kind": "compaction" if COMPACTION_PROMPT_MARK in tail_text else "turn",
-                                  "key": key, "items": [str(item.get("role") or item.get("type"))
-                                                        for item in items if isinstance(item, dict)],
-                                  "tools": tools, "tail": tail_text[-400:]})
+            self.requests.append(
+                {
+                    "t": received,
+                    "kind": "compaction" if COMPACTION_PROMPT_MARK in tail_text else "turn",
+                    "key": key,
+                    "items": [
+                        str(item.get("role") or item.get("type"))
+                        for item in items
+                        if isinstance(item, dict)
+                    ],
+                    "tools": tools,
+                    "tail": tail_text[-400:],
+                }
+            )
             if COMPACTION_PROMPT_MARK in tail_text:
                 compaction = True
             else:
@@ -1382,8 +1714,14 @@ class FakeModelServer:
             count = self.served.get(key, 0)
         if compaction:
             time.sleep(self.compaction_delay)
-            return self.sse(self.message("Summary: the user asked for short answers; one command ran, `echo dry-run`."),
-                            70_000, 200, cache(70_000))
+            return self.sse(
+                self.message(
+                    "Summary: the user asked for short answers; one command ran, `echo dry-run`."
+                ),
+                70_000,
+                200,
+                cache(70_000),
+            )
         if key == "DRYRUN-1":
             return self.sse(self.message("done"), 70_000, 50, cache(70_000))
         if key == "DRYRUN-2" and count == 1:
@@ -1420,7 +1758,9 @@ def compaction_tools_checks(requests: list[dict[str, Any]]) -> dict[str, Any]:
     return {"compactions": compactions, "matching": matching, "capped": capped}
 
 
-def dry_run(out: Path, ragon: Path, compaction_delay: float = 8.0, probe_key: str = "enter") -> dict[str, Any]:
+def dry_run(
+    out: Path, ragon: Path, compaction_delay: float = 8.0, probe_key: str = "enter"
+) -> dict[str, Any]:
     """Every arm against `FakeModelServer`, with a throwaway HOME: proves the driver and the binary's
     switches, not the model.
 
@@ -1438,8 +1778,13 @@ def dry_run(out: Path, ragon: Path, compaction_delay: float = 8.0, probe_key: st
     """
     home = out / "fake-home"
     home.mkdir(parents=True, exist_ok=True)
-    task = Task("dry-run", "stand-in server", DRY_RUN_TURNS, lambda repo, cache: _tiny_repo(repo),
-                lambda repo, python: {})
+    task = Task(
+        "dry-run",
+        "stand-in server",
+        DRY_RUN_TURNS,
+        lambda repo, cache: _tiny_repo(repo),
+        lambda repo, python: {},
+    )
     sessions = []
     requests: dict[str, list] = {}
     tools: list[str] = []
@@ -1447,13 +1792,31 @@ def dry_run(out: Path, ragon: Path, compaction_delay: float = 8.0, probe_key: st
         server = FakeModelServer(compaction_delay=compaction_delay)
         host = server.start()
         try:
-            plan = SessionPlan(task, arm, 1, out / f"dry-run-{arm}-1", probe_key if arm in TURN_END_ARMS else None)
+            plan = SessionPlan(
+                task, arm, 1, out / f"dry-run-{arm}-1", probe_key if arm in TURN_END_ARMS else None
+            )
             # The fake's 70,000-token answer to DRYRUN-1 must cross the turn-end threshold: the
             # launcher's 26 (64,750), as in v1; v2's 20 (49,808) lies below it too.
-            sessions.append(run_session(plan, ragon=ragon, host=host, limit=DEFAULT_LIMIT, window=DEFAULT_WINDOW,
-                                        python=sys.executable, cache=out / "sources", home=home, code_tools=False,
-                                        docs=False, turn_timeout=120, session_timeout=600, think_s=1.0, settle=3.0,
-                                        ready_timeout=120, percent=TURN_END_PERCENT_V2))
+            sessions.append(
+                run_session(
+                    plan,
+                    ragon=ragon,
+                    host=host,
+                    limit=DEFAULT_LIMIT,
+                    window=DEFAULT_WINDOW,
+                    python=sys.executable,
+                    cache=out / "sources",
+                    home=home,
+                    code_tools=False,
+                    docs=False,
+                    turn_timeout=120,
+                    session_timeout=600,
+                    think_s=1.0,
+                    settle=3.0,
+                    ready_timeout=120,
+                    percent=TURN_END_PERCENT_V2,
+                )
+            )
         finally:
             server.stop()
         requests[arm] = server.requests
@@ -1463,35 +1826,62 @@ def dry_run(out: Path, ragon: Path, compaction_delay: float = 8.0, probe_key: st
     off = by_arm.get("off", {})
     tool_checks = {arm: compaction_tools_checks(requests.get(arm, [])) for arm in ARMS}
     checks = {
-        "every session reached the composer and finished": all(s["status"] == "complete" for s in sessions),
+        "every session reached the composer and finished": all(
+            s["status"] == "complete" for s in sessions
+        ),
         "off: no turn-end compaction": off.get("counts", {}).get("turn-end", -1) == 0,
         "off: a mid-turn compaction": off.get("counts", {}).get("mid-turn", 0) >= 1,
     }
     for arm in TURN_END_ARMS:
         on = by_arm.get(arm, {})
-        checks.update({
-            f"{arm}: a turn-end compaction": on.get("counts", {}).get("turn-end", 0) >= 1,
-            f"{arm}: a mid-turn compaction": on.get("counts", {}).get("mid-turn", 0) >= 1,
-            f"{arm}: every compaction timed": all(c["wall_s"] is not None for c in on.get("compactions", [])),
-            f"{arm}: the probe was typed during a turn-end compaction": bool(on.get("probe"))
-            and on["probe"]["compaction_kind"] == "turn-end",
-            f"{arm}: the probe's message was not lost": bool(on.get("probe")) and on["probe"]["delivered"],
-        })
-    checks.update({
-        "every compaction request offers the tools of the turn request before it, same order (patch 0027)":
-            all(t["compactions"] >= 1 and t["matching"] == t["compactions"] for t in tool_checks.values()),
-        f"every compaction request carries the {SUMMARY_WORDS}-word bound (compact_prompt)":
-            all(t["capped"] == t["compactions"] for t in tool_checks.values()),
-        "every compaction's cache hit is read from the rollout, and is above 0": all(
-            c.get("cache_hit") for s in sessions for c in s.get("compactions", [])),
-        "drop: drop-first compaction was attempted (its log is written)":
-            (by_arm.get("drop", {}).get("drops") or {}).get("attempts", 0) >= 1,
-        "off and on: drop-first compaction never ran": all(
-            (by_arm.get(arm, {}).get("drops") or {}).get("attempts", 1) == 0 for arm in ("off", "on")),
-        "every compaction has an audit verdict": all("audit" in c for s in sessions for c in s.get("compactions", [])),
-        "every typed turn reached the model whole (a long paste included)": all(s.get("inputs_intact") for s in sessions),
-    })
-    return {"sessions": sessions, "requests": requests, "tools": tools, "compaction_tools": tool_checks, "checks": checks}
+        checks.update(
+            {
+                f"{arm}: a turn-end compaction": on.get("counts", {}).get("turn-end", 0) >= 1,
+                f"{arm}: a mid-turn compaction": on.get("counts", {}).get("mid-turn", 0) >= 1,
+                f"{arm}: every compaction timed": all(
+                    c["wall_s"] is not None for c in on.get("compactions", [])
+                ),
+                f"{arm}: the probe was typed during a turn-end compaction": bool(on.get("probe"))
+                and on["probe"]["compaction_kind"] == "turn-end",
+                f"{arm}: the probe's message was not lost": bool(on.get("probe"))
+                and on["probe"]["delivered"],
+            }
+        )
+    checks.update(
+        {
+            "every compaction request offers the tools of the turn request before it, same order (patch 0027)": all(
+                t["compactions"] >= 1 and t["matching"] == t["compactions"]
+                for t in tool_checks.values()
+            ),
+            f"every compaction request carries the {SUMMARY_WORDS}-word bound (compact_prompt)": all(
+                t["capped"] == t["compactions"] for t in tool_checks.values()
+            ),
+            "every compaction's cache hit is read from the rollout, and is above 0": all(
+                c.get("cache_hit") for s in sessions for c in s.get("compactions", [])
+            ),
+            "drop: drop-first compaction was attempted (its log is written)": (
+                by_arm.get("drop", {}).get("drops") or {}
+            ).get("attempts", 0)
+            >= 1,
+            "off and on: drop-first compaction never ran": all(
+                (by_arm.get(arm, {}).get("drops") or {}).get("attempts", 1) == 0
+                for arm in ("off", "on")
+            ),
+            "every compaction has an audit verdict": all(
+                "audit" in c for s in sessions for c in s.get("compactions", [])
+            ),
+            "every typed turn reached the model whole (a long paste included)": all(
+                s.get("inputs_intact") for s in sessions
+            ),
+        }
+    )
+    return {
+        "sessions": sessions,
+        "requests": requests,
+        "tools": tools,
+        "compaction_tools": tool_checks,
+        "checks": checks,
+    }
 
 
 def _tiny_repo(repo: Path) -> None:
@@ -1504,6 +1894,7 @@ def _tiny_repo(repo: Path) -> None:
 
 # --------------------------------------------------------------------------------------------------
 # The report
+
 
 def _median(values: Iterable[float | None]) -> float | None:
     present = [value for value in values if value is not None]
@@ -1537,31 +1928,46 @@ def aggregate(sessions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         table[key] = {
             "sessions": len(members),
             "complete": sum(1 for s in members if s.get("status") == "complete"),
-            "mid_turn_per_session": _mean(s.get("counts", {}).get("mid-turn", 0) + s.get("counts", {}).get("pre-turn", 0)
-                                          for s in members),
+            "mid_turn_per_session": _mean(
+                s.get("counts", {}).get("mid-turn", 0) + s.get("counts", {}).get("pre-turn", 0)
+                for s in members
+            ),
             "turn_end_per_session": _mean(s.get("counts", {}).get("turn-end", 0) for s in members),
             "turn_end_wall_median_s": _median(turn_end),
             "turn_end_wall_max_s": max(turn_end) if turn_end else None,
             "mid_turn_wall_median_s": _median(mid),
             "session_wall_mean_s": _mean(s.get("wall_s") for s in members),
-            "peak_context_max": max((s.get("peak_context") or 0 for s in members), default=0) or None,
-            "hidden_passed_mean": _mean((s.get("grade") or {}).get("hidden", {}).get("counts", {}).get("passed", 0)
-                                        for s in members),
+            "peak_context_max": max((s.get("peak_context") or 0 for s in members), default=0)
+            or None,
+            "hidden_passed_mean": _mean(
+                (s.get("grade") or {}).get("hidden", {}).get("counts", {}).get("passed", 0)
+                for s in members
+            ),
             "missed_turn_ends": sum(len(s.get("missed_turn_ends", [])) for s in members),
-            "missed_turn_ends_clear": sum(len(s.get("missed_turn_ends_clear", [])) for s in members),
+            "missed_turn_ends_clear": sum(
+                len(s.get("missed_turn_ends_clear", [])) for s in members
+            ),
             "inputs_intact": all(s.get("inputs_intact", True) for s in members),
-            "audit_lossless": sum(1 for c in compactions if (c.get("audit") or {}).get("verdict") in ("kept all", "nothing to keep")),
+            "audit_lossless": sum(
+                1
+                for c in compactions
+                if (c.get("audit") or {}).get("verdict") in ("kept all", "nothing to keep")
+            ),
             "audited": len(compactions),
             "stray_summaries": sum(1 for c in compactions if c.get("stray_tool_call")),
             "cache_hit_mean": _mean(c.get("cache_hit") for c in compactions),
             "cache_measured": sum(1 for c in compactions if c.get("cache_hit") is not None),
             "drops_per_session": _mean((s.get("drops") or {}).get("drops", 0) for s in members),
-            "declined_per_session": _mean((s.get("drops") or {}).get("declined", 0) for s in members),
+            "declined_per_session": _mean(
+                (s.get("drops") or {}).get("declined", 0) for s in members
+            ),
         }
     return table
 
 
-def decide_arm(sessions: list[dict[str, Any]], table: dict[str, dict[str, Any]], arm: str = "on") -> tuple[str, list[str]]:
+def decide_arm(
+    sessions: list[dict[str, Any]], table: dict[str, dict[str, Any]], arm: str = "on"
+) -> tuple[str, list[str]]:
     """Applies the decision rule to one turn-end arm (`on`, or `drop`), paired against `off`.
 
     Hard conditions, all needed to switch the arm's settings on by default: (1) at least one probe,
@@ -1589,16 +1995,24 @@ def decide_arm(sessions: list[dict[str, Any]], table: dict[str, dict[str, Any]],
     probes = [s["probe"] for s in mine if s.get("probe")]
     lost = [p for p in probes if p["verdict"] == "lost"]
     interrupted = [p for p in probes if p["verdict"] == "interrupted"]
-    lines.append(f"{'✅' if not lost and probes else '❌'} typed messages kept: {len(probes) - len(lost)} of {len(probes)} probes"
-                 + (f" ({len(interrupted)} cut the compaction short)" if interrupted else "")
-                 + ("" if probes else " (no probe fired: not shown)"))
+    lines.append(
+        f"{'✅' if not lost and probes else '❌'} typed messages kept: {len(probes) - len(lost)} of {len(probes)} probes"
+        + (f" ({len(interrupted)} cut the compaction short)" if interrupted else "")
+        + ("" if probes else " (no probe fired: not shown)")
+    )
     passed &= bool(probes) and not lost
-    walls = [c["wall_s"] for s in mine for c in s.get("compactions", [])
-             if c["kind"] == "turn-end" and c["wall_s"] is not None]
+    walls = [
+        c["wall_s"]
+        for s in mine
+        for c in s.get("compactions", [])
+        if c["kind"] == "turn-end" and c["wall_s"] is not None
+    ]
     median = _median(walls)
     fast = bool(walls) and median <= MAX_MEDIAN_TURN_END_S and max(walls) <= MAX_TURN_END_S
-    lines.append(f"{'✅' if fast else '❌'} turn-end compaction wall time: median {median} s, max "
-                 f"{max(walls) if walls else None} s (limits {MAX_MEDIAN_TURN_END_S:.0f} s / {MAX_TURN_END_S:.0f} s)")
+    lines.append(
+        f"{'✅' if fast else '❌'} turn-end compaction wall time: median {median} s, max "
+        f"{max(walls) if walls else None} s (limits {MAX_MEDIAN_TURN_END_S:.0f} s / {MAX_TURN_END_S:.0f} s)"
+    )
     passed &= fast
     reached = False
     for task in sorted({s["task"] for s in sessions}):
@@ -1610,26 +2024,45 @@ def decide_arm(sessions: list[dict[str, Any]], table: dict[str, dict[str, Any]],
         if (off["mid_turn_per_session"] or 0) > 0:
             reached = True
             saves = (on["mid_turn_per_session"] or 0) < off["mid_turn_per_session"]
-            lines.append(f"{'✅' if saves else '❌'} {task}: mid-turn compactions per session {off['mid_turn_per_session']} "
-                         f"off, {on['mid_turn_per_session']} {arm}")
+            lines.append(
+                f"{'✅' if saves else '❌'} {task}: mid-turn compactions per session {off['mid_turn_per_session']} "
+                f"off, {on['mid_turn_per_session']} {arm}"
+            )
             passed &= saves
         else:
-            lines.append(f"❔ {task}: the off arm never compacted mid-turn (peak {off['peak_context_max']}), so it shows "
-                         "no saving to measure")
+            lines.append(
+                f"❔ {task}: the off arm never compacted mid-turn (peak {off['peak_context_max']}), so it shows "
+                "no saving to measure"
+            )
         missed = on["missed_turn_ends_clear"]
-        lines.append(f"{'❌' if missed else '✅'} {task}: {arm}-arm turns ending clearly above the threshold with no compaction: "
-                     f"{missed}" + (f" ({on['missed_turn_ends']} within {MISSED_MARGIN_PERCENT}% of it)"
-                                    if on["missed_turn_ends"] > missed else ""))
+        lines.append(
+            f"{'❌' if missed else '✅'} {task}: {arm}-arm turns ending clearly above the threshold with no compaction: "
+            f"{missed}"
+            + (
+                f" ({on['missed_turn_ends']} within {MISSED_MARGIN_PERCENT}% of it)"
+                if on["missed_turn_ends"] > missed
+                else ""
+            )
+        )
         passed &= not missed
-        slower = bool(off["session_wall_mean_s"] and on["session_wall_mean_s"]
-                      and on["session_wall_mean_s"] > off["session_wall_mean_s"] * (1 + MAX_WALL_INCREASE))
+        slower = bool(
+            off["session_wall_mean_s"]
+            and on["session_wall_mean_s"]
+            and on["session_wall_mean_s"] > off["session_wall_mean_s"] * (1 + MAX_WALL_INCREASE)
+        )
         worse = (on["hidden_passed_mean"] or 0) < (off["hidden_passed_mean"] or 0) - MAX_HIDDEN_DROP
-        lines.append(f"{'⚠️' if slower or worse else '➖'} {task} (reported, not deciding): session wall "
-                     f"{off['session_wall_mean_s']} s off, {on['session_wall_mean_s']} s {arm}; hidden tests passed "
-                     f"{off['hidden_passed_mean']} off, {on['hidden_passed_mean']} {arm}")
-    intact = all(row["inputs_intact"] for key, row in table.items() if key.endswith(("/off", f"/{arm}")))
+        lines.append(
+            f"{'⚠️' if slower or worse else '➖'} {task} (reported, not deciding): session wall "
+            f"{off['session_wall_mean_s']} s off, {on['session_wall_mean_s']} s {arm}; hidden tests passed "
+            f"{off['hidden_passed_mean']} off, {on['hidden_passed_mean']} {arm}"
+        )
+    intact = all(
+        row["inputs_intact"] for key, row in table.items() if key.endswith(("/off", f"/{arm}"))
+    )
     if not intact:
-        lines.append("❔ a typed turn did not reach the model intact: the driver failed, see `inputs_missing`")
+        lines.append(
+            "❔ a typed turn did not reach the model intact: the driver failed, see `inputs_missing`"
+        )
     if not reached or not intact:
         return "inconclusive", lines
     return ("switch on" if passed else "keep off"), lines
@@ -1637,16 +2070,25 @@ def decide_arm(sessions: list[dict[str, Any]], table: dict[str, dict[str, Any]],
 
 def cache_line(sessions: list[dict[str, Any]]) -> str:
     """The prefix cache on compaction requests, across all arms (reported, not deciding)."""
-    hits = [c["cache_hit"] for s in sessions for c in s.get("compactions", []) if c.get("cache_hit") is not None]
+    hits = [
+        c["cache_hit"]
+        for s in sessions
+        for c in s.get("compactions", [])
+        if c.get("cache_hit") is not None
+    ]
     cold = sum(1 for hit in hits if hit < 0.5)
     stray = sum(1 for s in sessions for c in s.get("compactions", []) if c.get("stray_tool_call"))
-    return (f"{'✅' if hits and not cold else '⚠️' if hits else '❔'} (reported, not deciding) compaction requests served from "
-            f"the prefix cache: median {_percent(statistics.median(hits)) if hits else None} of the prompt over {len(hits)} "
-            f"compactions, {cold} below half "
-            f"(the first run: 0 in 12 of 13); summaries that are a stray tool call: {stray}")
+    return (
+        f"{'✅' if hits and not cold else '⚠️' if hits else '❔'} (reported, not deciding) compaction requests served from "
+        f"the prefix cache: median {_percent(statistics.median(hits)) if hits else None} of the prompt over {len(hits)} "
+        f"compactions, {cold} below half "
+        f"(the first run: 0 in 12 of 13); summaries that are a stray tool call: {stray}"
+    )
 
 
-def decide(sessions: list[dict[str, Any]], table: dict[str, dict[str, Any]]) -> tuple[str, list[str]]:
+def decide(
+    sessions: list[dict[str, Any]], table: dict[str, dict[str, Any]]
+) -> tuple[str, list[str]]:
     """The decision rule (`decide_arm`) for every turn-end arm present, each paired against "off".
 
     With one such arm the verdict is that arm's (`switch on`, `keep off`, `inconclusive`); with
@@ -1718,7 +2160,8 @@ OWNER_RULE: Final[str] = (
     "arm never compacted mid-turn is marked ❔ and neither passes nor fails. If the verdict is "
     "`switch on`, turn-end compaction becomes on by default. v2 (the owner's): the same rule, applied "
     "to each turn-end arm against off; every arm runs with the cache fix (patch 0027) and the 800-word summary "
-    "cap, the turn-end threshold is 20, and the compaction requests' cache hit is reported.")
+    "cap, the turn-end threshold is 20, and the compaction requests' cache hit is reported."
+)
 
 
 def _percent(share: float | None) -> str:
@@ -1739,7 +2182,9 @@ def render_report(meta: dict[str, Any], sessions: list[dict[str, Any]]) -> str:
     decision, reasons = decide(sessions, table)
     binary = meta.get("binary") or {}
     arms = [arm for arm in ARMS if any(s.get("arm") == arm for s in sessions)] or list(ARMS)
-    switches = ", ".join(f"{key.removeprefix('knows_')}: {binary.get(key)}" for key in REQUIRED_SWITCHES)
+    switches = ", ".join(
+        f"{key.removeprefix('knows_')}: {binary.get(key)}" for key in REQUIRED_SWITCHES
+    )
     words = meta.get("summary_words")
     out = [
         "# Turn-end compaction in the TUI: measurement" + (" (v2)" if len(arms) > 2 else ""),
@@ -1751,8 +2196,11 @@ def render_report(meta: dict[str, Any], sessions: list[dict[str, Any]]) -> str:
         + f". Limit pinned at {meta.get('limit')} in every arm; the turn-end arms set `{TURN_END_KEY}={meta.get('percent')}`, "
         f"a turn-end compaction once the context passes {meta.get('threshold')} tokens"
         + (f"; the drop arm also sets `{DROP_ENV}=1`" if "drop" in arms else "")
-        + (f". Every arm caps the summary at {words} words (`{SUMMARY_WORDS_ENV}`, Codex's `compact_prompt`)"
-           if words else "")
+        + (
+            f". Every arm caps the summary at {words} words (`{SUMMARY_WORDS_ENV}`, Codex's `compact_prompt`)"
+            if words
+            else ""
+        )
         + f". Masking off, ledger on (its default), approvals off, sandbox `{meta.get('sandbox', 'workspace-write')}`.",
         "",
         f"**Decision: {decision}.**",
@@ -1780,57 +2228,82 @@ def render_report(meta: dict[str, Any], sessions: list[dict[str, Any]]) -> str:
             f"| {', '.join(str(c['wall_s']) for c in compactions if c['kind'] != 'turn-end') or '—'} "
             f"| {(s.get('drops') or {}).get('drops', 0)} / {(s.get('drops') or {}).get('declined', 0)} "
             f"| {hidden.get('passed', 0)} passed, {hidden.get('failed', 0)} failed "
-            f"| {own.get('passed', 0)} passed, {own.get('failed', 0)} failed |")
-    out += ["", "## Per task and arm", "",
-            "| Task / arm | Sessions | Mid-turn per session | Turn-end per session | Turn-end wall median / max (s) "
-            "| Mid-turn wall median (s) | Session wall mean (min) | Peak | Hidden passed (mean) | Summaries lossless (audit) "
-            "| Compaction cache hit (mean) | Drops / declined per session |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+            f"| {own.get('passed', 0)} passed, {own.get('failed', 0)} failed |"
+        )
+    out += [
+        "",
+        "## Per task and arm",
+        "",
+        "| Task / arm | Sessions | Mid-turn per session | Turn-end per session | Turn-end wall median / max (s) "
+        "| Mid-turn wall median (s) | Session wall mean (min) | Peak | Hidden passed (mean) | Summaries lossless (audit) "
+        "| Compaction cache hit (mean) | Drops / declined per session |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
     for key, row in table.items():
         wall = round(row["session_wall_mean_s"] / 60, 1) if row["session_wall_mean_s"] else None
-        out.append(f"| {key} | {row['sessions']} ({row['complete']} complete) | {row['mid_turn_per_session']} "
-                   f"| {row['turn_end_per_session']} | {row['turn_end_wall_median_s']} / {row['turn_end_wall_max_s']} "
-                   f"| {row['mid_turn_wall_median_s']} | {wall} | {row['peak_context_max']} | {row['hidden_passed_mean']} "
-                   f"| {row['audit_lossless']} of {row['audited']} | {_percent(row.get('cache_hit_mean'))} "
-                   f"| {row.get('drops_per_session')} / {row.get('declined_per_session')} |")
-    out += ["", "## Typing during a turn-end compaction", "",
-            "| Session | Key | Typed after (s) | Compaction finished | Turn aborted | Message taken up | Waited (s) | Verdict |",
-            "|---|---|---|---|---|---|---|---|"]
+        out.append(
+            f"| {key} | {row['sessions']} ({row['complete']} complete) | {row['mid_turn_per_session']} "
+            f"| {row['turn_end_per_session']} | {row['turn_end_wall_median_s']} / {row['turn_end_wall_max_s']} "
+            f"| {row['mid_turn_wall_median_s']} | {wall} | {row['peak_context_max']} | {row['hidden_passed_mean']} "
+            f"| {row['audit_lossless']} of {row['audited']} | {_percent(row.get('cache_hit_mean'))} "
+            f"| {row.get('drops_per_session')} / {row.get('declined_per_session')} |"
+        )
+    out += [
+        "",
+        "## Typing during a turn-end compaction",
+        "",
+        "| Session | Key | Typed after (s) | Compaction finished | Turn aborted | Message taken up | Waited (s) | Verdict |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
     for s in sessions:
         p = s.get("probe")
         if p:
-            out.append(f"| {s['label']} | {p['key']} | {p['typed_after_s']} | {p['compaction_finished']} | {p['turn_aborted']} "
-                       f"| {p['delivered_in'] or 'no'} | {p['waited_s']} | {p['verdict']} |")
+            out.append(
+                f"| {s['label']} | {p['key']} | {p['typed_after_s']} | {p['compaction_finished']} | {p['turn_aborted']} "
+                f"| {p['delivered_in'] or 'no'} | {p['waited_s']} | {p['verdict']} |"
+            )
     if not any(s.get("probe") for s in sessions):
         out.append("| — | | | | | | | no probe fired |")
-    out += ["", "## Compactions and the nightly audit", "",
-            "| Session | # | Kind | Wall (s) | Context before → after | Cached / input (hit) | Summary tokens / chars | Audit |",
-            "|---|---|---|---|---|---|---|---|"]
+    out += [
+        "",
+        "## Compactions and the nightly audit",
+        "",
+        "| Session | # | Kind | Wall (s) | Context before → after | Cached / input (hit) | Summary tokens / chars | Audit |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
     for s in sessions:
         for c in s.get("compactions", []):
-            out.append(f"| {s['label']} | {c['number']} | {c['kind']} | {c['wall_s']} | {c['context_before']} → {c['context_after']} "
-                       f"| {c.get('cached_tokens')} / {c.get('input_tokens')} ({_percent(c.get('cache_hit'))}) "
-                       f"| {c.get('summary_output_tokens')} / {c['summary_chars']} | {(c.get('audit') or {}).get('verdict', '—')} |")
-    out += ["", "## Decision rule", "",
-            "Each turn-end arm is judged against `off` on its own (v2: `on`, and `drop`, which adds drop-old-outputs). "
-            f"Switch the arm's settings on by default only if all hold: at least one probe and no typed "
-            f"message lost; turn-end compactions at most {MAX_MEDIAN_TURN_END_S:.0f} s at the median and "
-            f"{MAX_TURN_END_S:.0f} s at worst (about the time it takes to read an answer); for each task whose off arm "
-            "compacted mid-turn, fewer mid-turn compactions per session in the arm (a drop that replaced a summary is "
-            "not a compaction); and no turn of the arm ended "
-            f"clearly ({MISSED_MARGIN_PERCENT}% or more) above the threshold without compacting. Reported but not deciding, "
-            "since two sessions per arm cannot resolve them (Phase 0 saw one task vary twofold): an on arm more than "
-            f"{MAX_WALL_INCREASE:.0%} slower per session, or passing more than {MAX_HIDDEN_DROP:.0f} fewer hidden tests. "
-            "Inconclusive when no off session compacted mid-turn (the tasks were too small, not the setting useless) or a "
-            "typed turn did not reach the model intact. An interrupted compaction is not a failure if the typed message "
-            "was kept; it is reported. The compaction requests' cache hit (cached / input tokens of each, from its usage "
-            "in the rollout) is reported, not deciding.",
-            "", RUNBOOK]
+            out.append(
+                f"| {s['label']} | {c['number']} | {c['kind']} | {c['wall_s']} | {c['context_before']} → {c['context_after']} "
+                f"| {c.get('cached_tokens')} / {c.get('input_tokens')} ({_percent(c.get('cache_hit'))}) "
+                f"| {c.get('summary_output_tokens')} / {c['summary_chars']} | {(c.get('audit') or {}).get('verdict', '—')} |"
+            )
+    out += [
+        "",
+        "## Decision rule",
+        "",
+        "Each turn-end arm is judged against `off` on its own (v2: `on`, and `drop`, which adds drop-old-outputs). "
+        f"Switch the arm's settings on by default only if all hold: at least one probe and no typed "
+        f"message lost; turn-end compactions at most {MAX_MEDIAN_TURN_END_S:.0f} s at the median and "
+        f"{MAX_TURN_END_S:.0f} s at worst (about the time it takes to read an answer); for each task whose off arm "
+        "compacted mid-turn, fewer mid-turn compactions per session in the arm (a drop that replaced a summary is "
+        "not a compaction); and no turn of the arm ended "
+        f"clearly ({MISSED_MARGIN_PERCENT}% or more) above the threshold without compacting. Reported but not deciding, "
+        "since two sessions per arm cannot resolve them (Phase 0 saw one task vary twofold): an on arm more than "
+        f"{MAX_WALL_INCREASE:.0%} slower per session, or passing more than {MAX_HIDDEN_DROP:.0f} fewer hidden tests. "
+        "Inconclusive when no off session compacted mid-turn (the tasks were too small, not the setting useless) or a "
+        "typed turn did not reach the model intact. An interrupted compaction is not a failure if the typed message "
+        "was kept; it is reported. The compaction requests' cache hit (cached / input tokens of each, from its usage "
+        "in the rollout) is reported, not deciding.",
+        "",
+        RUNBOOK,
+    ]
     return "\n".join(out) + "\n"
 
 
 # --------------------------------------------------------------------------------------------------
 # Commands
+
 
 def fetch_json(url: str, timeout: float = 10) -> Any:
     """GET a JSON document."""
@@ -1858,8 +2331,12 @@ def server_facts(host: str) -> dict[str, Any]:
         pool = int(float(found.group(1))) if found else None
     except OSError:
         pass
-    return {"model": card.get("id"), "owned_by": card.get("owned_by"),
-            "window": int(card.get("max_model_len") or 0) or None, "pool": pool}
+    return {
+        "model": card.get("id"),
+        "owned_by": card.get("owned_by"),
+        "window": int(card.get("max_model_len") or 0) or None,
+        "pool": pool,
+    }
 
 
 LOOPBACK_NAMES: Final[tuple] = ("localhost", "127.", "0.0.0.0", "[::1]", "::1")
@@ -1876,10 +2353,18 @@ def require_host(host: str | None) -> str:
         str: The URL without a trailing slash.
     """
     if not host:
-        raise SystemExit("❌ name the model server: --host http://<node>.local:8000 (or DREAMFERENCE_VLLM_HOST)")
-    name = host.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0] if "]" not in host else host.split("://", 1)[-1].split("]")[0] + "]"
+        raise SystemExit(
+            "❌ name the model server: --host http://<node>.local:8000 (or DREAMFERENCE_VLLM_HOST)"
+        )
+    name = (
+        host.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0]
+        if "]" not in host
+        else host.split("://", 1)[-1].split("]")[0] + "]"
+    )
     if name.lower().startswith(LOOPBACK_NAMES):
-        raise SystemExit(f"❌ {host} is this machine's own server; name the node to measure on (--host http://<node>.local:8000)")
+        raise SystemExit(
+            f"❌ {host} is this machine's own server; name the node to measure on (--host http://<node>.local:8000)"
+        )
     return host.rstrip("/")
 
 
@@ -1889,37 +2374,63 @@ def command_preflight(options: argparse.Namespace) -> int:
     ok = True
     try:
         facts = server_facts(host)
-        print(f"✅ {host}: model {facts['model']} ({facts['owned_by']}), window {facts['window']}, KV pool {facts['pool']}")
+        print(
+            f"✅ {host}: model {facts['model']} ({facts['owned_by']}), window {facts['window']}, KV pool {facts['pool']}"
+        )
         if options.expect_model and options.expect_model not in str(facts["model"]):
             print(f"❌ the served model is not {options.expect_model}")
             ok = False
         window = facts["window"] or DEFAULT_WINDOW
         percent = options.turn_end_percent or turn_end_percent(window, options.limit)
-        print(f"💡 limit {options.limit}, turn-end percentage {percent}, threshold "
-              f"{turn_end_threshold_tokens(window, percent) if percent else None} tokens; the server's own pool would give "
-              f"{facts['pool'] * 60 // 100 if facts['pool'] else 'no'} limit")
+        print(
+            f"💡 limit {options.limit}, turn-end percentage {percent}, threshold "
+            f"{turn_end_threshold_tokens(window, percent) if percent else None} tokens; the server's own pool would give "
+            f"{facts['pool'] * 60 // 100 if facts['pool'] else 'no'} limit"
+        )
     except OSError as error:
         print(f"❌ {host} does not answer: {error}")
         ok = False
     info = binary_info(ragon_binary(options.ragon))
     missing = [key for key in REQUIRED_SWITCHES if not info[key]]
-    print(f"{'❌' if missing else '✅'} ragon {info['resolved']} (built {info['mtime']}, sha256 {info['sha256']}…): "
-          + ", ".join(f"{key.removeprefix('knows_')} {info[key]}" for key in REQUIRED_SWITCHES)
-          + (": a binary without them cannot run v2's arms (build compaction/cache-hit)" if missing else ""))
-    print(f"{'✅' if info['code_mode_host_beside'] else '❌'} codex-code-mode-host beside it: {info['code_mode_host_beside']}")
+    print(
+        f"{'❌' if missing else '✅'} ragon {info['resolved']} (built {info['mtime']}, sha256 {info['sha256']}…): "
+        + ", ".join(f"{key.removeprefix('knows_')} {info[key]}" for key in REQUIRED_SWITCHES)
+        + (
+            ": a binary without them cannot run v2's arms (build compaction/cache-hit)"
+            if missing
+            else ""
+        )
+    )
+    print(
+        f"{'✅' if info['code_mode_host_beside'] else '❌'} codex-code-mode-host beside it: {info['code_mode_host_beside']}"
+    )
     ok &= not missing and info["code_mode_host_beside"]
-    label = Path("/proc/self/attr/current").read_text(errors="replace").strip() if Path("/proc/self/attr/current").exists() else "?"
-    print(f"{'⚠️ ' if 'pycharm' in label else '✅'} AppArmor label {label!r}"
-          + (": a PyCharm shell sandboxes more permissively than a user's terminal" if "pycharm" in label else ""))
+    label = (
+        Path("/proc/self/attr/current").read_text(errors="replace").strip()
+        if Path("/proc/self/attr/current").exists()
+        else "?"
+    )
+    print(
+        f"{'⚠️ ' if 'pycharm' in label else '✅'} AppArmor label {label!r}"
+        + (
+            ": a PyCharm shell sandboxes more permissively than a user's terminal"
+            if "pycharm" in label
+            else ""
+        )
+    )
     if not Path("/etc/apparmor.d/ragon-bwrap").exists():
-        print("⚠️  no /etc/apparmor.d/ragon-bwrap: sandboxed commands may fail outside PyCharm (ragon-admin host setup)")
+        print(
+            "⚠️  no /etc/apparmor.d/ragon-bwrap: sandboxed commands may fail outside PyCharm (ragon-admin host setup)"
+        )
     try:
         click_mirror(Path(options.cache))
         print(f"✅ click {CLICK_TAG} at {CLICK_COMMIT[:12]} in {options.cache}")
     except (OSError, subprocess.SubprocessError, RuntimeError) as error:
         print(f"❌ click: {error}")
         ok = False
-    if subprocess.run(["git", "-C", str(ROOT), "cat-file", "-e", NIGHT_SHIFT_BASE], capture_output=True).returncode:
+    if subprocess.run(
+        ["git", "-C", str(ROOT), "cat-file", "-e", NIGHT_SHIFT_BASE], capture_output=True
+    ).returncode:
         print(f"❌ this checkout lacks {NIGHT_SHIFT_BASE[:12]} (Night Shift's base)")
         ok = False
     else:
@@ -1935,20 +2446,39 @@ def load_sessions(out: Path) -> list[dict[str, Any]]:
             sessions.append(json.loads(path.read_text()))
         except (OSError, json.JSONDecodeError):
             continue
-    order = json.loads((out / "meta.json").read_text()).get("order", []) if (out / "meta.json").exists() else []
-    return sorted(sessions, key=lambda s: order.index(s["label"]) if s["label"] in order else len(order))
+    order = (
+        json.loads((out / "meta.json").read_text()).get("order", [])
+        if (out / "meta.json").exists()
+        else []
+    )
+    return sorted(
+        sessions, key=lambda s: order.index(s["label"]) if s["label"] in order else len(order)
+    )
 
 
 def write_outputs(out: Path, meta: dict[str, Any], sessions: list[dict[str, Any]]) -> None:
     """Writes `results.json` and `report.md`."""
     table = aggregate(sessions)
     decision, reasons = decide(sessions, table)
-    (out / "results.json").write_text(json.dumps({"meta": meta, "aggregate": table, "decision": decision,
-                                                  "reasons": reasons, "sessions": sessions}, indent=1, default=str))
+    (out / "results.json").write_text(
+        json.dumps(
+            {
+                "meta": meta,
+                "aggregate": table,
+                "decision": decision,
+                "reasons": reasons,
+                "sessions": sessions,
+            },
+            indent=1,
+            default=str,
+        )
+    )
     (out / "report.md").write_text(render_report(meta, sessions))
 
 
-def plans_for(tasks: list[str], reps: int, root: Path, probe_keys: list[str], arms: tuple = ARMS) -> list[SessionPlan]:
+def plans_for(
+    tasks: list[str], reps: int, root: Path, probe_keys: list[str], arms: tuple = ARMS
+) -> list[SessionPlan]:
     """The sessions in run order: per repetition every task, its arms alternating which goes first.
 
     Args:
@@ -1968,8 +2498,15 @@ def plans_for(tasks: list[str], reps: int, root: Path, probe_keys: list[str], ar
         key = probe_keys[(rep - 1) % len(probe_keys)] if probe_keys else None
         for name in tasks:
             for arm in arms:
-                plans.append(SessionPlan(TASKS[name], arm, rep, root / f"{name}-{arm}-{rep}",
-                                         key if arm in TURN_END_ARMS else None))
+                plans.append(
+                    SessionPlan(
+                        TASKS[name],
+                        arm,
+                        rep,
+                        root / f"{name}-{arm}-{rep}",
+                        key if arm in TURN_END_ARMS else None,
+                    )
+                )
     return plans
 
 
@@ -1978,7 +2515,9 @@ def command_run(options: argparse.Namespace) -> int:
     host = require_host(options.host)
     out = Path(options.out).expanduser()
     if str(out).startswith(tempfile.gettempdir() + os.sep):
-        raise SystemExit("❌ --out under the temporary directory: Codex refuses its helper links there; use ~/.cache/…")
+        raise SystemExit(
+            "❌ --out under the temporary directory: Codex refuses its helper links there; use ~/.cache/…"
+        )
     out.mkdir(parents=True, exist_ok=True)
     ragon = ragon_binary(options.ragon)
     facts = server_facts(host)
@@ -1989,41 +2528,83 @@ def command_run(options: argparse.Namespace) -> int:
     info = binary_info(ragon)
     missing = [key for key in REQUIRED_SWITCHES if not info[key]]
     if missing and not options.allow_old_binary:
-        raise SystemExit(f"❌ {ragon} lacks {', '.join(missing)}: build compaction/cache-hit (or pass --allow-old-binary)")
+        raise SystemExit(
+            f"❌ {ragon} lacks {', '.join(missing)}: build compaction/cache-hit (or pass --allow-old-binary)"
+        )
     stop_by = datetime.fromisoformat(options.stop_by).timestamp() if options.stop_by else None
-    plans = [plan for plan in plans_for(options.tasks, options.reps, out, options.probe_keys, tuple(options.arms))
-             if not options.only or plan.label in options.only]
-    meta = {"started": datetime.now(timezone.utc).isoformat(timespec="seconds"), "host": host, **facts,
-            "window": window, "limit": options.limit, "percent": percent,
-            "threshold": turn_end_threshold_tokens(window, percent) if percent else None,
-            "summary_words": options.summary_words, "arms": list(options.arms), "stop_by": options.stop_by,
-            "binary": info, "sandbox": options.sandbox, "order": [plan.label for plan in plans],
-            "python": options.python, "code_tools": not options.no_code_tools, "docs": not options.no_docs}
+    plans = [
+        plan
+        for plan in plans_for(
+            options.tasks, options.reps, out, options.probe_keys, tuple(options.arms)
+        )
+        if not options.only or plan.label in options.only
+    ]
+    meta = {
+        "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "host": host,
+        **facts,
+        "window": window,
+        "limit": options.limit,
+        "percent": percent,
+        "threshold": turn_end_threshold_tokens(window, percent) if percent else None,
+        "summary_words": options.summary_words,
+        "arms": list(options.arms),
+        "stop_by": options.stop_by,
+        "binary": info,
+        "sandbox": options.sandbox,
+        "order": [plan.label for plan in plans],
+        "python": options.python,
+        "code_tools": not options.no_code_tools,
+        "docs": not options.no_docs,
+    }
     (out / "meta.json").write_text(json.dumps(meta, indent=1))
     for plan in plans:
         if (plan.root / "session.json").exists() and not options.redo:
             print(f"⏭️  {plan.label}: already measured")
             continue
         if stop_by is not None and time.time() > stop_by - options.min_session_minutes * 60:
-            print(f"⏹️  {datetime.now():%H:%M:%S} {plan.label}: not started, under {options.min_session_minutes} min "
-                  f"left before {options.stop_by}", flush=True)
+            print(
+                f"⏹️  {datetime.now():%H:%M:%S} {plan.label}: not started, under {options.min_session_minutes} min "
+                f"left before {options.stop_by}",
+                flush=True,
+            )
             continue
         print(f"🚀 {datetime.now():%H:%M:%S} {plan.label}", flush=True)
         try:
-            result = run_session(plan, ragon=ragon, host=host, limit=options.limit, window=window, python=options.python,
-                                 cache=Path(options.cache), sandbox=options.sandbox, code_tools=not options.no_code_tools,
-                                 docs=not options.no_docs, turn_timeout=options.turn_timeout,
-                                 session_timeout=options.session_timeout, percent=percent,
-                                 summary_words=options.summary_words, stop_by=stop_by)
+            result = run_session(
+                plan,
+                ragon=ragon,
+                host=host,
+                limit=options.limit,
+                window=window,
+                python=options.python,
+                cache=Path(options.cache),
+                sandbox=options.sandbox,
+                code_tools=not options.no_code_tools,
+                docs=not options.no_docs,
+                turn_timeout=options.turn_timeout,
+                session_timeout=options.session_timeout,
+                percent=percent,
+                summary_words=options.summary_words,
+                stop_by=stop_by,
+            )
         except Exception as error:  # noqa: BLE001 - one broken session must not end the run
-            result = {"label": plan.label, "task": plan.task.name, "arm": plan.arm, "rep": plan.rep,
-                      "status": f"driver error: {error!r}"}
+            result = {
+                "label": plan.label,
+                "task": plan.task.name,
+                "arm": plan.arm,
+                "rep": plan.rep,
+                "status": f"driver error: {error!r}",
+            }
         (plan.root / "session.json").write_text(json.dumps(result, indent=1, default=str))
         counts = result.get("counts", {})
         hits = [c.get("cache_hit") for c in result.get("compactions", [])]
-        print(f"   {result.get('status')}: {round((result.get('wall_s') or 0) / 60, 1)} min, peak {result.get('peak_context')}, "
-              f"compactions {counts}, cache hits {hits}, drops {(result.get('drops') or {}).get('drops')}, "
-              f"probe {(result.get('probe') or {}).get('verdict')}", flush=True)
+        print(
+            f"   {result.get('status')}: {round((result.get('wall_s') or 0) / 60, 1)} min, peak {result.get('peak_context')}, "
+            f"compactions {counts}, cache hits {hits}, drops {(result.get('drops') or {}).get('drops')}, "
+            f"probe {(result.get('probe') or {}).get('verdict')}",
+            flush=True,
+        )
         write_outputs(out, meta, load_sessions(out))
     print(f"✅ {out / 'report.md'}")
     return 0
@@ -2037,8 +2618,14 @@ def command_report(options: argparse.Namespace) -> int:
     for session in sessions:
         rollout = find_rollout(out / session["label"] / "home")
         if rollout is not None:
-            session.update(analyze_session(rollout, session.get("turn_end_threshold"), session.get("probe_note"),
-                                           out / session["label"] / "home"))
+            session.update(
+                analyze_session(
+                    rollout,
+                    session.get("turn_end_threshold"),
+                    session.get("probe_note"),
+                    out / session["label"] / "home",
+                )
+            )
     write_outputs(out, meta, sessions)
     print(out / "report.md")
     return 0
@@ -2046,13 +2633,25 @@ def command_report(options: argparse.Namespace) -> int:
 
 def command_dry_run(options: argparse.Namespace) -> int:
     """Both arms against the stand-in server; prints the checks."""
-    out = Path(options.out).expanduser() if options.out else DEFAULT_OUT_PARENT / f"dry-run-{datetime.now():%Y%m%d-%H%M%S}"
+    out = (
+        Path(options.out).expanduser()
+        if options.out
+        else DEFAULT_OUT_PARENT / f"dry-run-{datetime.now():%Y%m%d-%H%M%S}"
+    )
     out.mkdir(parents=True, exist_ok=True)
     ragon = ragon_binary(options.ragon)
-    meta = {"started": datetime.now(timezone.utc).isoformat(timespec="seconds"), "host": "stand-in", "model": "fake-model",
-            "window": DEFAULT_WINDOW, "limit": DEFAULT_LIMIT, "percent": TURN_END_PERCENT_V2,
-            "threshold": turn_end_threshold_tokens(DEFAULT_WINDOW, TURN_END_PERCENT_V2), "binary": binary_info(ragon),
-            "summary_words": SUMMARY_WORDS, "order": [f"dry-run-{arm}-1" for arm in ARMS]}
+    meta = {
+        "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "host": "stand-in",
+        "model": "fake-model",
+        "window": DEFAULT_WINDOW,
+        "limit": DEFAULT_LIMIT,
+        "percent": TURN_END_PERCENT_V2,
+        "threshold": turn_end_threshold_tokens(DEFAULT_WINDOW, TURN_END_PERCENT_V2),
+        "binary": binary_info(ragon),
+        "summary_words": SUMMARY_WORDS,
+        "order": [f"dry-run-{arm}-1" for arm in ARMS],
+    }
     (out / "meta.json").write_text(json.dumps(meta, indent=1))
     result = dry_run(out, ragon, probe_key=options.probe_key)
     (out / "dry-run.json").write_text(json.dumps(result, indent=1, default=str))
@@ -2060,30 +2659,52 @@ def command_dry_run(options: argparse.Namespace) -> int:
     for name, passed in result["checks"].items():
         print(f"{'✅' if passed else '❌'} {name}")
     for arm, counts in result["compaction_tools"].items():
-        print(f"💡 {arm}: {counts['matching']} of {counts['compactions']} compaction requests offered the turn's tools; "
-              f"{counts['capped']} carried the summary bound")
+        print(
+            f"💡 {arm}: {counts['matching']} of {counts['compactions']} compaction requests offered the turn's tools; "
+            f"{counts['capped']} carried the summary bound"
+        )
     print(f"💡 {out}")
     return 0 if all(result["checks"].values()) else 1
 
 
 def parser() -> argparse.ArgumentParser:
     """The command line."""
-    top = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
+    top = argparse.ArgumentParser(
+        description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     commands = top.add_subparsers(dest="command", required=True)
 
     def common(sub: argparse.ArgumentParser) -> None:
         sub.add_argument("--ragon", help="the binary (default: ragon on PATH)")
 
     def target(sub: argparse.ArgumentParser) -> None:
-        sub.add_argument("--host", default=os.environ.get("DREAMFERENCE_VLLM_HOST"),
-                         help="the model server, e.g. http://node-b.local:8000 (required)")
-        sub.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="the compaction limit pinned on both arms")
-        sub.add_argument("--expect-model", default="Qwen3.8-27B", help="refuse a server serving another model ('' to skip)")
+        sub.add_argument(
+            "--host",
+            default=os.environ.get("DREAMFERENCE_VLLM_HOST"),
+            help="the model server, e.g. http://node-b.local:8000 (required)",
+        )
+        sub.add_argument(
+            "--limit",
+            type=int,
+            default=DEFAULT_LIMIT,
+            help="the compaction limit pinned on both arms",
+        )
+        sub.add_argument(
+            "--expect-model",
+            default="Qwen3.8-27B",
+            help="refuse a server serving another model ('' to skip)",
+        )
         sub.add_argument("--cache", default=str(SOURCE_CACHE), help="where task sources are kept")
-        sub.add_argument("--turn-end-percent", type=int, default=TURN_END_PERCENT_V2,
-                         help="the turn-end arms' percentage (v2: 20; 0 for the launcher's arithmetic, 26)")
+        sub.add_argument(
+            "--turn-end-percent",
+            type=int,
+            default=TURN_END_PERCENT_V2,
+            help="the turn-end arms' percentage (v2: 20; 0 for the launcher's arithmetic, 26)",
+        )
 
-    preflight = commands.add_parser("preflight", help="check the server, binary, sandbox and task sources")
+    preflight = commands.add_parser(
+        "preflight", help="check the server, binary, sandbox and task sources"
+    )
     common(preflight)
     target(preflight)
     run = commands.add_parser("run", help="run the sessions")
@@ -2097,18 +2718,52 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--redo", action="store_true", help="rerun sessions already measured")
     run.add_argument("--window", type=int, help="override the window the server reports")
     run.add_argument("--sandbox", default="workspace-write")
-    run.add_argument("--python", default=sys.executable, help="the interpreter the tasks' tests use (default: this one)")
-    run.add_argument("--no-code-tools", action="store_true", help="switch ragon-code's tools off (default: the product's)")
-    run.add_argument("--no-docs", action="store_true", help="switch ragon-docs's tools off (default: the product's)")
-    run.add_argument("--arms", nargs="+", default=list(ARMS), choices=list(ARMS), help="the arms, in repetition 1's order")
-    run.add_argument("--summary-words", type=int, default=SUMMARY_WORDS,
-                     help=f"the summary cap every arm runs with ({SUMMARY_WORDS_ENV}; 0: Codex's own prompt)")
-    run.add_argument("--stop-by", help="ISO time by which the run ends: no session starts within --min-session-minutes "
-                                       "of it, and a running turn is interrupted at it")
+    run.add_argument(
+        "--python",
+        default=sys.executable,
+        help="the interpreter the tasks' tests use (default: this one)",
+    )
+    run.add_argument(
+        "--no-code-tools",
+        action="store_true",
+        help="switch ragon-code's tools off (default: the product's)",
+    )
+    run.add_argument(
+        "--no-docs",
+        action="store_true",
+        help="switch ragon-docs's tools off (default: the product's)",
+    )
+    run.add_argument(
+        "--arms",
+        nargs="+",
+        default=list(ARMS),
+        choices=list(ARMS),
+        help="the arms, in repetition 1's order",
+    )
+    run.add_argument(
+        "--summary-words",
+        type=int,
+        default=SUMMARY_WORDS,
+        help=f"the summary cap every arm runs with ({SUMMARY_WORDS_ENV}; 0: Codex's own prompt)",
+    )
+    run.add_argument(
+        "--stop-by",
+        help="ISO time by which the run ends: no session starts within --min-session-minutes "
+        "of it, and a running turn is interrupted at it",
+    )
     run.add_argument("--min-session-minutes", type=float, default=20.0)
-    run.add_argument("--allow-old-binary", action="store_true", help="run a binary that lacks v2's switches")
-    run.add_argument("--turn-timeout", type=float, default=2700, help="seconds before a turn is interrupted")
-    run.add_argument("--session-timeout", type=float, default=6300, help="seconds after which no further turn is typed")
+    run.add_argument(
+        "--allow-old-binary", action="store_true", help="run a binary that lacks v2's switches"
+    )
+    run.add_argument(
+        "--turn-timeout", type=float, default=2700, help="seconds before a turn is interrupted"
+    )
+    run.add_argument(
+        "--session-timeout",
+        type=float,
+        default=6300,
+        help="seconds after which no further turn is typed",
+    )
     report = commands.add_parser("report", help="re-analyze the rollouts and rewrite the report")
     report.add_argument("--out", required=True)
     dry = commands.add_parser("dry-run", help="every arm against a stand-in server on loopback")
@@ -2121,8 +2776,12 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Entry point."""
     options = parser().parse_args(argv)
-    return {"preflight": command_preflight, "run": command_run, "report": command_report,
-            "dry-run": command_dry_run}[options.command](options)
+    return {
+        "preflight": command_preflight,
+        "run": command_run,
+        "report": command_report,
+        "dry-run": command_dry_run,
+    }[options.command](options)
 
 
 if __name__ == "__main__":
