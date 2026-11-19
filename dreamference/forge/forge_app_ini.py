@@ -189,6 +189,15 @@ class ForgeAppIni:
                 },
             ),
             ("oauth2", {"JWT_SECRET": secret_values["oauth2.JWT_SECRET"]}),
+            (
+                "oauth2_client",
+                {
+                    "ENABLE_AUTO_REGISTRATION": "true",
+                    "ACCOUNT_LINKING": "auto",
+                    "USERNAME": "nickname",
+                    "UPDATE_AVATAR": "false",
+                },
+            ),
             ("openid", {"ENABLE_OPENID_SIGNIN": "false", "ENABLE_OPENID_SIGNUP": "false"}),
             ("mailer", {"ENABLED": "false"}),
             ("picture", {"DISABLE_GRAVATAR": "true", "ENABLE_FEDERATED_AVATAR": "false"}),
