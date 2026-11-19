@@ -417,6 +417,15 @@ pub async fn bind(port: u16, lan: bool) -> std::io::Result<Vec<tokio::net::TcpLi
     Ok(listeners)
 }
 
+/// The HTTPS addresses of the server: the names the node's certificate covers (`ModelGateTls.names`:
+/// the host name, `<host>.local` and loopback), never a LAN address or the overlay name.
+fn https_urls(port: u16, lan: bool) -> Vec<String> {
+    let names = if lan { lan_names() } else { Vec::new() };
+    std::iter::once(format!("https://localhost:{port}/"))
+        .chain(names.iter().filter(|name| name.parse::<std::net::IpAddr>().is_err()).map(|name| format!("https://{name}:{port}/")))
+        .collect()
+}
+
 async fn serve_command(args: &[String], environment: &Environment) -> i32 {
     let lan = args.iter().any(|arg| arg == "--lan");
     if lan && !advertised_web(&environment.home) {
@@ -466,14 +475,25 @@ async fn serve_command(args: &[String], environment: &Environment) -> i32 {
             return 1;
         }
     };
+    let tls = match crate::tls::load(&environment.home.join(crate::tls::TLS_DIR)) {
+        Ok(tls) => tls,
+        Err(err) => {
+            eprintln!("The node's certificate could not be read ({err}); serving plain HTTP only.");
+            None
+        }
+    };
     let urls: Vec<String> = std::iter::once(format!("http://127.0.0.1:{port}/"))
         .chain(config.lan_names.iter().map(|name| format!("http://{name}:{port}/")))
         .collect();
+    let https_urls = if tls.is_some() { https_urls(port, lan) } else { Vec::new() };
     let _ = auth::write_private(
         &server_file(&state),
-        &json!({ "pid": std::process::id(), "port": port, "lan": lan, "urls": urls }).to_string(),
+        &json!({ "pid": std::process::id(), "port": port, "lan": lan, "urls": urls, "https_urls": https_urls }).to_string(),
     );
     eprintln!("Ragon web server on {}", urls.join(", "));
+    if !https_urls.is_empty() {
+        eprintln!("HTTPS with the node's certificate on {}", https_urls.join(", "));
+    }
     let shutdown = async {
         let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
         tokio::select! {
@@ -481,7 +501,7 @@ async fn serve_command(args: &[String], environment: &Environment) -> i32 {
             _ = async { match terminate.as_mut() { Some(signal) => { signal.recv().await; } None => std::future::pending::<()>().await } } => {}
         }
     };
-    let result = server::serve(server, listeners, shutdown).await;
+    let result = server::serve_with(server, listeners, tls, shutdown).await;
     remove_server_file_if_ours(&state, std::process::id());
     match result {
         Ok(()) => 0,

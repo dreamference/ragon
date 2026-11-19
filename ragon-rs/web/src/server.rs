@@ -1386,19 +1386,37 @@ pub async fn serve(
     listeners: Vec<tokio::net::TcpListener>,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    let app = router(server.clone()).into_make_service_with_connect_info::<SocketAddr>();
+    serve_with(server, listeners, None, shutdown).await
+}
+
+/// Serves as `serve` does, and HTTPS beside plain HTTP on the same ports when `tls` is given
+/// (specs/DREAMFERENCE_AUTH.md §6, tls.rs).
+pub async fn serve_with(
+    server: Arc<Server>,
+    listeners: Vec<tokio::net::TcpListener>,
+    tls: Option<Arc<rustls::ServerConfig>>,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
     let (stop, _) = tokio::sync::broadcast::channel::<()>(1);
     let mut tasks = Vec::new();
     for listener in listeners {
         let mut stopped = stop.subscribe();
-        let app = app.clone();
-        tasks.push(tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async move {
-                    let _ = stopped.recv().await;
-                })
-                .await
-        }));
+        let stopped = async move {
+            let _ = stopped.recv().await;
+        };
+        match &tls {
+            None => {
+                let app = router(server.clone()).into_make_service_with_connect_info::<SocketAddr>();
+                tasks.push(tokio::spawn(async move { axum::serve(listener, app).with_graceful_shutdown(stopped).await }));
+            }
+            Some(config) => {
+                let listener = crate::tls::SniffingListener::new(listener, config.clone())?;
+                let app = router(server.clone())
+                    .layer(axum::middleware::map_request(crate::tls::peer_as_socket_addr))
+                    .into_make_service_with_connect_info::<crate::tls::Peer>();
+                tasks.push(tokio::spawn(async move { axum::serve(listener, app).with_graceful_shutdown(stopped).await }));
+            }
+        }
     }
     // Full Access ends within one interval of the node taking it away, not at the thread's next turn.
     let mut stopped = stop.subscribe();

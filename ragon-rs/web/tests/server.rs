@@ -2095,3 +2095,79 @@ async fn the_status_routes_say_so_when_there_is_no_monitor_or_it_fails() {
     assert!(body.contains("did not start"), "{body}");
     assert_eq!(call(&server, get("/status")).await.0, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+/// A CA and a server certificate signed by it for `localhost` and 127.0.0.1, as `ModelGateTls`
+/// makes them, written where `tls::load` reads them; the CA's certificate in DER.
+fn node_certificate(dir: &Path) -> rustls::pki_types::CertificateDer<'static> {
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca = rcgen::CertifiedIssuer::self_signed(ca_params, ca_key).unwrap();
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
+    params.subject_alt_names.push(rcgen::SanType::IpAddress(std::net::Ipv4Addr::LOCALHOST.into()));
+    let certificate = params.signed_by(&key, &ca).unwrap();
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("server.pem"), certificate.pem()).unwrap();
+    std::fs::write(dir.join("server.key"), key.serialize_pem()).unwrap();
+    ca.der().clone()
+}
+
+/// The status line the server answers `GET /healthz` with, over `stream`.
+async fn status_line<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(mut stream: S) -> String {
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+    stream.write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut answer = Vec::new();
+    let _ = stream.read_to_end(&mut answer).await;
+    String::from_utf8_lossy(&answer).lines().next().unwrap_or_default().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_node_certificate_serves_https_beside_plain_http_on_one_port() {
+    use ragon_web_server::tls;
+    use tokio::io::AsyncWriteExt;
+    let scratch = scratch("tls");
+    let folder = scratch.dir.join("tls");
+    assert!(tls::load(&folder).unwrap().is_none(), "no certificate: plain HTTP as before");
+    let ca = node_certificate(&folder);
+    let config_tls = tls::load(&folder).unwrap().expect("the node's certificate");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = Server::new(config(&scratch.dir, port, Vec::new())).unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(server::serve_with(server.clone(), vec![listener], Some(config_tls), async move {
+        let _ = stopped.await;
+    }));
+
+    // A silent client and a broken handshake hold up nobody.
+    let _silent = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let mut broken = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    broken.write_all(b"\x16\x03\x01\x00\x05hello").await.unwrap();
+
+    // HTTPS, verified against the node's CA only.
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca).unwrap();
+    let client = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(client));
+    for name in ["localhost", "127.0.0.1"] {
+        let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let name = rustls::pki_types::ServerName::try_from(name.to_string()).unwrap();
+        let secure = tokio::time::timeout(Duration::from_secs(10), connector.connect(name, tcp)).await.unwrap().unwrap();
+        let line = tokio::time::timeout(Duration::from_secs(10), status_line(secure)).await.unwrap();
+        assert!(line.starts_with("HTTP/1.1 "), "{line}");
+    }
+
+    // Plain HTTP on the same port, as an older client speaks it.
+    let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let line = tokio::time::timeout(Duration::from_secs(10), status_line(tcp)).await.unwrap();
+    assert!(line.starts_with("HTTP/1.1 "), "{line}");
+
+    let _ = stop.send(());
+    serving.await.unwrap().unwrap();
+}
