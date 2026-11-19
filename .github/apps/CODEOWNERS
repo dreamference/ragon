@@ -37,6 +37,8 @@
 # Quality
 /tests/                                         @dreamference/quality
 /conftest.py                                    @dreamference/quality
+/scripts/auth_compat_nightly.py              @dreamference/security
+/tests/test_auth_compat_nightly.py            @dreamference/security
 /scripts/as_team.py                             @dreamference/quality
 /scripts/qa/                                     @dreamference/quality
 
