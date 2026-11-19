@@ -215,7 +215,7 @@ The desktop app talks to `ragon app-server` (`desktop/electron/src/server.ts:64`
   - `OPENAI_API_KEY`: the node key (Codex's field name, kept so that the file is Codex's format);
   - `tokens`: the `id_token`, the `access_token` and `refresh_token` (both the node key), and `account_id` (the node id);
   - `last_refresh`: the sign-in time.
-- **Permissions.** Mode 0600 on create (`login/src/auth/storage.rs:206-222`), in a directory with mode 0700. On Windows, the file inherits the user profile's ACL (row 10 of §13).
+- **Permissions.** Mode 0600 on create (`login/src/auth/storage.rs:206-222`), in a directory with mode 0700. On Windows, the file inherits the user profile's ACL (row 9 of §13).
 - **File store only.** The launcher forces `cli_auth_credentials_store = "file"`, so the key never goes to a keyring that `ragon logout` might not clear (`config/src/types.rs:112-125`).
 - **No carry-over.** `auth.json` is not copied when the home is created. `CARRY_OVER` in `ragon-rs/src/home.rs` already excludes it.
 
@@ -241,7 +241,7 @@ Argon2id was the brief's first choice. scrypt is used because it is the stronger
 - the gate is stdlib-only in the engine image, and `hashlib.scrypt` is in the standard library, with `maxmem` set to 64 MiB;
 - argon2 is not, and neither is any argon2 package in `setup.py`.
 
-The Rust node half on Windows and Mac (row 10) adds the `scrypt` crate to `ragon-rs`; version 0.11 is already in the Codex build's lockfile. A stored hash records its parameters, so a later move to argon2id (3.0) can rehash at the next sign-in.
+The Rust node half on Windows and Mac (row 9 of §13) adds the `scrypt` crate to `ragon-rs`; version 0.11 is already in the Codex build's lockfile. A stored hash records its parameters, so a later move to argon2id (3.0) can rehash at the next sign-in.
 
 ## 8. Commands
 
@@ -317,7 +317,7 @@ Patch `0001`'s status-card strings ("signed in", "API key configured") stay. The
 
 - **No new destination.** The issuer is the model host and port, which the audit already allows ([docs/dev/egress-audit.md](../docs/dev/egress-audit.md)).
 - **The callback is a listener, not an outbound connection.** Codex's callback listens on loopback ports 1455/1457, and the browser connects to it. The audit traces the session's own outbound connections, so the allowlist (`allowed_ports` in `dreamference/audit/egress_audit.py`) gains nothing.
-- **Row 9 adds checks that:**
+- **Row 8 of §13 adds checks that:**
   - an audited session signed in with a node key makes no connection to the closed port (`CHATGPT_BLACKHOLE_PORT`), which proves §9.1 holds in practice;
   - the issuer it uses equals the model host it was given.
 
@@ -392,8 +392,8 @@ Each row is one repository, one file set and one test, can land alone, and is he
 | 6 | Desktop app and `ragon web`: policy and sign-in view | ragon (Electron, web) | no |
 | 7 | Service account, `service.key` and the unattended callers | ragon (Python) | no |
 | 8 | Egress audit checks (§10.2) | ragon (Python) | no |
-| 9 | Docs: the user page, `docs/dev/launcher.md`, one `AGENTS.md` line; turn `model_auth` on by default | ragon (docs + one default) | no |
-| 10 | Windows and Mac clients (and the node-half routes, held until those gates exist) | ragon (Rust) | no |
+| 9 | Windows and Mac clients (and the node-half routes, held until those gates exist) | ragon (Rust) | no |
+| 10 | Docs: the user page, `docs/dev/launcher.md`, one `AGENTS.md` line; turn `model_auth` on by default, last, after the clients of rows 5, 6 and 9 sign in | ragon (docs + one default) | no |
 
 ## 14. Tests
 
@@ -442,7 +442,7 @@ Each row is one repository, one file set and one test, can land alone, and is he
 7. **The patch cap.** **Default:** raise it from 64,000 to 70,000 bytes in row 3, for patches `0038`–`0040`. Each row records the measured size. Row 3 is held for the owner's word on this.
 8. **The model list without a key.** **Default:** `GET /v1/models` stays open, so probes, `ragon doctor` and readiness checks need no key. It reveals only the served model's name.
 9. **Choosing among several nodes.** **Default:** when the mDNS browse finds several nodes, the least-loaded pick ([RAGON_NODE](./DREAMFERENCE_RAGON_NODE.md) §6.1) prefers nodes this client has credentials for. With none, it picks as today and the sign-in screen appears for the chosen node.
-10. **The `model_auth` default.** **Default:** off until row 9 turns it on. A node owner can set it either way in `[node]`. A node with it off serves as 0.9 did.
+10. **The `model_auth` default.** **Default:** off until row 10 turns it on. A node owner can set it either way in `[node]`. A node with it off serves as 0.9 did.
 
 ## 16. Changes to other specs
 
