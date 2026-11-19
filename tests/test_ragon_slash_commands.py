@@ -288,6 +288,12 @@ RAGON_CASES: dict[str, Case] = {
     "node": Case("inline", expect=("/node: manage Ragon nodes", "/node provision")),
     # Alone it lists the base and the installed adapters from the catalog the launcher wrote.
     "adapter": Case("inline", expect=("Base model:",)),
+    # The account commands (patch 0039) act on a signed-in session on the primary; ragon-rs/tests/auth_slash.rs
+    # covers their dispatch, the launcher's own tests their answers.
+    **{
+        name: Case("skip", reason="needs a signed-in account on the node's primary")
+        for name in ("whoami", "password", "apikey", "sessions", "users", "delete-account")
+    },
 }
 CASES.update(RAGON_CASES)
 
