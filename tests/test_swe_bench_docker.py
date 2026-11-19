@@ -95,6 +95,21 @@ def test_an_image_that_cannot_be_pulled_has_no_digest(monkeypatch):
     assert calls.count(["pull", "-q", "img"]) == 3
 
 
+def test_swe_bench_docker_ensure_image_names_the_box_for_a_locally_built_image(monkeypatch, capsys):
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    monkeypatch.setenv("SWE_BENCH_BUILT_IMAGE_BOX", "the builder")
+    calls = docker(
+        monkeypatch,
+        [
+            (["image", "inspect"], 1, ""),
+            (["pull"], 1, "denied"),
+        ],
+    )
+    assert SweBenchDocker.ensure_image("ragon/swe-bench-built-arm64:head") is None
+    assert calls.count(["pull", "-q", "ragon/swe-bench-built-arm64:head"]) == 3
+    assert "the builder" in capsys.readouterr().out
+
+
 def test_a_pull_that_fails_once_is_tried_again(monkeypatch, capsys):
     monkeypatch.setattr("time.sleep", lambda seconds: None)
     pulls = iter([1, 0])
