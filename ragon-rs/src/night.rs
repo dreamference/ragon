@@ -984,12 +984,34 @@ fn pretty(value: &Value) -> String {
 }
 
 fn write_atomically(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write_atomically_with(path, contents, |from, to| std::fs::rename(from, to))
+}
+
+/// Windows refuses a rename onto a file another process has open for a moment (a virus
+/// scanner, the indexer, a reader), with `PermissionDenied`; the same call succeeds a few
+/// milliseconds later. Retry that error instead of losing a status change.
+fn write_atomically_with(
+    path: &Path,
+    contents: &[u8],
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     let staging = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
     std::fs::write(&staging, contents)?;
-    std::fs::rename(&staging, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&staging);
-    })
+    let mut attempt = 0;
+    loop {
+        match rename(&staging, path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied && attempt < 20 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&staging);
+                return Err(error);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1392,6 +1414,29 @@ mod tests {
     }
 
     #[test]
+    fn a_rename_the_system_refuses_for_a_moment_is_retried() {
+        // Windows answers PermissionDenied while a scanner holds the target; fabricate it
+        // instead of racing one.
+        let (_repo, dir) = repo("rename-retry");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("task.json");
+        std::fs::write(&target, "old").unwrap();
+        let mut refusals = 2;
+        write_atomically_with(&target, b"new", |from, to| {
+            if refusals > 0 {
+                refusals -= 1;
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+            std::fs::rename(from, to)
+        })
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        let error = write_atomically_with(&target, b"x", |_, _| Err(std::io::Error::from(std::io::ErrorKind::NotFound)));
+        assert_eq!(error.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert!(!dir.join(format!(".task.json.{}.tmp", std::process::id())).exists());
+    }
+
+    #[test]
     fn the_startup_line_announces_finished_tasks_once() {
         let (repo, dir) = repo("startup");
         assert_eq!(startup_line(&dir, &repo), None);
@@ -1404,7 +1449,7 @@ mod tests {
                 set_status(task, status, None);
                 Ok(())
             })
-            .unwrap_or_default();
+            .unwrap();
         }
         assert_eq!(
             startup_line(&dir, &repo).as_deref(),
