@@ -16,6 +16,7 @@ from dreamference.accounts.accounts_store import (
     AccountsError,
     AccountsStore,
 )
+from dreamference.accounts.accounts_usage import AccountsUsage
 from dreamference.config.ports import DEFAULT_MODEL_PORT
 
 CMD_LOG: Final[str] = "log"
@@ -67,6 +68,11 @@ class AccountsAdmin:
         sub.add_parser("log", help="The audit lines from the journal")
         usage = sub.add_parser("usage", help="Requests and tokens per user per day and client kind")
         usage.add_argument("--days", type=int, default=7)
+        usage.add_argument(
+            "--unauthenticated",
+            action="store_true",
+            help="The requests served without credentials, per day, node, client kind and source",
+        )
         sub.add_parser("export", help="Print users, roles and key hashes as JSON (never tokens)")
         sub.add_parser("import", help="Import an export").add_argument("file")
 
@@ -155,6 +161,13 @@ class AccountsAdmin:
 
     @classmethod
     def _do_usage(cls, args: argparse.Namespace, store: AccountsStore) -> None:
+        if getattr(args, "unauthenticated", False):
+            for count in AccountsUsage(store).unauthenticated(args.days):
+                cls._say(
+                    f"{count['day']}\t{count['node_id']}\t{count['client_kind']}\t"
+                    f"{count['source']}\t{count['requests']} requests"
+                )
+            return
         for row in store.usage(args.days):
             cls._say(
                 f"{row['day']}\t{row['username']}\t{row['client_kind']}\t{row['requests']} requests\t"

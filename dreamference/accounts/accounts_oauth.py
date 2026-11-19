@@ -13,10 +13,17 @@ from collections.abc import Callable
 from http import HTTPStatus
 from typing import Any, Final
 
+from dreamference.accounts.accounts_bindings import AccountsBindings
 from dreamference.accounts.accounts_device import GRANT_AUTH_CODE, GRANT_DEVICE, AccountsDevice
 from dreamference.accounts.accounts_error import AccountsError
 from dreamference.accounts.accounts_jwt import ACCESS_LIFETIME_S, RAGON_AUTH_CLAIM, AccountsJwt
-from dreamference.accounts.accounts_store import KEY_PREFIX, AccountsStore
+from dreamference.accounts.accounts_store import (
+    KEY_PREFIX,
+    ROLE_ADMIN,
+    SERVICE_PREFIX,
+    AccountsStore,
+)
+from dreamference.accounts.accounts_usage import AccountsUsage
 
 GRANT_PASSWORD: Final[str] = "password"
 GRANT_REFRESH: Final[str] = "refresh_token"
@@ -24,6 +31,11 @@ JSON_TYPE: Final[str] = "application/json"
 BEARER_REALM: Final[str] = 'Bearer realm="ragon"'
 ME_PATH: Final[str] = "/ragon/v1/users/me"
 USERS_PATH: Final[str] = "/ragon/v1/users"
+BINDINGS_PATH: Final[str] = "/ragon/v1/bindings"
+NODES_PATH: Final[str] = "/ragon/v1/nodes"
+USAGE_PATH: Final[str] = "/ragon/v1/usage"
+MAX_DAYS: Final[int] = 366
+NODE_ID: Final[re.Pattern[str]] = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 SESSION_PATH: Final[re.Pattern[str]] = re.compile(r"^/ragon/v1/users/me/sessions/(\d+)$")
 # Parameter names that carry a credential: never accepted in a URL (§10).
 SECRET_PARAMS: Final[frozenset[str]] = frozenset(
@@ -74,6 +86,8 @@ class AccountsOauth:
         issuer = signer.issuer.rstrip("/")
         web = urllib.parse.urlsplit(issuer)
         self.device = device or AccountsDevice(issuer, f"{web.scheme}://{web.hostname}:3100/device")
+        self.bindings = AccountsBindings(store)
+        self.usage = AccountsUsage(store)
         # The fixed routes: path -> (the methods allowed, the answer).
         self.routes: dict[str, tuple[tuple[str, ...], Route]] = {
             "/.well-known/jwks.json": ((GET,), lambda _h, _b: (200, {}, self.signer.jwks())),
@@ -88,6 +102,11 @@ class AccountsOauth:
             "/api/accounts/deviceauth/token": ((POST,), self.codex_poll),
             "/oauth/device/code": ((POST,), self.standard_code),
             USERS_PATH: ((POST,), self.create),
+            NODES_PATH: ((POST,), self.register_node),
+            BINDINGS_PATH: ((GET, POST), self.bindings_root),
+            BINDINGS_PATH + "/redeem": ((POST,), self.redeem_binding),
+            USAGE_PATH: ((GET,), self.usage_read),
+            USAGE_PATH + "/unauthenticated": ((GET, POST), self.usage_unauthenticated),
         }
 
     # ----- shapes -------------------------------------------------------------------------
@@ -196,10 +215,16 @@ class AccountsOauth:
         route = urllib.parse.urlsplit(path).path.rstrip("/") or "/"
         if self.query_has_secret(path):
             return self.unauthorized()
+        # Pseudo-headers (as HTTP/2 has them, so no real header collides) carry what a route needs.
+        headers = {**headers, ":method": method, ":query": urllib.parse.urlsplit(path).query}
         fixed = self.routes.get(route)
         if fixed is not None:
             allowed, answer = fixed
             return self.only(method, *allowed) or answer(headers, body)
+        if route.startswith(BINDINGS_PATH + "/"):
+            return self.only(method, DELETE) or self.remove_binding(
+                headers, route[len(BINDINGS_PATH) + 1 :]
+            )
         if route == ME_PATH or route.startswith(ME_PATH + "/"):
             return self.me(method, route, headers, body)
         return self.api_error(404, "unknown_url", f"Unknown path {route}.")
@@ -544,3 +569,118 @@ class AccountsOauth:
         except AccountsError as error:
             return self.api_error(409, "last_admin", str(error))
         return 200, {}, {"deleted": True}
+
+    # ----- /ragon/v1/bindings, /nodes, /usage (§5.6, §9, §14.1) ------------------------------
+
+    def bindings_root(self, headers: dict[str, str], body: bytes) -> Answer:
+        """`GET /ragon/v1/bindings` lists the caller's bindings; `POST` makes a pairing code."""
+        found = self.caller(headers)
+        if found is None:
+            return self.unauthorized()
+        user = found[0]
+        if headers.get(":method") == GET:
+            return (200, {}, {"bindings": self.bindings.list(user["user_id"])})
+        fields = self.parse_body(headers, body)
+        if fields is None:
+            return self.api_error(400, "invalid_request", "The body is not valid.")
+        try:
+            return 200, {}, self.bindings.create_code(user["user_id"], str(fields.get("chat_kind")))
+        except AccountsError as error:
+            return self.api_error(400, "invalid_request", str(error))
+
+    def redeem_binding(self, headers: dict[str, str], body: bytes) -> Answer:
+        """`POST /ragon/v1/bindings/redeem`: a bridge, with its node's service key, binds a chat."""
+        found = self.caller(headers)
+        if found is None:
+            return self.unauthorized()
+        if not found[0]["service"]:
+            return self.api_error(403, "forbidden", "Only a node's service key may redeem a code.")
+        fields = self.parse_body(headers, body)
+        if fields is None:
+            return self.api_error(400, "invalid_request", "The body is not valid.")
+        code, kind, identity = (fields.get(n) for n in ("code", "chat_kind", "chat_identity"))
+        if not isinstance(code, str) or not isinstance(identity, str):
+            return self.api_error(400, "invalid_request", "Send code, chat_kind and chat_identity.")
+        try:
+            return 200, {}, self.bindings.redeem(code, str(kind), identity)
+        except AccountsError as error:
+            return self.api_error(400, "invalid_code", str(error))
+
+    def remove_binding(self, headers: dict[str, str], binding_id: str) -> Answer:
+        """`DELETE /ragon/v1/bindings/<id>`: removes one of the caller's bindings."""
+        found = self.caller(headers)
+        if found is None:
+            return self.unauthorized()
+        if not self.bindings.remove(found[0]["user_id"], binding_id):
+            return self.api_error(404, "not_found", "No such binding.")
+        return 200, {}, {"deleted": True}
+
+    def register_node(self, headers: dict[str, str], body: bytes) -> Answer:
+        """`POST /ragon/v1/nodes`: creates a node's service account; a key only the first time.
+
+        Open at pin time by design (AUTH open question 10); the account is a service account
+        with no password anyone knows, and the admin may remove it.
+        """
+        fields = self.parse_body(headers, body)
+        node_id = fields.get("node_id") if fields else None
+        if not isinstance(node_id, str) or not NODE_ID.match(node_id):
+            return self.api_error(400, "invalid_request", "Send the node's node_id.")
+        name = SERVICE_PREFIX + node_id.replace("-", "")[:8].lower()
+        existed = any(u["username"] == name for u in self.store.list_users())
+        account = self.store.ensure_service_account(node_id)
+        answer: dict[str, Any] = {"username": account["username"], "created": not existed}
+        if not existed:
+            answer["key"] = self.store.mint_key(account["username"], "node")
+        return (200 if existed else 201), {}, answer
+
+    def usage_read(self, headers: dict[str, str], body: bytes) -> Answer:
+        """`GET /ragon/v1/usage?days=N`: the caller's own rows; an admin's are every user's."""
+        found = self.caller(headers)
+        if found is None:
+            return self.unauthorized()
+        user = found[0]
+        days = self.days_param(headers)
+        rows = (
+            self.store.usage(days)
+            if user["role"] == ROLE_ADMIN
+            else self.usage.for_user(user["username"], days)
+        )
+        return 200, {}, {"usage": rows}
+
+    def usage_unauthenticated(self, headers: dict[str, str], body: bytes) -> Answer:
+        """A node's daily unauthenticated counts (POST) and the admin's read of them (GET)."""
+        found = self.caller(headers)
+        if found is None:
+            return self.unauthorized()
+        user = found[0]
+        if headers.get(":method") == GET:
+            if user["role"] != ROLE_ADMIN:
+                return self.api_error(403, "forbidden", "Only an admin reads these counts.")
+            return (
+                200,
+                {},
+                {"unauthenticated": self.usage.unauthenticated(self.days_param(headers))},
+            )
+        if not user["service"] and user["role"] != ROLE_ADMIN:
+            return self.api_error(403, "forbidden", "Only a node's service key sends counts.")
+        return self.receive_counts(user["username"], headers, body)
+
+    def receive_counts(self, node: str, headers: dict[str, str], body: bytes) -> Answer:
+        """Stores the counts a node sent for one day."""
+        fields = self.parse_body(headers, body)
+        counts = fields.get("counts") if fields else None
+        day = fields.get("day") if fields else None
+        if not isinstance(counts, list) or not isinstance(day, str):
+            return self.api_error(400, "invalid_request", "Send day and counts.")
+        try:
+            stored = self.usage.add_unauthenticated(node, day, counts)
+        except AccountsError as error:
+            return self.api_error(400, "invalid_request", str(error))
+        return 200, {}, {"stored": stored}
+
+    @classmethod
+    def days_param(cls, headers: dict[str, str]) -> int:
+        """The `days` of the request, 7 when absent."""
+        query = dict(urllib.parse.parse_qsl(headers.get(":query", "")))
+        raw = query.get("days", "7")
+        return int(raw) if raw.isdigit() and 0 < int(raw) <= MAX_DAYS else 7

@@ -571,6 +571,7 @@ Requests and tokens per user per day and client kind.
 | Option | Description |
 |---|---|
 | `--days` |  |
+| `--unauthenticated` | The requests served without credentials, per day, node, client kind and source. |
 
 #### `ragon-admin node user export`
 

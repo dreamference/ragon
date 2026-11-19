@@ -103,7 +103,12 @@ ACCOUNT_PATHS: Final[tuple[str, ...]] = (
     "/.well-known/jwks.json",
     "/.well-known/openid-configuration",
 )
-ACCOUNT_PREFIXES: Final[tuple[str, ...]] = ("/ragon/v1/users",)
+ACCOUNT_PREFIXES: Final[tuple[str, ...]] = (
+    "/ragon/v1/users",
+    "/ragon/v1/bindings",
+    "/ragon/v1/nodes",
+    "/ragon/v1/usage",
+)
 
 RUN_FILE: Final[str] = "run.json"
 PAUSE_FILE: Final[str] = "pause.json"

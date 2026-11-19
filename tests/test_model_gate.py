@@ -1085,6 +1085,9 @@ def test_only_the_auth_routes_go_to_the_accounts_service():
         "/.well-known/openid-configuration",
         "/ragon/v1/users",
         "/ragon/v1/users/me/sessions/3",
+        "/ragon/v1/bindings/redeem",
+        "/ragon/v1/nodes",
+        "/ragon/v1/usage/unauthenticated",
     ):
         assert ModelGateService.is_account_route(path), path
     for path in ("/v1/responses", "/v1/models", "/ragon/v1/usersX", "/oauth", "/ragon-gate"):
