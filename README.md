@@ -18,6 +18,8 @@ app, running entirely on your own GB10. No cloud. No account. No API bill. No te
 [![GitHub stars](https://img.shields.io/github/stars/dreamference/ragon?style=flat&color=FFB400)](https://github.com/dreamference/ragon/stargazers)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue)](LICENSE)
 
+**Documentation:** [ragon.dreamference.ai](https://ragon.dreamference.ai/)
+
 | **0** | **$0** | **262K** |
 |:---:|:---:|:---:|
 | phone-home connections, verified by `audit egress` | per token, forever | tokens of context |
@@ -73,6 +75,8 @@ Already using a coding agent? Paste this into it:
 ```text
 Install Ragon on this GB10 from https://github.com/dreamference/ragon (one-line installer in the README), then run ragon-admin server start.
 ```
+
+Read the docs: [ragon.dreamference.ai](https://ragon.dreamference.ai/)
 
 ## Try these first
 

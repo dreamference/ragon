@@ -64,3 +64,5 @@ With Ragon installed (see [Get started](getting-started.md)):
 ragon-admin server start     # load the model (several minutes the first time)
 cd ~/my-project && ragon     # start the terminal agent in a repository
 ```
+
+The source is on [GitHub](https://github.com/dreamference/ragon).
