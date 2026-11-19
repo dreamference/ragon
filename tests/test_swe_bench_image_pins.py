@@ -93,6 +93,14 @@ def test_pin_images_pins_new_images_only_with_new(pins, monkeypatch):
     assert SweBenchImagePins.load()[other] == BAD
 
 
+def test_swe_bench_image_pins_review_rejects_an_image_that_is_not_local(pins, monkeypatch, capsys):
+    monkeypatch.setattr(SweBenchImages, "local_images", classmethod(lambda cls: []))
+    docker(monkeypatch, [], [])
+    assert SweBenchImagePins.review([IMAGE], False) == 1
+    assert "not present locally" in capsys.readouterr().out
+    assert SweBenchImagePins.load() == {IMAGE: GOOD}
+
+
 def test_the_committed_pins_are_well_formed():
     from dreamference.swe_bench.swe_bench_settings import COMMUNITY_IMAGE_REPO
 
