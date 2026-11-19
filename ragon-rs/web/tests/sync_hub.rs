@@ -56,6 +56,7 @@ fn config(dir: &std::path::Path) -> Config {
         forge_url: None,
         phone_admin: None,
         monitor: None,
+        accounts_url: None,
         state_dir,
         port: 3100,
         lan_names: Vec::new(),

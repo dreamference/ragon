@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>Account - Ragon</title>
+<link rel="stylesheet" href="/pair.css">
+<style>
+  section { margin: 1.5rem 0; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { text-align: left; padding: .25rem .5rem; border-bottom: 1px solid #8884; }
+  pre { white-space: pre-wrap; word-break: break-all; padding: .5rem; background: #8882; }
+  .error { color: #b00020; }
+  [hidden] { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Account</h1>
+  <p id="status" role="status"></p>
+
+  <form id="signin" hidden>
+    <h2>Sign in</h2>
+    <label>Username <input id="username" autocomplete="username"></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password"></label>
+    <button type="submit">Sign in</button>
+  </form>
+
+  <div id="signed-in" hidden>
+    <section id="identity">
+      <h2>You</h2>
+      <table><tbody id="identity-rows"></tbody></table>
+      <p><button id="signout" type="button">Sign out</button></p>
+    </section>
+
+    <section>
+      <h2>Sessions</h2>
+      <table><thead><tr><th>Machine</th><th>Client</th><th>Last use</th><th></th></tr></thead><tbody id="sessions"></tbody></table>
+      <p><button id="revoke-all" type="button">Revoke all sessions</button></p>
+    </section>
+
+    <section>
+      <h2>API keys</h2>
+      <table><thead><tr><th>Name</th><th>Created</th><th>Last use</th><th></th></tr></thead><tbody id="keys"></tbody></table>
+      <form id="new-key"><label>Key name <input id="key-name" required></label> <button type="submit">Create key</button></form>
+      <div id="key-once" hidden>
+        <p>Copy this key now: it is shown once.</p>
+        <pre id="key-value"></pre>
+        <p>Provider block for an upstream Codex:</p>
+        <pre id="snippet-config"></pre>
+        <p>For SDK tools:</p>
+        <pre id="snippet-env"></pre>
+        <p>Certificate lines (the node's CA file, see the node's trust notes):</p>
+        <pre id="snippet-ca"></pre>
+      </div>
+    </section>
+
+    <section>
+      <h2>Phones and chats</h2>
+      <table><thead><tr><th>Kind</th><th>Bound</th><th></th></tr></thead><tbody id="bindings"></tbody></table>
+      <p><button id="pair-phone" type="button">Pair a phone</button> <span id="pairing-code"></span></p>
+    </section>
+
+    <section>
+      <h2>Password</h2>
+      <form id="password-form">
+        <label>Current <input id="pw-current" type="password" autocomplete="current-password"></label>
+        <label>New <input id="pw-new" type="password" autocomplete="new-password"></label>
+        <button type="submit">Change password</button>
+      </form>
+    </section>
+
+    <section>
+      <h2>Usage</h2>
+      <table><thead><tr><th>Day</th><th>User</th><th>Requests</th><th>Tokens</th></tr></thead><tbody id="usage"></tbody></table>
+    </section>
+
+    <section id="admin" hidden>
+      <h2>Users</h2>
+      <table><thead><tr><th>User</th><th>Role</th><th></th></tr></thead><tbody id="users"></tbody></table>
+      <p id="reset-result"></p>
+    </section>
+
+    <section>
+      <h2>Delete account</h2>
+      <form id="delete-form">
+        <label>Type your username to confirm <input id="delete-confirm"></label>
+        <button type="submit">Delete my account</button>
+      </form>
+    </section>
+  </div>
+</main>
+<script src="/account.js"></script>
+</body>
+</html>

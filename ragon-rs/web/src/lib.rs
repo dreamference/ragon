@@ -17,6 +17,7 @@ pub mod anonymity;
 pub mod app_server;
 pub mod ask;
 pub mod ask_client;
+pub mod account;
 pub mod ask_files;
 pub mod assets;
 pub mod auth;

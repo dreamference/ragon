@@ -460,6 +460,7 @@ async fn serve_command(args: &[String], environment: &Environment) -> i32 {
         forge_url: None,
         phone_admin: overlay_name(&environment.home).map(|_| environment.home.join(".local/bin/ragon-admin")),
         monitor: Some(environment.home.join(".local/bin/ragon-node-monitor")),
+        accounts_url: std::env::var("RAGON_ACCOUNTS_URL").ok(),
     };
     let server = match Server::new(config.clone()) {
         Ok(server) => server,

@@ -5799,6 +5799,7 @@ mod tests {
             forge_url,
             phone_admin: None,
             monitor: None,
+            accounts_url: None,
         };
         let srv = Server::new(cfg).unwrap();
         let probe = StubProbe::new(500 * GB, false);

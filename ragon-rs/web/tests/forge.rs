@@ -137,6 +137,7 @@ fn config(dir: &Path, forge_url: &str, public_names: Vec<String>) -> Config {
         forge_url: Some(forge_url.to_string()),
         phone_admin: None,
         monitor: None,
+        accounts_url: None,
         state_dir,
         port: 3100,
         lan_names: Vec::new(),

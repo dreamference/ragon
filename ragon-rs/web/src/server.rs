@@ -96,6 +96,8 @@ pub struct Config {
     pub phone_admin: Option<PathBuf>,
     /// `ragon-node-monitor`, for `/status` and `/api/monitor/status` (monitor_status.rs); none: the routes answer 404.
     pub monitor: Option<PathBuf>,
+    /// The primary's accounts service for the Account page (`http://127.0.0.1:8000` when `None`), overridden by tests.
+    pub accounts_url: Option<String>,
 }
 
 pub struct Server {
@@ -142,6 +144,7 @@ impl Config {
             public_names: Vec::new(),
             phone_admin: None,
             monitor: None,
+            accounts_url: None,
         }
     }
 }
@@ -445,6 +448,11 @@ pub fn router(server: Arc<Server>) -> Router {
         .route("/login", get(login))
         .route("/pair", get(pair_page).post(pair))
         .route("/pair.css", get(pair_css))
+        .route("/account", get(crate::account::page))
+        .route("/account.js", get(crate::account::script))
+        .route("/oauth/token", any(crate::account::proxy))
+        .route("/oauth/revoke", any(crate::account::proxy))
+        .route("/ragon/v1/{*path}", any(crate::account::proxy))
         .route("/devices", get(devices_page))
         .route("/devices/pair", post(devices_pair))
         .route("/devices/phone", post(devices_phone))
@@ -1485,6 +1493,7 @@ mod tests {
             forge_url: None,
             phone_admin: None,
             monitor: None,
+            accounts_url: None,
         })
         .unwrap();
         let with = |cookie: String| {
@@ -1546,6 +1555,7 @@ mod tests {
             forge_url: None,
             phone_admin: None,
             monitor: None,
+            accounts_url: None,
         })
         .unwrap();
 
@@ -1629,6 +1639,7 @@ mod tests {
             forge_url: None,
             phone_admin: None,
             monitor: None,
+            accounts_url: None,
         })
         .unwrap()
     }

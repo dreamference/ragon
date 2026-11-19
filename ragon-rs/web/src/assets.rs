@@ -6,6 +6,8 @@ include!(concat!(env!("OUT_DIR"), "/ui_assets.rs"));
 pub const BRIDGE_JS: &str = include_str!("../static/bridge.js");
 pub const PAIR_CSS: &str = include_str!("../static/pair.css");
 pub const LOCKED_HTML: &str = include_str!("../static/locked.html");
+pub const ACCOUNT_HTML: &str = include_str!("../static/account.html");
+pub const ACCOUNT_JS: &str = include_str!("../static/account.js");
 pub const LOGIN_FAILED_HTML: &str = include_str!("../static/login-failed.html");
 const PAIR_HTML: &str = include_str!("../static/pair.html");
 const PLACEHOLDER_HTML: &str = include_str!("../static/placeholder.html");

@@ -520,6 +520,7 @@ mod tests {
             forge_url: None,
             phone_admin: None,
             monitor: None,
+            accounts_url: None,
         })
         .unwrap();
 
