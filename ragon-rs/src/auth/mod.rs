@@ -6,9 +6,12 @@
 //! a no-op against a node that has no gate yet (plain HTTP, no `/ragon/v1/info`): such a node is
 //! served as before.
 
+pub mod local;
 pub mod pin;
 pub mod screen;
 pub mod switcher;
+
+pub use local::{NOT_SIGNED_IN, bearer, bearer_from_text, child_env, current_bearer, ragon_home};
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

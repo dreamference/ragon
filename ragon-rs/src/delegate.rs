@@ -4,6 +4,11 @@
 
 /// `ragon delegate …` from Claude Code's MCP stdio transport or a shell. Returns the exit code.
 pub fn run_cli(args: &[String]) -> i32 {
+    // The plugin server and its tools send the active entry's bearer to the gate (AUTH §14.5).
+    if let Some((name, value)) = crate::auth::child_env() {
+        // SAFETY: runs first in the subcommand, before the server starts any thread.
+        unsafe { std::env::set_var(name, value) };
+    }
     ragon_delegate::cli::run(args)
 }
 

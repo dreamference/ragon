@@ -195,6 +195,10 @@ pub fn start_and_prompt_block(tools: bool, dir: &std::path::Path) -> String {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // The gate's bearer, from the active entry of auth.json (AUTH §14.5); no password is asked.
+    if let Some((name, value)) = crate::auth::child_env() {
+        command.env(name, value);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
