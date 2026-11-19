@@ -136,6 +136,23 @@ With no remembered node, a single node found on the network is used and remember
 network that is the moment of exposure; `RAGON_NODE`/`vllm_host` and `ragon node use` pin a node
 explicitly. Consistent with the trusted-LAN premise above.
 
+## Release 3.0: authentication hardening
+
+[AUTH](./DREAMFERENCE_AUTH.md) adds node accounts in 1.x to identify users, deliberately with little
+security (the owner's scope, 2026-11-19). These items are known and left for 3.0, where all security
+work goes:
+
+- **Rate limits** on the sign-in page, the one-time-code routes and the token route.
+- **Lockout** after repeated wrong passwords.
+- **TLS between client and node:** in 1.x passwords and node keys cross the LAN in clear HTTP.
+- **Token binding and key expiry:** a node key is a bearer token with no lifetime; anyone who copies
+  `auth.json` or sees the traffic can use it until it is revoked.
+- **Open sign-up:** anyone who reaches the node can create an account.
+- **Empty and weak passwords** are accepted.
+- **Keys in a plain file** on the client (`auth.json`, mode 0600); a keyring store is not used.
+- **The signing key on disk** on the node, readable by the node's user and the gate container.
+- **Cross-site requests** to the sign-in form (it has a strict CSP and no script, but no CSRF token).
+
 ## Not changed and checked
 
 - **`serve-job`:** operations are an allow-list; model keys, job ids, git paths and `--out` are
