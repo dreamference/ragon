@@ -3,14 +3,18 @@
 The listener binds an ephemeral loopback port of the test's own; nothing else is reached.
 """
 
+import datetime
 import json
 import socket
+import subprocess
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
-from dreamference.remote import RemoteEnrolment
+import dreamference.remote.remote_certificate_authority as ca_module
+from dreamference.remote import RemoteCertificateAuthority, RemoteEnrolment
 from dreamference.remote import remote_enrolment as module
 
 CODE = "12345678"
@@ -256,3 +260,33 @@ def test_an_unused_code_expires(monkeypatch):
         RemoteEnrolment.serve(CODE, lambda c: {}, port=_free_port(), minutes=1, host="127.0.0.1")
         == "expired"
     )
+
+
+def _openssl_result(stdout, returncode=0):
+    return subprocess.CompletedProcess(None, returncode, stdout=stdout, stderr="")
+
+
+def test_remote_certificate_authority_expiry_reads_the_certificate_end_date(monkeypatch):
+    """`expiry` is the parsed `notAfter` of `openssl x509 -enddate`, with the failures None.
+
+    Every case runs through the mocked `_run`: no openssl, no socket, no clock.
+    """
+    cases = [
+        (
+            ("notAfter=Jan  5 10:20:30 2027 GMT\n", 0),
+            datetime.datetime(2027, 1, 5, 10, 20, 30, tzinfo=datetime.UTC),
+        ),
+        (("notAfter=whenever", 0), None),
+        (("notAfter=", 0), None),
+        (("garbage", 0), None),
+        (("", 1), None),
+    ]
+    for (stdout, returncode), expected in cases:
+        monkeypatch.setattr(
+            ca_module.RemoteCertificateAuthority,
+            "_run",
+            classmethod(
+                lambda cls, argv, input_text=None, s=stdout, r=returncode: _openssl_result(s, r)
+            ),
+        )
+        assert RemoteCertificateAuthority.expiry(Path("cert.crt")) == expected
