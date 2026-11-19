@@ -10,6 +10,7 @@ pub mod commands;
 pub mod local;
 pub mod pin;
 pub mod screen;
+pub mod slash;
 pub mod switcher;
 
 pub use local::{NOT_SIGNED_IN, bearer, bearer_from_text, child_env, current_bearer, ragon_home};

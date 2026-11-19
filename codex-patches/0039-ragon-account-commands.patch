@@ -1,0 +1,72 @@
+diff --git a/codex-rs/tui/src/bottom_pane/status_line_setup.rs b/codex-rs/tui/src/bottom_pane/status_line_setup.rs
+--- a/codex-rs/tui/src/bottom_pane/status_line_setup.rs
++++ b/codex-rs/tui/src/bottom_pane/status_line_setup.rs
+@@ -80,2 +80,5 @@ pub(crate) enum StatusLineItem {
+ 
++    /// Signed-in user and node name.
++    Account,
++
+     /// Current git branch name (if in a repository).
+@@ -169,2 +172,3 @@ impl StatusLineItem {
+             StatusLineItem::Hostname => "Current machine hostname (omitted when unavailable)",
++            StatusLineItem::Account => "Signed-in user and node (omitted when signed out)",
+             StatusLineItem::GitBranch => "Current Git branch (omitted when unavailable)",
+@@ -227,3 +231,3 @@ impl StatusLineItem {
+             StatusLineItem::ProjectRoot => StatusSurfacePreviewItem::ProjectRoot,
+-            StatusLineItem::Hostname => StatusSurfacePreviewItem::Hostname,
++            StatusLineItem::Hostname | StatusLineItem::Account => StatusSurfacePreviewItem::Hostname,
+             StatusLineItem::GitBranch => StatusSurfacePreviewItem::GitBranch,
+diff --git a/codex-rs/tui/src/bottom_pane/status_line_style.rs b/codex-rs/tui/src/bottom_pane/status_line_style.rs
+--- a/codex-rs/tui/src/bottom_pane/status_line_style.rs
++++ b/codex-rs/tui/src/bottom_pane/status_line_style.rs
+@@ -53,3 +53,3 @@ impl StatusLineAccent {
+             StatusLineItem::FiveHourLimit | StatusLineItem::WeeklyLimit => Self::Limit,
+-            StatusLineItem::CodexVersion | StatusLineItem::Hostname | StatusLineItem::SessionId => {
++            StatusLineItem::CodexVersion | StatusLineItem::Hostname | StatusLineItem::Account | StatusLineItem::SessionId => {
+                 Self::Metadata
+diff --git a/codex-rs/tui/src/chatwidget/slash_dispatch.rs b/codex-rs/tui/src/chatwidget/slash_dispatch.rs
+--- a/codex-rs/tui/src/chatwidget/slash_dispatch.rs
++++ b/codex-rs/tui/src/chatwidget/slash_dispatch.rs
+@@ -545,2 +545,3 @@ impl ChatWidget {
+             SlashCommand::Adapter => { let (l, m) = ragon_launcher::adapter::command(self.thread_id, self.current_model(), ""); self.add_plain_history_lines(l.into_iter().map(ratatui::text::Line::from).collect()); if let Some(m) = m { self.app_event_tx.send(AppEvent::UpdateModel(m)); } }
++            SlashCommand::Whoami | SlashCommand::Password | SlashCommand::Apikey | SlashCommand::Sessions | SlashCommand::Users | SlashCommand::DeleteAccount => { let l = ragon_launcher::auth::slash::command(cmd.command(), ""); self.add_plain_history_lines(l.into_iter().map(ratatui::text::Line::from).collect()); }
+             SlashCommand::DebugConfig => {
+@@ -780,2 +781,3 @@ impl ChatWidget {
+             SlashCommand::Adapter => { let (l, m) = ragon_launcher::adapter::command(self.thread_id, self.current_model(), trimmed); self.add_plain_history_lines(l.into_iter().map(ratatui::text::Line::from).collect()); if let Some(m) = m { self.app_event_tx.send(AppEvent::UpdateModel(m)); } }
++            SlashCommand::Whoami | SlashCommand::Password | SlashCommand::Apikey | SlashCommand::Sessions | SlashCommand::Users | SlashCommand::DeleteAccount => { let l = ragon_launcher::auth::slash::command(cmd.command(), trimmed); self.add_plain_history_lines(l.into_iter().map(ratatui::text::Line::from).collect()); }
+             SlashCommand::Cd => self.request_working_directory_change(trimmed),
+@@ -1282,2 +1284,3 @@ impl ChatWidget {
+             | SlashCommand::Adapter
++            | SlashCommand::Whoami | SlashCommand::Password | SlashCommand::Apikey | SlashCommand::Sessions | SlashCommand::Users | SlashCommand::DeleteAccount
+             | SlashCommand::Pets => QueueDrain::Stop,
+diff --git a/codex-rs/tui/src/chatwidget/status_surfaces.rs b/codex-rs/tui/src/chatwidget/status_surfaces.rs
+--- a/codex-rs/tui/src/chatwidget/status_surfaces.rs
++++ b/codex-rs/tui/src/chatwidget/status_surfaces.rs
+@@ -724,2 +724,3 @@ impl ChatWidget {
+             StatusLineItem::Hostname => os_host_name(),
++            StatusLineItem::Account => ragon_launcher::auth::slash::status_item(),
+             StatusLineItem::GitBranch => self.status_line_branch.clone(),
+diff --git a/codex-rs/tui/src/slash_command.rs b/codex-rs/tui/src/slash_command.rs
+--- a/codex-rs/tui/src/slash_command.rs
++++ b/codex-rs/tui/src/slash_command.rs
+@@ -16,2 +16,8 @@ pub enum SlashCommand {
+     Adapter,
++    Whoami,
++    Password,
++    Apikey,
++    Sessions,
++    Users,
++    DeleteAccount,
+     Ide,
+@@ -136,2 +142,3 @@ impl SlashCommand {
+             SlashCommand::Adapter => "show or switch this session's adapter",
++            SlashCommand::Whoami | SlashCommand::Password | SlashCommand::Apikey | SlashCommand::Sessions | SlashCommand::Users | SlashCommand::DeleteAccount => "your Ragon account",
+             SlashCommand::Ide => {
+@@ -196,2 +203,3 @@ impl SlashCommand {
+                 | SlashCommand::Adapter
++                | SlashCommand::Whoami | SlashCommand::Password | SlashCommand::Apikey | SlashCommand::Sessions | SlashCommand::Users | SlashCommand::DeleteAccount
+                 | SlashCommand::Pets
+@@ -292,2 +300,3 @@ impl SlashCommand {
+             | SlashCommand::Adapter
++            | SlashCommand::Whoami | SlashCommand::Password | SlashCommand::Apikey | SlashCommand::Sessions | SlashCommand::Users | SlashCommand::DeleteAccount
+             | SlashCommand::DebugConfig
