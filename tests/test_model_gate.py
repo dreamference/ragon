@@ -589,7 +589,10 @@ def test_the_client_is_told_to_close_whatever_the_engine_says(tmp_path):
         upstream.close()
     interim, final = answer.split(b"\r\n\r\n", 1)[0], answer.split(b"\r\n\r\n", 1)[1]
     assert interim == b"HTTP/1.1 100 Continue"
-    assert final == b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+    head, _, text = final.partition(b"\r\n\r\n")
+    # /v1/responses answers carry Codex's limit headers (model_gate_compat.py).
+    assert head.startswith(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n")
+    assert b"x-codex-credits-unlimited: true" in head and text == b"ok"
 
 
 def test_a_tool_waiting_for_the_server_is_told_why_instead_of_waiting_out_the_run(
@@ -638,13 +641,14 @@ def test_the_service_runs_on_its_own_as_the_container_runs_it(tmp_path):
     """The file is copied into the engine's image and run there, without the package."""
     copy = tmp_path / "model_gate_service.py"
     copy.write_text(SERVICE.read_text())
-    # The adapter rules, the guard, the TLS port and the credential check travel beside it.
+    # The adapter rules, the guard, the TLS port, the credential check and the compat answers travel beside it.
     for helper in (
         "model_gate_adapters.py",
         "model_gate_guard.py",
         "model_gate_tls.py",
         "model_gate_listener.py",
         "model_gate_auth.py",
+        "model_gate_compat.py",
     ):
         (tmp_path / helper).write_text(SERVICE.with_name(helper).read_text())
     probe = socket.socket()

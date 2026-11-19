@@ -75,6 +75,13 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     gate_auth = importlib.import_module("model_gate_auth")
 GateAuth = gate_auth.ModelGateAuth
+# What the gate answers for an upstream Codex: model list, limit headers, /backend-api stubs, CORS.
+try:
+    gate_compat = importlib.import_module("dreamference.vllm_server.model_gate_compat")
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    gate_compat = importlib.import_module("model_gate_compat")
+GateCompat = gate_compat.ModelGateCompat
 
 # Answered by the gate itself, never forwarded: what the gate is doing, as JSON.
 PROBE_PATH: Final[str] = "/ragon-gate"
@@ -82,6 +89,8 @@ PROBE_PATH: Final[str] = "/ragon-gate"
 # Methods, framings and status values the code compares against.
 METHOD_GET: Final[str] = "GET"
 METHOD_HEAD: Final[str] = "HEAD"
+METHOD_OPTIONS: Final[str] = "OPTIONS"
+RESPONSES_PATH: Final[str] = "/v1/responses"
 STATE_CLOSED: Final[str] = "closed"
 KEY_PAUSED_UNTIL: Final[str] = "paused_until"
 FRAMING_CHUNKED: Final[str] = "chunked"
@@ -98,6 +107,8 @@ REQUEST_LINE_PARTS: Final[int] = 3
 HTTP_CONTINUE: Final[int] = 100
 HTTP_SWITCHING_PROTOCOLS: Final[int] = 101
 HTTP_OK_FLOOR: Final[int] = 200
+HTTP_NOT_FOUND: Final[int] = 404
+IDS_TTL_S: Final[float] = 5.0
 
 # The primary's accounts service (`dreamference/accounts/accounts_service.py`, port `ACCOUNTS_PORT`)
 # answers the sign-in routes; the gate forwards them there, whatever its state, so a run holding the
@@ -236,6 +247,8 @@ class ModelGateService:
         self.plain_counts: dict[str, int] = {}
         self.plain_peers: set[str] = set()
         self.auth = GateAuth(state_dir, accounts)
+        self.ids: list[str] = []
+        self.ids_at = 0.0
 
     # -- the rules -----------------------------------------------------------------------------
 
@@ -648,6 +661,7 @@ class ModelGateService:
         sink: asyncio.StreamWriter,
         replacement: tuple[bytes, bytes] | None = None,
         tap: dict[str, Any] | None = None,
+        extra: list[tuple[str, str]] | None = None,
     ) -> None:
         """Copies the engine's answer.
 
@@ -663,7 +677,7 @@ class ModelGateService:
                 sink.write(head)
                 await sink.drain()
                 continue
-            sink.write(cls.rewrite_head(head))
+            sink.write(GateCompat.head_with(cls.rewrite_head(head), extra or []))
             await sink.drain()
             break
         await cls.pipe(source, sink, replacement, tap)
@@ -1044,7 +1058,15 @@ class ModelGateService:
                 tap["user"] = user
             tasks = [
                 asyncio.ensure_future(client_side()),
-                asyncio.ensure_future(self.pipe_response(upstream_reader, writer, forward[2], tap)),
+                asyncio.ensure_future(
+                    self.pipe_response(
+                        upstream_reader,
+                        writer,
+                        forward[2],
+                        tap,
+                        self.answer_headers(method, path, headers),
+                    )
+                ),
             ]
             # The answer is over when the engine closes (it was asked to) or the client leaves,
             # which also tells the engine to stop generating.
@@ -1181,12 +1203,61 @@ class ModelGateService:
         if self.is_account_route(path):
             await self.forward_account(reader, writer, (method, head), framing)
             return True
+        if method == METHOD_OPTIONS:
+            await self.respond_preflight(writer, head)
+            return True
         if not self.allows(state, peer_address, method, path):
             await self.refuse(
                 reader, writer, state, framing, expects_continue, (method, path, peer_address)
             )
             return True
+        if GateCompat.is_backend(path):
+            await self.respond_backend(writer, (method, path, head))
+            return True
         return False
+
+    def origin_headers(self, headers: list[tuple[bytes, bytes]]) -> list[tuple[str, str]]:
+        """The CORS headers for a request's `Origin` (none unless it is an allowed one)."""
+        origin = dict(headers).get(b"origin", b"").decode("latin-1").strip()
+        return GateCompat.cors_headers(origin, GateCompat.origins(self.state_dir))
+
+    def answer_headers(
+        self, method: str, path: str, headers: list[tuple[bytes, bytes]]
+    ) -> list[tuple[str, str]]:
+        """The headers the gate adds to an engine answer: CORS, and the limit headers on `/v1/responses`."""
+        extra = self.origin_headers(headers)
+        if method == POST and path.split("?", 1)[0] == RESPONSES_PATH:
+            extra += GateCompat.limit_headers()
+        return extra
+
+    async def respond_preflight(self, writer: asyncio.StreamWriter, head: bytes) -> None:
+        """Answers an `OPTIONS` request: 204, with CORS headers only for an allowed origin."""
+        parsed = self.parse_head(head)
+        origin = dict(parsed[2]).get(b"origin", b"").decode("latin-1").strip() if parsed else ""
+        extra = GateCompat.cors_headers(origin, GateCompat.origins(self.state_dir), preflight=True)
+        lines = ["HTTP/1.1 204 No Content", "Content-Length: 0", "Connection: close"]
+        lines += [f"{name}: {value}" for name, value in extra]
+        writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
+        await writer.drain()
+
+    async def respond_backend(
+        self, writer: asyncio.StreamWriter, request: tuple[str, str, bytes]
+    ) -> None:
+        """Answers a `/backend-api/` request itself (the stubs and the 404 of specs/DREAMFERENCE_AUTH.md §5.9)."""
+        method, path, head = request
+        parsed = self.parse_head(head)
+        headers = parsed[2] if parsed else []
+        bearer = dict(headers).get(AUTHORIZATION, b"").decode("latin-1")
+        status, body = GateCompat.backend(path, bearer)
+        self.log(f"stub {method} {path} -> {status}")
+        await self.respond(
+            writer,
+            status,
+            "OK" if status == HTTP_OK_FLOOR else "Not Found",
+            body,
+            self.origin_headers(headers),
+            head_only=method == METHOD_HEAD,
+        )
 
     @classmethod
     def is_account_route(cls, path: str) -> bool:
@@ -1317,20 +1388,15 @@ class ModelGateService:
         # `/v1/responses` bodies are read for the loop guard (`model_gate_guard.py`) even without
         # adapters; every other request without adapters streams through as before.
         guarded = GateGuard.applies(method, path)
-        if listing is None and not guarded:
+        compat = method == POST and path.split("?", 1)[0] in gate_compat.SANITIZED_PATHS
+        route = path.split("?", 1)[0]
+        if method in READ_METHODS and route == gate_adapters.MODELS_PATH:
+            target = head.split(b" ", 2)[1].decode("latin-1")
+            await self.respond_models(writer, (method, target), listing)
+            return None
+        if listing is None and not guarded and not compat:
             return self.rewrite_head(head), None, None
         key = self.adapters.key() if listing is not None else None
-        if listing is not None and method in READ_METHODS and path == gate_adapters.MODELS_PATH:
-            status, body = await self.adapters.engine_call("GET", gate_adapters.MODELS_PATH, None)
-            reason = "OK" if status == gate_adapters.HTTP_OK else "Bad Gateway"
-            await self.respond(
-                writer,
-                status or BAD_GATEWAY,
-                reason,
-                GateAdapters.models(body, listing),
-                head_only=method == READ_METHODS[1],
-            )
-            return None
         if (
             method != POST
             or path not in gate_adapters.GENERATION_PATHS
@@ -1338,12 +1404,76 @@ class ModelGateService:
         ):
             return self.rewrite_head(head, key), None, None
         refusal, sent, replacement = await self.read_and_rewrite(
-            reader, framing, listing, guarded=guarded
+            reader, framing, listing, guarded=guarded, path=path
         )
         if refusal is not None:
             await self.respond(writer, refusal[0], "Refused", refusal[1])
             return None
         return self.rewrite_head(head, key, len(sent)), sent, replacement
+
+    async def respond_models(
+        self,
+        writer: asyncio.StreamWriter,
+        request: tuple[str, str],
+        listing: dict[str, object] | None,
+    ) -> None:
+        """Answers `/v1/models`: the engine's list, adapters applied, aliases added, in the asked shape."""
+        method, path = request
+        status, body = await self.adapters.engine_call("GET", gate_adapters.MODELS_PATH, None)
+        if status != HTTP_OK_FLOOR:
+            await self.respond_bad_gateway(writer, method)
+            return
+        if listing is not None:
+            record = GateAdapters.models(body, listing)
+        else:
+            try:
+                record = json.loads(body)
+            except ValueError:
+                record = {}
+        if not isinstance(record, dict):
+            record = {}
+        await self.respond(
+            writer,
+            HTTP_OK_FLOOR,
+            "OK",
+            GateCompat.models(record, path),
+            head_only=method == METHOD_HEAD,
+        )
+
+    async def served_ids(self) -> list[str]:
+        """The ids the engine serves, kept for a few seconds; empty when it does not answer."""
+        now = time.monotonic()
+        if self.ids_at and now - self.ids_at < IDS_TTL_S:
+            return self.ids
+        status, body = await self.adapters.engine_call("GET", gate_adapters.MODELS_PATH, None)
+        if status != HTTP_OK_FLOOR:
+            return []
+        try:
+            self.ids = GateCompat.served_ids(json.loads(body))
+        except ValueError:
+            return []
+        self.ids_at = now
+        return self.ids
+
+    async def resolve_model(self, body: bytes) -> tuple[tuple[int, dict[str, Any]] | None, bytes]:
+        """Maps an alias to the served id, and refuses an unknown model (404 `model_not_found`)."""
+        try:
+            record = json.loads(body)
+        except ValueError:
+            return None, body
+        if not isinstance(record, dict):
+            return None, body
+        model = record.get("model")
+        if not isinstance(model, str) or any(sep in model for sep in ("+", ":")):
+            return None, body  # An adapter: the adapter rules decide.
+        ids = await self.served_ids()
+        target = GateCompat.alias_target(model, ids)
+        if target is not None:
+            record["model"] = target
+            return None, json.dumps(record).encode("utf-8")
+        if GateCompat.unknown(model, ids):
+            return (HTTP_NOT_FOUND, GateCompat.unknown_model(model)), body
+        return None, body
 
     @classmethod
     def body_is_read(cls, listing: dict[str, object] | None, framing: tuple[str, int]) -> bool:
@@ -1370,6 +1500,7 @@ class ModelGateService:
         listing: dict[str, object] | None,
         *,
         guarded: bool,
+        path: str = "",
     ) -> tuple[tuple[int, dict[str, Any]] | None, bytes, tuple[bytes, bytes] | None]:
         """Reads a generation request's body and applies the loop guard's and the adapters' rules.
 
@@ -1377,6 +1508,7 @@ class ModelGateService:
             reader: The client.
             framing: `framing()`'s answer.
             listing: The adapters served, or None.
+            path: The request's path.
             guarded: Whether the loop guard's rules apply (`ModelGateGuard.applies`).
 
         Returns:
@@ -1396,6 +1528,12 @@ class ModelGateService:
             request_body, note = GateGuard.rewrite(request_body)
             if note:
                 self.log(note)
+        request_body, note = GateCompat.sanitize(path, request_body)
+        if note:
+            self.log(note)
+        refusal, request_body = await self.resolve_model(request_body)
+        if refusal is not None:
+            return refusal, b"", None
         if listing is None:
             return None, request_body, None
         return await self.adapters.rewrite(request_body, listing)

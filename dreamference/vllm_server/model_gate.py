@@ -50,6 +50,8 @@ LISTENER_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_listener.py"
 # The credential check (§10 of the auth spec), copied beside it too.
 AUTH_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_auth.py")
 AUTH_FILE: Final[str] = "auth.json"
+# What it answers for an upstream Codex (model list, limit headers, stubs, CORS), copied beside it too.
+COMPAT_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_compat.py")
 
 ENGINE_BIND_ADDRESS: Final[str] = "127.0.0.1"
 PUBLIC_BIND_ADDRESS: Final[str] = "0.0.0.0"
@@ -170,7 +172,14 @@ class ModelGate:
         """
         GATE_DIR.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(SERVICE_SOURCE, GATE_DIR / SERVICE_COPY)
-        for source in (ADAPTERS_SOURCE, GUARD_SOURCE, TLS_SOURCE, LISTENER_SOURCE, AUTH_SOURCE):
+        for source in (
+            ADAPTERS_SOURCE,
+            GUARD_SOURCE,
+            TLS_SOURCE,
+            LISTENER_SOURCE,
+            AUTH_SOURCE,
+            COMPAT_SOURCE,
+        ):
             shutil.copyfile(source, GATE_DIR / source.name)
         cls.stage_tls()
         cls.write_node_info()
