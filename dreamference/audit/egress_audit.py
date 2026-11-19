@@ -38,6 +38,7 @@ from dreamference.audit.preview_page import PreviewPage
 from dreamference.audit.strace_parser import StraceParser
 from dreamference.audit.tui_session import TuiSession
 from dreamference.config.ports import SEARXNG_PORT
+from dreamference.node.service_key import ServiceKey
 
 # The loopback port each implemented search backend uses, by the name `[search] backends` gives it
 # (ragon-web-rs/src/backend.rs). Only a backend that is turned on is allowed and named.
@@ -358,6 +359,7 @@ class EgressAudit:
                 "DREAMFERENCE_VLLM_HOST": vllm_host,
             }
         )
+        ServiceKey.apply(env)
         # The environment wins over the config file: a caller's DREAMFERENCE_RAGON_DOCS must
         # not start a file index over the real home's folders from the throwaway CODEX_HOME.
         env["DREAMFERENCE_RAGON_DOCS"] = "0"

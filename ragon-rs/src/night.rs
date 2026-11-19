@@ -348,6 +348,29 @@ fn lines(dir: &Path, request: Request, cwd: &Path) -> Vec<String> {
     }
 }
 
+/// The signed-in username and user id, from the active entry of `$CODEX_HOME/auth.json`: the
+/// `email` claim holds the username and `chatgpt_user_id` the id (spec §6). `None` when nobody is
+/// signed in, the file is unreadable or the token is not a JWT.
+fn signed_in_user() -> Option<(String, String)> {
+    let home = std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| ragon_node_locator::home_dir().map(|home| home.join(".ragon")))?;
+    user_from_auth(&std::fs::read_to_string(home.join("auth.json")).ok()?)
+}
+
+fn user_from_auth(text: &str) -> Option<(String, String)> {
+    use base64::Engine;
+    let file: Value = serde_json::from_str(text).ok()?;
+    let entry = match file.get("entries") {
+        Some(entries) => entries.get(file.get("active")?.as_str()?)?,
+        None => &file,
+    };
+    let token = entry.pointer("/tokens/id_token")?.as_str()?;
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(token.split('.').nth(1)?).ok()?;
+    let claims: Value = serde_json::from_slice(&payload).ok()?;
+    let name = claims.get("email")?.as_str()?.to_string();
+    let id = claims.pointer("/https:~1~1api.openai.com~1auth/chatgpt_user_id")?.as_str()?.to_string();
+    Some((name, id))
+}
+
 fn add(
     dir: &Path,
     repo: &Path,
@@ -362,6 +385,7 @@ fn add(
         return vec!["Night Shift: this repository has no commit yet, so there is nothing to start from.".to_string()];
     };
     let now = chrono::Local::now();
+    let user = signed_in_user();
     let record_for = |id: &str| {
         json!({
             "id": id,
@@ -375,6 +399,9 @@ fn add(
             "best_of": best_of,
             "retry_of": retry_of,
             "model_at_add": served_model_id(),
+            // Who queued it (specs/DREAMFERENCE_AUTH.md §14.3); null when nobody is signed in.
+            "user": user.as_ref().map(|(name, _)| name),
+            "user_id": user.as_ref().map(|(_, id)| id),
             "status": "queued",
             "history": [{"at": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, false), "status": "queued"}],
             "attempts": 0,
@@ -537,6 +564,7 @@ fn show(dir: &Path, repo: &Path, id: &str) -> Vec<String> {
         format!("Branch: {}   base: {}", text(&task, "branch"), text(&task, "base")),
         format!("Test: {}", task["test"].as_str().unwrap_or("detected at run time")),
         format!("Model when queued: {}", task["model_at_add"].as_str().unwrap_or("unknown")),
+        format!("Queued by: {}", task["user"].as_str().unwrap_or("nobody signed in")),
     ];
     if let Some(node) = task["on"].as_str() {
         lines.push(format!("Node: {node} (its own runner works the task)"));
@@ -1022,6 +1050,21 @@ mod tests {
     fn a_printed_line_keeps_no_terminal_escape() {
         let line = "done\u{1b}]52;c;aGk=\u{7} \u{1b}[8mhidden\u{9b}2J\r\tend";
         assert_eq!(printable(line), "done]52;c;aGk= [8mhidden2J\tend");
+    }
+
+    #[test]
+    fn the_signed_in_user_comes_from_the_active_entry_of_auth_json() {
+        use base64::Engine;
+        let enc = |value: &Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.to_string());
+        let claims = json!({"email": "ana", "https://api.openai.com/auth": {"chatgpt_user_id": "u-1"}});
+        let token = format!("{}.{}.sig", enc(&json!({"alg": "none"})), enc(&claims));
+        let entry = json!({"tokens": {"id_token": token}});
+        let single = entry.to_string();
+        assert_eq!(user_from_auth(&single), Some(("ana".to_string(), "u-1".to_string())));
+        let multi = json!({"version": 2, "active": "p1", "entries": {"p1": entry, "p2": {}}}).to_string();
+        assert_eq!(user_from_auth(&multi), Some(("ana".to_string(), "u-1".to_string())));
+        assert_eq!(user_from_auth("{}"), None);
+        assert_eq!(user_from_auth("not json"), None);
     }
 
     #[test]

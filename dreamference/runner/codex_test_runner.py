@@ -36,6 +36,7 @@ from typing import Final
 
 from dreamference.chat.desktop_installer import DesktopInstaller
 from dreamference.chat.desktop_runner import DesktopRunner
+from dreamference.node.service_key import ServiceKey
 from dreamference.runner.codex_branded_builder import (
     BUILD_CACHE_DIR,
     REPO_ROOT,
@@ -529,6 +530,7 @@ class CodexTestRunner:
                 # The launcher leaves the tests' command lines alone (ragon-rs, UPSTREAM_TESTS_ENV).
                 "RAGON_UPSTREAM_TESTS": "1",
                 "DREAMFERENCE_VLLM_HOST": CLOSED_MODEL_HOST,
+                **ServiceKey.environment(),
                 ADAPTER_ENV: "",
                 # codex-bwrap compiles a vendored bubblewrap that needs libcap's headers. Ragon does
                 # not ship it (the sandbox runs the system's /usr/bin/bwrap), and the crate's build

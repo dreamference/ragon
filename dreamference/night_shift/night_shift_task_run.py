@@ -41,6 +41,7 @@ from dreamference.night_shift.night_shift_queue import NightShiftQueue
 from dreamference.night_shift.night_shift_settings import NightShiftSettings
 from dreamference.night_shift.refine_prompt import NIGHT_WRITES, RefinePrompt
 from dreamference.night_shift.strategy_hints import StrategyHints
+from dreamference.node.service_key import ServiceKey
 from dreamference.runner.codex_installer import ADAPTER_ENV
 from dreamference.runner.safe_git import SafeGit
 
@@ -930,6 +931,7 @@ class NightShiftTaskRun:
         env[NIGHT_RUN_ENV] = "1"
         if self.model_host:
             env["DREAMFERENCE_VLLM_HOST"] = self.model_host
+        ServiceKey.apply(env)
         # The base unless an arm names an adapter: never the user's `ragon_adapter` default.
         env[ADAPTER_ENV] = ""
         # The lane's model server may be another node's: it and loopback never go through a proxy.
@@ -1018,6 +1020,7 @@ class NightShiftTaskRun:
         }
         if self.model_host:
             variables["DREAMFERENCE_VLLM_HOST"] = self.model_host
+        ServiceKey.apply(variables)
         variables[ADAPTER_ENV] = ""
         ProxyBypass.apply(variables, self.model_host)
         if self.airgapped:

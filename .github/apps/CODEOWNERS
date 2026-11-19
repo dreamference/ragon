@@ -165,6 +165,7 @@
 # Nodes & Remote Access
 /dreamference/node/                             @dreamference/nodes
 /dreamference/accounts/                          @dreamference/nodes @dreamference/security
+/tests/test_service_key_callers.py             @dreamference/nodes
 /dreamference/forge/                            @dreamference/nodes @dreamference/security
 /ragon-rs/node-locator/                          @dreamference/nodes
 /ragon-rs/node-monitor/                          @dreamference/nodes

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Final
 
 from dreamference.config import DreamferenceConfig
+from dreamference.node.service_key import ServiceKey
 
 LOG_NAME: Final[str] = "first-run.log"
 # What one command line of `ragon-admin` is when run from this same Python, wherever it is installed.
@@ -187,6 +188,7 @@ class FirstRun:
             return False, "ragon is not installed"
         # An unattended caller names the server: a node browse is a multicast DNS query.
         env = {**os.environ, "DREAMFERENCE_VLLM_HOST": config.vllm_host}
+        ServiceKey.apply(env)
         with tempfile.TemporaryDirectory(prefix="ragon-first-run-") as folder:
             answer_path = Path(folder) / "answer.txt"
             command = [

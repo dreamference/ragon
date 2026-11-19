@@ -37,6 +37,7 @@ from dreamference.night_shift.refine_prompt import (
     NO_REFINED as NO_REFINED_PIECE,
 )
 from dreamference.night_shift.strategy_hints import StrategyHints
+from dreamference.node.service_key import ServiceKey
 from dreamference.runner.codex_installer import ADAPTER_ENV
 from dreamference.swe_bench import swe_bench_settings
 from dreamference.swe_bench.swe_bench_docker import SweBenchDocker
@@ -1383,6 +1384,7 @@ class SweBenchInstanceRun:
             "SCRATCH": SCRATCH_MOUNT,
             "BASE_COMMIT": self.base_commit,
             "DREAMFERENCE_VLLM_HOST": self.model_url,
+            **ServiceKey.environment(),
             # The base unless the arm names an adapter in `extra_env`: never the user's default.
             ADAPTER_ENV: "",
             NIGHT_RUN_ENV: "1",

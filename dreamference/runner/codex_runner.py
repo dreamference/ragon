@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Final
 
 from dreamference.config import DreamferenceConfig
+from dreamference.node.service_key import ServiceKey
 from dreamference.runner.codex_installer import CodexInstaller
 
 # The variable the launcher reads for the compatibility mode (ragon-rs/src/compat.rs).
@@ -76,6 +77,7 @@ class CodexRunner:
         # The launcher reads the vLLM URL from the environment first, so a host given to
         # ragon-admin on the command line or in a non-default config file reaches it.
         env["DREAMFERENCE_VLLM_HOST"] = self.config.vllm_host
+        ServiceKey.apply(env)
         # Same for the Gmail prompt opt-out, which the launcher reads the same way.
         env["DREAMFERENCE_RAGON_GMAIL"] = "true" if self.config.ragon_gmail else "false"
         if compat is not None:
