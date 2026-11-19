@@ -139,26 +139,35 @@ explicitly. Consistent with the trusted-LAN premise above.
 ## Release 3.0: authentication hardening
 
 [AUTH](./DREAMFERENCE_AUTH.md) adds accounts in 0.9.9 to identify users, deliberately with little
-security (the owner's scope, 2026-11-19): one primary node keeps users (user and admin roles),
-password hashes, login tokens and per-user API keys; requests are served and counted without a
-token in 0.9.9 and refused at 1.0. These items are known and left for 3.0, where all security work
-goes:
+security (the owner's scope, 2026-11-19): one primary node is an OAuth2 server that keeps users
+(user and admin roles), password hashes, refresh tokens and per-user API keys and signs RS256 JWTs;
+TLS with a per-node CA ships in 0.9.9 (owner 2026-11-19); requests without credentials are served
+and counted in 0.9.9 and refused at 1.0. These items are known and left for 3.0, where all security
+work goes:
 
-- **Rate limits** on the token route, account creation and the check secondaries make.
+- **JWT key rotation:** each primary signs with one key for its lifetime; a leaked key means signing
+  in again everywhere after a new primary key.
+- **Refresh-token rotation:** a refresh token never expires and is not replaced on use; anyone who
+  copies `auth.json` can refresh until the session is revoked.
+- **Rate limits** on the token route, account creation, the device and pairing routes and the check
+  secondaries make.
 - **Lockout** after repeated wrong passwords.
-- **TLS between client and node:** passwords and tokens cross the LAN in clear HTTP, client to node
-  and secondary to primary.
-- **Token binding and expiry:** a login token or API key is a bearer token with no lifetime; anyone
-  who copies `auth.json` or sees the traffic can use it until it is revoked.
+- **Guessing limits for pairing codes and device user codes:** both are short codes with no limit on
+  attempts within their lifetime.
+- **Client registration:** any OAuth `client_id` is accepted and only recorded; only the Forgejo
+  client is registered.
+- **Certificate rotation and PKI:** each node's self-signed CA and certificate are never rotated, a
+  client pins the CA at first contact, and there is no common root across nodes.
 - **Revocation lag:** a secondary keeps a check for 60 s, so a revoked token works there for up to a
   minute.
 - **Open sign-up:** anyone who reaches a node can create an account; the first account becomes admin.
 - **Open node registration:** a secondary registers its service account on the primary with no
   admin step.
-- **Empty and weak passwords** are accepted; an admin reset sets the password to empty.
-- **Keys in a plain file:** `auth.json` (mode 0600) on the client and the service key on each node;
-  Codex's keyring store is available but not the default.
-- **Cross-site requests** to the node's sign-in routes from a browser on the LAN.
+- **Empty and weak passwords** are accepted.
+- **Keys in a plain file:** `auth.json` (mode 0600, an access list on Windows) on the client and the
+  service key on each node; Codex's keyring store is available but not the default.
+- **Cross-site form posts** to the node's sign-in routes from a browser on the LAN; CORS limits
+  scripted reads only.
 - **Nodes without a gate** (Windows, Mac) serve with no check.
 
 ## Not changed and checked
