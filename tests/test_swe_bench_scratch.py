@@ -4,6 +4,8 @@ import contextlib
 import json
 import os
 
+import pytest
+
 from dreamference.swe_bench import SweBenchRunStore
 from dreamference.swe_bench.swe_bench_hooks import GATE_DIRECTORY, SweBenchHooks
 from dreamference.swe_bench.swe_bench_scratch import SweBenchScratch
@@ -114,3 +116,27 @@ def test_a_malformed_gate_record_does_not_raise_on_the_host(tmp_path):
         outcome = SweBenchHooks.outcome(tmp_path)
         assert outcome["errors"] == ["the gate's records are malformed"]
         assert outcome["ran"] is False
+
+
+def test_swe_bench_hooks_register_writes_the_hook_set_and_refuses_one_already_there(tmp_path):
+    """Registration lands the whole set in a new or existing `config.toml`, and twice is an error."""
+    existing = "[model]\nname = 'x'\n"
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    config.write_text(existing)
+    SweBenchHooks.register(codex_home, "/opt/codex-home", "/opt/gate")
+    expected = (
+        existing + "\n" + SweBenchHooks.config_text("/opt/codex-home/config.toml", "/opt/gate")
+    )
+    assert config.read_text() == expected
+    with pytest.raises(ValueError, match="already has hooks"):
+        SweBenchHooks.register(codex_home, "/opt/codex-home", "/opt/gate")
+    assert config.read_text() == expected
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    SweBenchHooks.register(fresh, "/opt/codex-home", "/opt/gate")
+    assert (fresh / "config.toml").read_text() == SweBenchHooks.config_text(
+        "/opt/codex-home/config.toml", "/opt/gate"
+    )
