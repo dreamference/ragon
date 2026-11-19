@@ -320,7 +320,7 @@ G20 uses a GB10 as harness, so Windows needs no SWE-bench code: the node only se
 
 ## 10. What 1.0 requires
 
-**On AMD:** G1–G20 on the AMD box and on the second box; user and developer docs; the release assets; the 2.0 document amended; WN1–WN8 settled. **On NVIDIA:** per WN6.
+**On AMD:** G1–G20 on the AMD box and on the second box; user and developer docs; the release assets; the 2.0 document amended; WN1–WN8 settled. **The auth gate** ([AUTH](./DREAMFERENCE_AUTH.md) §7, §10; owner 2026-11-19): the node ships with the credential check in front of its model API, as a secondary of the pinned primary, on HTTPS with its own node CA; a request without a credential is refused at 1.0, and no ungated Windows node ships. Its acceptance run joins the gate (§9). **On NVIDIA:** per WN6.
 
 | Work | Weeks **[E]** | Source |
 |---|---|---|

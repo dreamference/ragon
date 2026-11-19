@@ -267,7 +267,7 @@ A stand-in engine with the same CLI and `/v1/models` lets §4 and §6 be built a
 
 ## 9. What 1.0 requires
 
-G1 to G20 on the gate box; user and developer docs; the release assets; MN1 to MN10 settled.
+G1 to G20 on the gate box; user and developer docs; the release assets; MN1 to MN10 settled. **The auth gate** ([AUTH](./DREAMFERENCE_AUTH.md) §7, §10; owner 2026-11-19): the node ships with the credential check in front of its model API, as a secondary of the pinned primary, on HTTPS with its own node CA; a request without a credential is refused at 1.0, and no ungated Mac node ships. Its acceptance run joins the gate (§8).
 
 | Work | Weeks **[E]** | Source |
 |---|---|---|

@@ -23,7 +23,7 @@ Revision 3 replaces revision 2 of the same name. Revision 2 stored an opaque tok
 4. **Valid until logout.** The access token lives 3600 s and is refreshed by Codex's code; the refresh token never expires. A session ends at logout, at `ragon logout --all`, or when an admin resets or removes the account (owner 2026-11-19).
 5. **TLS ships in 0.9.9** (owner 2026-11-19). Each node's gate serves HTTPS with a certificate from the node's own self-signed CA. Ragon pins that CA at first contact, and the installers and the pairing step add it to the user's trust store (§6).
 6. **0.9.9 serves and counts; 1.0 refuses.** In 0.9.9 a model request with no credentials is served, logged and counted per day. A request with bad credentials gets 401 at once. At 1.0 a request with no credentials gets 401 too (§10).
-7. **The login screen lives in `ragon-rs`** (owner 2026-11-19). A small Codex patch routes the onboarding sign-in step to it; Codex's own screen code is not edited in place. The patch series grows from 63,875 to about 67,600 bytes, and the cap rises from 64,000 to 69,000 bytes (§15).
+7. **The login screen lives in `ragon-rs`** (owner 2026-11-19). A small Codex patch routes the onboarding sign-in step to it; Codex's own screen code is not edited in place. Three more patches follow (the issuer, the multi-entry `auth.json`, the sign-in RPC; §5.1, §11, §5.8). The series grows from 63,875 to about 74,300 bytes, and the cap rises from 64,000 to 76,000 bytes (§15).
 8. **The empty password is a password.** It is hashed with argon2id like any other. It is never logged and never put in a URL (owner 2026-11-19).
 9. **Hardening goes to version 3.0.** Key rotation, refresh-token rotation, rate limits, lockout, guessing limits for pairing and device codes, client registration and certificate rotation are on the 3.0 list in [SECURITY_REVIEW](./DREAMFERENCE_SECURITY_REVIEW.md) (owner addendum, 2026-11-19).
 
@@ -144,9 +144,10 @@ The node's gate serves every path at one base, `https://<node>.local:8000` (owne
 | `/ragon/v1/users*` | account creation and the user and admin API (§5.6) | the primary; a secondary forwards |
 | `/backend-api/*` | the endpoints Codex's backend client calls (§5.9) | every gate, stubs |
 
-**Codex has no issuer setting in `config.toml`.** The issuer is a constant (`login/src/server.rs:76`), overridden only by the hidden flag `--experimental_issuer` (`cli/src/main.rs:527-530`, used at `cli/src/login.rs:351`, `:403`) and by `CODEX_APP_SERVER_LOGIN_ISSUER` for the app-server (`app-server/src/request_processors/account_processor.rs:28`, `:599-602`). The refresh and revoke URLs have their own overrides (`login/src/auth/manager.rs:212-215`). None of these is limited to debug builds. So the owner's "the issuer URL written into config.toml at every start" is met this way (open question 1):
-- the launcher writes `chatgpt_base_url = "https://<node>.local:8000/backend-api/"` into `~/.ragon/config.toml` beside the provider entry (`config/src/config_toml.rs:409`), at every start, as it writes `model_catalog.json` today;
-- it sets `CODEX_APP_SERVER_LOGIN_ISSUER`, `CODEX_REFRESH_TOKEN_URL_OVERRIDE` (`…/oauth/token`) and `CODEX_REVOKE_TOKEN_URL_OVERRIDE` (`…/oauth/revoke`) in the environment of every process it starts, and passes `--experimental_issuer` to `login --device-auth`.
+**Codex has no issuer setting in `config.toml`.** The issuer is a constant (`login/src/server.rs:76`), overridden only by the hidden flag `--experimental_issuer` (`cli/src/main.rs:527-530`, used at `cli/src/login.rs:351`, `:403`) and by `CODEX_APP_SERVER_LOGIN_ISSUER` for the app-server (`app-server/src/request_processors/account_processor.rs:28`, `:599-602`). The refresh and revoke URLs have their own overrides (`login/src/auth/manager.rs:212-215`). None of these is limited to debug builds. The owner's "the issuer URL written into config.toml at every start" is met by a small patch to the login crate (owner 2026-11-19, question 1: patch, not environment variables alone):
+- **Patch `0040-ragon-login-issuer`** (about 0.7 KB, counted toward the cap of §15). The login crate reads the issuer from one function: the environment override when set, else the top-level key `ragon_issuer` of `config.toml`, else the constant. The same function serves the refresh and revoke URLs (`login/src/auth/manager.rs:212-215`: the `/oauth/token` and `/oauth/revoke` paths on that issuer, unless their own overrides are set) and the device-code client (`login/src/server.rs:76`). The result: a plain `codex login --device-auth` or an IDE extension started with no environment still reaches the primary.
+- the launcher writes `chatgpt_base_url = "https://<node>.local:8000/backend-api/"` and `ragon_issuer = "https://<node>.local:8000"` into `~/.ragon/config.toml` beside the provider entry (`config/src/config_toml.rs:409`; the second key is read by patch `0040` alone), at every start, as it writes `model_catalog.json` today;
+- it still sets `CODEX_APP_SERVER_LOGIN_ISSUER`, `CODEX_REFRESH_TOKEN_URL_OVERRIDE` (`…/oauth/token`) and `CODEX_REVOKE_TOKEN_URL_OVERRIDE` (`…/oauth/revoke`) in the environment of every process it starts, so that a process started with another `config.toml` still follows the resolved node (the environment wins over the file), and passes `--experimental_issuer` to `login --device-auth` as before.
 
 **Issuer discovery** (owner 2026-11-19). The launcher resolves the node as today, then asks `GET /ragon/v1/info`. The answer names the primary, whose id selects the `auth.json` entry (§15). The node is never asked at login.
 
@@ -251,7 +252,13 @@ The product-wide rename of `DREAMFERENCE_*` variables to `RAGON_*` is a separate
 ### 5.8 The app-server
 
 Codex's account RPCs keep their names, parameters and events (owner 2026-11-19; `app-server-protocol/src/protocol/common.rs:1276`, `:1297`, `:1303`, `:1309`, `:1321`, `:1443`, `:1982-1984`, `:2035`). `LoginAccountParams` has the variants `apiKey`, `chatgpt`, `chatgptDeviceCode`, `chatgptAuthTokens` and a third-party cloud variant (`app-server-protocol/src/protocol/v2/account.rs:64`). Each client of the app-server uses one of them:
-- **The desktop app** shows the two-choice form in place of the browser step. The form runs the launcher (`ragon login --username <name> --password-stdin`, or `--create`), which writes `auth.json` through `codex_login::save_auth`. The app then restarts its app-server, which reads the entry at start as after any sign-in. The device line uses `chatgptDeviceCode` unchanged; the key line uses `apiKey` unchanged. No RPC is added (open question 4).
+- **The desktop app** shows the two-choice form in place of the browser step and calls a **new app-server RPC** (owner 2026-11-19, question 4: a new RPC, not a restart):
+  - Name `account/ragon/signIn`, a client request in `app-server-protocol/src/protocol/common.rs` beside `account/login/start`, with params and result defined in `protocol/v2/account.rs`.
+  - Params: `{ "mode": "signIn" | "create", "username": string, "password": string }`. The password is sent as typed: empty and untrimmed are valid.
+  - Result: `{ "type": "ragon", "username": string, "role": string, "mustChangePassword": bool }`. A refusal is a JSON-RPC error with code `-32001` (wrong credentials), `-32002` (name taken or invalid, `create` only), or `-32003` (authentication server unreachable); the message is the screen's own text (§8.5).
+  - Behaviour: the handler runs the password grant, or the account creation, at the issuer of patch `0040`, writes the entry of the active primary through the login crate's `save_auth`, and reloads `AuthManager` (`login/src/auth/manager.rs:2481`). It then sends the usual `account/updated` notification, so the app shows the user at once: **the app-server is not restarted** and keeps its threads.
+  - Patch `0042-ragon-account-signin-rpc` (about 3.6 KB, counted toward the cap of §15). The handler is in `app-server/src/request_processors/account_processor.rs`, with one call into `ragon_launcher` in the style of `0028-adapter-slash-command`, so the grant, the CA pinning and the strings are the launcher's. This is a protocol change: the generated schema files under `app-server-protocol/schema/` are regenerated in the same row. The existing RPCs, with their names, parameters and events, are not touched.
+  - The device line uses `chatgptDeviceCode` unchanged; the key line uses `apiKey` unchanged.
 - **`ragon web`** holds the JWT in the browser. Its server hands the browser session's tokens to the app-server with `chatgptAuthTokens` and answers `account/chatgptAuthTokens/refresh` (`common.rs:1801`) with a refresh at the primary: the external-token mode Codex provides for clients that own the tokens.
 - **IDE extensions built for Codex** keep working against Ragon's app-server: they see the same RPCs and an account with the username as email and the role as plan (`app-server-protocol/src/protocol/v2/account.rs:22`, `:557`).
 
@@ -326,7 +333,7 @@ Any other unknown path gets the vendor's 404 error JSON: `{"error": {"message": 
 
 **Moving the primary** (owner 2026-11-19). `ragon-admin node user export` on the old primary (JSON: users, roles, key hashes; never tokens), `ragon-admin node user import` on the new one, `ragon-admin node primary <new id>` on every secondary. The new primary has a new signing key, so everyone signs in again.
 
-**Windows and Mac nodes** have no model gate ([WINDOWS_NODE](./DREAMFERENCE_WINDOWS_NODE.md), [MAC_NODE](./DREAMFERENCE_MAC_NODE.md)). They cannot be primary. A client whose resolved node has no gate signs in at the node's pinned primary, found by its advertisement. The Windows and Mac **clients** ship in 0.9.9 from the same launcher code (§16).
+**Windows and Mac nodes** (owner 2026-11-19, the thirteenth question) **ship with the auth gate at version 1.0; no ungated node ships.** Neither can be primary. Each runs the §10 check in front of its model API, as a secondary: it holds the primary's public key, forwards the authentication routes to its pinned primary, answers `/ragon/v1/info`, `/ragon/v1/ca.pem` and the `/backend-api/*` stubs, serves HTTPS with its own node CA (§6), and counts unauthenticated requests until 1.0 as every gate does. The requirement is a line in the 1.0 requirements of [WINDOWS_NODE](./DREAMFERENCE_WINDOWS_NODE.md) §10 and [MAC_NODE](./DREAMFERENCE_MAC_NODE.md) §9, and the check joins their acceptance gates (a request without a credential is refused at 1.0). Until their gates exist those nodes are not part of the 0.9.9 plan, which has no Windows or Mac node. A client whose resolved node has no gate yet signs in at the node's pinned primary, found by its advertisement. The Windows and Mac **clients** ship in 0.9.9 from the same launcher code (§16).
 
 ## 8. The screens
 
@@ -470,11 +477,11 @@ with `WWW-Authenticate: Bearer realm="ragon"` on every 401. Other codes use the 
 
 **The client in 0.9.9.** `ragon exec` never prompts, as Codex's `exec` never does: with nothing stored it sends no credential (`model-provider/src/auth.rs:205-221`) and the node serves and counts the request until version 1.0. Its unattended callers set `RAGON_API_KEY` (§13).
 
-**Windows and Mac nodes** have no gate. Their own specs add the check when a gate exists there; `ragon-admin status` on them says "no auth check".
+**Windows and Mac nodes** ship with the same check in 1.0, as secondaries (§7; owner 2026-11-19). `ragon-admin status` shows "auth check on" for every node, and a node that cannot run the check does not ship.
 
 ## 11. Commands
 
-The launcher stops refusing `login` and `logout` (`ragon-rs/src/lib.rs:148-154`, `REMOVED_COMMANDS` and `ACCOUNT_REASON`, and the test that asserts the refusal). Codex's CLI is not patched: the launcher handles the forms and passes the rest to Codex.
+The launcher stops refusing `login` and `logout` (`ragon-rs/src/lib.rs:148-154`, `REMOVED_COMMANDS` and `ACCOUNT_REASON`, and the test that asserts the refusal). Codex's CLI commands are not patched (the login crate and the app-server are, §15): the launcher handles the forms and passes the rest to Codex.
 
 | Command | Handled by | Does |
 |---|---|---|
@@ -497,11 +504,24 @@ The launcher stops refusing `login` and `logout` (`ragon-rs/src/lib.rs:148-154`,
 - `/users`: admins only (§12).
 - `/delete-account`: §12.
 
-**The account switcher** (owner 2026-11-19). Codex keeps one entry in `auth.json` and has no switcher. The owner's "one entry per primary node id" is met by the launcher, under a lock (open question 9):
-- `~/.ragon/auth.json` holds the entry of the resolved node's primary, as Codex expects;
-- the entries of other primaries sit beside it as `~/.ragon/auth-<primary node id>.json`, same mode;
-- at every start the launcher compares the active entry's org claim with the resolved node's primary id (`/ragon/v1/info`); on a mismatch it swaps the files before Codex starts;
-- `ragon login status --all` lists the entries by primary name.
+**The account switcher** (owner 2026-11-19, question 9: one file). Codex's `auth.json` holds one entry and has no switcher. The owner's "one entry per primary node id" is met by one `~/.ragon/auth.json` that holds every primary's entry and marks one of them active, with a patch that teaches Codex's reader the layout:
+- **Layout** (mode `0600`, written under a lock; the file replaces the single-entry file at first write, and a single-entry file is read as one entry whose key is the primary id in its org claim):
+
+```json
+{
+  "version": 2,
+  "active": "<primary node id>",
+  "entries": {
+    "<primary node id>": { "auth_mode": "...", "OPENAI_API_KEY": "...", "tokens": { }, "last_refresh": "..." },
+    "<other primary node id>": { }
+  }
+}
+```
+
+  Each value is exactly the single entry Codex writes today (`AuthDotJson`), so one entry is the old file's content.
+- **Patch `0041-ragon-auth-active-entry`** (about 2.4 KB, counted toward the cap of §15) changes Codex's reader and writer in `login/src/auth/storage.rs`: loading returns `entries[active]`; saving, `save_auth` included, replaces `entries[active]` and keeps the other entries and the marker; deleting (`logout`) removes `entries[active]` and moves the marker to none. A file with no `version` is the old layout and is read and written as before, so unpatched tooling keeps working on a one-entry file.
+- At every start the launcher resolves the node's primary id (`/ragon/v1/info`) and, under a lock, sets `active` to it when an entry for it exists. With no entry for it, `active` names it anyway and the first-run sign-in screen fills it. The launcher changes `active` by editing the file; it never moves the other entries.
+- `ragon login status --all` lists the entries by primary name, the active one marked.
 
 ## 12. Roles, admin commands and self-service
 
@@ -631,16 +651,16 @@ requires_openai_auth = true
 - The `<node>` is the node the launcher resolves today. A client whose node has no gate uses the gate of the node's pinned primary (§7).
 
 **The environment the launcher sets** for every Codex process it starts (§5.7):
-- `CODEX_APP_SERVER_LOGIN_ISSUER`, `CODEX_REFRESH_TOKEN_URL_OVERRIDE` and `CODEX_REVOKE_TOKEN_URL_OVERRIDE`, all pointing at the resolved node's gate (open question 1);
+- `CODEX_APP_SERVER_LOGIN_ISSUER`, `CODEX_REFRESH_TOKEN_URL_OVERRIDE` and `CODEX_REVOKE_TOKEN_URL_OVERRIDE`, all pointing at the resolved node's gate (§5.1; patch `0040` also reads the issuer from `config.toml`);
 - `CODEX_CA_CERTIFICATE`, the pinned CA of that node (§6);
 - `CODEX_API_KEY` from `RAGON_API_KEY`, else from `OPENAI_API_KEY`; `RAGON_API_KEY` wins when both are set;
 - the User-Agent suffix `+ragon/<version>` through `USER_AGENT_SUFFIX` (`login/src/auth/default_client.rs:41`).
 
-**The auth module.** A new `ragon-rs/src/auth/` holds the screen of §8, the commands of §11, the switcher, the CA pinning store and the translations of §8.5. It writes `auth.json` only through Codex's public `codex_login::save_auth` (`login/src/lib.rs:72`) and makes a running session reread it with `AuthManager::reload` (`login/src/auth/manager.rs:2481`). The login crate is not patched.
+**The auth module.** A new `ragon-rs/src/auth/` holds the screen of §8, the commands of §11, the switcher, the CA pinning store and the translations of §8.5. It writes `auth.json` only through Codex's public `codex_login::save_auth` (`login/src/lib.rs:72`) and makes a running session reread it with `AuthManager::reload` (`login/src/auth/manager.rs:2481`). Codex's login crate is patched in two places only, patches `0040` and `0041` (§5.1, §11); the launcher still writes entries only through `save_auth`, and it edits the `active` marker of §11 directly.
 
 **The CA pinning store.** `~/.ragon/nodes/<node id>/ca.pem`, written at first contact (§6) and at pairing (§14.1). A later certificate from another CA under the same node id stops the launcher with the message of §6.
 
-**Windows.** Codex sets mode `0600` on Unix only (`login/src/auth/storage.rs:214-217`). On Windows the launcher sets an access list on `auth.json`, `auth-<primary node id>.json` and the pinning store that grants the current user alone. The file store stays the default on every system (`config/src/types.rs:116-118`).
+**Windows.** Codex sets mode `0600` on Unix only (`login/src/auth/storage.rs:214-217`). On Windows the launcher sets an access list on `auth.json` and the pinning store that grants the current user alone. The file store stays the default on every system (`config/src/types.rs:116-118`).
 
 **The patches.**
 
@@ -649,10 +669,13 @@ requires_openai_auth = true
 | `0005-hide-vendor-login` | **Deleted.** Its two hunks hide `login` and `logout` (`cli/src/main.rs`) and turn off `/logout` (`tui/src/slash_command.rs`). `REMOVED_COMMANDS` and `ACCOUNT_REASON` in the launcher (`ragon-rs/src/lib.rs:148-154`) lose `login` and `logout` in the same row | −1,054 bytes |
 | `0038-ragon-sign-in-step` | Routes the onboarding sign-in step (`tui/src/lib.rs:2296-2304`; the widget in `tui/src/onboarding/auth.rs`) to the screen in `ragon-rs`, which draws it and returns once `auth.json` is written | about 1.8 KB |
 | `0039-ragon-account-commands` | The slash commands `/whoami`, `/password`, `/apikey`, `/sessions`, `/users` and `/delete-account` in `tui/src/slash_command.rs`, with one dispatch arm into `ragon-rs`, in the style of `0028-adapter-slash-command`; and the status line's Account item (`tui/src/bottom_pane/status_line_setup.rs:56`, beside `Hostname` at `:79`) | about 3.0 KB |
+| `0040-ragon-login-issuer` | The login crate takes the issuer, the refresh URL and the revoke URL from one function: the environment, else `ragon_issuer` in `config.toml`, else the constant (`login/src/server.rs:76`, `login/src/auth/manager.rs:212-215`) | about 0.7 KB |
+| `0041-ragon-auth-active-entry` | `auth.json` holds every primary's entry with an `active` marker; the reader and writer in `login/src/auth/storage.rs` use the active entry (§11) | about 2.4 KB |
+| `0042-ragon-account-signin-rpc` | The app-server request `account/ragon/signIn` and its handler, with one call into `ragon_launcher`; the schema files regenerated (§5.8) | about 3.6 KB |
 
-There is no app-server protocol change, so the generated schema files under `app-server-protocol/schema/` stay as they are.
+The one app-server protocol change is the new request of patch `0042`; the generated schema files under `app-server-protocol/schema/` are regenerated in its row and nowhere else.
 
-**The size cap.** `tests/test_codex_branded_builder.py:322` holds the series in `codex-patches/` under 64,000 bytes; it stands at 63,875. With the table above the series comes to about 67,600 bytes. **The cap rises from 64,000 to 69,000 bytes** in the row that lands patch `0038` (the brief's default, "raise to what rows need"). Each patch row records its measured size in its report.
+**The size cap.** `tests/test_codex_branded_builder.py:322` holds the series in `codex-patches/` under 64,000 bytes; it stands at 63,875. With the table above the series comes to about 74,300 bytes (the 0.7, 2.4 and 3.6 KB of patches `0040` to `0042` added to 67,600 bytes). **The cap rises from 64,000 to 76,000 bytes** in the first row that lands a patch of the series (patch `0040`, row `auth-l2-login-patches`; the brief's default, "raise to what rows need"). Each patch row records its measured size in its report.
 
 ## 16. Compatibility
 
@@ -740,31 +763,32 @@ The hardening items are on the 3.0 list in [SECURITY_REVIEW](./DREAMFERENCE_SECU
 - registration of OAuth `client_id` values;
 - certificate rotation and a PKI beyond each node's own CA.
 
-## 20. Open questions, each with its default
+## 20. Decisions
 
-Each default is what the rows build unless the owner rules otherwise.
+The owner answered the thirteen questions on 2026-11-19. Nine confirm the default the rows were built on; four (1, 4, 9, 13) changed it, and their sections carry the change. None is open.
 
-1. **How the issuer reaches Codex.** **Default:** the environment variables of §15, plus the top-level `chatgpt_base_url` written beside the provider entry in `config.toml`; no patch (§5.1).
-2. **The email claim.** **Default:** the username for Ragon's clients; `<username>@<primary name>.local` in the Forgejo client's id token and on the Account page (§5.3).
-3. **Device-auth shapes.** **Default:** both Codex's paths and the standard's, served from one table of codes (§5.5).
-4. **The desktop app's sign-in.** **Default:** its form runs the launcher's `login` and restarts its app-server; no RPC is added (§5.8).
-5. **WebSockets and `ragon web`'s other routes.** **Default:** the same Bearer check at the upgrade of every WebSocket and on `/ws` and `/api/transcribe` (§5.9, §14.4).
-6. **Plain HTTP in 0.9.9.** **Default:** served only to requests with no credentials, so that 0.9.8 clients keep working; a plain request that carries a credential, or goes to the sign-in routes, is refused with `403` "Use https://" (§6).
-7. **The order of the picker's lines.** **Default:** Codex's order, the two changed labels in the places of the lines they replace (§8.2).
-8. **Translations.** **Default:** a table in `ragon-rs`, the language from `LC_ALL`, `LC_MESSAGES` and `LANG`, English when none matches (§8.5).
-9. **The account switcher.** **Default:** `auth.json` plus one `auth-<primary node id>.json` per other primary, swapped under a lock (§11).
-10. **A secondary's service account.** **Default:** the secondary registers it on the primary through `/ragon/v1/nodes` when it pins the primary, keyed by its node id, with no admin step; the admin sees it marked "service" and may remove it (§13).
-11. **The accounts service port.** **Default:** 18100 on loopback, a constant in `dreamference/config/ports.py`; the gate forwards the authentication routes to it (§9).
-12. **What `--all` revokes.** **Default:** every session of the user on every machine; API keys stay, and are revoked by name (§11).
-13. **Windows and Mac nodes at version 1.0.** **Default:** they keep serving without a check until their own gates exist, a matter for their own specs; `ragon-admin status` there says "no auth check" (§7).
+1. **How the issuer reaches Codex.** **Decided (2026-11-19), differs from the default:** a patch to the login crate, `0040-ragon-login-issuer`, reads the issuer from `config.toml`; the environment variables and `chatgpt_base_url` stay as well (§5.1, §15).
+2. **The email claim.** **Decided (2026-11-19), the default:** the username for Ragon's clients; `<username>@<primary name>.local` in the Forgejo client's id token and on the Account page (§5.3).
+3. **Device-auth shapes.** **Decided (2026-11-19), the default:** both Codex's paths and the standard's, served from one table of codes (§5.5).
+4. **The desktop app's sign-in.** **Decided (2026-11-19), differs from the default:** a new app-server request `account/ragon/signIn` (patch `0042`); the form calls it and the app-server is not restarted (§5.8).
+5. **WebSockets and `ragon web`'s other routes.** **Decided (2026-11-19), the default:** the same Bearer check at the upgrade of every WebSocket and on `/ws` and `/api/transcribe` (§5.9, §14.4).
+6. **Plain HTTP in 0.9.9.** **Decided (2026-11-19), the default:** served only to requests with no credentials, so that 0.9.8 clients keep working; a plain request that carries a credential, or goes to the sign-in routes, is refused with `403` "Use https://" (§6).
+7. **The order of the picker's lines.** **Decided (2026-11-19), the default:** Codex's order, the two changed labels in the places of the lines they replace (§8.2).
+8. **Translations.** **Decided (2026-11-19), the default:** a table in `ragon-rs`, the language from `LC_ALL`, `LC_MESSAGES` and `LANG`, English when none matches (§8.5).
+9. **The account switcher.** **Decided (2026-11-19), differs from the default:** one `auth.json` holds every primary's entry with an `active` marker; Codex's reader and writer use the active entry (patch `0041`; layout in §11).
+10. **A secondary's service account.** **Decided (2026-11-19), the default:** the secondary registers it on the primary through `/ragon/v1/nodes` when it pins the primary, keyed by its node id, with no admin step; the admin sees it marked "service" and may remove it (§13).
+11. **The accounts service port.** **Decided (2026-11-19), the default:** 18100 on loopback, a constant in `dreamference/config/ports.py`; the gate forwards the authentication routes to it (§9).
+12. **What `--all` revokes.** **Decided (2026-11-19), the default:** every session of the user on every machine; API keys stay, and are revoked by name (§11).
+13. **Windows and Mac nodes at version 1.0.** **Decided (2026-11-19), differs from the default (an option the owner added):** both ship with the auth gate in 1.0 and no ungated node ships; the requirement is in their specs (§7).
 
 ## 21. Changes to other specs
 
 These are made when the rows land, not by this document:
 - **[RAGON_NODE](./DREAMFERENCE_RAGON_NODE.md):** decision 7 ("nodes have no roles") is superseded by the primary and secondary roles (§7); decision 4 ("no authentication") gains a pointer here; `ragon-admin init` gains the primary question; the TXT record gains `auth=primary`; the gate serves HTTPS (§6).
 - **[RAGON_ASK](./DREAMFERENCE_RAGON_ASK.md) §4.5:** "no account system" becomes the signed-in user of `~/.ragon/auth.json`, and `ragon web`'s login page (§14.4).
-- **[RAGON_CODEX](./DREAMFERENCE_RAGON_CODEX.md):** `login` and `logout` leave the removed commands; `0005` leaves the patch list, `0038` and `0039` join it; `--oss` gives way to the provider entry (§15).
+- **[RAGON_CODEX](./DREAMFERENCE_RAGON_CODEX.md):** `login` and `logout` leave the removed commands; `0005` leaves the patch list, `0038` to `0042` join it; `--oss` gives way to the provider entry (§15).
 - **[SECURITY_REVIEW](./DREAMFERENCE_SECURITY_REVIEW.md):** item 9 (the model server on port 8000) gains "served and counted in 0.9.9, refused at version 1.0"; the 3.0 list follows §19 (changed with this revision).
+- **[WINDOWS_NODE](./DREAMFERENCE_WINDOWS_NODE.md) §10 and [MAC_NODE](./DREAMFERENCE_MAC_NODE.md) §9:** the 1.0 requirements gain the auth gate (§7; done with this revision).
 - **[README](./README.md), "Accepted by design":** the row on the model server with no API key changes at version 1.0.
 
 ## Sources
