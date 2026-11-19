@@ -22,6 +22,7 @@ from dreamference.swe_bench.swe_bench_code_index import (
 )
 from dreamference.swe_bench.swe_bench_docker import SweBenchDocker
 from dreamference.swe_bench.swe_bench_runtime import SweBenchRuntime
+from dreamference.swe_bench.swe_bench_settings import SweBenchSettings
 
 ROW = {"instance_id": "acme__widget-1", "repo": "acme/widget", "base_commit": "a" * 40}
 
@@ -350,3 +351,23 @@ def test_cached_lists_the_index_names_sorted():
 
 def test_the_suite_does_not_see_the_real_cache():
     assert str(swe_bench_settings.CACHE_DIR).startswith(os.environ["HOME"])
+
+
+def test_swe_bench_settings_read_table_of_a_missing_or_bad_config_is_empty(monkeypatch, tmp_path):
+    missing = tmp_path / "missing.toml"
+    monkeypatch.setattr(
+        swe_bench_settings.ConfigPathResolver, "resolve_path", staticmethod(lambda: missing)
+    )
+
+    assert SweBenchSettings.read_table() == {}
+    assert SweBenchSettings.read_table(missing) == {}
+
+    broken = tmp_path / "broken.toml"
+    broken.write_text("[swe_bench\n")
+
+    assert SweBenchSettings.read_table(broken) == {}
+
+    not_a_table = tmp_path / "not-a-table.toml"
+    not_a_table.write_text("swe_bench = 1\n")
+
+    assert SweBenchSettings.read_table(not_a_table) == {}
