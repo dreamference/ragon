@@ -43,8 +43,9 @@ Now no test reaches the network: conftest stubs `ReleaseAssetDownloader.ensure` 
 
 The suite's time is process start-up and the sleeps the stand-ins play out, not the machine: the
 Night Shift and egress-audit tests run several stand-in processes each and take 1 to 4 s; the rest
-is about 0.1 s a test. It was measured at 2 minutes for about 1,080 tests (the
-"8 s" the project guide used to claim dated from a tenth of the suite).
+is about 0.1 s a test. The suite now holds about 6,700 tests - run
+`.venv/bin/python -m pytest tests --collect-only -q` and read the trailing
+"N tests collected" line to count them - and a full run takes tens of minutes.
 
 ## The code-standard ratchet
 
