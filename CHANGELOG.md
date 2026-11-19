@@ -2,6 +2,16 @@
 
 The full notes of each release are in `specs/DREAMFERENCE_RELEASE_<version>.md`.
 
+## 0.9.8 "Illuyanka" (2026-11-20)
+
+- Signal sends one new message per progress step instead of editing a message, so nothing flickers; editing stays an option (`ragon signal delivery edit`).
+- No new engine image: the 0.9.7 image stays pinned.
+- The platform quality specification: the Windows and Mac ports are judged on the same quality, not the same results, by benchmark bands from N = 5 reference runs.
+- SWE-bench Verified reference set on the 0.9.7 image: runs per slice with their spread (the four-slice set averages 239); this set is the band the ports are judged against.
+- RBRB week 2026-W47 so far: 8.7 % of generated tokens were Ragon's against a 7 % gate; the chart shows the running week and the target.
+- 72 small cleanups (typing, test coverage, constants) were landed by Ragon through the RBRB routing, none reverted.
+- The Windows engine port (HIP) passed its decode gate and its first speed lane.
+
 ## 0.9.7 "Vritra" (2026-11-17)
 
 - A new engine image (ragon-engine 46ab4259, `ragon-serve@sha256:f4391e2e`) with the fan-out policy: two exact levers on by default, 32 forks x 32K at 287 against 192 tok/s decode span on the 0.9.6 image, greedy output identical on 16 of 16 turns.
