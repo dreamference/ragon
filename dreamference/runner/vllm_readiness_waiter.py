@@ -29,7 +29,7 @@ class VLLMReadinessWaiter:
         """Initializes the waiter with a configuration and a server manager for its host.
 
         Args:
-            config (Optional[DreamferenceConfig]): Configuration instance (defaults to DreamferenceConfig()).
+            config (DreamferenceConfig|None): Configuration instance (defaults to DreamferenceConfig()).
         """
         self.config: DreamferenceConfig = config or DreamferenceConfig()
         self.vllm_manager: VLLMServerManager = VLLMServerManager(host=self.config.vllm_host)
@@ -39,7 +39,7 @@ class VLLMReadinessWaiter:
 
         Args:
             poll_interval (float): Seconds between polls.
-            max_wait (Optional[float]): Seconds to wait before giving up, or None to wait forever.
+            max_wait (float|None): Seconds to wait before giving up, or None to wait forever.
 
         Returns:
             bool: True once the server is healthy and answers a completion, False on timeout or
