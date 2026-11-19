@@ -500,3 +500,79 @@ def test_snapshot_dir_raises_when_no_complete_snapshot(tmp_path, monkeypatch):
 
     with pytest.raises(FileNotFoundError, match="snapshot is not in"):
         AdapterTrainGenerate.snapshot_dir(model_key)
+
+
+def test_served_assets_patches_the_served_snapshot_template_and_hashes_both(tmp_path, monkeypatch):
+    """Without named assets, the recipe's patches land on the snapshot's template and each is hashed."""
+    from hashlib import sha256
+
+    from dreamference.hardware.model_matrix_registry import (
+        DEFAULT_MODEL_ALIAS,
+        ModelMatrixRegistry,
+    )
+    from dreamference.vllm_server.chat_template_patcher import ChatTemplatePatcher
+
+    model_key = DEFAULT_MODEL_ALIAS
+    overrides = ModelMatrixRegistry.get_launch_overrides(model_key, "sglang")
+    revision = overrides["revision"]
+    patches = overrides["chat_template_patches"]
+    cache_dir = tmp_path / "hf_cache"
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache_dir))
+
+    pinned = (
+        cache_dir
+        / f"models--{ModelMatrixRegistry.resolve_hf_repo(model_key).replace('/', '--')}"
+        / "snapshots"
+        / revision
+    )
+    pinned.mkdir(parents=True)
+    template_text = "unpatched"
+    for anchor, _replacement in patches:
+        template_text += "\n" + anchor
+    (pinned / "chat_template.jinja").write_text(template_text)
+    tokenizer = pinned / "tokenizer.json"
+    tokenizer.write_text("{}")
+
+    generate = AdapterTrainGenerate(
+        tmp_path / "repo",
+        tmp_path / "out",
+        [],
+        [],
+        MODEL_HOST,
+        model_key=model_key,
+    )
+    template, tokenizer_path, digests = generate.served_assets()
+    patched, failed = ChatTemplatePatcher.apply(template_text, patches)
+    assert failed == []
+    assert template == patched
+    assert tokenizer_path == tokenizer
+    assert digests == {
+        "chat_template_sha256": sha256(patched.encode()).hexdigest(),
+        "tokenizer_sha256": sha256(Path(tokenizer).read_bytes()).hexdigest(),
+    }
+
+
+def test_served_assets_with_named_template_and_tokenizer_skips_the_patches(tmp_path):
+    """Named assets are used as-is, unpatched, and their bytes are hashed."""
+    from hashlib import sha256
+
+    template = tmp_path / "template.jinja"
+    template.write_text("named template")
+    tokenizer = tmp_path / "tokenizer.json"
+    tokenizer.write_text("{}")
+    generate = AdapterTrainGenerate(
+        tmp_path / "repo",
+        tmp_path / "out",
+        [],
+        [],
+        MODEL_HOST,
+        chat_template=template,
+        tokenizer=tokenizer,
+    )
+    text, tokenizer_path, digests = generate.served_assets()
+    assert text == "named template"
+    assert tokenizer_path == tokenizer
+    assert digests == {
+        "chat_template_sha256": sha256(b"named template").hexdigest(),
+        "tokenizer_sha256": sha256(b"{}").hexdigest(),
+    }
