@@ -32,6 +32,8 @@ futures = { workspace = true, features = ["std"] }
 # Pure-Rust mDNS browsing, one code path on Linux, macOS and Windows; no async runtime, no logging.
 mdns-sd = { version = "0.21.4", default-features = false }
 codex-login = { workspace = true }
+# The sign-in screen's key events (src/auth/screen.rs).
+crossterm = { workspace = true }
 ragon-airgapped = { path = "airgapped" }
 # Host-side git with the program-running config keys turned off (src/*.rs that run git in a checkout).
 ragon-safegit = { path = "safegit" }
@@ -54,6 +56,8 @@ ragon-monitor = { path = "monitor" }
 # `ragon delegate`: the Claude Code delegation plugin server and CLI (src/delegate.rs).
 ragon-delegate = { path = "delegate" }
 rand = { workspace = true }
+# The sign-in screen Codex's onboarding shows (src/auth/screen.rs, patch 0038).
+ratatui = { workspace = true }
 # The guards' rules on commands and last messages (src/guard.rs).
 regex-lite = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }

@@ -73,11 +73,10 @@ sessions in `~/.codex`, the first run copies them and your settings across, neve
 
 ## What Ragon removes
 
-Anything that would need a vendor's cloud or an account is hidden or refused:
+Anything that would need a vendor's cloud or account is hidden or refused. `login`, `logout` and `/logout` stay: they sign in to and out of the accounts server of your Ragon node, and the first start shows the sign-in step (sign in, create an account, a device code or an API key).
 
 | Feature | In Ragon |
 |---|---|
-| `login`, `logout`, `/logout` | Refused: there is no account to sign in to. |
 | `cloud` (`cloud-tasks`) | Switched off: it runs tasks on a vendor's servers. It may return for a private cloud. |
 | `remote-control` | Hidden. It relays sessions through a vendor's servers. |
 | `/feedback` | Removed. It uploaded session logs. |

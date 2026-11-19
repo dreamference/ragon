@@ -261,7 +261,7 @@ CASES: dict[str, Case] = {
         reason="Ragon offers apps only on a node (APPS §3), and the test's HOME is none",
     ),
     "plugins": Case("popup"),
-    "logout": Case("absent", reason="hidden by patch 0005: there is no account to sign out of"),
+    "logout": Case("exit"),
     "quit": Case("exit"),
     "exit": Case("exit"),
     "feedback": Case("absent", reason="removed by patch 0009: it uploads session logs to OpenAI"),
@@ -560,8 +560,8 @@ def test_a_fresh_home_opens_on_the_composer(tmp_path: Path, workspace: Path):
 # Command-line subcommands. The launcher answers these before it looks for a model server, so they
 # need only the built binary.
 
-HIDDEN_SUBCOMMANDS = ("cloud", "login", "logout", "remote-control")
-REFUSED_SUBCOMMANDS = ("cloud", "cloud-tasks", "login", "logout")
+HIDDEN_SUBCOMMANDS = ("cloud", "remote-control")
+REFUSED_SUBCOMMANDS = ("cloud", "cloud-tasks")
 
 
 def _ragon(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
@@ -612,12 +612,14 @@ def test_openai_hosted_subcommands_are_refused(tmp_path: Path, name: str):
 
 
 @needs_ragon
-@pytest.mark.parametrize("args", [("-c", "x=1", "login"), ("--oss", "cloud"), ("-cx=1", "logout")])
+@pytest.mark.parametrize(
+    "args", [("-c", "x=1", "cloud"), ("--oss", "cloud"), ("-cx=1", "cloud-tasks")]
+)
 def test_refusal_is_not_bypassed_by_options_before_the_subcommand(
     tmp_path: Path, args: tuple[str, ...]
 ):
-    # The launcher once checked only the first argument, so any option in front of `login` let
-    # the OpenAI sign-in start.
+    # The launcher once checked only the first argument, so any option in front of a refused
+    # subcommand let it start.
     result = _ragon(tmp_path, *args)
     assert result.returncode != 0
     assert f"`ragon {args[-1]}` is not available" in result.stderr, result.stdout + result.stderr

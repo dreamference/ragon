@@ -142,20 +142,16 @@ pub const LAUNCHER_SUBCOMMANDS: &[&str] = &[
 /// Codex subcommands Ragon does not offer, each with the reason it gives. They are refused here,
 /// before Codex parses argv, so the code behind them stays compiled and untouched in the fork.
 ///
-/// - `login`/`logout` are OpenAI account commands. Ragon talks to the model served on this
-///   machine, so there is no account to sign in to; patch 0005 also hides them from `--help` and
-///   `/logout` from the TUI.
+/// `login`/`logout` are not here: they sign in to the node's accounts server (specs/DREAMFERENCE_AUTH.md
+/// §8, §15), whose environment `auth::start` sets.
+///
 /// - `cloud` (alias `cloud-tasks`) browses Codex Cloud tasks on OpenAI's servers. It is switched
 ///   off rather than removed because it may later be pointed at a private cloud; patch 0006 also
 ///   hides it from `--help`. Taking it out of this list turns it back on.
 const REMOVED_COMMANDS: &[(&str, &str)] = &[
-    ("login", ACCOUNT_REASON),
-    ("logout", ACCOUNT_REASON),
     ("cloud", CLOUD_REASON),
     ("cloud-tasks", CLOUD_REASON),
 ];
-const ACCOUNT_REASON: &str =
-    "ragon uses the model served on this machine, so there is no account to sign in to or out of";
 const CLOUD_REASON: &str =
     "cloud tasks run on a vendor's servers; the command is switched off until a private cloud replaces it";
 
@@ -1770,17 +1766,19 @@ mod tests {
         unsafe { std::env::set_var(UPSTREAM_TESTS_ENV, "1") };
         let args: Vec<OsString> = ["ragon", "exec", "hello"].iter().map(OsString::from).collect();
         let prepared = prepare_args(&codex_like(), args.clone()).await;
-        let refused = prepare_args(&codex_like(), vec!["ragon".into(), "login".into()]).await;
+        let refused = prepare_args(&codex_like(), vec!["ragon".into(), "cloud".into()]).await;
         unsafe { std::env::remove_var(UPSTREAM_TESTS_ENV) };
         assert_eq!(prepared.unwrap(), args);
         assert!(refused.is_err(), "refused commands stay refused under Codex's tests");
     }
 
     #[test]
-    fn openai_login_and_logout_are_refused() {
-        assert_eq!(removed(&["login"]), Some("login"));
-        assert_eq!(removed(&["logout"]), Some("logout"));
-        assert_eq!(removed(&["exec", "login"]), None);
+    fn cloud_is_refused_and_the_account_commands_are_not() {
+        assert_eq!(removed(&["cloud"]), Some("cloud"));
+        assert_eq!(removed(&["cloud-tasks"]), Some("cloud-tasks"));
+        assert_eq!(removed(&["login"]), None);
+        assert_eq!(removed(&["logout"]), None);
+        assert_eq!(removed(&["exec", "cloud"]), None);
         assert_eq!(removed(&[]), None);
     }
 
@@ -1838,9 +1836,9 @@ mod tests {
 
     #[test]
     fn a_refused_command_is_refused_after_options_too() {
-        assert_eq!(removed(&["-c", "x=1", "login"]), Some("login"));
+        assert_eq!(removed(&["-c", "x=1", "cloud-tasks"]), Some("cloud-tasks"));
         assert_eq!(removed(&["--oss", "cloud"]), Some("cloud"));
-        assert_eq!(removed(&["-m", "login"]), None, "`login` is the model name here");
+        assert_eq!(removed(&["-m", "cloud"]), None, "`cloud` is the model name here");
     }
 
     #[test]

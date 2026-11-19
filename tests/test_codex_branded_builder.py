@@ -320,6 +320,7 @@ def test_the_patches_stay_small():
     # deleted and 0018, 0019, 0025 and 0028 re-cut; 57,571 after. Not raised for 0036 (554 bytes:
     # the trust evaluation agent in the macOS network policy); 62,774 after.
     # Raised to 76,000 by the owner for 0040 (login issuer) and 0041 (multi-entry auth.json); 74,901 after.
+    # Not raised for 0038 (2,074 bytes: the sign-in step's hooks), with 0005 deleted; 75,965 after.
     assert sum(Path(p).stat().st_size for p in CodexBrandedBuilder.patches()) < 76_000
 
 

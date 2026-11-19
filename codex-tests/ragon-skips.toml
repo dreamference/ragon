@@ -111,18 +111,12 @@ filter = """
 | (binary_id(codex-tui) & test(=chatwidget::tests::slash_commands::slash_pets_with_arg_selects_named_pet))
 """
 
-# cli-refused: 8 tests
+# cli-refused: 2 tests
 [[test]]
-reason = """`ragon login`, `logout` and `cloud` are refused before Codex parses its arguments (the launcher's REMOVED_COMMANDS, with patches 0005 and 0006): Ragon has no a cloud account. These tests run those commands."""
+reason = """`ragon cloud` is refused before Codex parses its arguments (the launcher's REMOVED_COMMANDS, with patch 0006): Ragon has no cloud account. These tests run that command."""
 filter = """
   (binary_id(codex-cli::cloud_auth) & test(=cloud_list_only_allows_trusted_credential_destinations))
 | (binary_id(codex-cli::features) & test(=strict_config_is_not_supported_for_cloud_command))
-| (binary_id(codex-cli::login) & test(=device_login_revokes_existing_auth_before_requesting_new_tokens))
-| (binary_id(codex-cli::login) & test(=login_status_reports_auth_storage_errors))
-| (binary_id(codex-cli::login) & test(=login_status_validates_configured_workload_identity))
-| (binary_id(codex-cli::login) & test(=login_with_access_token_rejects_invalid_jwt))
-| (binary_id(codex-cli::login) & test(=login_with_api_key_reads_stdin_and_writes_auth_json))
-| (binary_id(codex-cli::login) & test(=logout_clears_only_the_selected_bedrock_provider))
 """
 
 # cli-update: 1 tests

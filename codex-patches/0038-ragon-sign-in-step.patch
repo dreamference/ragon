@@ -1,0 +1,44 @@
+diff --git a/codex-rs/app-server/src/extensions.rs b/codex-rs/app-server/src/extensions.rs
+--- a/codex-rs/app-server/src/extensions.rs
++++ b/codex-rs/app-server/src/extensions.rs
+@@ -96,2 +96,3 @@
+     ragon_launcher::airgapped::install(&mut builder);
++    ragon_launcher::auth::screen::register(&auth_manager);
+     codex_guardian_v2::install(&mut builder, auth_manager.clone(), thread_manager);
+diff --git a/codex-rs/tui/src/onboarding/auth.rs b/codex-rs/tui/src/onboarding/auth.rs
+--- a/codex-rs/tui/src/onboarding/auth.rs
++++ b/codex-rs/tui/src/onboarding/auth.rs
+@@ -184,2 +184,11 @@
+     fn handle_key_event(&mut self, key_event: KeyEvent) {
++        let (f, s) = (self.request_frame.clone(), self.sign_in_state.clone());
++        let p = matches!(*s.read().unwrap(), SignInState::PickMode);
++        match ragon_launcher::auth::screen::key(p, key_event, move || f.schedule_frame()) {
++            0 => {}
++            2 => return self.handle_sign_in_option(SignInOption::DeviceCode),
++            3 => return self.handle_sign_in_option(SignInOption::ApiKey),
++            4 => return *s.write().unwrap() = SignInState::ChatGptSuccess,
++            _ => return,
++        }
+         if self.handle_bedrock_key_event(&key_event) {
+@@ -245,3 +254,3 @@
+             }
+-            _ => {}
++            _ => _ = ragon_launcher::auth::screen::paste(&pasted),
+         }
+@@ -317,3 +326,3 @@
+             SignInState::Bedrock(state) => state.is_text_entry_active(),
+-            _ => false,
++            _ => ragon_launcher::auth::screen::typing(),
+         })
+@@ -329,3 +338,3 @@
+             SignInState::Bedrock(state) => state.is_text_entry_active(),
+-            _ => false,
++            _ => ragon_launcher::auth::screen::typing(),
+         })
+@@ -1063,2 +1072,6 @@
+         let sign_in_state = self.sign_in_state.read().unwrap();
++        let s = &*sign_in_state;
++        if ragon_launcher::auth::screen::render(matches!(s, SignInState::PickMode), matches!(s, SignInState::ChatGptSuccess), area, buf) {
++            return;
++        }
+         match &*sign_in_state {

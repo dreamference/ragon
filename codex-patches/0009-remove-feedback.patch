@@ -9,8 +9,8 @@ diff --git a/codex-rs/tui/src/chatwidget/turn_runtime.rs b/codex-rs/tui/src/chat
 diff --git a/codex-rs/tui/src/slash_command.rs b/codex-rs/tui/src/slash_command.rs
 --- a/codex-rs/tui/src/slash_command.rs
 +++ b/codex-rs/tui/src/slash_command.rs
-@@ -310,2 +310,4 @@ impl SlashCommand {
-             SlashCommand::Logout => false,
+@@ -308,2 +308,4 @@ impl SlashCommand {
+             SlashCommand::Voice => true,
 +            // Ragon: /feedback uploads session logs to OpenAI, which an air-gapped tool must not do.
 +            SlashCommand::Feedback => false,
              SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),

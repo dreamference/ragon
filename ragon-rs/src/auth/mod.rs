@@ -7,6 +7,7 @@
 //! served as before.
 
 pub mod pin;
+pub mod screen;
 pub mod switcher;
 
 use std::path::{Path, PathBuf};
@@ -110,6 +111,7 @@ async fn fetch(client: &reqwest::Client, url: &str) -> Option<String> {
 pub async fn start(gate: &str, codex_home: &Path) -> anyhow::Result<()> {
     let gate = gate.trim_end_matches('/');
     let mut ca: Option<PathBuf> = None;
+    let mut known: Option<Info> = None;
     if wants_pin(gate) {
         // First contact has no CA to trust yet: the info and the CA are public documents, and what
         // they say is checked against the pin below and by Codex, which trusts only the pin.
@@ -135,8 +137,21 @@ pub async fn start(gate: &str, codex_home: &Path) -> anyhow::Result<()> {
                 }
             }
             switcher::set_active(codex_home, &info.primary_id)?;
+            known = Some(info);
         }
     }
+    // The sign-in screen (screen.rs) draws from what was found here and does no I/O of its own
+    // until a grant is sent. The upgrade note needs a home used before and no entry for the primary.
+    let label = node_label(gate);
+    let (node_name, primary_name) = known.as_ref().map_or((label.clone(), label), |info| (info.node_name.clone(), info.primary_name.clone()));
+    screen::set_node(screen::Node {
+        gate: gate.to_string(),
+        node_name,
+        primary_name,
+        ca: ca.clone(),
+        codex_home: codex_home.to_path_buf(),
+        upgrade: screen::used_before(codex_home),
+    });
     let ragon_key = std::env::var("RAGON_API_KEY").ok();
     let openai_key = std::env::var("OPENAI_API_KEY").ok();
     // SAFETY: called from the launcher's start-up path before the Codex session spawns threads of

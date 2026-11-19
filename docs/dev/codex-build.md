@@ -98,7 +98,7 @@ The builder needs no change: it already puts `RUSTC_WRAPPER=sccache` in front wh
 
 ### The patches are one-line hooks and nothing else
 
-35 patches, ~74.9 KB in all (74,901 bytes); `test_the_patches_stay_small` caps them at 76 KB. The cap's history:
+36 patches, ~76.0 KB in all (75,965 bytes); `test_the_patches_stay_small` caps them at 76 KB. The cap's history:
 
 - raised from 20 KB for the last on-screen Codex names;
 - to 25 KB for `0017-cave-mode` (removed; its bytes stay in the cap's history);
@@ -131,6 +131,7 @@ The builder needs no change: it already puts `RUSTC_WRAPPER=sccache` in front wh
 - not raised for `0036-macos-trust-evaluation-agent` (554 bytes: the network policy allows `com.apple.TrustEvaluationAgent`, which Apple's curl asks when `/etc/ssl/cert.pem` cannot build the chain); 62,774 after;
 - not raised for `0037-submission-log-without-payload` (1,101 bytes: the Submission debug line logs the id and the kind instead of the payload, and the log store's filter caps the TUI's reply-text trace; [codex-log-store.md](codex-log-store.md)); 63,875 after;
 - to 76 KB by the owner for `0040-ragon-login-issuer` (the issuer, refresh and revoke URLs from one function: environment, else `ragon_issuer` in `config.toml`, else the constant) and `0041-ragon-auth-active-entry` (`auth.json` with `version`, `active` and `entries`; the reader and writer use the active entry); 74,901 after;
+- not raised for `0038-ragon-sign-in-step` (2,074 bytes: Codex's sign-in step hands its keys, pastes and drawing to `ragon-rs/src/auth/screen.rs`, and the embedded app-server registers its `AuthManager` there), with `0005-hide-vendor-login` deleted now that `login`, `logout` and `/logout` reach the node's accounts server; 75,965 after;
 - and to be raised again, explicitly, for each hook that needs it.
 
 Not raised, when plugins were allowed at `/airgapped off`: the launcher and the bridge policy do it (`ragon-rs/src/plugins.rs`), and the only patch change is 0030's empty Curated tab, which now says the vendor's catalogue is closed in Ragon (33 bytes; overlay `0004-tests-neutral-vendor-names`).

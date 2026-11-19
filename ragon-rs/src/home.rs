@@ -78,7 +78,7 @@ fn set_codex_home() {
         {
             eprintln!(
                 "ragon: copied your session history from {} to {} ({carried} items). \
-                 No cloud sign-in was copied: Ragon has no account to sign in to.",
+                 No cloud sign-in was copied: Ragon signs in to your node instead.",
                 upstream.display(),
                 ragon_home.display()
             );
