@@ -11,6 +11,7 @@ sends a shared repository's branches and never the private one's.
 import os
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -363,3 +364,18 @@ def test_an_archive_is_private_before_its_history_is_pushed(tmp_path, monkeypatc
     monkeypatch.setattr(ForgeContainer, "api", classmethod(api))
     assert ForgeRepositories.import_bundles([tmp_path / "old.bundle"], "owner/archive-pre-rewrite")
     assert "PATCH ['private']" in calls[: calls.index("push")], calls
+
+
+def test_forge_accounts_show_password_once_prints_on_a_terminal_and_elsewhere(monkeypatch, capsys):
+    # The generated password is shown once on a terminal, or only named as kept, elsewhere.
+    monkeypatch.setattr(
+        ForgeSettings, "secret_path", classmethod(lambda cls, name: Path("/tmp") / name)
+    )
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    ForgeAccounts.show_password_once("Abc123Abc123Abc123Abc123")
+    out = capsys.readouterr().out
+    assert "Abc123Abc123Abc123Abc123" in out and "/tmp/owner-password" in out
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    ForgeAccounts.show_password_once("Abc123Abc123Abc123Abc123")
+    out = capsys.readouterr().out
+    assert "Abc123Abc123Abc123Abc123" not in out and "/tmp/owner-password" in out
