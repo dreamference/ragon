@@ -601,3 +601,21 @@ def test_the_timers_state_is_systemds_word_or_unknown(monkeypatch):
     assert RemotePublicCertificate.timer_state() == "inactive"
     _commands(monkeypatch, {"is-active": _done([], "", 127)})
     assert RemotePublicCertificate.timer_state() == "unknown"
+
+
+def test_remote_public_certificate_install_serves_what_lego_left_on_disk(monkeypatch, tmp_path):
+    certificate = tmp_path / "box.crt"
+    key = tmp_path / "box.key"
+    certificate.write_text("CERT-PEM")
+    key.write_text("KEY-PEM")
+    served = []
+    monkeypatch.setattr(
+        RemotePublicCertificate, "files", classmethod(lambda cls, name: (certificate, key))
+    )
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "serve",
+        classmethod(lambda cls, name, crt, k: served.append((name, crt, k)) or True),
+    )
+    assert RemotePublicCertificate.install(BOX) is True
+    assert served == [(BOX, "CERT-PEM", "KEY-PEM")]
