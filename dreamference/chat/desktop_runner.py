@@ -322,7 +322,7 @@ class DesktopRunner:
         cannot drift away from the one the app actually uses.
 
         Returns:
-            Optional[str]: The identifier, or None if the config cannot be read.
+            str | None: The identifier, or None if the config cannot be read.
         """
         return cls._app_config().get("identifier")
 
@@ -347,7 +347,7 @@ class DesktopRunner:
         """Locates the packaged desktop binary (`electron-forge package` or `make` output).
 
         Returns:
-            Optional[str]: Path to the binary, or None if it has not been built.
+            str | None: Path to the binary, or None if it has not been built.
         """
         config = cls._app_config()
         name = config.get("productName", "Ragon")
