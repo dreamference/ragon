@@ -442,3 +442,61 @@ def test_rollout_messages_mirror_the_servers_request_conversion(tmp_path):
     )
     with pytest.raises(ValueError, match="compacted"):
         AdapterTrainGenerate.rollout_messages(rollout)
+
+
+def test_snapshot_dir_returns_the_revision_when_named(tmp_path, monkeypatch):
+    """The revision named by the sglang recipe selects the snapshot without listing the cache."""
+    revision = "16e768e7d0461b0b86e565ecedd08a24eca53e9a"
+    model_key = "qwen3.8-27b-minima-nvfp4-dflash2"
+    cache_dir = tmp_path / "hf_cache"
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache_dir))
+
+    # Build the expected snapshot layout with both marker files present.
+    snapshots = cache_dir / "models--minima-ai--mnma_qwen3.8_27b_nvfp4" / "snapshots"
+    pinned = snapshots / revision
+    pinned.mkdir(parents=True)
+    (pinned / "chat_template.jinja").write_text("template")
+    (pinned / "tokenizer.json").write_text("{}")
+
+    # Also create a different snapshot that is incomplete (no tokenizer) to verify it is skipped.
+    other = snapshots / "other-revision"
+    other.mkdir()
+    (other / "chat_template.jinja").write_text("template")
+    # tokenizer.json intentionally absent
+
+    result = AdapterTrainGenerate.snapshot_dir(model_key)
+    assert result == pinned
+
+
+def test_snapshot_dir_without_revision_globs_the_cache(tmp_path, monkeypatch):
+    """Without a revision in the recipe, the first complete snapshot is used."""
+    from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
+
+    model_key = "some-model"
+    cache_dir = tmp_path / "hf_cache"
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache_dir))
+    repo_id = ModelMatrixRegistry.resolve_hf_repo(model_key)
+    snapshots = cache_dir / f"models--{repo_id.replace('/', '--')}" / "snapshots"
+    good = snapshots / "abc123"
+    good.mkdir(parents=True)
+    (good / "chat_template.jinja").write_text("template")
+    (good / "tokenizer.json").write_text("{}")
+    result = AdapterTrainGenerate.snapshot_dir(model_key)
+    assert result == good
+
+
+def test_snapshot_dir_raises_when_no_complete_snapshot(tmp_path, monkeypatch):
+    """A FileNotFoundError is raised when no snapshot has both marker files."""
+    model_key = "qwen3.8-27b-minima-nvfp4-dflash2"
+    revision = "16e768e7d0461b0b86e565ecedd08a24eca53e9a"
+    cache_dir = tmp_path / "hf_cache"
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache_dir))
+
+    snapshots = cache_dir / "models--minima-ai--mnma_qwen3.8_27b_nvfp4" / "snapshots"
+    pinned = snapshots / revision
+    pinned.mkdir(parents=True)
+    # Only one of the two marker files: incomplete
+    (pinned / "chat_template.jinja").write_text("template")
+
+    with pytest.raises(FileNotFoundError, match="snapshot is not in"):
+        AdapterTrainGenerate.snapshot_dir(model_key)
