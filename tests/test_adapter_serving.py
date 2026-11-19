@@ -29,6 +29,7 @@ from dreamference.hardware.model_matrix_registry import (
     QWEN38_LORA_RECIPE,
     ModelMatrixRegistry,
 )
+from dreamference.vllm_server import model_gate_compat as gate_compat
 from dreamference.vllm_server.adapter_serving import AdapterServing
 from dreamference.vllm_server.model_gate import ModelGate
 from dreamference.vllm_server.model_gate_adapters import (
@@ -37,6 +38,7 @@ from dreamference.vllm_server.model_gate_adapters import (
     REFUSED_PATHS,
     ModelGateAdapters,
 )
+from dreamference.vllm_server.model_gate_auth import ModelGateAuth
 from dreamference.vllm_server.model_gate_service import (
     BODY_LIMIT,
     READ_ONLY_PATHS,
@@ -498,7 +500,14 @@ class Engine(BaseHTTPRequestHandler):
 
 
 @pytest.fixture
-def gate(tmp_path):
+def gate(tmp_path, monkeypatch):
+    async def accept(self, bearer):
+        return {
+            "name": "someone",
+            "claims": None,
+        }  # AUTH §10: a credential the account check refuses gets 401
+
+    monkeypatch.setattr(ModelGateAuth, "lookup", accept)
     Engine.seen, Engine.loaded, Engine.load_seconds = [], [], 0.0
     Engine.load_status = Engine.unload_status = 200
     engine = ThreadingHTTPServer(("127.0.0.1", 0), Engine)
@@ -737,7 +746,9 @@ def test_the_gates_model_list_names_the_adapters_as_base_plus_name(gate):
     ids = [
         entry["id"] for entry in json.loads(call(gate["port"], "/v1/models", method="GET"))["data"]
     ]
-    assert ids == [BASE, f"{BASE}+cpp", f"{BASE}+rust", f"{BASE}+ts"]
+    # The Codex aliases (model_gate_compat.ALIASES) follow the served ids.
+    assert ids[:4] == [BASE, f"{BASE}+cpp", f"{BASE}+rust", f"{BASE}+ts"]
+    assert ids[4:] == list(gate_compat.ALIASES)
 
 
 # -- ragon-serve serves them itself [key]
