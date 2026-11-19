@@ -131,6 +131,18 @@ Section "Install"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "QuietUninstallString" '"$INSTDIR\Uninstall Ragon.exe" /S'
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair" 1
+  ; The CA of each node already pinned (~\.ragon\nodes\<id>\ca.pem, written by ragon at first
+  ; contact) goes into the current user's trust store, never the machine's (AUTH spec 6).
+  FindFirst $1 $2 "$PROFILE\.ragon\nodes\*"
+  ca_next:
+    StrCmp $2 "" ca_done
+    IfFileExists "$PROFILE\.ragon\nodes\$2\ca.pem" 0 ca_skip
+      nsExec::Exec '"$SYSDIR\certutil.exe" -user -addstore Root "$PROFILE\.ragon\nodes\$2\ca.pem"'
+    ca_skip:
+    FindNext $1 $2
+    Goto ca_next
+  ca_done:
+  FindClose $1
 SectionEnd
 
 Section "Uninstall"

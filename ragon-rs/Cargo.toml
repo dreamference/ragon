@@ -31,6 +31,7 @@ flate2 = { workspace = true }
 futures = { workspace = true, features = ["std"] }
 # Pure-Rust mDNS browsing, one code path on Linux, macOS and Windows; no async runtime, no logging.
 mdns-sd = { version = "0.21.4", default-features = false }
+codex-login = { workspace = true }
 ragon-airgapped = { path = "airgapped" }
 # Host-side git with the program-running config keys turned off (src/*.rs that run git in a checkout).
 ragon-safegit = { path = "safegit" }

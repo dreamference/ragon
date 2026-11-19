@@ -139,11 +139,11 @@ mod tests {
         let out = with_scope(args, "abc123");
         assert_eq!(out[1], OsString::from("-c"));
         let text = out[2].to_string_lossy().to_string();
-        assert_eq!(text, "model_providers.openai-custom.http_headers.X-Ragon-Share-Scope=\"abc123\"");
+        assert_eq!(text, "model_providers.ragon.http_headers.X-Ragon-Share-Scope=\"abc123\"");
         let (key, raw) = text.split_once('=').unwrap_or_default();
         let table: toml::Table = format!("_x_ = {raw}").parse().unwrap_or_default();
         assert_eq!(table["_x_"].as_str(), Some("abc123"));
-        assert!(key.starts_with("model_providers.openai-custom."));
+        assert!(key.starts_with("model_providers.ragon."));
         // A header the user set on the command line is kept.
         assert_eq!(with_scope(out.clone(), "other"), out);
     }

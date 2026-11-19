@@ -188,6 +188,8 @@
 /ragon-web-rs/src/airgapped.rs                   @dreamference/security
 /ragon-rs/src/airgapped.rs                       @dreamference/security
 /ragon-rs/src/audit.rs                           @dreamference/security
+/ragon-rs/src/auth/                              @dreamference/security
+/ragon-rs/tests/auth_provider.rs                  @dreamference/security
 /ragon-rs/web/policy.json                        @dreamference/security @dreamference/web @dreamference/desktop
 /codex-patches/0013-*                           @dreamference/security @dreamference/agent
 /codex-patches/0015-*                           @dreamference/security @dreamference/agent

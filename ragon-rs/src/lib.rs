@@ -11,7 +11,7 @@
 //! 4. Write a model catalog entry for that model and one for each adapter the server lists on it
 //!    (adapter.rs), plus the `config.toml` settings Codex needs to use them. Both go in
 //!    `$CODEX_HOME` (default `~/.codex`).
-//! 5. Put `--oss --local-provider openai-custom --model <id>` in front of the user's arguments,
+//! 5. Put `-c model_provider="ragon" --model <id>` in front of the user's arguments,
 //!    `<id>` being the base or the session's adapter (`<base>+<name>`). These are root options, so
 //!    `exec`, `resume` and `fork` inherit them.
 //!
@@ -38,6 +38,7 @@ pub mod airgapped;
 pub mod app;
 pub mod apps;
 pub mod audit;
+pub mod auth;
 #[cfg(unix)]
 pub mod chat;
 pub mod code_index;
@@ -103,9 +104,11 @@ pub const DEFAULT_VLLM_HOST: &str = "http://localhost:8000";
 pub const DETACHED_PROCESS_FLAGS: u32 = 0x0000_0200 | 0x0000_0008;
 
 /// The provider name the catalog and `config.toml` agree on.
-pub const PROVIDER: &str = "openai-custom";
+pub const PROVIDER: &str = "ragon";
 
-/// Where Codex's ChatGPT-backend requests go: a closed local port. Codex builds every such request
+/// Where Codex's ChatGPT-backend requests went before the gate served stubs (spec AUTH §5.9): a
+/// closed local port. The egress audit (`audit.rs`) still names it as a connect that must not happen.
+/// Codex builds every such request
 /// (plugins, connectors, account and usage lookups, ...) from `chatgpt_base_url`, which defaults to
 /// `https://chatgpt.com/backend-api/`. Patches 0013 and 0015 remove the calls found on a traced
 /// session; this makes any call not found fail on this machine instead of reaching OpenAI.
@@ -631,6 +634,9 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
         .context("could not resolve CODEX_HOME")?
         .as_path()
         .to_path_buf();
+    // The account system's start: the node's CA pinned, the primary's entry marked active, the
+    // environment Codex inherits (auth/mod.rs; specs/DREAMFERENCE_AUTH.md §15).
+    auth::start(&host, &codex_home).await?;
     // Where the session's edits land (worktree.rs; specs/DREAMFERENCE_RAGON_WORKTREE.md): in
     // place by default, as in Codex; in worktree mode a new interactive session moves into a fresh
     // worktree on a branch of its own before anything below reads the working folder.
@@ -1551,8 +1557,13 @@ pub fn updated_config(existing: &str, catalog_path: &Path, host: &str) -> anyhow
     // theirs, which would replace Ragon with upstream Codex. Forced, not set only when absent:
     // a `true` left in the file turned the request back on.
     doc["check_for_update_on_startup"] = value(false);
-    // Always, not only when absent: this is a privacy boundary, not a preference.
-    doc["chatgpt_base_url"] = value(OFFLINE_CHATGPT_BASE_URL);
+    // Always, not only when absent: this is a privacy boundary, not a preference. Codex's backend
+    // requests go to the node's gate (stubs, spec AUTH §5.9), never to the vendor; `ragon_issuer`
+    // is read by the login crate's patch 0040 (spec AUTH §5.1).
+    let gate = host.trim_end_matches('/');
+    doc["model_provider"] = value(PROVIDER);
+    doc["chatgpt_base_url"] = value(format!("{gate}/backend-api/"));
+    doc["ragon_issuer"] = value(gate);
     // A chosen terminal pet downloads its art from OpenAI's CDN (persistent.oaistatic.com) at
     // startup; /pets is hidden (patch 0010), and a pet left in the file is dropped for the same
     // reason.
@@ -1563,8 +1574,13 @@ pub fn updated_config(existing: &str, catalog_path: &Path, host: &str) -> anyhow
     let providers = table(doc.as_table_mut(), "model_providers");
     providers.set_implicit(true);
     let provider = table(providers, PROVIDER);
-    provider["name"] = value(PROVIDER);
-    provider["base_url"] = value(format!("{}/v1", host.trim_end_matches('/')));
+    provider["name"] = value(auth::node_label(gate));
+    provider["base_url"] = value(format!("{gate}/v1"));
+    provider["wire_api"] = value("responses");
+    // Account mode: the bearer comes from `auth.json` (or `CODEX_API_KEY`), never from an
+    // environment variable the provider names.
+    provider["requires_openai_auth"] = value(true);
+    provider.remove("env_key");
     // Only when absent, so a user can set their own (CONTEXT_BUDGET §1.10).
     set_if_absent(provider, "stream_idle_timeout_ms", STREAM_IDLE_TIMEOUT_MS);
 
@@ -1648,13 +1664,12 @@ pub(crate) fn option_values<'a>(user_args: &'a [String], flags: &'a [&'a str]) -
     })
 }
 
-/// Puts the local-model options in front of the user's arguments, unless the user chose their own.
+/// Puts the model options in front of the user's arguments, unless the user chose their own.
 ///
-/// `--oss --local-provider` choose the provider for the session, but not for the account check
-/// the TUI makes at startup: that reads the configured `model_provider`, which on a fresh
-/// `CODEX_HOME` is OpenAI's, so a new user landed on the "Sign in with ChatGPT" screen. The
-/// `-c model_provider=…` override fixes that without writing the choice into `config.toml`, which
-/// may be shared with an upstream Codex install.
+/// The provider is the `[model_providers.ragon]` entry `config.toml` carries (`updated_config`),
+/// not `--oss`: the entry turns on Codex's account mode. `-c model_provider=…` stays, so the
+/// startup account check reads the same provider in every process whatever a shared `config.toml`
+/// says.
 pub fn with_local_model_args(args: Vec<OsString>, model_id: &str) -> Vec<OsString> {
     let user_args: Vec<String> = args
         .iter()
@@ -1673,17 +1688,9 @@ pub fn with_local_model_args(args: Vec<OsString>, model_id: &str) -> Vec<OsStrin
             .split_once('=')
             .is_some_and(|(key, _)| key.trim() == "model_provider")
     });
-    let local_provider = option_values(&user_args, &["--local-provider"]).last();
     let mut injected: Vec<OsString> = Vec::new();
-    if !has(&["--oss"]) {
-        injected.push("--oss".into());
-    }
-    if local_provider.is_none() {
-        injected.extend(["--local-provider".into(), PROVIDER.into()]);
-    }
     if !overrides_provider {
-        let provider = local_provider.unwrap_or(PROVIDER);
-        injected.extend(["-c".into(), format!("model_provider=\"{provider}\"").into()]);
+        injected.extend(["-c".into(), format!("model_provider=\"{PROVIDER}\"").into()]);
     }
     if !has(&["--model", "-m"]) && option_values(&user_args, &["-m"]).next().is_none() {
         injected.extend(["--model".into(), model_id.into()]);
@@ -1867,11 +1874,8 @@ mod tests {
             out,
             strings(&[
                 "ragon",
-                "--oss",
-                "--local-provider",
-                PROVIDER,
                 "-c",
-                "model_provider=\"openai-custom\"",
+                "model_provider=\"ragon\"",
                 "--model",
                 "Intel/Qwen",
                 "exec",
@@ -1893,13 +1897,11 @@ mod tests {
         // Without `model_provider` the TUI's account check sees OpenAI's provider and a fresh
         // CODEX_HOME opens on the ChatGPT sign-in screen.
         let out = prepared(&["ragon"]);
-        assert!(out.windows(2).any(|w| w[0] == "-c" && w[1] == "model_provider=\"openai-custom\""));
-        // A provider the user chose is the one selected, and their own override is left alone.
-        let out = prepared(&["ragon", "--local-provider", "ollama"]);
-        assert!(out.contains(&"model_provider=\"ollama\"".to_string()));
-        assert_eq!(out.iter().filter(|arg| *arg == "--local-provider").count(), 1);
+        assert!(out.windows(2).any(|w| w[0] == "-c" && w[1] == "model_provider=\"ragon\""));
+        assert!(!out.iter().any(|arg| arg == "--oss" || arg == "--local-provider"));
+        // Their own override is left alone.
         let out = prepared(&["ragon", "-c", "model_provider=mine"]);
-        assert!(!out.iter().any(|arg| arg.contains("openai-custom\"")));
+        assert!(!out.iter().any(|arg| arg.contains("ragon\"")));
         let out = prepared(&["ragon", "--config=model_provider = \"mine\""]);
         assert_eq!(out.iter().filter(|arg| arg.starts_with("model_provider")).count(), 0);
     }
@@ -2183,8 +2185,10 @@ mod tests {
         );
         assert_eq!(
             parsed.get("chatgpt_base_url").and_then(toml::Value::as_str),
-            Some(OFFLINE_CHATGPT_BASE_URL)
+            Some("http://x:8000/backend-api/")
         );
+        assert_eq!(parsed.get("ragon_issuer").and_then(toml::Value::as_str), Some("http://x:8000"));
+        assert_eq!(parsed.get("model_provider").and_then(toml::Value::as_str), Some(PROVIDER));
         assert_eq!(parsed.get("suppress_unstable_features_warning").and_then(toml::Value::as_bool), Some(true));
         let tui = parsed.get("tui").and_then(toml::Value::as_table);
         assert!(tui.is_some_and(|tui| !tui.contains_key("model_catalog_json")));
@@ -2232,7 +2236,7 @@ mod tests {
             parsed.get("check_for_update_on_startup").and_then(toml::Value::as_bool),
             Some(false)
         );
-        assert_eq!(parsed.get("chatgpt_base_url").and_then(toml::Value::as_str), Some(OFFLINE_CHATGPT_BASE_URL));
+        assert_eq!(parsed.get("chatgpt_base_url").and_then(toml::Value::as_str), Some("http://x:8000/backend-api/"));
         let tui = parsed.get("tui").and_then(toml::Value::as_table);
         assert!(tui.is_some_and(|tui| !tui.contains_key("pet") && tui.contains_key("theme")));
     }
@@ -2274,13 +2278,13 @@ mod tests {
         assert_eq!(parsed["features"].get("code_mode").and_then(toml::Value::as_bool), Some(false));
         let provider = &parsed["model_providers"][PROVIDER];
         assert_eq!(provider.get("stream_idle_timeout_ms").and_then(toml::Value::as_integer), Some(120_000));
-        assert_eq!(provider.get("env_key").and_then(toml::Value::as_str), Some("MINE"));
+        assert_eq!(provider.get("env_key"), None, "account mode takes no env_key");
         assert_eq!(provider.get("base_url").and_then(toml::Value::as_str), Some("http://x:8000/v1"));
         // The whole providers table inline, and the provider inside it.
         let existing = format!("model_providers = {{ {PROVIDER} = {{ env_key = \"MINE\" }} }}\n");
         let text = updated_config(&existing, Path::new("/h/c.json"), "http://x:8000").unwrap_or_default();
         let parsed: toml::Table = toml::from_str(&text).unwrap_or_default();
-        assert_eq!(parsed["model_providers"][PROVIDER].get("env_key").and_then(toml::Value::as_str), Some("MINE"), "{text}");
+        assert_eq!(parsed["model_providers"][PROVIDER].get("env_key"), None, "{text}");
     }
 
     #[test]
@@ -2408,7 +2412,7 @@ mod tests {
         let parsed: toml::Table = toml::from_str(&text).unwrap_or_default();
         assert_eq!(parsed.get("model_catalog_json").and_then(toml::Value::as_str), Some("/h/c.json"));
         let provider = &parsed["model_providers"][PROVIDER];
-        assert_eq!(provider.get("name").and_then(toml::Value::as_str), Some(PROVIDER));
+        assert_eq!(provider.get("name").and_then(toml::Value::as_str), Some("x"));
         assert_eq!(provider.get("base_url").and_then(toml::Value::as_str), Some("http://x:8000/v1"));
     }
 
