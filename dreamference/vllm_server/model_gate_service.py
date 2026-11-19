@@ -81,6 +81,20 @@ HTTP_CONTINUE: Final[int] = 100
 HTTP_SWITCHING_PROTOCOLS: Final[int] = 101
 HTTP_OK_FLOOR: Final[int] = 200
 
+# The primary's accounts service (`dreamference/accounts/accounts_service.py`, port `ACCOUNTS_PORT`)
+# answers the sign-in routes; the gate forwards them there, whatever its state, so a run holding the
+# gate never blocks a sign-in or a logout (specs/DREAMFERENCE_AUTH.md §5.1). A literal: this file
+# runs in the gate's container, without the package.
+ACCOUNTS_UPSTREAM: Final[tuple[str, int]] = ("127.0.0.1", 18100)
+ACCOUNT_PATHS: Final[tuple[str, ...]] = (
+    "/oauth/token",
+    "/oauth/revoke",
+    "/oauth/userinfo",
+    "/.well-known/jwks.json",
+    "/.well-known/openid-configuration",
+)
+ACCOUNT_PREFIXES: Final[tuple[str, ...]] = ("/ragon/v1/users",)
+
 RUN_FILE: Final[str] = "run.json"
 PAUSE_FILE: Final[str] = "pause.json"
 
@@ -149,16 +163,24 @@ CLOSE_BRACE: Final[int] = ord("}")
 class ModelGateService:
     """The proxy and the rules it applies; the rules are classmethods the host shares."""
 
-    def __init__(self, listen: tuple[str, int], upstream: tuple[str, int], state_dir: str) -> None:
+    def __init__(
+        self,
+        listen: tuple[str, int],
+        upstream: tuple[str, int],
+        state_dir: str,
+        accounts: tuple[str, int] = ACCOUNTS_UPSTREAM,
+    ) -> None:
         """Set up the gate service.
 
         Args:
             listen: Address and port to serve on (the model server's public port).
             upstream: The engine's loopback address and internal port.
             state_dir: The directory holding `run.json` and `pause.json`.
+            accounts: The accounts service's loopback address and port.
         """
         self.listen = listen
         self.upstream = upstream
+        self.accounts = accounts
         self.state_dir = state_dir
         self.server: asyncio.AbstractServer | None = None
         self.adapters = GateAdapters(state_dir, upstream)
@@ -765,10 +787,12 @@ class ModelGateService:
                 return
             framing = self.framing(headers)
             expects_continue = EXPECT_CONTINUE in dict(headers).get(b"expect", b"").lower()
-            if not self.allows(state, peer_address, method, path):
-                await self.refuse(
-                    reader, writer, state, framing, expects_continue, (method, path, peer_address)
-                )
+            if await self.divert(
+                reader,
+                writer,
+                (state, framing, expects_continue),
+                (method, path, peer_address, head),
+            ):
                 return
             forward = await self.adapter_request(reader, writer, (method, path, head), framing)
             if forward is None:
@@ -808,6 +832,108 @@ class ModelGateService:
         finally:
             await self.close_connection(tasks, (upstream_writer, writer))
             self.log_usage(tap)
+
+    async def divert(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        decision: tuple[dict[str, Any], tuple[str, int], bool],
+        request: tuple[str, str, str, bytes],
+    ) -> bool:
+        """Answers a request that does not go to the engine: an auth route, or one refused.
+
+        An auth route goes to the accounts service even while a run holds the gate, so a
+        client can sign in or refresh during a run (specs/DREAMFERENCE_AUTH.md §9).
+
+        Args:
+            reader: The client's stream.
+            writer: The client's writer.
+            decision: The gate's state, the request's framing and whether it expects 100.
+            request: Method, path, peer address and the raw head.
+
+        Returns:
+            bool: True when the request was answered here.
+        """
+        state, framing, expects_continue = decision
+        method, path, peer_address, head = request
+        if self.is_account_route(path):
+            await self.forward_account(reader, writer, (method, head), framing)
+            return True
+        if not self.allows(state, peer_address, method, path):
+            await self.refuse(
+                reader, writer, state, framing, expects_continue, (method, path, peer_address)
+            )
+            return True
+        return False
+
+    @classmethod
+    def is_account_route(cls, path: str) -> bool:
+        """True for a path the accounts service answers (`ACCOUNT_PATHS`, `ACCOUNT_PREFIXES`)."""
+        route = path.split("?", 1)[0].rstrip("/") or "/"
+        return route in ACCOUNT_PATHS or any(
+            route == prefix or route.startswith(prefix + "/") for prefix in ACCOUNT_PREFIXES
+        )
+
+    async def forward_account(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        request: tuple[str, bytes],
+        framing: tuple[str, int],
+    ) -> None:
+        """Streams one request to the accounts service and its answer back.
+
+        No engine key, no adapter rule and no usage tap: the request and its credentials go to the
+        accounts service as the client sent them, one request per connection.
+
+        Args:
+            reader: The client.
+            writer: The client.
+            request: Its method and head.
+            framing: `framing()`'s answer.
+        """
+        method, head = request
+        try:
+            accounts_reader, accounts_writer = await asyncio.wait_for(
+                asyncio.open_connection(*self.accounts), UPSTREAM_CONNECT_TIMEOUT_S
+            )
+        except (TimeoutError, OSError):
+            await self.respond_accounts_unreachable(writer, method)
+            return
+        tasks: list[asyncio.Task] = []
+        try:
+            accounts_writer.write(self.rewrite_head(head))
+            await accounts_writer.drain()
+
+            async def client_side() -> None:
+                await self.copy_body(reader, framing, accounts_writer)
+                await self.watch_client(reader)
+
+            tasks = [
+                asyncio.ensure_future(client_side()),
+                asyncio.ensure_future(self.pipe_response(accounts_reader, writer)),
+            ]
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            await self.close_connection(tasks, (accounts_writer,))
+
+    async def respond_accounts_unreachable(self, writer: asyncio.StreamWriter, method: str) -> None:
+        """Answers an auth route when the accounts service cannot be reached (503)."""
+        await self.respond(
+            writer,
+            503,
+            "Service Unavailable",
+            {
+                "error": {
+                    "message": "authentication server unreachable",
+                    "type": "service_unavailable",
+                    "code": "accounts_unavailable",
+                    "param": None,
+                }
+            },
+            [("Retry-After", "5")],
+            head_only=method == METHOD_HEAD,
+        )
 
     @classmethod
     def log_usage(cls, tap: dict[str, Any] | None) -> None:

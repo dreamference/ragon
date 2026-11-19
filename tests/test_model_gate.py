@@ -982,3 +982,109 @@ def test_ragon_serve_starts_behind_the_gate_without_sglangs_runtime_patch(monkey
     assert not any(event[0] == "patch" for event in events)
     assert [kwargs["gate"] for kwargs in built] == [True]
     assert events.index(("gate", 8000)) < events.index(("docker", "run"))
+
+
+# -- the auth routes go to the accounts service (specs/DREAMFERENCE_AUTH.md §5.1) ----------------
+
+
+@pytest.fixture
+def accounts_live(tmp_path):
+    """The accounts service and a gate in front of it and the stand-in engine, on scratch ports."""
+    from dreamference.accounts import AccountsService, AccountsStore
+
+    StandIn.seen = []
+    StandIn.second_chunk = threading.Event()
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), StandIn)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    store = AccountsStore(
+        tmp_path / "accounts" / "accounts.db", primary_name="box", audit_sink=[].append
+    )
+    accounts = AccountsService.server(AccountsService.build(store), port=0)
+    threading.Thread(target=accounts.serve_forever, daemon=True).start()
+    state_dir = tmp_path / "gate"
+    state_dir.mkdir()
+    loop = asyncio.new_event_loop()
+    service = ModelGateService(
+        ("127.0.0.1", 0),
+        ("127.0.0.1", upstream.server_address[1]),
+        str(state_dir),
+        accounts=("127.0.0.1", accounts.server_address[1]),
+    )
+    port = loop.run_until_complete(service.start())
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    yield {"port": port, "state": state_dir}
+    stop_gate(loop, thread, service)
+    for server in (accounts, upstream):
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_gate_forwards_the_auth_routes_to_the_accounts_service_even_while_a_run_holds_it(
+    accounts_live,
+):
+    write(accounts_live["state"], RUN_FILE, run_record())
+    port = accounts_live["port"]
+    body = json.dumps({"username": "t-alice", "password": "pw-alice-1", "client_id": "c"}).encode()
+    with post(port, "/ragon/v1/users", body) as response:
+        tokens = json.loads(response.read())
+    assert set(tokens) == {"id_token", "access_token", "refresh_token", "expires_in", "token_type"}
+    refresh = json.dumps(
+        {"client_id": "c", "grant_type": "refresh_token", "refresh_token": tokens["refresh_token"]}
+    ).encode()
+    with post(port, "/oauth/token", refresh) as response:
+        assert json.loads(response.read())["refresh_token"] == tokens["refresh_token"]
+    # The caller's Authorization reaches the accounts service as it was sent.
+    me = urllib.request.Request(
+        f"http://127.0.0.1:{port}/ragon/v1/users/me",
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+    )
+    with urllib.request.urlopen(me, timeout=10) as response:
+        assert json.loads(response.read())["username"] == "t-alice"
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/.well-known/jwks.json", timeout=10) as r:
+        assert json.loads(r.read())["keys"][0]["alg"] == "RS256"
+    assert StandIn.seen == []  # The engine never saw one of them.
+    # A model request is still refused while the run holds the gate.
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        post(port)
+    assert refused.value.code == 503
+
+
+def test_an_auth_route_with_no_accounts_service_answers_503_unreachable(tmp_path):
+    loop = asyncio.new_event_loop()
+    with socket.socket() as spare:
+        spare.bind(("127.0.0.1", 0))
+        dead = spare.getsockname()[1]
+    service = ModelGateService(
+        ("127.0.0.1", 0), ("127.0.0.1", dead), str(tmp_path), accounts=("127.0.0.1", dead)
+    )
+    port = loop.run_until_complete(service.start())
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as answer:
+            post(port, "/oauth/token", b'{"grant_type": "password"}')
+        assert answer.value.code == 503
+        assert json.loads(answer.value.read())["error"]["message"] == (
+            "authentication server unreachable"
+        )
+    finally:
+        stop_gate(loop, thread, service)
+
+
+def test_only_the_auth_routes_go_to_the_accounts_service():
+    from dreamference.config.ports import ACCOUNTS_PORT
+
+    assert model_gate_service.ACCOUNTS_UPSTREAM == ("127.0.0.1", ACCOUNTS_PORT)
+    for path in (
+        "/oauth/token",
+        "/oauth/revoke",
+        "/oauth/token?x=1",
+        "/.well-known/jwks.json",
+        "/.well-known/openid-configuration",
+        "/ragon/v1/users",
+        "/ragon/v1/users/me/sessions/3",
+    ):
+        assert ModelGateService.is_account_route(path), path
+    for path in ("/v1/responses", "/v1/models", "/ragon/v1/usersX", "/oauth", "/ragon-gate"):
+        assert not ModelGateService.is_account_route(path), path

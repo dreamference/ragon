@@ -102,7 +102,9 @@ class AccountsStore:
         fd = os.open(self.path, os.O_CREAT | os.O_RDWR, STORE_MODE)
         os.close(fd)
         self.path.chmod(STORE_MODE)
-        self.db = sqlite3.connect(self.path)
+        # The accounts service may open the store on one thread and serve on another; it serves one
+        # request at a time, so the connection is never used by two threads at once.
+        self.db = sqlite3.connect(self.path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
         self.db.commit()
@@ -337,6 +339,109 @@ class AccountsStore:
             (self._hash(token),),
         ).fetchone()
         return row is not None and row["revoked"] is None and row["removed"] is None
+
+    def open_session(self, name: str, client_id: str, machine: str) -> tuple[str, int]:
+        """Mints a refresh token like `issue_refresh_token` and names its session.
+
+        Args:
+            name: The user.
+            client_id: The grant's client.
+            machine: The machine name the client gave.
+
+        Returns:
+            tuple[str, int]: The token (shown once) and the session id.
+        """
+        token = self.issue_refresh_token(name, client_id, machine)
+        row = self.db.execute(
+            "SELECT rowid FROM tokens WHERE token_hash = ?", (self._hash(token),)
+        ).fetchone()
+        return token, int(row[0])
+
+    def session_for_refresh(self, token: str) -> dict[str, Any] | None:
+        """Finds the live session of a refresh token and records its use.
+
+        Args:
+            token: The refresh token.
+
+        Returns:
+            dict[str, Any] | None: `session_id`, `client_id`, `machine` and `user` (as
+                `_public`), or None when the token is unknown, revoked or its user removed.
+        """
+        row = self.db.execute(
+            "SELECT t.rowid AS session_id, t.client_id, t.machine, u.* FROM tokens t"
+            " JOIN users u ON u.user_id = t.user_id"
+            " WHERE t.token_hash = ? AND t.revoked IS NULL AND u.removed IS NULL",
+            (self._hash(token),),
+        ).fetchone()
+        if row is None:
+            return None
+        self.db.execute(
+            "UPDATE tokens SET last_use = ? WHERE rowid = ?", (time.time(), row["session_id"])
+        )
+        self.db.commit()
+        return {
+            "session_id": int(row["session_id"]),
+            "client_id": row["client_id"],
+            "machine": row["machine"],
+            "user": self._public(row),
+        }
+
+    def session_alive(self, session_id: int, user_id: str) -> bool:
+        """Returns True when the session is the user's, not revoked, and the user still exists."""
+        row = self.db.execute(
+            "SELECT 1 FROM tokens t JOIN users u ON u.user_id = t.user_id WHERE t.rowid = ?"
+            " AND t.user_id = ? AND t.revoked IS NULL AND u.removed IS NULL",
+            (session_id, user_id),
+        ).fetchone()
+        return row is not None
+
+    def user_by_id(self, user_id: str) -> dict[str, Any] | None:
+        """Returns the live user with this id (as `_public`), or None."""
+        row = self.db.execute(
+            "SELECT * FROM users WHERE user_id = ? AND removed IS NULL", (user_id,)
+        ).fetchone()
+        return None if row is None else self._public(row)
+
+    def sessions(self, user_id: str) -> list[dict[str, Any]]:
+        """Lists the user's live sessions: id, client, machine, creation and last use."""
+        rows = self.db.execute(
+            "SELECT rowid AS id, client_id, machine, created, last_use FROM tokens"
+            " WHERE user_id = ? AND revoked IS NULL ORDER BY rowid",
+            (user_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def revoke_refresh_token(self, token: str) -> bool:
+        """Revokes the session of a refresh token.
+
+        Returns:
+            bool: True when a live session was revoked; an unknown token is not an error.
+        """
+        cursor = self.db.execute(
+            "UPDATE tokens SET revoked = ? WHERE token_hash = ? AND revoked IS NULL",
+            (time.time(), self._hash(token)),
+        )
+        self.db.commit()
+        return cursor.rowcount > 0
+
+    def revoke_sessions(self, user_id: str, session_id: int | None = None) -> int:
+        """Revokes one of the user's sessions, or all of them.
+
+        Args:
+            user_id: The user.
+            session_id: One session, or None for every session.
+
+        Returns:
+            int: How many sessions were revoked.
+        """
+        query = "UPDATE tokens SET revoked = ? WHERE user_id = ? AND revoked IS NULL"
+        params: tuple[Any, ...] = (time.time(), user_id)
+        if session_id is not None:
+            query += " AND rowid = ?"
+            params += (session_id,)
+        cursor = self.db.execute(query, params)
+        self.db.commit()
+        return cursor.rowcount
 
     def mint_key(self, name: str, key_name: str = "default") -> str:
         """Mints an API key `sk-ragon-<32 random bytes, base64url>`; only its SHA-256 is stored.

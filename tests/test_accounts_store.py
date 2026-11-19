@@ -154,3 +154,34 @@ def test_accounts_store_audit_lines_carry_no_secret(store, lines):
     assert "event=signin" in journal and "result=invalid_grant" in journal
     for secret in ("hunter2-pw", "wrong-pw", "brandnew-pw", token, key, one_time, "$argon2"):
         assert secret not in journal
+
+
+def test_accounts_store_sessions_open_refresh_list_and_revoke(store):
+    alice = store.create_user("alice", "")
+    bob = store.create_user("bob", "")
+    token, sid = store.open_session("alice", "cli", "laptop")
+    other, other_sid = store.open_session("alice", "cli", "desk")
+    bob_token, bob_sid = store.open_session("bob", "cli", "m")
+    session = store.session_for_refresh(token)
+    assert session["session_id"] == sid and session["machine"] == "laptop"
+    assert session["client_id"] == "cli" and session["user"]["user_id"] == alice["user_id"]
+    assert "password_hash" not in session["user"]
+    assert store.session_for_refresh("not-a-token") is None
+    assert store.session_alive(sid, alice["user_id"]) and not store.session_alive(
+        sid, bob["user_id"]
+    )
+    assert store.user_by_id(bob["user_id"])["username"] == "bob"
+    assert store.user_by_id("missing") is None
+    listed = store.sessions(alice["user_id"])
+    assert {s["id"] for s in listed} == {sid, other_sid}
+    assert set(listed[0]) == {"id", "client_id", "machine", "created", "last_use"}
+    assert store.revoke_refresh_token(token) and not store.revoke_refresh_token(token)
+    assert store.session_for_refresh(token) is None and not store.session_alive(
+        sid, alice["user_id"]
+    )
+    assert store.revoke_sessions(alice["user_id"], bob_sid) == 0
+    assert store.revoke_sessions(alice["user_id"]) == 1
+    assert store.session_for_refresh(other) is None
+    assert store.session_for_refresh(bob_token) is not None
+    store.remove_user("bob")
+    assert store.session_for_refresh(bob_token) is None and store.user_by_id(bob["user_id"]) is None

@@ -28,6 +28,8 @@ setup(
         "beautifulsoup4>=4.12.0",
         # The accounts store hashes passwords with argon2id (specs/DREAMFERENCE_AUTH.md §9).
         "argon2-cffi>=23.1.0",
+        # The accounts service signs RS256 tokens (specs/DREAMFERENCE_AUTH.md §5.2).
+        "cryptography>=42.0",
     ],
     extras_require={
         # The code standard's tools (specs/DREAMFERENCE_PYTHON_QUALITY.md §4), pinned: the ratchet
