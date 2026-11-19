@@ -68,7 +68,7 @@ def test_the_device_holds_an_interactive_thread_and_an_exec_session(tmp_path):
     assert THREAD_ID != EXEC_ID
 
 
-def test_the_scenario_pairs_a_device_and_traces_its_agent_with_the_node_named(
+def test_sync_egress_audit_trace_pairs_a_device_and_traces_its_agent_with_the_node_named(
     tmp_path, monkeypatch
 ):
     # A stand-in for `ragon` that records how it was called, writes the server's marker for `web
@@ -213,3 +213,43 @@ def test_sync_egress_audit_step_returns_the_reason_when_the_agent_cannot_start(t
     with patch("subprocess.Popen", side_effect=OSError("no such binary")):
         said = SyncEgressAudit.step("/opt/ragon", ["exec"], {"HOME": str(tmp_path)})
     assert said == "no such binary"
+
+
+def test_sync_egress_audit_trace_reports_a_hub_that_cannot_be_spawned(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    with (
+        patch.object(EgressAudit, "free_port", return_value=PORT),
+        patch("subprocess.Popen", side_effect=OSError("no such file")),
+    ):
+        trace, port, published, exec_held, outputs = SyncEgressAudit.trace("ragon", str(work))
+    assert (port, published, exec_held) == (PORT, False, True)
+    assert outputs == {"web serve": "no such file"}
+    assert not trace.destinations
+
+
+def test_sync_egress_audit_trace_retries_the_kill_when_the_hub_is_already_gone(tmp_path):
+    from subprocess import TimeoutExpired
+    from unittest.mock import MagicMock
+
+    work = tmp_path / "work"
+    work.mkdir()
+    server = MagicMock(pid=4242)
+    server.poll.return_value = 1
+    server.wait.side_effect = [TimeoutExpired("hub", 20), None]
+    kills = []
+
+    def killpg(pid, sig):
+        kills.append(sig)
+        if len(kills) == 1:
+            raise ProcessLookupError
+
+    with (
+        patch.object(EgressAudit, "free_port", return_value=PORT),
+        patch("subprocess.Popen", return_value=server),
+        patch.object(SyncEgressAudit, "step", return_value="no code here"),
+        patch("os.killpg", side_effect=killpg),
+    ):
+        _, _, published, exec_held, outputs = SyncEgressAudit.trace("ragon", str(work))
+    assert len(kills) == 2 and (published, exec_held) == (False, True)
+    assert set(outputs) == {"hub", "pair", "agent"}
