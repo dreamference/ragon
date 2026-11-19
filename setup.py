@@ -35,6 +35,8 @@ setup(
         # The code standard's tools (specs/DREAMFERENCE_PYTHON_QUALITY.md §4), pinned: the ratchet
         # test compares ruff's findings with a baseline that only the pinned version recorded.
         "dev": ["ruff==0.16.10", "mypy==2.4.0"],
+        # The vendor's Python SDK, unmodified: tests/test_gate_sdk_compat.py (AUTH §18). Never in the node venv.
+        "sdk": ["openai>=2.0"],
     },
     entry_points={
         "console_scripts": [
