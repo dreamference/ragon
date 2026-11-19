@@ -18,6 +18,7 @@ from typing import Any, Final
 
 from dreamference.accounts.accounts_jwt import KEY_FILE, AccountsJwt
 from dreamference.accounts.accounts_oauth import AccountsOauth
+from dreamference.accounts.accounts_secondary import AccountsSecondary
 from dreamference.accounts.accounts_store import AccountsStore
 from dreamference.config.ports import ACCOUNTS_PORT, DEFAULT_MODEL_PORT
 from dreamference.node.node_identity import NodeIdentity
@@ -56,6 +57,36 @@ class AccountsService:
         )
         return AccountsOauth(store, signer, log=cls.log)
 
+    @classmethod
+    def build_secondary(
+        cls, primary_url: str | None = None, ca_file: Path | None = None
+    ) -> AccountsSecondary:
+        """Builds the secondary's handler for the pinned primary (§7).
+
+        Args:
+            primary_url: The primary's gate; found from its advertisement when None.
+            ca_file: The primary's pinned CA; `~/.ragon/nodes/<id>/ca.pem` when it exists.
+
+        Returns:
+            AccountsSecondary: The handler.
+
+        Raises:
+            SystemExit: No primary is pinned, or its advertisement is not on the network.
+        """
+        from dreamference.node.node_settings import NodeSettings
+
+        node_id = NodeSettings.pinned_primary()
+        if primary_url is None:
+            if node_id is None:
+                raise SystemExit("No primary is pinned: run `ragon-admin node primary <node id>`.")
+            primary_url = AccountsSecondary.find_primary(node_id)
+            if primary_url is None:
+                raise SystemExit(f"The primary {node_id} is not advertised on this network.")
+        if ca_file is None and node_id:
+            pinned = Path("~/.ragon/nodes").expanduser() / node_id / "ca.pem"
+            ca_file = pinned if pinned.is_file() else None
+        return AccountsSecondary(primary_url, ca_file)
+
     @staticmethod
     def log(line: str) -> None:
         """Writes one operational line to stderr (the journal under systemd)."""
@@ -63,7 +94,9 @@ class AccountsService:
         sys.stderr.flush()
 
     @classmethod
-    def handler_class(cls, oauth: AccountsOauth) -> type[BaseHTTPRequestHandler]:
+    def handler_class(
+        cls, oauth: "AccountsOauth | AccountsSecondary"
+    ) -> type[BaseHTTPRequestHandler]:
         """A request handler class bound to `oauth`."""
 
         class Handler(BaseHTTPRequestHandler):
@@ -96,27 +129,29 @@ class AccountsService:
 
     @classmethod
     def answer(
-        cls, oauth: AccountsOauth, request: BaseHTTPRequestHandler
+        cls, oauth: "AccountsOauth | AccountsSecondary", request: BaseHTTPRequestHandler
     ) -> tuple[int, dict[str, str], dict[str, Any]]:
         """Reads the body (bounded) and asks the handler; a failure is a fixed-text 500."""
         headers = {name.lower(): value for name, value in request.headers.items()}
         if CHUNKED in headers.get("transfer-encoding", "").lower():
-            return oauth.api_error(411, "length_required", "Send a Content-Length.")
+            return AccountsOauth.api_error(411, "length_required", "Send a Content-Length.")
         try:
             length = int(headers.get("content-length", "0") or 0)
         except ValueError:
-            return oauth.api_error(400, "invalid_request", "Bad Content-Length.")
+            return AccountsOauth.api_error(400, "invalid_request", "Bad Content-Length.")
         if length < 0 or length > MAX_BODY:
-            return oauth.api_error(413, "body_too_large", "The body is too large.")
+            return AccountsOauth.api_error(413, "body_too_large", "The body is too large.")
         body = request.rfile.read(length) if length else b""
         try:
             return oauth.handle(request.command, request.path, headers, body)
         except Exception as error:  # noqa: BLE001 - one answer for anything unexpected
             cls.log(f"internal error: {type(error).__name__}")
-            return oauth.api_error(500, "server_error", "The accounts service failed.")
+            return AccountsOauth.api_error(500, "server_error", "The accounts service failed.")
 
     @classmethod
-    def server(cls, oauth: AccountsOauth, port: int = ACCOUNTS_PORT) -> HTTPServer:
+    def server(
+        cls, oauth: "AccountsOauth | AccountsSecondary", port: int = ACCOUNTS_PORT
+    ) -> HTTPServer:
         """An HTTP server on 127.0.0.1:`port`, not yet serving (port 0 picks one)."""
         return HTTPServer((LISTEN_HOST, port), cls.handler_class(oauth))
 
@@ -134,8 +169,15 @@ class AccountsService:
         parser.add_argument("--port", type=int, default=ACCOUNTS_PORT)
         parser.add_argument("--store", type=Path, default=None, help="the accounts.db file")
         parser.add_argument("--primary-name", default=None)
+        parser.add_argument(
+            "--secondary", action="store_true", help="forward to the pinned primary"
+        )
+        parser.add_argument("--primary-url", default=None, help="the pinned primary's gate")
         args = parser.parse_args(argv)
-        oauth = cls.build(AccountsStore(args.store, primary_name=args.primary_name))
+        if args.secondary:
+            oauth: AccountsOauth | AccountsSecondary = cls.build_secondary(args.primary_url)
+        else:
+            oauth = cls.build(AccountsStore(args.store, primary_name=args.primary_name))
         httpd = cls.server(oauth, args.port)
         cls.log(f"accounts service on {LISTEN_HOST}:{httpd.server_address[1]}")
         with contextlib.suppress(KeyboardInterrupt):

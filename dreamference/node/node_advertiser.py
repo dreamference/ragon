@@ -102,6 +102,7 @@ class NodeAdvertiser:
             search_port=cls.search_port(),
             main=cls.serves_main_model(),
             remote=cls.remote_name(),
+            auth_primary=NodeSettings.auth_primary(),
         )
         # The advertisement first, the binds only once it is in place: a node whose web UI is on
         # the LAN but which nobody can find is the worst of both states.

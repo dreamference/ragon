@@ -14,7 +14,7 @@ import sys
 import time
 from typing import TYPE_CHECKING, Any, Final
 
-from dreamference.accounts import AccountsAdmin
+from dreamference.accounts import AccountsAdmin, AccountsMigrate
 from dreamference.cli.adapter_command import ADAPTER_COMMAND, AdapterCommand
 from dreamference.cli.monitor_command import MONITOR_COMMAND, MonitorCommand
 from dreamference.config import DreamferenceConfig, ProxyBypass
@@ -192,6 +192,15 @@ _MIN_FENCE_PARTS: Final[int] = 2
 
 class DreamferenceCLIController:
     """Controller class for ragon-admin operations, Rich status panels, and subcommand routing."""
+
+    @classmethod
+    def _ask_auth_role(cls) -> None:
+        """Asks once, on a terminal, whether this node is the authentication primary or a secondary."""
+        if not sys.stdin.isatty():
+            return
+        from dreamference.node.node_browser import NodeBrowser
+
+        AccountsMigrate.choose(NodeBrowser.browse)
 
     @classmethod
     def display_header(cls) -> None:
@@ -2434,6 +2443,7 @@ class DreamferenceCLIController:
         )
         node_subparsers = node_parser.add_subparsers(dest="node_command")
         AccountsAdmin.add_parser(node_subparsers)
+        AccountsMigrate.add_parser(node_subparsers)
         node_enable_parser = node_subparsers.add_parser(
             "enable",
             help="Advertise the node and publish the web UI and web search to the local network",
@@ -4768,6 +4778,7 @@ class DreamferenceCLIController:
             target_config_path = getattr(args, "config", None)
             resolved_path = ConfigPathResolver.resolve_path(target_config_path)
             saved_config_path = generate_default_init_config(resolved_path)
+            cls._ask_auth_role()
             from dreamference.context_engine import ContextEngine
 
             ctx_engine = ContextEngine()
@@ -4926,6 +4937,10 @@ class DreamferenceCLIController:
         elif args.command == _ARG_NODE:
             from dreamference.node import NodeAdvertiser
 
+            if args.node_command == AccountsMigrate.PRIMARY_COMMAND:
+                sys.exit(AccountsMigrate.run_primary(args))
+            if args.node_command == AccountsMigrate.MIGRATE_COMMAND:
+                sys.exit(AccountsMigrate.run_migrate(args))
             if args.node_command == _ARG_USER:
                 sys.exit(AccountsAdmin.run(args))
 

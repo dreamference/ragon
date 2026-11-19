@@ -12,6 +12,7 @@ from typing import Any, Final
 
 LOOPBACK: Final[str] = "127.0.0.1"
 EVERY_INTERFACE: Final[str] = "0.0.0.0"
+AUTH_PRIMARY: Final[str] = "primary"
 
 
 class NodeSettings:
@@ -47,11 +48,52 @@ class NodeSettings:
             advertise: Whether the node is advertised.
             web: Whether the web UI is shared with the network when it is.
         """
+        cls._write({"advertise": advertise, "web": web})
+
+    @classmethod
+    def _raw(cls) -> dict[str, Any]:
+        """The file's whole content, `{}` when missing or unreadable."""
+        try:
+            data: Any = json.loads(cls.path().read_text())
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @classmethod
+    def _write(cls, changes: dict[str, Any]) -> None:
+        """Merges `changes` into the file (a None value drops the key) and replaces it atomically."""
+        data = cls._raw()
+        for key, value in changes.items():
+            if value is None:
+                data.pop(key, None)
+            else:
+                data[key] = value
         path = cls.path()
         path.parent.mkdir(parents=True, exist_ok=True)
         staging = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        staging.write_text(json.dumps({"advertise": advertise, "web": web}, indent=2) + "\n")
+        staging.write_text(json.dumps(data, indent=2) + "\n")
         Path(staging).replace(path)
+
+    @classmethod
+    def auth_primary(cls) -> bool:
+        """Whether this node is the authentication primary (specs/DREAMFERENCE_AUTH.md §7)."""
+        return cls._raw().get("auth") == AUTH_PRIMARY
+
+    @classmethod
+    def pinned_primary(cls) -> str | None:
+        """The node id a secondary pins as its primary, or None."""
+        value = cls._raw().get("primary")
+        return value if isinstance(value, str) and value else None
+
+    @classmethod
+    def set_self_primary(cls) -> None:
+        """Makes this node the primary: `auth=primary` is advertised, no other id is pinned."""
+        cls._write({"auth": AUTH_PRIMARY, "primary": None})
+
+    @classmethod
+    def set_pinned_primary(cls, node_id: str) -> None:
+        """Makes this node a secondary of the primary with `node_id`."""
+        cls._write({"auth": None, "primary": node_id})
 
     @classmethod
     def auth_enforce(cls) -> bool:

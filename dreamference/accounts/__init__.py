@@ -6,7 +6,9 @@ from dreamference.accounts.accounts_device import AccountsDevice
 from dreamference.accounts.accounts_error import AccountsError
 from dreamference.accounts.accounts_forgejo_client import AccountsForgejoClient
 from dreamference.accounts.accounts_jwt import AccountsJwt
+from dreamference.accounts.accounts_migrate import AccountsMigrate
 from dreamference.accounts.accounts_oauth import AccountsOauth
+from dreamference.accounts.accounts_secondary import AccountsSecondary
 from dreamference.accounts.accounts_service import AccountsService
 from dreamference.accounts.accounts_store import AccountsStore
 from dreamference.accounts.accounts_usage import AccountsUsage
@@ -18,7 +20,9 @@ __all__ = [
     "AccountsError",
     "AccountsForgejoClient",
     "AccountsJwt",
+    "AccountsMigrate",
     "AccountsOauth",
+    "AccountsSecondary",
     "AccountsService",
     "AccountsStore",
     "AccountsUsage",

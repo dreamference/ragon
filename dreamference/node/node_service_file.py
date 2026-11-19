@@ -25,6 +25,9 @@ STATES: Final[tuple] = ("stopped", "loading", "ready")
 # "Leave this record as it is", for the two records whose value can also be "absent" (None).
 KEEP: Final[object] = object()
 
+# The `auth` record's value on the authentication primary (specs/DREAMFERENCE_AUTH.md §7).
+AUTH_PRIMARY: Final[str] = "primary"
+
 
 class NodeServiceFile:
     """Renders, reads and rewrites `ragon-node.service`."""
@@ -44,6 +47,7 @@ class NodeServiceFile:
         main: bool = False,
         remote: str | None = None,
         forge: tuple[str, int] | None = None,
+        auth_primary: bool = False,
     ) -> str:
         """Renders the service file.
 
@@ -59,6 +63,8 @@ class NodeServiceFile:
                 name, never an address. None leaves the record out.
             forge: The forge's role (`record` or `mirror`) and HTTP port, advertised as a second
                 service, `_ragon-forge._tcp`; None when the forge is off.
+            auth_primary: Whether the node is the authentication primary; adds `auth=primary`
+                (specs/DREAMFERENCE_AUTH.md §7).
 
         Returns:
             str: The file's exact text. The instance name is the host name (`%h`).
@@ -75,6 +81,8 @@ class NodeServiceFile:
             records.append("main=1")
         if remote:
             records.append(f"remote={remote}")
+        if auth_primary:
+            records.append(f"auth={AUTH_PRIMARY}")
         lines = [
             "<?xml version=\"1.0\" standalone='no'?>",
             '<!DOCTYPE service-group SYSTEM "avahi-service.dtd">',
@@ -203,6 +211,7 @@ class NodeServiceFile:
         search_port: Any = KEEP,
         remote: object = KEEP,
         forge: object = KEEP,
+        auth_primary: bool | None = None,
     ) -> bool | None:
         """Changes records of the installed file and leaves the others as they are.
 
@@ -215,6 +224,7 @@ class NodeServiceFile:
             search_port: SearXNG's port, or None to stop advertising it; `KEEP` leaves it.
             remote: The node's overlay name, or None to stop advertising it; `KEEP` leaves it.
             forge: The forge's (role, port), or None to stop advertising it; `KEEP` leaves it.
+            auth_primary: Whether `auth=primary` is advertised; None leaves it as it is.
 
         Returns:
             Optional[bool]: None when the node is not advertised (nothing to do), True when the
@@ -245,6 +255,9 @@ class NodeServiceFile:
             if remote is KEEP
             else (str(remote) if remote else None),
             forge=advertised_forge,
+            auth_primary=(current.get("auth") == AUTH_PRIMARY)
+            if auth_primary is None
+            else auth_primary,
         )
         try:
             if cls.service_path.read_text() == text:
