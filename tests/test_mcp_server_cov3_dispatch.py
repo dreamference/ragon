@@ -171,6 +171,17 @@ def test_stdio_loop_carries_the_id_of_a_failing_request(monkeypatch):
     assert "tool broke" in written[0]["error"]["message"]
 
 
+def test_mcp_server_run_stdio_delegates_to_the_async_loop(monkeypatch):
+    def fake_loop(self):
+        return None
+
+    runner = MagicMock()
+    monkeypatch.setattr(MCPServer, "run_stdio_async", fake_loop)
+    monkeypatch.setattr(mcp_module.asyncio, "run", runner)
+    MCPServer().run_stdio()
+    runner.assert_called_once()
+
+
 def test_main_runs_the_stdio_loop(monkeypatch):
     run = MagicMock()
     monkeypatch.setattr(MCPServer, "run_stdio", run)
