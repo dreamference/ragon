@@ -81,3 +81,13 @@ def test_only_containers_of_this_grading_get_a_memory_cap_and_only_once(monkeypa
     updates = [c for c in calls if c[0] == "update"]
     assert [c[-1] for c in updates] == ["sweb.eval.a.run1", "sweb.eval.c.run1"]
     assert all(c[:5] == ["update", "--memory", "8g", "--memory-swap", "8g"] for c in updates)
+
+
+def test_swe_bench_harness_download_dataset_reports_a_failed_dump_and_returns_none(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        SweBenchHarness, "execute", classmethod(lambda cls, cmd, **kw: done(1, "", "no network"))
+    )
+    assert SweBenchHarness.download_dataset("lite", force=True) is None
+    assert "Could not download lite: no network" in capsys.readouterr().out
