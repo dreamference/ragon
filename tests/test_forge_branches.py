@@ -477,6 +477,26 @@ def test_the_free_space_of_a_forge_not_yet_made_is_measured_where_it_will_live(
     assert measured == [tmp_path]
 
 
+def test_forge_storage_night_running_reads_the_active_swe_units_or_answers_no_night(monkeypatch):
+    import dreamference.forge.forge_storage as forge_storage
+    from dreamference.forge.forge_storage import ForgeStorage
+
+    answer = {"stdout": "", "error": None}
+
+    def systemctl(argv, **_kwargs):
+        if answer["error"] is not None:
+            raise answer["error"]
+        return subprocess.CompletedProcess(argv, 0, stdout=answer["stdout"])
+
+    monkeypatch.setattr(forge_storage.subprocess, "run", systemctl)
+    answer["stdout"] = "ragon-swe-a.service"
+    assert ForgeStorage.night_running() is True
+    answer["stdout"] = " "
+    assert ForgeStorage.night_running() is False
+    answer["error"] = OSError("no user bus")
+    assert ForgeStorage.night_running() is False
+
+
 # -- forge move promote [key]
 
 
