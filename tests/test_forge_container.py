@@ -237,3 +237,42 @@ def test_a_page_that_cannot_be_read_fails_the_whole_listing(pages, reply):
     with pytest.raises(RuntimeError, match="did not list /orgs"):
         ForgeContainer.paginate("/orgs", "t", limit=1)
     assert pages["paths"][0] == "/orgs?limit=1&page=1"
+
+
+# -- the model server's memory budget
+
+
+def test_forge_service_memory_allowance_gb_is_the_cap_only_while_the_container_runs(
+    monkeypatch, docker
+):
+    from dreamference.forge import forge_service
+    from dreamference.forge.forge_service import ForgeService
+
+    monkeypatch.setattr(forge_service, "ForgeSettings", SimpleNamespace(role=lambda: "record"))
+    docker["answers"][("inspect",)] = (0, "true\n")
+    assert ForgeService.memory_allowance_gb() == pytest.approx(
+        forge_service.MEMORY_CAP_GIB * forge_service.GIB_IN_GB
+    )
+    assert docker["calls"] == [(["inspect", "-f", "{{.State.Running}}", ForgeContainer.name], 30)]
+
+    docker["answers"][("inspect",)] = (0, "false\n")
+    assert ForgeService.memory_allowance_gb() == 0.0
+
+
+def test_forge_service_memory_allowance_gb_is_zero_without_a_role_or_when_docker_fails(
+    monkeypatch, docker
+):
+    from dreamference.forge import forge_service
+    from dreamference.forge.forge_service import ForgeService
+
+    monkeypatch.setattr(forge_service, "ForgeSettings", SimpleNamespace(role=lambda: None))
+    assert ForgeService.memory_allowance_gb() == 0.0
+    assert docker["calls"] == []
+
+    monkeypatch.setattr(forge_service, "ForgeSettings", SimpleNamespace(role=lambda: "record"))
+
+    def no_docker(*_, **__):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(forge_service.subprocess, "run", no_docker)
+    assert ForgeService.memory_allowance_gb() == 0.0
