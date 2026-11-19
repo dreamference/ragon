@@ -13,6 +13,7 @@ from collections.abc import Callable
 from http import HTTPStatus
 from typing import Any, Final
 
+from dreamference.accounts.accounts_device import GRANT_AUTH_CODE, GRANT_DEVICE, AccountsDevice
 from dreamference.accounts.accounts_error import AccountsError
 from dreamference.accounts.accounts_jwt import ACCESS_LIFETIME_S, RAGON_AUTH_CLAIM, AccountsJwt
 from dreamference.accounts.accounts_store import KEY_PREFIX, AccountsStore
@@ -57,6 +58,7 @@ class AccountsOauth:
         store: AccountsStore,
         signer: AccountsJwt,
         log: Callable[[str], None] | None = None,
+        device: AccountsDevice | None = None,
     ) -> None:
         """Binds the handler to its store and signer.
 
@@ -64,10 +66,14 @@ class AccountsOauth:
             store: The account store.
             signer: The primary's token signer (it knows the node id and the primary's name).
             log: Receives operational lines (never a secret); defaults to nowhere.
+            device: The table of device and authorization codes; one is made when absent.
         """
         self.store = store
         self.signer = signer
         self.log = log or (lambda _line: None)
+        issuer = signer.issuer.rstrip("/")
+        web = urllib.parse.urlsplit(issuer)
+        self.device = device or AccountsDevice(issuer, f"{web.scheme}://{web.hostname}:3100/device")
         # The fixed routes: path -> (the methods allowed, the answer).
         self.routes: dict[str, tuple[tuple[str, ...], Route]] = {
             "/.well-known/jwks.json": ((GET,), lambda _h, _b: (200, {}, self.signer.jwks())),
@@ -78,6 +84,9 @@ class AccountsOauth:
             "/oauth/token": ((POST,), self.token),
             "/oauth/revoke": ((POST,), self.revoke),
             "/oauth/userinfo": ((GET, POST), lambda headers, _b: self.userinfo(headers)),
+            "/api/accounts/deviceauth/usercode": ((POST,), self.codex_usercode),
+            "/api/accounts/deviceauth/token": ((POST,), self.codex_poll),
+            "/oauth/device/code": ((POST,), self.standard_code),
             USERS_PATH: ((POST,), self.create),
         }
 
@@ -214,7 +223,13 @@ class AccountsOauth:
             "revocation_endpoint": f"{issuer}/oauth/revoke",
             "userinfo_endpoint": f"{issuer}/oauth/userinfo",
             "jwks_uri": f"{issuer}/.well-known/jwks.json",
-            "grant_types_supported": [GRANT_PASSWORD, GRANT_REFRESH],
+            "grant_types_supported": [
+                GRANT_PASSWORD,
+                GRANT_REFRESH,
+                GRANT_DEVICE,
+                GRANT_AUTH_CODE,
+            ],
+            "device_authorization_endpoint": f"{issuer}/oauth/device/code",
             "response_types_supported": ["code"],
             "subject_types_supported": ["public"],
             "id_token_signing_alg_values_supported": ["RS256"],
@@ -226,15 +241,19 @@ class AccountsOauth:
     # ----- /oauth/token -------------------------------------------------------------------
 
     def token(self, headers: dict[str, str], body: bytes) -> Answer:
-        """The password and refresh-token grants, form-encoded or JSON."""
+        """The grants of §5.4, form-encoded or JSON."""
         fields = self.parse_body(headers, body)
         if fields is None:
             return self.oauth_error(400, "invalid_request", "The body is not JSON or a form.")
         grant = fields.get("grant_type")
-        if grant == GRANT_PASSWORD:
-            return self.password_grant(fields)
-        if grant == GRANT_REFRESH:
-            return self.refresh_grant(fields)
+        handlers = {
+            GRANT_PASSWORD: self.password_grant,
+            GRANT_REFRESH: self.refresh_grant,
+            GRANT_DEVICE: self.device_code_grant,
+            GRANT_AUTH_CODE: self.auth_code_grant,
+        }
+        if grant in handlers:
+            return handlers[grant](fields)
         if not grant:
             return self.oauth_error(400, "invalid_request", "grant_type is missing.")
         return self.oauth_error(400, "unsupported_grant_type", "This grant type is not supported.")
@@ -297,6 +316,69 @@ class AccountsOauth:
             session["user"], client, session["machine"], session["session_id"], values[0]
         )
         return 200, {}, answer
+
+    # ----- device authorization (§5.5) ----------------------------------------------------
+
+    def codex_usercode(self, headers: dict[str, str], body: bytes) -> Answer:
+        """Codex's `POST /api/accounts/deviceauth/usercode`."""
+        fields = self.parse_body(headers, body)
+        values = None if fields is None else self.text_fields(fields, "client_id")
+        if values is None:
+            return self.oauth_error(400, "invalid_request", "client_id is required.")
+        return 200, {}, self.device.codex_usercode(values[0])
+
+    def codex_poll(self, headers: dict[str, str], body: bytes) -> Answer:
+        """Codex's `POST /api/accounts/deviceauth/token`: 403 while pending."""
+        fields = self.parse_body(headers, body)
+        values = None if fields is None else self.text_fields(fields, "device_auth_id", "user_code")
+        if values is None:
+            return self.oauth_error(400, "invalid_request", "device_auth_id and user_code needed.")
+        status, answer = self.device.codex_poll(values[0], values[1])
+        return status, {}, answer
+
+    def standard_code(self, headers: dict[str, str], body: bytes) -> Answer:
+        """RFC 8628's `POST /oauth/device/code`."""
+        fields = self.parse_body(headers, body)
+        values = None if fields is None else self.text_fields(fields, "client_id")
+        if values is None:
+            return self.oauth_error(400, "invalid_request", "client_id is required.")
+        return 200, {}, self.device.standard_code(values[0])
+
+    def device_code_grant(self, fields: dict[str, Any]) -> Answer:
+        """The device-code grant: the RFC's pending words, then the token set."""
+        values = self.text_fields(fields, "device_code", "client_id")
+        if values is None:
+            return self.oauth_error(400, "invalid_request", "device_code and client_id needed.")
+        word, entry = self.device.device_grant(values[0], values[1])
+        if entry is None or entry.user is None:
+            return self.oauth_error(400, word, f"The device sign-in answered {word}.")
+        user = self.store.user_by_id(entry.user)
+        if user is None:
+            return self.oauth_error(400, "invalid_grant", "The account no longer exists.")
+        return 200, {}, self.new_session(user, entry.client_id, entry.machine)
+
+    def auth_code_grant(self, fields: dict[str, Any]) -> Answer:
+        """The authorization-code grant: Codex's device client and the Forgejo client only."""
+        values = self.text_fields(fields, "code", "redirect_uri", "client_id")
+        if values is None:
+            return self.oauth_error(
+                400, "invalid_request", "code, redirect_uri and client_id are required."
+            )
+        verifier = fields.get("code_verifier")
+        secret = fields.get("client_secret")
+        error, row = self.device.redeem(
+            values[0],
+            values[2],
+            values[1],
+            verifier if isinstance(verifier, str) else "",
+            secret if isinstance(secret, str) else "",
+        )
+        if row is None:
+            return self.oauth_error(400, "invalid_grant", error or "The code is not valid.")
+        user = self.store.user_by_id(row.user)
+        if user is None:
+            return self.oauth_error(400, "invalid_grant", "The account no longer exists.")
+        return 200, {}, self.new_session(user, row.client_id, row.machine)
 
     # ----- /oauth/revoke ------------------------------------------------------------------
 

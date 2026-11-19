@@ -170,7 +170,7 @@ def test_refresh_with_codex_json_body_keeps_the_refresh_token(oauth, users):
         ({"grant_type": "refresh_token"}, "invalid_request"),
         ({"grant_type": "refresh_token", "refresh_token": "made-up"}, "invalid_grant"),
         ({"grant_type": "client_credentials"}, "unsupported_grant_type"),
-        ({"grant_type": "authorization_code", "code": "x"}, "unsupported_grant_type"),
+        ({"grant_type": "authorization_code", "code": "x"}, "invalid_request"),
         ({}, "invalid_request"),
     ],
 )
@@ -295,7 +295,7 @@ def test_jwks_and_discovery(oauth):
     assert discovery["jwks_uri"] == "https://box.local:8000/.well-known/jwks.json"
     assert discovery["token_endpoint"].endswith("/oauth/token")
     assert discovery["revocation_endpoint"].endswith("/oauth/revoke")
-    assert set(discovery["grant_types_supported"]) == {"password", "refresh_token"}
+    assert {"password", "refresh_token"} <= set(discovery["grant_types_supported"])
     status, headers, _ = call(oauth, "POST", "/.well-known/jwks.json")
     assert status == 405 and headers["Allow"] == "GET"
     assert call(oauth, "GET", "/oauth/token")[0] == 405
