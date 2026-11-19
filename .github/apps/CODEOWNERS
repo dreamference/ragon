@@ -205,3 +205,5 @@
 /.github/workflows/release.yml                  @dreamference/release @dreamference/security
 /.github/workflows/release-build.yml            @dreamference/release @dreamference/security
 /tests/test_readme_perf_table.py                @dreamference/docs
+/tests/test_egress_audit_auth.py                @dreamference/quality
+/dreamference/audit/auth_trace.py              @dreamference/security

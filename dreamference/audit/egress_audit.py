@@ -232,6 +232,7 @@ class EgressAudit:
         allowed: dict[int, str],
         replied: bool,
         bridge_hosts: tuple[str, ...] = (),
+        remote_allowed: frozenset[str] = frozenset(),
     ) -> EgressVerdict:
         """Decides the verdict (§3.2).
 
@@ -245,6 +246,9 @@ class EgressAudit:
                 and that is not a pass.
             bridge_hosts (Tuple[str, ...]): Host names a bridge that is on may resolve
                 (`discord_hosts()`); any other name still fails.
+            remote_allowed (FrozenSet[str]): `addr:port` destinations off this machine that are
+                allowed: the pinned primary's gate, from `AuthTrace.admitted` (AUTH §16), which
+                admits it only when its certificate chains to the pinned CA.
 
         Returns:
             EgressVerdict: The verdict and its reasons.
@@ -253,6 +257,8 @@ class EgressAudit:
         for target, count in sorted(trace.destinations.items()):
             address, _, port = target.rpartition(":")
             address = address.strip("[]")
+            if target in remote_allowed:
+                continue
             if not StraceParser.is_loopback(address):
                 problems.append(f"connected to {target} ({count}x): not on this machine")
             elif int(port) == CHATGPT_BLACKHOLE_PORT:
