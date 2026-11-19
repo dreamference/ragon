@@ -5734,6 +5734,61 @@ def test_a_remote_server_leaves_this_gate_open_even_when_the_network_has_a_subne
     assert sessions[0]["gate"].startswith("open: ")
 
 
+def test_open_relays_gives_each_remote_lane_a_relay_on_the_gateway(monkeypatch):
+    """Each lane gets a relay on the gateway; the containers are told that relay's port."""
+    import dreamference.swe_bench.swe_bench_relay as relay_module
+    from dreamference.swe_bench import SweBenchRelay
+
+    class FakeSocket:
+        """A stand-in listening socket: it binds where told and reports a fixed port."""
+
+        def __init__(self, family, type_):
+            self.port = 40001 + len(sockets)
+            sockets.append(self)
+
+        def setsockopt(self, *args):
+            return None
+
+        def bind(self, address):
+            self.address = address
+
+        def listen(self, backlog):
+            return None
+
+        def getsockname(self):
+            return (self.address[0], self.port)
+
+    class FakeThread:
+        """A stand-in thread: the relay's accept loop never runs in this test."""
+
+        def __init__(self, target, name, daemon):
+            self.name = name
+
+        def start(self):
+            return None
+
+    class FakeEvent:
+        def set(self):
+            return None
+
+    sockets: list[FakeSocket] = []
+    monkeypatch.setattr(relay_module.socket, "socket", FakeSocket)
+    monkeypatch.setattr(relay_module.threading, "Thread", FakeThread)
+    monkeypatch.setattr(relay_module.threading, "Event", FakeEvent)
+    lanes = [
+        {"name": "replica-a", "node": "aaaa-1111", "host": "http://node-a:8000", "parallel": 2},
+        {"name": "this machine", "node": None, "host": "http://192.168.50.106", "parallel": 1},
+    ]
+    relays = SweBenchRunner.open_relays("172.30.0.1", lanes)
+    assert [relay.port for relay in relays] == [40001, 40002]
+    assert [relay.target for relay in relays] == [("node-a", 8000), ("192.168.50.106", 8000)]
+    assert [lane["model_url"] for lane in lanes] == [
+        "http://172.30.0.1:40001",
+        "http://172.30.0.1:40002",  # the default port fills the missing one
+    ]
+    assert all(isinstance(relay, SweBenchRelay) for relay in relays)
+
+
 def test_a_run_whose_network_is_not_internal_starts_no_container(bench, monkeypatch, capsys):
     docker = bench["docker"]
 
