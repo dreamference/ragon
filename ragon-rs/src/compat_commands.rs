@@ -32,7 +32,7 @@ pub const CODEX_COMMANDS: &[&str] = &[
     "skills", "import", "hooks", "review", "rename", "new", "archive", "delete", "resume", "fork", "worktree", "app",
     "init", "compact", "recap", "plan", "voice", "goal", "agents", "side", "btw", "copy", "export", "raw", "tui",
     "diff", "mention", "status", "daemon", "warnings", "cd", "pwd", "cwd", "usage", "debug-config", "title",
-    "statusline", "theme", "pets", "pet", "mcp", "apps", "plugins", "logout", "quit", "exit", "feedback", "rollout",
+    "statusline", "theme", "pets", "pet", "mcp", "apps", "plugins", "logout", "whoami", "password", "apikey", "sessions", "users", "delete-account", "quit", "exit", "feedback", "rollout",
     "ps", "stop", "clean", "clear", "test-approval", "subagents", "debug-m-drop", "debug-m-update",
     // Ragon's, from its patches.
     "adapter", "airgapped", "night", "node",
