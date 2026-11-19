@@ -14,8 +14,8 @@
 <polyline class="ln" points="112.0,204.0 336.0,118.7" fill="none" stroke-width="2"/>
 <circle class="dot" cx="112.0" cy="204.0" r="4"/>
 <circle class="dot" cx="336.0" cy="118.7" r="4"/>
-<line class="ln" x1="336.0" y1="118.7" x2="560.0" y2="99.1" stroke-width="1.5" stroke-dasharray="4 3"/>
-<circle class="hollow" cx="560.0" cy="99.1" r="5"/>
+<line class="ln" x1="336.0" y1="118.7" x2="560.0" y2="107.8" stroke-width="1.5" stroke-dasharray="4 3"/>
+<circle class="hollow" cx="560.0" cy="107.8" r="5"/>
 <text class="hd" x="56" y="246" font-size="14" font-weight="bold">Ragon tasks landed per week</text>
 <line class="gr" x1="56" y1="340.0" x2="616" y2="340.0"/>
 <text class="tx" x="50" y="344.0" text-anchor="end">0</text>
@@ -31,14 +31,14 @@
 <text class="hd" x="112.0" y="335.0" text-anchor="middle" font-weight="bold">0</text>
 <rect class="bar" x="324.0" y="339.0" width="24" height="1.0"/>
 <text class="hd" x="336.0" y="334.0" text-anchor="middle" font-weight="bold">1</text>
-<rect class="barh" x="548.0" y="278.0" width="24" height="62.0"/>
-<text class="hd" x="560.0" y="273.0" text-anchor="middle" font-weight="bold">62</text>
+<rect class="barh" x="548.0" y="273.0" width="24" height="67.0"/>
+<text class="hd" x="560.0" y="268.0" text-anchor="middle" font-weight="bold">67</text>
 <text class="tx" x="112.0" y="222" text-anchor="middle">2026-W45</text>
 <text class="tx" x="336.0" y="222" text-anchor="middle">2026-W46</text>
 <text class="tx" x="560.0" y="222" text-anchor="middle">2026-W47</text>
 <text class="hd" x="112.0" y="193.0" text-anchor="middle" font-size="12" font-weight="bold">0.00 %</text>
 <text class="hd" x="336.0" y="107.7" text-anchor="middle" font-size="12" font-weight="bold">8.00 %</text>
-<text class="hd" x="560.0" y="121.1" text-anchor="end" font-size="12" font-weight="bold">2026-W47 so far 9.84 %</text>
+<text class="hd" x="560.0" y="129.8" text-anchor="end" font-size="12" font-weight="bold">2026-W47 so far 9.02 %</text>
 <text class="hd" x="56" y="386" font-size="14" font-weight="bold">Quality band: revert rate (%), Ragon vs others</text>
 <line class="gr" x1="56" y1="560.0" x2="616" y2="560.0"/>
 <text class="tx" x="50" y="564.0" text-anchor="end">0</text>
