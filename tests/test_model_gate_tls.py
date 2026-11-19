@@ -23,6 +23,7 @@ from cryptography import x509
 
 from dreamference.vllm_server import model_gate
 from dreamference.vllm_server.model_gate import ModelGate
+from dreamference.vllm_server.model_gate_auth import ModelGateAuth
 from dreamference.vllm_server.model_gate_service import ModelGateService
 from dreamference.vllm_server.model_gate_tls import ModelGateTls
 
@@ -117,6 +118,16 @@ def remote(monkeypatch):
     monkeypatch.setattr(ModelGateService, "is_loopback", classmethod(lambda cls, peer: False))
 
 
+@pytest.fixture
+def signed_in(monkeypatch):
+    """The accounts service accepts every credential (AUTH §10: a bad one gets 401 at once)."""
+
+    async def accept(self, bearer):
+        return {"name": "someone", "claims": None}
+
+    monkeypatch.setattr(ModelGateAuth, "lookup", accept)
+
+
 def client_context(gate):
     return ssl.create_default_context(cafile=str(gate["folder"] / "ca.pem"))
 
@@ -193,10 +204,10 @@ def test_https_serves_the_node_info_and_the_ca_without_credentials(tls_gate):
     assert headers["Content-Type"] == "application/x-pem-file"
 
 
-def test_https_carries_credentials_through(tls_gate, remote):
+def test_https_carries_credentials_through(tls_gate, remote, signed_in):
     status, body, _ = ask(
         tls_gate["port"],
-        "/v1/models",
+        "/v1/embeddings",
         {"Authorization": "Bearer token-1"},
         context=client_context(tls_gate),
     )
@@ -233,8 +244,8 @@ def test_plain_http_with_a_credential_or_a_node_route_is_told_to_use_https(
     assert tls_gate["service"].plain_counts == {}
 
 
-def test_plain_http_from_loopback_keeps_its_credentials(tls_gate):
-    status, body, _ = ask(tls_gate["port"], "/v1/models", {"Authorization": "Bearer token-1"})
+def test_plain_http_from_loopback_keeps_its_credentials(tls_gate, signed_in):
+    status, body, _ = ask(tls_gate["port"], "/v1/embeddings", {"Authorization": "Bearer token-1"})
     assert status == 200
     assert json.loads(body)["authorization"] == "Bearer token-1"
     assert tls_gate["service"].plain_counts == {}
@@ -251,8 +262,8 @@ def test_a_failed_handshake_does_not_stop_the_port(tls_gate):
     assert status == 200
 
 
-def test_without_certificates_the_gate_serves_plain_http_as_before(plain_gate, remote):
-    status, body, _ = ask(plain_gate["port"], "/v1/models", {"Authorization": "Bearer token-1"})
+def test_without_certificates_the_gate_serves_plain_http_as_before(plain_gate, remote, signed_in):
+    status, body, _ = ask(plain_gate["port"], "/v1/embeddings", {"Authorization": "Bearer token-1"})
     assert status == 200
     assert json.loads(body)["authorization"] == "Bearer token-1"
     status, body, _ = ask(plain_gate["port"], "/ragon/v1/info")
@@ -319,6 +330,8 @@ def test_the_copied_service_serves_https_on_its_own_as_the_container_runs_it(tmp
         "model_gate_guard.py",
         "model_gate_tls.py",
         "model_gate_listener.py",
+        "model_gate_auth.py",
+        "model_gate_compat.py",
     ):
         (copy / name).write_text(source.with_name(name).read_text())
     state = tmp_path / "state"
