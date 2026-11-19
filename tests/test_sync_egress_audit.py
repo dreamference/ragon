@@ -207,3 +207,9 @@ def test_a_query_whose_name_was_read_fails_by_its_name():
     verdict = SyncEgressAudit.judge(trace, PORT, published=True, exec_held=True)
     assert verdict.status == FAIL
     assert verdict.problems == ["asked a resolver for audit-probe.example.com (1x)"]
+
+
+def test_sync_egress_audit_step_returns_the_reason_when_the_agent_cannot_start(tmp_path):
+    with patch("subprocess.Popen", side_effect=OSError("no such binary")):
+        said = SyncEgressAudit.step("/opt/ragon", ["exec"], {"HOME": str(tmp_path)})
+    assert said == "no such binary"
