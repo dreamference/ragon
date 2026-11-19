@@ -128,7 +128,7 @@ pub const UPSTREAM_TESTS_ENV: &str = "RAGON_UPSTREAM_TESTS";
 /// Codex subcommands that never open a session, so `ragon apply` or `ragon completion bash`
 /// answers at once instead of waiting for a model server that may not be running.
 const COMMANDS_WITHOUT_MODEL: &[&str] = &[
-    "help", "completion", "apply", "a", "features", "doctor", "mcp", "plugin", "archive",
+    "help", "completion", "apply", "a", "features", "doctor", "login", "logout", "sessions", "mcp", "plugin", "archive",
     "unarchive", "delete", "sandbox", "update", "node", "skill", "web", "chat", "signal", "sync", "monitor", "delegate",
 ];
 
@@ -136,7 +136,7 @@ const COMMANDS_WITHOUT_MODEL: &[&str] = &[
 pub const LAUNCHER_SUBCOMMANDS: &[&str] = &[
     "app", "night", "airgapped", "node", "apps", "ledger", "notice", "skill", "audit", "docs", "prompt", "web", "chat",
     "signal", "refine", "compat", "loop-guard", "guard", "worktree", "sync", "monitor", "delegate",
-    "uninstall",
+    "uninstall", "doctor", "login", "logout", "sessions",
 ];
 
 /// Codex subcommands Ragon does not offer, each with the reason it gives. They are refused here,
@@ -347,6 +347,37 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
     let subcommand = first_positional(command, &user_args);
     if let Some((name, reason)) = removed_command(&user_args, subcommand) {
         bail!("`ragon {name}` is not available: {reason}.");
+    }
+    // `login`, `logout` and `sessions` are the account system's (auth/commands.rs; AUTH §11): the
+    // launcher handles the password forms and `logout --all`, and hands Codex the rest with the
+    // issuer set; `doctor` gets its auth line and goes on to Codex.
+    if let Some(index) = subcommand
+        && matches!(user_args[index].as_str(), "login" | "logout" | "sessions")
+        && std::env::var_os(UPSTREAM_TESTS_ENV).is_none()
+    {
+        let host = node::resolve_host(false).await?;
+        let codex_home = codex_utils_home_dir::find_codex_home()
+            .context("could not resolve CODEX_HOME")?
+            .as_path()
+            .to_path_buf();
+        let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+        let stdin = std::io::stdin();
+        let mut input = stdin.lock();
+        let mut out = std::io::stdout();
+        let mut io = auth::commands::Io { input: &mut input, out: &mut out, tty };
+        let outcome = auth::commands::run(&user_args[index], &user_args[index + 1..], &host, &codex_home, &mut io).await?;
+        let Some(forward) = outcome.forward else { std::process::exit(outcome.code) };
+        auth::start(&host, &codex_home).await?;
+        let mut forwarded: Vec<OsString> = args.first().cloned().into_iter().collect();
+        forwarded.extend(forward.into_iter().map(OsString::from));
+        return Ok(forwarded);
+    }
+    if let Some(index) = subcommand
+        && user_args[index] == "doctor"
+        && std::env::var_os(UPSTREAM_TESTS_ENV).is_none()
+        && let Ok(home) = codex_utils_home_dir::find_codex_home()
+    {
+        println!("Account: {}", auth::commands::doctor_line(home.as_path(), None));
     }
     // `app` is Ragon's desktop window, not OpenAI's app (see app.rs); it never reaches Codex.
     if let Some(index) = subcommand
@@ -1779,6 +1810,7 @@ mod tests {
         assert_eq!(removed(&["login"]), None);
         assert_eq!(removed(&["logout"]), None);
         assert_eq!(removed(&["exec", "cloud"]), None);
+        assert_eq!(removed(&["exec", "login"]), None);
         assert_eq!(removed(&[]), None);
     }
 

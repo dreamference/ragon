@@ -6,6 +6,7 @@
 //! a no-op against a node that has no gate yet (plain HTTP, no `/ragon/v1/info`): such a node is
 //! served as before.
 
+pub mod commands;
 pub mod local;
 pub mod pin;
 pub mod screen;

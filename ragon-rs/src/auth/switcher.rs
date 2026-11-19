@@ -52,6 +52,69 @@ pub fn with_active(current: Option<&str>, primary_id: &str) -> anyhow::Result<Op
     Ok(Some(serde_json::to_string_pretty(&doc)? + "\n"))
 }
 
+/// What `auth.json` holds: the active primary's id and every entry by primary id.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct State {
+    /// The primary whose entry Codex uses.
+    pub active: Option<String>,
+    /// Each primary's entry, exactly as Codex stores one.
+    pub entries: Map<String, Value>,
+}
+
+/// Reads `auth.json`. No file, or the old single-entry layout, answers no entries: the old layout
+/// belongs to Codex's reader, which keys it by its org claim.
+///
+/// # Errors
+/// The file exists and is not JSON.
+pub fn read_state(codex_home: &Path) -> anyhow::Result<State> {
+    let file = codex_home.join("auth.json");
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(State::default()),
+        Err(error) => return Err(error).with_context(|| format!("could not read {}", file.display())),
+    };
+    let doc: Value = serde_json::from_str(&text).context("auth.json is not valid JSON")?;
+    if doc.get("version").and_then(Value::as_u64) != Some(2) {
+        return Ok(State::default());
+    }
+    Ok(State {
+        active: doc.get("active").and_then(Value::as_str).map(str::to_string),
+        entries: doc.get("entries").and_then(Value::as_object).cloned().unwrap_or_default(),
+    })
+}
+
+/// Stores `entry` for `primary_id` and makes it active, keeping every other entry. A file in the
+/// old single-entry layout is replaced by a version 2 file holding this entry.
+///
+/// # Errors
+/// The lock is not taken, or the file cannot be read or written.
+pub fn save_entry(codex_home: &Path, primary_id: &str, entry: Value) -> anyhow::Result<()> {
+    let _lock = Lock::take(&codex_home.join("auth.json.lock"))?;
+    let mut state = read_state(codex_home)?;
+    state.entries.insert(primary_id.to_string(), entry);
+    state.active = Some(primary_id.to_string());
+    write_state(codex_home, &state)
+}
+
+/// Removes the entry of `primary_id` and, when it was the active one, clears the marker.
+///
+/// # Errors
+/// The lock is not taken, or the file cannot be read or written.
+pub fn remove_entry(codex_home: &Path, primary_id: &str) -> anyhow::Result<()> {
+    let _lock = Lock::take(&codex_home.join("auth.json.lock"))?;
+    let mut state = read_state(codex_home)?;
+    state.entries.remove(primary_id);
+    if state.active.as_deref() == Some(primary_id) {
+        state.active = None;
+    }
+    write_state(codex_home, &state)
+}
+
+fn write_state(codex_home: &Path, state: &State) -> anyhow::Result<()> {
+    let doc = json!({ "version": 2, "active": state.active, "entries": state.entries });
+    super::pin::write_private(&codex_home.join("auth.json"), (serde_json::to_string_pretty(&doc)? + "\n").as_bytes())
+}
+
 /// An exclusive lock file, released when dropped.
 struct Lock(std::path::PathBuf);
 
