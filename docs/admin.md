@@ -498,6 +498,92 @@ Trace one real ragon session and list every network destination and process, wit
 
 Advertise this machine on the local network so clients find it with no address typed.
 
+#### `ragon-admin node user`
+
+Manage the accounts of this primary node.
+
+#### `ragon-admin node user list`
+
+Users with role, service flag, created and last use.
+
+| Option | Description |
+|---|---|
+| `--sessions` | Also every token and binding. |
+
+#### `ragon-admin node user add`
+
+Create a user; the password is read without echo.
+
+| Option | Description |
+|---|---|
+| `name` |  |
+
+#### `ragon-admin node user reset`
+
+Print a one-time password; the next sign-in must set a new one.
+
+| Option | Description |
+|---|---|
+| `name` |  |
+
+#### `ragon-admin node user remove`
+
+Remove a user and revoke tokens, keys and bindings.
+
+| Option | Description |
+|---|---|
+| `name` |  |
+
+#### `ragon-admin node user promote`
+
+Make a user an admin.
+
+| Option | Description |
+|---|---|
+| `name` |  |
+
+#### `ragon-admin node user demote`
+
+Make an admin a plain user.
+
+| Option | Description |
+|---|---|
+| `name` |  |
+
+#### `ragon-admin node user key`
+
+Mint an API key (shown once) or revoke one by name.
+
+| Option | Description |
+|---|---|
+| `name` |  |
+| `--name` | The key's name. |
+| `--revoke` | Revoke the key of this name. |
+
+#### `ragon-admin node user log`
+
+The audit lines from the journal.
+
+#### `ragon-admin node user usage`
+
+Requests and tokens per user per day and client kind.
+
+| Option | Description |
+|---|---|
+| `--days` |  |
+
+#### `ragon-admin node user export`
+
+Print users, roles and key hashes as JSON (never tokens).
+
+#### `ragon-admin node user import`
+
+Import an export.
+
+| Option | Description |
+|---|---|
+| `file` |  |
+
 #### `ragon-admin node enable`
 
 Advertise the node and publish the web UI and web search to the local network.
