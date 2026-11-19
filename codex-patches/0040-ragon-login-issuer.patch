@@ -1,0 +1,86 @@
+diff --git a/codex-rs/login/src/auth/manager.rs b/codex-rs/login/src/auth/manager.rs
+--- a/codex-rs/login/src/auth/manager.rs
++++ b/codex-rs/login/src/auth/manager.rs
+@@ -209,8 +209,6 @@ const REFRESH_TOKEN_INVALIDATED_MESSAGE: &str = "Your access token could not be
+ const REFRESH_TOKEN_UNKNOWN_MESSAGE: &str =
+     "Your access token could not be refreshed. Please log out and sign in again.";
+ const REFRESH_TOKEN_ACCOUNT_MISMATCH_MESSAGE: &str = "Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.";
+-const REFRESH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+-pub(super) const REVOKE_TOKEN_URL: &str = "https://auth.openai.com/oauth/revoke";
+ pub const REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
+ pub const REVOKE_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "CODEX_REVOKE_TOKEN_URL_OVERRIDE";
+ pub const CLIENT_ID_OVERRIDE_ENV_VAR: &str = "CODEX_APP_SERVER_LOGIN_CLIENT_ID";
+@@ -1725,7 +1723,7 @@ pub fn oauth_client_id() -> String {
+ 
+ fn refresh_token_endpoint() -> String {
+     std::env::var(REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR)
+-        .unwrap_or_else(|_| REFRESH_TOKEN_URL.to_string())
++        .unwrap_or_else(|_| format!("{}/oauth/token", crate::server::issuer()))
+ }
+ 
+ impl AuthDotJson {
+diff --git a/codex-rs/login/src/auth/revoke.rs b/codex-rs/login/src/auth/revoke.rs
+--- a/codex-rs/login/src/auth/revoke.rs
++++ b/codex-rs/login/src/auth/revoke.rs
+@@ -11,7 +11,6 @@ use codex_http_client::HttpClient;
+ use codex_protocol::auth::AuthMode;
+ 
+ use super::manager::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
+-use super::manager::REVOKE_TOKEN_URL;
+ use super::manager::REVOKE_TOKEN_URL_OVERRIDE_ENV_VAR;
+ use super::manager::oauth_client_id;
+ use super::storage::AuthDotJson;
+@@ -142,7 +141,7 @@ fn revoke_token_endpoint() -> String {
+         return endpoint;
+     }
+ 
+-    REVOKE_TOKEN_URL.to_string()
++    format!("{}/oauth/revoke", crate::server::issuer())
+ }
+ 
+ fn derive_revoke_token_endpoint(refresh_endpoint: &str) -> Option<String> {
+diff --git a/codex-rs/login/src/server.rs b/codex-rs/login/src/server.rs
+--- a/codex-rs/login/src/server.rs
++++ b/codex-rs/login/src/server.rs
+@@ -74,6 +74,32 @@ use tracing::info;
+ use tracing::warn;
+ 
+ pub(super) const DEFAULT_ISSUER: &str = "https://auth.openai.com";
++
++/// The issuer: `RAGON_ISSUER`, else the top-level `ragon_issuer` of `$CODEX_HOME/config.toml`, else the constant.
++pub(super) fn issuer() -> String {
++    let set =
++        |v: String| Some(v.trim().trim_end_matches('/').to_string()).filter(|v| !v.is_empty());
++    std::env::var("RAGON_ISSUER")
++        .ok()
++        .and_then(set)
++        .or_else(|| {
++            let home = std::env::var_os("CODEX_HOME")
++                .map(std::path::PathBuf::from)
++                .or_else(|| {
++                    std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".codex"))
++                })?;
++            let text = std::fs::read_to_string(home.join("config.toml")).ok()?;
++            text.lines()
++                .take_while(|l| !l.trim_start().starts_with('['))
++                .find_map(|l| {
++                    let (k, v) = l.split_once('=')?;
++                    (k.trim() == "ragon_issuer")
++                        .then(|| v.trim().trim_matches('"').to_string())
++                        .and_then(set)
++                })
++        })
++        .unwrap_or_else(|| DEFAULT_ISSUER.to_string())
++}
+ const DEFAULT_PORT: u16 = 1455;
+ // Keep in sync with the Codex CLI Hydra redirect URI allow-list.
+ const FALLBACK_PORT: u16 = 1457;
+@@ -112,7 +138,7 @@ impl ServerOptions {
+         Self {
+             codex_home,
+             client_id,
+-            issuer: DEFAULT_ISSUER.to_string(),
++            issuer: issuer(),
+             port: DEFAULT_PORT,
+             open_browser: true,
+             force_state: None,

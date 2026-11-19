@@ -1,0 +1,183 @@
+diff --git a/codex-rs/login/src/auth/storage.rs b/codex-rs/login/src/auth/storage.rs
+--- a/codex-rs/login/src/auth/storage.rs
++++ b/codex-rs/login/src/auth/storage.rs
+@@ -186,30 +186,32 @@ impl FileAuthStorage {
+         let mut file = File::open(auth_file)?;
+         let mut contents = String::new();
+         file.read_to_string(&mut contents)?;
+-        let auth_dot_json: AuthDotJson = serde_json::from_str(&contents)?;
+-
+-        Ok(auth_dot_json)
++        let value: serde_json::Value = serde_json::from_str(&contents)?;
++        // A file with `version` holds {active, entries}: the active entry is the account.
++        let value = match entries_of(&value) {
++            Some((active, entries)) => entries
++                .get(active)
++                .cloned()
++                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?,
++            None => value,
++        };
++        Ok(serde_json::from_value(value)?)
+     }
+-}
+ 
+-impl AuthStorageBackend for FileAuthStorage {
+-    fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
+-        let auth_file = get_auth_file(&self.codex_home);
+-        let auth_dot_json = match self.try_read_auth_json(&auth_file) {
+-            Ok(auth) => auth,
+-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+-            Err(err) => return Err(err),
+-        };
+-        Ok(Some(auth_dot_json))
++    fn read_value(&self) -> std::io::Result<Option<serde_json::Value>> {
++        match std::fs::read_to_string(get_auth_file(&self.codex_home)) {
++            Ok(text) => Ok(Some(serde_json::from_str(&text)?)),
++            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
++            Err(err) => Err(err),
++        }
+     }
+ 
+-    fn save(&self, auth_dot_json: &AuthDotJson) -> std::io::Result<()> {
++    fn write_value(&self, value: &serde_json::Value) -> std::io::Result<()> {
+         let auth_file = get_auth_file(&self.codex_home);
+-
+         if let Some(parent) = auth_file.parent() {
+             std::fs::create_dir_all(parent)?;
+         }
+-        let json_data = serde_json::to_string_pretty(auth_dot_json)?;
++        let json_data = serde_json::to_string_pretty(value)?;
+         let mut options = OpenOptions::new();
+         options.truncate(true).write(true).create(true);
+         #[cfg(unix)]
+@@ -221,9 +223,57 @@ impl AuthStorageBackend for FileAuthStorage {
+         file.flush()?;
+         Ok(())
+     }
++}
++
++/// The active key and the entries of a multi-entry file (`version` present), else `None`.
++fn entries_of(
++    value: &serde_json::Value,
++) -> Option<(&str, &serde_json::Map<String, serde_json::Value>)> {
++    value.get("version")?;
++    Some((
++        value.get("active")?.as_str()?,
++        value.get("entries")?.as_object()?,
++    ))
++}
++
++impl AuthStorageBackend for FileAuthStorage {
++    fn load(&self) -> std::io::Result<Option<AuthDotJson>> {
++        let auth_file = get_auth_file(&self.codex_home);
++        match self.try_read_auth_json(&auth_file) {
++            Ok(auth) => Ok(Some(auth)),
++            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
++            Err(err) => Err(err),
++        }
++    }
++
++    fn save(&self, auth_dot_json: &AuthDotJson) -> std::io::Result<()> {
++        let mut value = serde_json::to_value(auth_dot_json)?;
++        // Replace the active entry of a multi-entry file and keep the others.
++        if let Some(mut file) = self.read_value()?
++            && let Some((active, _)) = entries_of(&file)
++        {
++            let active = active.to_string();
++            file["entries"][active.as_str()] = std::mem::take(&mut value);
++            return self.write_value(&file);
++        }
++        self.write_value(&value)
++    }
+ 
+     fn delete(&self) -> std::io::Result<bool> {
+-        delete_file_if_exists(&self.codex_home)
++        let Some(mut file) = self.read_value()? else {
++            return Ok(false);
++        };
++        let Some((active, _)) = entries_of(&file) else {
++            return delete_file_if_exists(&self.codex_home);
++        };
++        let active = active.to_string();
++        let removed = file["entries"]
++            .as_object_mut()
++            .is_some_and(|entries| entries.remove(&active).is_some());
++        if removed {
++            self.write_value(&file)?;
++        }
++        Ok(removed)
+     }
+ }
+ 
+diff --git a/codex-rs/login/src/auth/storage_tests.rs b/codex-rs/login/src/auth/storage_tests.rs
+--- a/codex-rs/login/src/auth/storage_tests.rs
++++ b/codex-rs/login/src/auth/storage_tests.rs
+@@ -818,3 +818,68 @@ fn auto_auth_storage_delete_removes_keyring_and_file() -> anyhow::Result<()> {
+     );
+     Ok(())
+ }
++
++fn key_auth(key: &str) -> AuthDotJson {
++    AuthDotJson {
++        auth_mode: Some(AuthMode::ApiKey),
++        openai_api_key: Some(key.to_string()),
++        tokens: None,
++        last_refresh: None,
++        agent_identity: None,
++        personal_access_token: None,
++        bedrock_api_key: None,
++        bedrock_access_keys: None,
++    }
++}
++
++fn entries_file(active: &str, keys: &[&str]) -> serde_json::Value {
++    let entries: serde_json::Map<_, _> = keys
++        .iter()
++        .map(|k| (k.to_string(), serde_json::to_value(key_auth(k)).unwrap()))
++        .collect();
++    json!({"version": 2, "active": active, "entries": entries})
++}
++
++#[test]
++fn multi_entry_file_one_three_and_a_switch() -> anyhow::Result<()> {
++    let home = tempdir()?;
++    let storage = FileAuthStorage::new(home.path().to_path_buf());
++    let path = get_auth_file(home.path());
++    let put = |v: &serde_json::Value| std::fs::write(&path, v.to_string());
++
++    put(&entries_file("a", &["a"]))?;
++    assert_eq!(storage.load()?, Some(key_auth("a")));
++
++    put(&entries_file("b", &["a", "b", "c"]))?;
++    assert_eq!(storage.load()?, Some(key_auth("b")));
++    storage.save(&key_auth("b2"))?;
++    let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
++    assert_eq!(file["active"], "b");
++    assert_eq!(file["entries"]["a"], serde_json::to_value(key_auth("a"))?);
++    assert_eq!(file["entries"]["b"], serde_json::to_value(key_auth("b2"))?);
++    assert_eq!(file["entries"]["c"], serde_json::to_value(key_auth("c"))?);
++
++    let mut switched = file.clone();
++    switched["active"] = json!("c");
++    put(&switched)?;
++    assert_eq!(storage.load()?, Some(key_auth("c")));
++
++    assert!(storage.delete()?);
++    let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
++    assert_eq!(file["entries"].as_object().unwrap().len(), 2);
++    assert_eq!(storage.load()?, None);
++    Ok(())
++}
++
++#[test]
++fn file_without_version_keeps_the_old_layout() -> anyhow::Result<()> {
++    let home = tempdir()?;
++    let storage = FileAuthStorage::new(home.path().to_path_buf());
++    storage.save(&key_auth("x"))?;
++    let file: serde_json::Value =
++        serde_json::from_str(&std::fs::read_to_string(get_auth_file(home.path()))?)?;
++    assert_eq!(file, serde_json::to_value(key_auth("x"))?);
++    assert!(storage.delete()?);
++    assert!(!get_auth_file(home.path()).exists());
++    Ok(())
++}
