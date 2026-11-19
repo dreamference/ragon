@@ -150,3 +150,23 @@ def test_remote_certificate_dispatch(monkeypatch, capsys):
     ns.certificate_command = None
     assert Cli._remote_certificate(ns) == 2
     assert "usage: ragon-admin remote certificate" in capsys.readouterr().out
+
+
+def test_image_search_sidecar_served_model_names_the_first_id_or_the_fallback(monkeypatch):
+    import io
+
+    seen = {}
+
+    def answer(url, timeout):
+        seen["url"] = url
+        return io.BytesIO(b'{"data": [{"id": "served-one"}, {"id": "other"}]}')
+
+    monkeypatch.setattr("urllib.request.urlopen", answer)
+    assert ImageSearchSidecar.served_model("http://host:8000/", "fb") == "served-one"
+    assert seen["url"] == "http://host:8000/v1/models"
+
+    def refuse(url, timeout):
+        raise OSError("down")
+
+    monkeypatch.setattr("urllib.request.urlopen", refuse)
+    assert ImageSearchSidecar.served_model("http://host:8000", "fb") == "fb"
