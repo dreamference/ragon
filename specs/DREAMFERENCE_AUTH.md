@@ -69,7 +69,7 @@ Do EXACTLY what Codex does. Exactly two differences, no others: (1) username and
 
 ## 2. Reference: what Codex does against the vendor's service
 
-This is the only paragraph that names the vendor. Codex as shipped signs a person in to their ChatGPT account at `auth.openai.com`. The browser flow starts a loopback callback server with PKCE (`login/src/server.rs`, `DEFAULT_ISSUER` at `:76`); the device-code flow asks `auth.openai.com/api/accounts/deviceauth/usercode`, shows a code and a page, and polls (`login/src/device_code_auth.rs:68`, `:107`, `:175`). The resulting tokens are JWTs whose claim `"https://api.openai.com/auth"` carries the plan, the user id and the account id (`login/src/token_data.rs:88-100`). Codex refreshes them at `auth.openai.com/oauth/token` and revokes them at `auth.openai.com/oauth/revoke` (`login/src/auth/manager.rs:212-213`). Its backend calls go to `chatgpt.com/backend-api/` (`core/src/config/mod.rs:4394`). The TUI's picker offers `Sign in with ChatGPT`, `Sign in with Device Code`, `Provide your own API key` and a line for a third-party cloud provider (`tui/src/onboarding/auth.rs:490-530`). Every path in this spec is under `codex/codex-rs/` unless it names another directory.
+This is the only paragraph that names the vendor, apart from the owner's verbatim words in §1 and Codex's own identifiers in code spans. Codex as shipped signs a person in to their ChatGPT account at `auth.openai.com`. The browser flow starts a loopback callback server with PKCE (`login/src/server.rs`, `DEFAULT_ISSUER` at `:76`); the device-code flow asks `auth.openai.com/api/accounts/deviceauth/usercode`, shows a code and a page, and polls (`login/src/device_code_auth.rs:68`, `:107`, `:175`). The resulting tokens are JWTs whose claim `"https://api.openai.com/auth"` carries the plan, the user id and the account id (`login/src/token_data.rs:88-100`). Codex refreshes them at `auth.openai.com/oauth/token` and revokes them at `auth.openai.com/oauth/revoke` (`login/src/auth/manager.rs:212-213`). Its backend calls go to `chatgpt.com/backend-api/` (`core/src/config/mod.rs:4394`). The TUI's picker offers `Sign in with ChatGPT`, `Sign in with Device Code`, `Provide your own API key` and a line for a third-party cloud provider (`tui/src/onboarding/auth.rs:490-530`). Every path in this spec is under `codex/codex-rs/` unless it names another directory.
 
 ## 3. The two differences, and they are the only ones
 
@@ -613,7 +613,7 @@ Forgejo uses the gate as its OAuth2 provider in 0.9.9 (owner 2026-11-19). Today 
 The IDE MCP server (`dreamference/mcp_server/mcp_server.py`), the context engine and the code index (`ragon-code-rs/`, which reaches the gate through `vllm_host`) read `~/.ragon/auth.json` like ragon and send the entry's token or key. They have no screen of their own; with no entry they print "Not signed in. Run ragon login." The desktop app and the terminal share the same `auth.json` (owner 2026-11-19).
 ## 15. The launcher and the Codex patches
 
-**The provider entry replaces `--oss`.** Today the launcher prepends `--oss --local-provider openai-custom` to every Codex run (`ragon-rs/src/lib.rs:14`, the `PROVIDER` constant at `:106`, the injection at `:1653-1682`). In 0.9.9 it passes a provider entry instead, through `-c` overrides, the way it passes its other settings:
+**The provider entry replaces `--oss`.** Today the launcher prepends `--oss --local-provider openai-custom` to every Codex run (`ragon-rs/src/lib.rs:14`, the `PROVIDER` constant at `:106`, the injection at `:1653-1682`). In 0.9.9 it writes a provider entry instead into `~/.ragon/config.toml` at every start (§5.1), `chatgpt_base_url` as a top-level key beside it:
 
 ```toml
 model_provider = "ragon"
@@ -689,16 +689,16 @@ The plan is `backlog/plan-auth-1.md`. Its rows form five lanes that run in paral
 4. the upgrade note (after L2);
 5. a nightly compatibility run against the live gate (after L3);
 6. **the end-to-end gate:** a test primary and a test secondary, every client, the Discord bridge included; a red run holds the release; held for the coordinator;
-7. **the fleet candidate, Friday 2026-11-28:** after the end-to-end gate, install on every node of the fleet, one primary and the rest secondaries, run the migration command, and repeat the end-to-end run on the real fleet by Sunday 2026-11-30; held for the coordinator.
+7. **the fleet candidate, 2026-11-28:** after the end-to-end gate, install on every node of the fleet, one primary and the rest secondaries, run the migration command, and repeat the end-to-end run on the real fleet by 2026-11-30; held for the coordinator.
 
 **Sizing.** The plan is sized for four rows in flight. The critical path runs store → OAuth service → sign-in screen → patch `0039` → translations → docs → end-to-end gate, 30.5 hours of row time (the plan's header recomputes it from the rows' estimates). The other rows fit beside it at four in flight.
 
 **Calendar.**
-- Thursday 2026-11-20 to Monday 2026-11-24: the five lanes and the first five tail rows.
-- By Wednesday 2026-11-26: the end-to-end gate green on the test pair, two days before the fleet date.
-- Friday 2026-11-28: the fleet candidate is installed.
-- By Sunday 2026-11-30: the end-to-end run is green on the real fleet.
-- Monday 2026-12-01, 09:00 UTC: release 0.9.9 ships. Nothing slips.
+- 2026-11-20 to 2026-11-24: the five lanes and the first five tail rows.
+- By 2026-11-26: the end-to-end gate green on the test pair, two days before the fleet date.
+- 2026-11-28: the fleet candidate is installed.
+- By 2026-11-30: the end-to-end run is green on the real fleet.
+- 2026-12-01, 09:00 UTC: release 0.9.9 ships. Nothing slips.
 
 **Verification of the first slice.** Jobs verify the first rows with test users on the test primary. There is no owner trial row; the row that lands the screen writes a trial script for the owner that points at the test primary, and says so in its report.
 
@@ -744,7 +744,7 @@ The hardening items are on the 3.0 list in [SECURITY_REVIEW](./DREAMFERENCE_SECU
 
 Each default is what the rows build unless the owner rules otherwise.
 
-1. **How the issuer reaches Codex.** **Default:** the environment variables of §15, plus `chatgpt_base_url` in the provider entry; no patch (§5.1).
+1. **How the issuer reaches Codex.** **Default:** the environment variables of §15, plus the top-level `chatgpt_base_url` written beside the provider entry in `config.toml`; no patch (§5.1).
 2. **The email claim.** **Default:** the username for Ragon's clients; `<username>@<primary name>.local` in the Forgejo client's id token and on the Account page (§5.3).
 3. **Device-auth shapes.** **Default:** both Codex's paths and the standard's, served from one table of codes (§5.5).
 4. **The desktop app's sign-in.** **Default:** its form runs the launcher's `login` and restarts its app-server; no RPC is added (§5.8).
