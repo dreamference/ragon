@@ -295,6 +295,17 @@ def test_a_stopped_or_failing_github_mirror_says_so(monkeypatch):
     assert ForgeCommand.github_summary(last) == "last run 10 s ago, problems in o/b"
 
 
+def test_forge_command_run_status_prints_its_report(monkeypatch, capsys):
+    """Run forge status and check it prints the report and returns 0."""
+    from dreamference.forge.forge_container import ForgeContainer
+
+    monkeypatch.setattr(ForgeContainer, "running", classmethod(lambda cls: False))
+    monkeypatch.setattr(ForgeCommand, "status_lines", classmethod(lambda cls: ["a", "b"]))
+    args = argparse.Namespace(forge_command="status")
+    assert ForgeCommand.dispatch(args) == 0
+    assert capsys.readouterr().out == "a\nb\n"
+
+
 # Ages and times
 
 
