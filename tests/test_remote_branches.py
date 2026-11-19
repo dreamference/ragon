@@ -7,6 +7,7 @@ network: every class's seam is replaced, as in the other remote tests.
 """
 
 import hashlib
+import socket
 import subprocess
 
 import pytest
@@ -27,6 +28,7 @@ NODE_ID = "7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001"
 BOX = "relay.example.org"
 RELAY = "turn.example.org"
 NOT_SET_UP = "Remote access is not set up on this node"
+FAKE_LEAF_DER: bytes = b"leaf"
 
 
 def _set_up(**extra):
@@ -720,3 +722,68 @@ def test_a_box_that_reports_itself_clean_is_removed(monkeypatch):
 def test_unit_states_of_a_box_that_answers_the_wrong_number_of_lines_is_none(monkeypatch, answer):
     _box_commands(monkeypatch, out={"ssh": answer})
     assert RemoteBox.unit_states(BOX) is None
+
+
+def test_remote_box_check_public_port_with_a_public_certificate_verifies_the_leaf(
+    monkeypatch, tmp_path
+):
+    """The public-certificate branch: own is checked against the served leaf, other answers unverified."""
+    ca = tmp_path / "ca.crt"
+    ca.write_bytes(b"cert")
+    monkeypatch.setattr(RemoteSettings, "public_certificate", classmethod(lambda cls: True))
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "served_files",
+        classmethod(lambda cls: (tmp_path / "tls.crt", tmp_path / "tls.key")),
+    )
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "fingerprint",
+        classmethod(lambda cls, pem: hashlib.sha256(FAKE_LEAF_DER).hexdigest()),
+    )
+
+    connections = []
+
+    class _Socket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def close(self):
+            return None
+
+    def connect(*_args, **_kwargs):
+        connection = _Socket()
+        connections.append(connection)
+        return connection
+
+    class _Tls:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        @staticmethod
+        def getpeercert(binary_form=False):
+            return FAKE_LEAF_DER
+
+    class _Context:
+        def wrap_socket(self, connection, server_hostname=None):
+            context_calls.append((id(connection), server_hostname))
+            return _Tls()
+
+    context_calls = []
+
+    def make_context(*_args, **_kwargs):
+        return _Context()
+
+    monkeypatch.setattr("dreamference.remote.remote_box.socket.create_connection", connect)
+    monkeypatch.setattr("dreamference.remote.remote_box.socket.socket", socket.socket)
+    monkeypatch.setattr("dreamference.remote.remote_box.ssl.create_default_context", make_context)
+    monkeypatch.setattr("dreamference.remote.remote_box.ssl.SSLContext", make_context)
+    assert RemoteBox.check_public_port(BOX, ca) == {"own": "verified", "other": "answered"}
+    assert len(connections) == 2
+    assert [name for _, name in context_calls] == [BOX, "not-this-box.invalid"]
