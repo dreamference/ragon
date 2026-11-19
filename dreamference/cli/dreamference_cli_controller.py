@@ -14,6 +14,7 @@ import sys
 import time
 from typing import TYPE_CHECKING, Any, Final
 
+from dreamference.accounts import AccountsAdmin
 from dreamference.cli.adapter_command import ADAPTER_COMMAND, AdapterCommand
 from dreamference.cli.monitor_command import MONITOR_COMMAND, MonitorCommand
 from dreamference.config import DreamferenceConfig, ProxyBypass
@@ -166,6 +167,7 @@ _ARG_INDEX: Final[str] = "index"
 _ARG_JOBS: Final[str] = "jobs"
 _ARG_MATRIX: Final[str] = "matrix"
 _ARG_NIGHT: Final[str] = "night"
+_ARG_USER: Final[str] = "user"
 _ARG_NODE: Final[str] = "node"
 _ARG_NVFP4: Final[str] = "nvfp4"
 _ARG_OK: Final[str] = "ok"
@@ -2431,6 +2433,7 @@ class DreamferenceCLIController:
             help="Advertise this machine on the local network so clients find it with no address typed",
         )
         node_subparsers = node_parser.add_subparsers(dest="node_command")
+        AccountsAdmin.add_parser(node_subparsers)
         node_enable_parser = node_subparsers.add_parser(
             "enable",
             help="Advertise the node and publish the web UI and web search to the local network",
@@ -4922,6 +4925,9 @@ class DreamferenceCLIController:
 
         elif args.command == _ARG_NODE:
             from dreamference.node import NodeAdvertiser
+
+            if args.node_command == _ARG_USER:
+                sys.exit(AccountsAdmin.run(args))
 
             if args.node_command == _ARG_ENABLE:
                 enabled = NodeAdvertiser.enable(no_web=args.no_web, yes=args.yes)

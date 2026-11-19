@@ -26,6 +26,8 @@ setup(
         # dependency: they were only ever present locally because another package pulled them in.
         "Pillow>=12.3.0",
         "beautifulsoup4>=4.12.0",
+        # The accounts store hashes passwords with argon2id (specs/DREAMFERENCE_AUTH.md §9).
+        "argon2-cffi>=23.1.0",
     ],
     extras_require={
         # The code standard's tools (specs/DREAMFERENCE_PYTHON_QUALITY.md §4), pinned: the ratchet

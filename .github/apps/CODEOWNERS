@@ -164,6 +164,7 @@
 
 # Nodes & Remote Access
 /dreamference/node/                             @dreamference/nodes
+/dreamference/accounts/                          @dreamference/nodes @dreamference/security
 /dreamference/forge/                            @dreamference/nodes @dreamference/security
 /ragon-rs/node-locator/                          @dreamference/nodes
 /ragon-rs/node-monitor/                          @dreamference/nodes

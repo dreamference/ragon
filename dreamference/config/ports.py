@@ -14,4 +14,7 @@ ENGINE_PORT_OFFSET: Final[int] = 10000
 ENGINE_PORT: Final[int] = DEFAULT_MODEL_PORT + ENGINE_PORT_OFFSET
 WEB_PORT: Final[int] = 3100
 SEARXNG_PORT: Final[int] = 8888
+# The accounts service, on loopback only: the gate forwards the authentication routes to it
+# (specs/DREAMFERENCE_AUTH.md §9).
+ACCOUNTS_PORT: Final[int] = 18100
 DEFAULT_VLLM_HOST: Final[str] = f"http://localhost:{DEFAULT_MODEL_PORT}"
