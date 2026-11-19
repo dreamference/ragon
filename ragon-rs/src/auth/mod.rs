@@ -44,6 +44,8 @@ pub struct Info {
     pub primary_id: String,
     /// The primary's display name.
     pub primary_name: String,
+    /// Whether the gate advertises an accounts service (`"accounts": true`; 0.9.9 or later).
+    pub accounts: bool,
 }
 
 /// Reads the info document; `None` when it is not one (an older node answers something else).
@@ -57,6 +59,7 @@ pub fn parse_info(text: &str) -> Option<Info> {
         node_name: field("node_name").unwrap_or(node_id).to_string(),
         primary_id: primary_id.to_string(),
         primary_name: field("primary_name").unwrap_or(primary_id).to_string(),
+        accounts: json.get("accounts").is_some_and(|v| v.as_bool().unwrap_or(!v.is_null())),
     })
 }
 
@@ -111,11 +114,26 @@ async fn fetch(client: &reqwest::Client, url: &str) -> Option<String> {
     response.text().await.ok()
 }
 
+/// The one line printed against a gate with no accounts service (spec §7, §15).
+pub fn no_accounts_line(gate: &str) -> String {
+    format!("node {} has no accounts yet (0.9.8 or older); running without sign-in", node_label(gate))
+}
+
+/// Whether a gate runs in account mode: its info says it has an accounts service. A 404, a refused
+/// connection or an info without the field mean no (a 0.9.8 gate or a plain model server).
+pub async fn gate_has_accounts(gate: &str) -> bool {
+    let gate = gate.trim_end_matches('/');
+    let Ok(client) = reqwest::Client::builder().no_proxy().danger_accept_invalid_certs(wants_pin(gate)).timeout(Duration::from_secs(5)).build() else {
+        return false;
+    };
+    fetch(&client, &format!("{gate}/ragon/v1/info")).await.as_deref().and_then(parse_info).is_some_and(|info| info.accounts)
+}
+
 /// Does everything the launcher owes the account system at a start. See the module comment.
 ///
 /// # Errors
 /// A CA that changed for a known node id (spec §6) stops the launcher.
-pub async fn start(gate: &str, codex_home: &Path) -> anyhow::Result<()> {
+pub async fn start(gate: &str, codex_home: &Path) -> anyhow::Result<bool> {
     let gate = gate.trim_end_matches('/');
     let mut ca: Option<PathBuf> = None;
     let mut known: Option<Info> = None;
@@ -143,9 +161,15 @@ pub async fn start(gate: &str, codex_home: &Path) -> anyhow::Result<()> {
                     pin::Outcome::Known(path) => ca = Some(path),
                 }
             }
-            switcher::set_active(codex_home, &info.primary_id)?;
+            if info.accounts {
+                switcher::set_active(codex_home, &info.primary_id)?;
+            }
             known = Some(info);
         }
+    }
+    let accounts = if wants_pin(gate) { known.as_ref().is_some_and(|info| info.accounts) } else { gate_has_accounts(gate).await };
+    if !accounts {
+        eprintln!("{}", no_accounts_line(gate));
     }
     // The sign-in screen (screen.rs) draws from what was found here and does no I/O of its own
     // until a grant is sent. The upgrade note needs a home used before and no entry for the primary.
@@ -171,5 +195,5 @@ pub async fn start(gate: &str, codex_home: &Path) -> anyhow::Result<()> {
     if let Ok(mut suffix) = codex_login::default_client::USER_AGENT_SUFFIX.lock() {
         *suffix = Some(user_agent_suffix());
     }
-    Ok(())
+    Ok(accounts)
 }

@@ -367,7 +367,7 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
         let mut io = auth::commands::Io { input: &mut input, out: &mut out, tty };
         let outcome = auth::commands::run(&user_args[index], &user_args[index + 1..], &host, &codex_home, &mut io).await?;
         let Some(forward) = outcome.forward else { std::process::exit(outcome.code) };
-        auth::start(&host, &codex_home).await?;
+        let _ = auth::start(&host, &codex_home).await?;
         let mut forwarded: Vec<OsString> = args.first().cloned().into_iter().collect();
         forwarded.extend(forward.into_iter().map(OsString::from));
         return Ok(forwarded);
@@ -663,7 +663,7 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
         .to_path_buf();
     // The account system's start: the node's CA pinned, the primary's entry marked active, the
     // environment Codex inherits (auth/mod.rs; specs/DREAMFERENCE_AUTH.md §15).
-    auth::start(&host, &codex_home).await?;
+    let accounts = auth::start(&host, &codex_home).await?;
     // Where the session's edits land (worktree.rs; specs/DREAMFERENCE_RAGON_WORKTREE.md): in
     // place by default, as in Codex; in worktree mode a new interactive session moves into a fresh
     // worktree on a branch of its own before anything below reads the working folder.
@@ -725,7 +725,7 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
     };
     airgapped::prune_session_files();
     adapter::prune_session_files();
-    let catalog = configure_codex_home(&codex_home, &host, &model, &adapters, &parts, &chosen.prompt)?;
+    let catalog = configure_codex_home(&codex_home, &host, &model, &adapters, &parts, &chosen.prompt, accounts)?;
     // When the session compacts and what it is handed afterwards (compaction.rs).
     let args = compaction::prepare(args, &codex_home, &host, &model).await;
     // Old tool outputs are masked in what is sent once the request nears that limit (mask.rs).
@@ -1479,6 +1479,7 @@ pub fn configure_codex_home(
     adapters: &[adapter::Adapter],
     parts: &prompt::Parts,
     chosen: &prompt::Prompt,
+    accounts: bool,
 ) -> anyhow::Result<Option<PathBuf>> {
     check_apply_patch_setting(std::env::var(APPLY_PATCH_ENV).ok().as_deref()).map_err(anyhow::Error::msg)?;
     std::fs::create_dir_all(codex_home)?;
@@ -1505,7 +1506,7 @@ pub fn configure_codex_home(
     let _ = std::fs::create_dir_all(codex_home.join("skills"));
     let config_path = codex_home.join("config.toml");
     let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let updated = updated_config(&existing, &catalog_path, host)?;
+    let updated = updated_config_for(&existing, &catalog_path, host, accounts)?;
     if updated != existing {
         write_atomically(&config_path, updated.as_bytes())?;
     }
@@ -1576,6 +1577,12 @@ pub(crate) fn write_through(path: &Path, contents: &[u8]) -> anyhow::Result<()> 
 /// recent table header, so a top-level key appended after `[tui.…]` silently becomes part of that
 /// table, and Codex then refuses to start.
 pub fn updated_config(existing: &str, catalog_path: &Path, host: &str) -> anyhow::Result<String> {
+    updated_config_for(existing, catalog_path, host, true)
+}
+
+/// [`updated_config`] with the mode chosen: `accounts` is whether the gate advertises an accounts
+/// service; without it the provider needs no sign-in, as in 0.9.8 (spec §7, §15).
+pub fn updated_config_for(existing: &str, catalog_path: &Path, host: &str, accounts: bool) -> anyhow::Result<String> {
     let mut doc: DocumentMut = existing.parse().context("config.toml is not valid TOML")?;
 
     doc["model_catalog_json"] = value(catalog_path.to_string_lossy().into_owned());
@@ -1606,7 +1613,11 @@ pub fn updated_config(existing: &str, catalog_path: &Path, host: &str) -> anyhow
     provider["wire_api"] = value("responses");
     // Account mode: the bearer comes from `auth.json` (or `CODEX_API_KEY`), never from an
     // environment variable the provider names.
-    provider["requires_openai_auth"] = value(true);
+    if accounts {
+        provider["requires_openai_auth"] = value(true);
+    } else {
+        provider.remove("requires_openai_auth");
+    }
     provider.remove("env_key");
     // Only when absent, so a user can set their own (CONTEXT_BUDGET §1.10).
     set_if_absent(provider, "stream_idle_timeout_ms", STREAM_IDLE_TIMEOUT_MS);
@@ -2610,9 +2621,9 @@ mod tests {
                 serde_json::from_str(&std::fs::read_to_string(path).unwrap_or_default()).unwrap_or_default();
             catalog["models"][0]["base_instructions"].as_str().unwrap_or_default().to_string()
         };
-        let none = configure_codex_home(&home, DEFAULT_VLLM_HOST, &model, &[], &parts, &prompt::Prompt::default_prompt());
+        let none = configure_codex_home(&home, DEFAULT_VLLM_HOST, &model, &[], &parts, &prompt::Prompt::default_prompt(), true);
         assert_eq!(none.ok().flatten(), None);
-        let own = configure_codex_home(&home, DEFAULT_VLLM_HOST, &model, &[], &parts, &prompt::Prompt::high_swe())
+        let own = configure_codex_home(&home, DEFAULT_VLLM_HOST, &model, &[], &parts, &prompt::Prompt::high_swe(), true)
             .ok()
             .flatten()
             .unwrap_or_default();
