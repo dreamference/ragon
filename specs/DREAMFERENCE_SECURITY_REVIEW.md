@@ -138,20 +138,28 @@ explicitly. Consistent with the trusted-LAN premise above.
 
 ## Release 3.0: authentication hardening
 
-[AUTH](./DREAMFERENCE_AUTH.md) adds node accounts in 1.x to identify users, deliberately with little
-security (the owner's scope, 2026-11-19). These items are known and left for 3.0, where all security
-work goes:
+[AUTH](./DREAMFERENCE_AUTH.md) adds accounts in 0.9.9 to identify users, deliberately with little
+security (the owner's scope, 2026-11-19): one primary node keeps users (user and admin roles),
+password hashes, login tokens and per-user API keys; requests are served and counted without a
+token in 0.9.9 and refused at 1.0. These items are known and left for 3.0, where all security work
+goes:
 
-- **Rate limits** on the sign-in page, the one-time-code routes and the token route.
+- **Rate limits** on the token route, account creation and the check secondaries make.
 - **Lockout** after repeated wrong passwords.
-- **TLS between client and node:** in 1.x passwords and node keys cross the LAN in clear HTTP.
-- **Token binding and key expiry:** a node key is a bearer token with no lifetime; anyone who copies
-  `auth.json` or sees the traffic can use it until it is revoked.
-- **Open sign-up:** anyone who reaches the node can create an account.
-- **Empty and weak passwords** are accepted.
-- **Keys in a plain file** on the client (`auth.json`, mode 0600); a keyring store is not used.
-- **The signing key on disk** on the node, readable by the node's user and the gate container.
-- **Cross-site requests** to the sign-in form (it has a strict CSP and no script, but no CSRF token).
+- **TLS between client and node:** passwords and tokens cross the LAN in clear HTTP, client to node
+  and secondary to primary.
+- **Token binding and expiry:** a login token or API key is a bearer token with no lifetime; anyone
+  who copies `auth.json` or sees the traffic can use it until it is revoked.
+- **Revocation lag:** a secondary keeps a check for 60 s, so a revoked token works there for up to a
+  minute.
+- **Open sign-up:** anyone who reaches a node can create an account; the first account becomes admin.
+- **Open node registration:** a secondary registers its service account on the primary with no
+  admin step.
+- **Empty and weak passwords** are accepted; an admin reset sets the password to empty.
+- **Keys in a plain file:** `auth.json` (mode 0600) on the client and the service key on each node;
+  Codex's keyring store is available but not the default.
+- **Cross-site requests** to the node's sign-in routes from a browser on the LAN.
+- **Nodes without a gate** (Windows, Mac) serve with no check.
 
 ## Not changed and checked
 
