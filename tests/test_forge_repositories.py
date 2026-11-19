@@ -344,3 +344,9 @@ def test_git_that_cannot_run_reads_as_exit_127(monkeypatch, tmp_path):
     monkeypatch.setattr("dreamference.forge.forge_repositories.subprocess.run", broken)
     result = ForgeRepositories.git(tmp_path, ["status"])
     assert result.returncode == 127 and "git" in result.stderr
+
+
+def test_forge_repositories_ensure_organisation_does_not_recreate_existing_org(api):
+    api.answers[("GET", "/orgs/team")] = (200, {})
+
+    assert ForgeRepositories.ensure_organisation("team") is True
