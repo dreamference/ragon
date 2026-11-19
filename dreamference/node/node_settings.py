@@ -54,6 +54,17 @@ class NodeSettings:
         Path(staging).replace(path)
 
     @classmethod
+    def auth_enforce(cls) -> bool:
+        """Whether a model request with no credential is refused (`[node] auth_enforce`, false).
+
+        Read from the user-level `config.toml`; false (serve and count) unless set to true.
+        """
+        from dreamference.night_shift.night_shift_settings import NightShiftSettings
+
+        path = Path("~/.config/dreamference/config.toml").expanduser()
+        return NightShiftSettings.read_table(path, section="node").get("auth_enforce") is True
+
+    @classmethod
     def advertised(cls) -> bool:
         """Returns True once `node enable` has run and `node disable` has not."""
         return cls.load()["advertise"]

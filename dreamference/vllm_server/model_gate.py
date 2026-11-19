@@ -47,6 +47,9 @@ GUARD_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_guard.py")
 # The node's certificate and the port that serves TLS beside plain HTTP (AUTH §6), copied too.
 TLS_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_tls.py")
 LISTENER_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_listener.py")
+# The credential check (§10 of the auth spec), copied beside it too.
+AUTH_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_auth.py")
+AUTH_FILE: Final[str] = "auth.json"
 
 ENGINE_BIND_ADDRESS: Final[str] = "127.0.0.1"
 PUBLIC_BIND_ADDRESS: Final[str] = "0.0.0.0"
@@ -167,10 +170,11 @@ class ModelGate:
         """
         GATE_DIR.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(SERVICE_SOURCE, GATE_DIR / SERVICE_COPY)
-        for source in (ADAPTERS_SOURCE, GUARD_SOURCE, TLS_SOURCE, LISTENER_SOURCE):
+        for source in (ADAPTERS_SOURCE, GUARD_SOURCE, TLS_SOURCE, LISTENER_SOURCE, AUTH_SOURCE):
             shutil.copyfile(source, GATE_DIR / source.name)
         cls.stage_tls()
         cls.write_node_info()
+        cls.write_auth_settings()
         cls.remove(port)
         result = subprocess.run(
             cls.run_command(port, docker_image),
@@ -256,6 +260,15 @@ class ModelGate:
         staging = target.with_name(f".{target.name}.{os.getpid()}.tmp")
         staging.write_text(json.dumps(cls.node_info()) + "\n")
         staging.replace(target)
+
+    @classmethod
+    def write_auth_settings(cls) -> None:
+        """Writes `auth.json`, the gate's copy of `[node] auth_enforce` (read on every request)."""
+        from dreamference.node.node_settings import NodeSettings
+
+        (GATE_DIR / AUTH_FILE).write_text(
+            json.dumps({"enforce": NodeSettings.auth_enforce()}) + "\n"
+        )
 
     @classmethod
     def stop(cls, port: int) -> None:

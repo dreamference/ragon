@@ -68,6 +68,13 @@ except ImportError:
     gate_listener = importlib.import_module("model_gate_listener")
 GateTls = gate_tls.ModelGateTls
 GateListener = gate_listener.ModelGateListener
+# The credential check (§10 of the auth spec), copied the same way.
+try:
+    gate_auth = importlib.import_module("dreamference.vllm_server.model_gate_auth")
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    gate_auth = importlib.import_module("model_gate_auth")
+GateAuth = gate_auth.ModelGateAuth
 
 # Answered by the gate itself, never forwarded: what the gate is doing, as JSON.
 PROBE_PATH: Final[str] = "/ragon-gate"
@@ -81,6 +88,7 @@ FRAMING_CHUNKED: Final[str] = "chunked"
 FRAMING_LENGTH: Final[str] = "length"
 CHUNKED_TOKEN: Final[bytes] = b"chunked"
 EXPECT_CONTINUE: Final[bytes] = b"100-continue"
+NO_USER: Final[str] = "-"
 CRLF: Final[bytes] = b"\r\n"
 URL_SCHEME_SEP: Final[str] = "://"
 SECONDS_PER_MINUTE: Final[int] = 60
@@ -227,6 +235,7 @@ class ModelGateService:
         # Plain-HTTP requests served while TLS is on, per UTC day, and who sent them today.
         self.plain_counts: dict[str, int] = {}
         self.plain_peers: set[str] = set()
+        self.auth = GateAuth(state_dir, accounts)
 
     # -- the rules -----------------------------------------------------------------------------
 
@@ -756,6 +765,8 @@ class ModelGateService:
             "cached": cached,
         }
         record = {"job": tap["job"], "path": tap["path"]}
+        if tap.get("user"):
+            record["user"] = tap["user"]
         record.update({key: value if type(value) is int else None for key, value in counts.items()})
         return "usage " + json.dumps(record, separators=(",", ":"))
 
@@ -1006,17 +1017,12 @@ class ModelGateService:
             if await self.answer_here(reader, writer, request, (peer_address, state)):
                 return
             framing = self.framing(headers)
-            expects_continue = EXPECT_CONTINUE in dict(headers).get(b"expect", b"").lower()
-            if await self.divert(
-                reader,
-                writer,
-                (state, framing, expects_continue),
-                (method, path, peer_address, head),
-            ):
+            admitted = await self.admit(
+                reader, writer, (method, path, peer_address, head, headers), (state, framing)
+            )
+            if admitted is None:
                 return
-            forward = await self.adapter_request(reader, writer, (method, path, head), framing)
-            if forward is None:
-                return
+            user, forward = admitted
             try:
                 upstream_reader, upstream_writer = await asyncio.wait_for(
                     asyncio.open_connection(*self.upstream), UPSTREAM_CONNECT_TIMEOUT_S
@@ -1034,6 +1040,8 @@ class ModelGateService:
                 await self.watch_client(reader)
 
             tap = self.usage_tap(method, path, headers)
+            if tap is not None and user not in ("", NO_USER):
+                tap["user"] = user
             tasks = [
                 asyncio.ensure_future(client_side()),
                 asyncio.ensure_future(self.pipe_response(upstream_reader, writer, forward[2], tap)),
@@ -1052,6 +1060,100 @@ class ModelGateService:
         finally:
             await self.close_connection(tasks, (upstream_writer, writer))
             self.log_usage(tap)
+
+    async def admit(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        request: tuple[str, str, str, bytes, list[tuple[bytes, bytes]]],
+        context: tuple[dict[str, Any], tuple[str, int]],
+    ) -> tuple[str, tuple[bytes, bytes | None, Any]] | None:
+        """Runs the diversion, the credential check and the adapter step; None when answered.
+
+        Args:
+            reader: The client's reader.
+            writer: The client's writer.
+            request: The method, path, peer address, raw head and parsed headers.
+            context: The gate state and the body framing.
+
+        Returns:
+            tuple | None: The user (`-` for none, empty when not gated) and the forward request.
+        """
+        method, path, peer_address, head, headers = request
+        state, framing = context
+        expects_continue = EXPECT_CONTINUE in dict(headers).get(b"expect", b"").lower()
+        if await self.divert(
+            reader,
+            writer,
+            (state, framing, expects_continue),
+            (method, path, peer_address, head),
+        ):
+            return None
+        user = await self.authenticate(
+            reader, writer, (method, path, peer_address, head, headers), framing, expects_continue
+        )
+        if user is None:
+            return None
+        forward = await self.adapter_request(reader, writer, (method, path, head), framing)
+        if forward is None:
+            return None
+        return user, forward
+
+    async def authenticate(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        request: tuple[str, str, str, bytes, list[tuple[bytes, bytes]]],
+        framing: tuple[str, int],
+        expects_continue: bool,
+    ) -> str | None:
+        """Runs the credential check (§10); a refusal is answered here (401, body drained first).
+
+        The check happens once, before the request goes on: a response already streaming is never
+        cut when its credential is revoked later.
+
+        Returns:
+            str | None: The user's name (`-` when the request had no credential, an empty string
+            for a route that is not checked), or None when the request was answered here.
+        """
+        method, path, peer_address, head, headers = request
+        outcome = await self.auth.check(head, method, path, headers)
+        if outcome["verdict"] != gate_auth.SERVE:
+            kind = self.auth.client_kind(headers)
+            self.log(f"auth refused {method} {path} kind={kind} from {peer_address}")
+            if not expects_continue:
+                with contextlib.suppress(
+                    TimeoutError,
+                    asyncio.IncompleteReadError,
+                    asyncio.LimitOverrunError,
+                    ValueError,
+                    ConnectionError,
+                ):
+                    await asyncio.wait_for(
+                        self.copy_body(reader, framing, None, DRAIN_LIMIT), DRAIN_TIMEOUT_S
+                    )
+            await self.respond(
+                writer,
+                int(outcome["status"]),
+                "Unauthorized",
+                outcome["body"],
+                [("WWW-Authenticate", gate_auth.BEARER_REALM)],
+                head_only=method == METHOD_HEAD,
+            )
+            return None
+        user = outcome["user"]
+        if user is None:
+            return ""
+        kind = self.auth.client_kind(headers)
+        if user == NO_USER:
+            count = self.auth.count_unauthenticated(kind, peer_address)
+            self.log(
+                f"request user=- kind={kind} {method} {path} "
+                f"(no credential, {count} today from {peer_address})"
+            )
+        else:
+            self.log(f"request user={user} kind={kind} {method} {path}")
+        return str(user)
 
     async def divert(
         self,

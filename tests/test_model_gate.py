@@ -638,12 +638,13 @@ def test_the_service_runs_on_its_own_as_the_container_runs_it(tmp_path):
     """The file is copied into the engine's image and run there, without the package."""
     copy = tmp_path / "model_gate_service.py"
     copy.write_text(SERVICE.read_text())
-    # The adapter rules, the guard and the TLS port travel beside it, as ModelGate.start copies them.
+    # The adapter rules, the guard, the TLS port and the credential check travel beside it.
     for helper in (
         "model_gate_adapters.py",
         "model_gate_guard.py",
         "model_gate_tls.py",
         "model_gate_listener.py",
+        "model_gate_auth.py",
     ):
         (tmp_path / helper).write_text(SERVICE.with_name(helper).read_text())
     probe = socket.socket()
@@ -728,7 +729,7 @@ def test_starting_the_gate_copies_the_service_beside_its_state(monkeypatch):
     )
     assert ModelGate.start(8000, "image")
     assert (model_gate.GATE_DIR / "model_gate_service.py").read_text() == SERVICE.read_text()
-    for rules in ("model_gate_adapters.py", "model_gate_guard.py"):
+    for rules in ("model_gate_adapters.py", "model_gate_guard.py", "model_gate_auth.py"):
         assert (model_gate.GATE_DIR / rules).read_text() == SERVICE.with_name(rules).read_text()
     assert calls[0] == ["docker", "rm", "-f", "dreamference-gate-8000"]
     assert calls[1][:3] == ["docker", "run", "-d"]
