@@ -1144,6 +1144,22 @@ def test_a_github_rate_limit_backs_off_to_the_next_tick(monkeypatch, tmp_path):
     assert "rate limit" in outcome["backoff"] and not outcome["failures"]
 
 
+def test_forge_mirror_bring_back_pushes_the_to_forge_refspecs_into_the_forge(monkeypatch, tmp_path):
+    seen = {}
+
+    def push_each(cls, work, arguments, refspecs, environment):
+        seen.update(work=work, arguments=arguments, refspecs=refspecs, environment=environment)
+        return {"pushed": refspecs, "failures": []}
+
+    monkeypatch.setattr(ForgeGithubMirror, "push_each", classmethod(push_each))
+    environment = {"GIT_TERMINAL_PROMPT": "0"}
+    outcome = ForgeGithubMirror.bring_back(tmp_path, "o/r", ["a:b"], environment)
+    assert outcome == {"pushed": ["a:b"], "failures": []}
+    assert seen["work"] == tmp_path and seen["refspecs"] == ["a:b"]
+    assert seen["environment"] is environment
+    assert seen["arguments"][-3:] == ["push", "--quiet", ForgeRepositories.forge_url("o/r")]
+
+
 @pytest.mark.parametrize(
     "stderr",
     [
