@@ -42,6 +42,7 @@ pub mod sync_live;
 pub mod sync_store;
 pub mod telegram_app;
 pub mod tls;
+pub mod web_login;
 
 pub use cli::Environment;
 pub use cli::run_cli;

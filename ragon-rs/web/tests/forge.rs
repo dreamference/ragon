@@ -133,6 +133,7 @@ fn config(dir: &Path, forge_url: &str, public_names: Vec<String>) -> Config {
         launch: Launch { ragon: dir.join("no-ragon"), env: Vec::new(), log: state_dir.join("app-server.log") },
         images_dir: dir.join("images"),
         speech_addr: "127.0.0.1:9".to_string(),
+        accounts_addr: "127.0.0.1:9".to_string(),
         user_config: Some(dir.join("user/.config/dreamference/config.toml")),
         forge_url: Some(forge_url.to_string()),
         phone_admin: None,

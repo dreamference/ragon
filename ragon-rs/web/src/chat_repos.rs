@@ -5795,6 +5795,7 @@ mod tests {
             },
             images_dir: dir.join("images"),
             speech_addr: "127.0.0.1:9".to_string(),
+            accounts_addr: "127.0.0.1:9".to_string(),
             user_config: Some(user_config),
             forge_url,
             phone_admin: None,

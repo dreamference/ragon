@@ -85,6 +85,8 @@ pub struct Config {
     pub images_dir: PathBuf,
     /// The speech-to-text service `/api/transcribe` passes recordings to (sidecars.rs).
     pub speech_addr: String,
+    /// The accounts service the sign-in pages and Bearer checks ask (web_login.rs).
+    pub accounts_addr: String,
     /// The user's own configuration file (`~/.config/dreamference/config.toml`), read for the
     /// `[chat]` settings and Night Shift's phone repositories; None when there is no home. Tests
     /// point it into their scratch folder, never at the real file.
@@ -120,6 +122,8 @@ pub struct Server {
     pub forge: crate::forge::ForgeProxy,
     /// The node monitor's last result (monitor_status.rs).
     pub monitor: crate::monitor_status::Cache,
+    /// The browser sign-in and the app-server's tokens (web_login.rs).
+    pub login: Arc<crate::web_login::Login>,
 }
 
 impl Config {
@@ -136,6 +140,7 @@ impl Config {
             launch: Launch { ragon: dir.join("no-ragon"), env: Vec::new(), log: state_dir.join("app-server.log") },
             images_dir: dir.join("images"),
             speech_addr: "127.0.0.1:9".to_string(),
+            accounts_addr: "127.0.0.1:9".to_string(),
             user_config: None,
             forge_url: None,
             state_dir,
@@ -170,6 +175,7 @@ impl Server {
             live: Mutex::new(None),
             forge: crate::forge::ForgeProxy::new(),
             monitor: Default::default(),
+            login: Arc::new(crate::web_login::Login::new(&config.accounts_addr)),
             config,
         }))
     }
@@ -356,6 +362,7 @@ impl Server {
     /// Forgets a tab that closed: its turns are no longer anyone's to wait for here.
     pub fn forget_tab(&self, tab: u64) {
         self.chat_repos.forget_tab(tab);
+        self.login.forget(tab);
         let mut busy = self.busy.lock().unwrap_or_else(|p| p.into_inner());
         if busy.remove(&tab).is_some() {
             self.sync_marker(&busy);
@@ -446,6 +453,16 @@ pub fn router(server: Arc<Server>) -> Router {
         .route("/forge/", any(forge_proxy))
         .route("/forge/{*path}", any(forge_proxy).layer(DefaultBodyLimit::disable()))
         .route("/login", get(login))
+        .route("/signin", get(signin_page))
+        .route("/signin.js", get(signin_js))
+        .route("/device", get(signin_page))
+        .route("/oauth/authorize", get(signin_page))
+        .route("/codex/device", get(codex_device))
+        .route("/api/auth/login", post(auth_login))
+        .route("/api/auth/refresh", post(auth_refresh))
+        .route("/api/auth/session", post(auth_session).delete(auth_logout))
+        .route("/api/auth/device", post(auth_device))
+        .route("/api/auth/authorize", post(auth_authorize))
         .route("/pair", get(pair_page).post(pair))
         .route("/pair.css", get(pair_css))
         .route("/account", get(crate::account::page))
@@ -492,10 +509,20 @@ async fn guard(State(server): State<Arc<Server>>, request: Request, next: Next) 
         return secured(text(StatusCode::FORBIDDEN, "Requests from other sites are refused.\n"));
     }
     let path = request.uri().path();
+    // A signed-in user's JWT opens the socket and the voice upload as a Bearer (AUTH §5.9, §14.4),
+    // beside the cookies; it is checked with the accounts service.
+    if matches!(path, "/ws" | "/api/transcribe")
+        && !server.authenticated(path, headers)
+        && let Some(token) = crate::web_login::bearer(header_str(headers, header::AUTHORIZATION))
+        && !same_owner_token(&server, token)
+        && server.login.verify(token).await.is_some()
+    {
+        return secured(next.run(request).await);
+    }
     // `/api/sync/pair` answers 404 while the hub is off, and pairs an agent only with a code.
     let public = matches!(
         path,
-        "/login" | "/pair" | "/pair.css" | "/api/sync/pair" | "/api/telegram/launch-pair"
+        "/login" | "/pair" | "/pair.css" | "/signin" | "/signin.js" | "/device" | "/codex/device" | "/oauth/authorize" | "/api/auth/login" | "/api/auth/refresh" | "/api/auth/device" | "/api/auth/authorize" | "/api/auth/session" | "/api/sync/pair" | "/api/telegram/launch-pair"
     ) || (path == "/bridge.js" && server.front_host_ok(headers));
     if !public && !server.authenticated(path, headers) {
         let response = if path == "/" || path == "/index.html" {
@@ -1119,6 +1146,110 @@ async fn login(State(server): State<Arc<Server>>, Query(query): Query<HashMap<St
     redirect_with_cookie(format!("{}={token}; HttpOnly; SameSite=Strict; Path=/", auth::SESSION_COOKIE))
 }
 
+fn same_owner_token(server: &Server, token: &str) -> bool {
+    auth::same_secret(token, &server.owner_token)
+}
+
+/// The sign-in page: one page for the sign-in, the device code and Forgejo's authorization step
+/// (the page reads its own path and query, `signin.js`).
+async fn signin_page() -> Response {
+    html(StatusCode::OK, assets::LOGIN_HTML)
+}
+
+async fn signin_js() -> Response {
+    (StatusCode::OK, [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], assets::LOGIN_JS).into_response()
+}
+
+/// Codex prints `{issuer}/codex/device`; the code is entered on `/device` (AUTH §5.5).
+async fn codex_device() -> Response {
+    (StatusCode::SEE_OTHER, [(header::LOCATION, "/device")]).into_response()
+}
+
+fn field<'a>(body: &'a serde_json::Value, name: &str) -> Option<&'a str> {
+    body.get(name).and_then(serde_json::Value::as_str)
+}
+
+/// The password grant, or account creation, for the page. The password is passed as typed.
+async fn auth_login(State(server): State<Arc<Server>>, raw: axum::body::Bytes) -> Response {
+    let body: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    let (Some(username), Some(password)) = (field(&body, "username"), field(&body, "password")) else {
+        return json_response(StatusCode::BAD_REQUEST, json!({ "error": "invalid_request", "error_description": "username and password are required." }));
+    };
+    let create = body.get("create").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let mut fields = vec![("grant_type", "password"), ("username", username), ("password", password), ("client_id", crate::web_login::CLIENT_ID)];
+    if create {
+        fields.push(("create", "true"));
+    }
+    forwarded(server.login.token(&fields).await)
+}
+
+async fn auth_refresh(State(server): State<Arc<Server>>, raw: axum::body::Bytes) -> Response {
+    let body: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    let Some(refresh) = field(&body, "refresh_token") else {
+        return json_response(StatusCode::BAD_REQUEST, json!({ "error": "invalid_request", "error_description": "refresh_token is required." }));
+    };
+    let fields = [("grant_type", "refresh_token"), ("refresh_token", refresh), ("client_id", crate::web_login::CLIENT_ID)];
+    forwarded(server.login.token(&fields).await)
+}
+
+fn forwarded(answer: Result<(u16, serde_json::Value), String>) -> Response {
+    match answer {
+        Ok((status, body)) => json_response(StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), body),
+        Err(reason) => json_response(StatusCode::BAD_GATEWAY, json!({ "error": "server_error", "error_description": reason })),
+    }
+}
+
+/// The page hands its session over (after sign-in and after each refresh): the app-server works
+/// under it from now on. The access token must be one the accounts service accepts.
+async fn auth_session(State(server): State<Arc<Server>>, headers: HeaderMap, raw: axum::body::Bytes) -> Response {
+    let body: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    let Some(token) = crate::web_login::bearer(header_str(&headers, header::AUTHORIZATION)) else {
+        return json_response(StatusCode::UNAUTHORIZED, json!({ "error": "invalid_token" }));
+    };
+    let Some(identity) = server.login.verify(token).await else {
+        return json_response(StatusCode::UNAUTHORIZED, json!({ "error": "invalid_token" }));
+    };
+    let refresh = field(&body, "refresh_token").unwrap_or_default();
+    let told = server.login.set_session(token, refresh, identity.clone());
+    json_response(StatusCode::OK, json!({ "username": identity.username, "role": identity.role, "app_servers": told }))
+}
+
+/// Logout: the app-server's session is forgotten (the page clears its local storage itself).
+async fn auth_logout(State(server): State<Arc<Server>>, headers: HeaderMap) -> Response {
+    let known = match crate::web_login::bearer(header_str(&headers, header::AUTHORIZATION)) {
+        Some(token) => server.login.verify(token).await.is_some(),
+        None => false,
+    };
+    if !known {
+        return json_response(StatusCode::UNAUTHORIZED, json!({ "error": "invalid_token" }));
+    }
+    server.login.clear_session();
+    json_response(StatusCode::OK, json!({ "ok": true }))
+}
+
+/// Approves a device user code for the signed-in user (AUTH §5.5): the accounts service
+/// marks the code and answers Codex's or the RFC 8628 client's poll.
+async fn auth_device(State(server): State<Arc<Server>>, headers: HeaderMap, raw: axum::body::Bytes) -> Response {
+    let body: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    let Some(token) = crate::web_login::bearer(header_str(&headers, header::AUTHORIZATION)) else {
+        return json_response(StatusCode::UNAUTHORIZED, json!({ "error": "invalid_token" }));
+    };
+    let Some(code) = field(&body, "user_code") else {
+        return json_response(StatusCode::BAD_REQUEST, json!({ "error": "invalid_request", "error_description": "user_code is required." }));
+    };
+    forwarded(server.login.as_user("POST", "/oauth/device/approve", token, Some(&json!({ "user_code": code }))).await)
+}
+
+/// Forgejo's authorization step (AUTH §14.2, §14.4): the signed-in user allows the client; the
+/// accounts service answers where to send the browser back, with the code.
+async fn auth_authorize(State(server): State<Arc<Server>>, headers: HeaderMap, raw: axum::body::Bytes) -> Response {
+    let body: serde_json::Value = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+    let Some(token) = crate::web_login::bearer(header_str(&headers, header::AUTHORIZATION)) else {
+        return json_response(StatusCode::UNAUTHORIZED, json!({ "error": "invalid_token" }));
+    };
+    forwarded(server.login.as_user("POST", "/oauth/authorize/approve", token, Some(&body)).await)
+}
+
 fn redirect_with_cookie(cookie: String) -> Response {
     let mut response = (StatusCode::SEE_OTHER, [(header::LOCATION, "/")]).into_response();
     if let Ok(value) = HeaderValue::from_str(&cookie) {
@@ -1489,6 +1620,7 @@ mod tests {
             },
             images_dir: dir.join("images"),
             speech_addr: "127.0.0.1:9".to_string(),
+            accounts_addr: "127.0.0.1:9".to_string(),
             user_config: None,
             forge_url: None,
             phone_admin: None,
@@ -1551,6 +1683,7 @@ mod tests {
             },
             images_dir: dir.join("images"),
             speech_addr: "127.0.0.1:9".to_string(),
+            accounts_addr: "127.0.0.1:9".to_string(),
             user_config: None,
             forge_url: None,
             phone_admin: None,
@@ -1635,6 +1768,7 @@ mod tests {
             launch: Launch { ragon: PathBuf::from("/bin/true"), env: Vec::new(), log: dir.join("app-server.log") },
             images_dir: dir.join("images"),
             speech_addr: "127.0.0.1:9".to_string(),
+            accounts_addr: "127.0.0.1:9".to_string(),
             user_config: None,
             forge_url: None,
             phone_admin: None,

@@ -9,6 +9,8 @@ pub const LOCKED_HTML: &str = include_str!("../static/locked.html");
 pub const ACCOUNT_HTML: &str = include_str!("../static/account.html");
 pub const ACCOUNT_JS: &str = include_str!("../static/account.js");
 pub const LOGIN_FAILED_HTML: &str = include_str!("../static/login-failed.html");
+pub const LOGIN_HTML: &str = include_str!("../static/login.html");
+pub const LOGIN_JS: &str = include_str!("../static/login.js");
 const PAIR_HTML: &str = include_str!("../static/pair.html");
 const PLACEHOLDER_HTML: &str = include_str!("../static/placeholder.html");
 

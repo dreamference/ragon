@@ -52,6 +52,7 @@ fn config(dir: &std::path::Path) -> Config {
         launch: Launch { ragon: dir.join("ragon"), env: Vec::new(), log: state_dir.join("app-server.log") },
         images_dir: dir.join("images"),
         speech_addr: "127.0.0.1:9".to_string(),
+        accounts_addr: "127.0.0.1:9".to_string(),
         user_config: Some(dir.join("user/.config/dreamference/config.toml")),
         forge_url: None,
         phone_admin: None,

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in</title>
+<link rel="stylesheet" href="/pair.css">
+</head>
+<body>
+<main>
+<h1>Ragon</h1>
+<p id="message" role="status"></p>
+<section id="signin" hidden>
+<p>Sign in with your account on this node, or create one.</p>
+<label>Name <input id="username" autocomplete="username"></label>
+<label>Password <input id="password" type="password" autocomplete="current-password"></label>
+<button id="do-signin" type="button">Sign in</button>
+<button id="do-create" type="button">Create an account</button>
+</section>
+<section id="device" hidden>
+<p>Enter the code shown on the other device.</p>
+<label>Code <input id="user-code" autocomplete="off" maxlength="9"></label>
+<button id="do-approve" type="button">Approve</button>
+</section>
+<section id="authorize" hidden>
+<p>An application asks to use your account.</p>
+<button id="do-allow" type="button">Allow</button>
+</section>
+<section id="done" hidden>
+<p>You are signed in.</p>
+<p><a href="/">Open Ragon</a></p>
+<button id="do-logout" type="button">Sign out</button>
+</section>
+</main>
+<script src="/signin.js"></script>
+</body>
+</html>

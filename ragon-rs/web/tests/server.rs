@@ -77,6 +77,7 @@ fn config(dir: &Path, port: u16, lan_names: Vec<String>) -> Config {
         images_dir: dir.join("images"),
         // Nothing listens on port 9 (discard): a test that needs the service starts its own.
         speech_addr: "127.0.0.1:9".to_string(),
+        accounts_addr: "127.0.0.1:9".to_string(),
         // Never the real ~/.config/dreamference/config.toml: a scratch one, absent unless a test writes it.
         user_config: Some(dir.join("user/.config/dreamference/config.toml")),
         forge_url: None,
@@ -990,6 +991,12 @@ async fn a_watch_device_reads_and_follows_threads_and_changes_nothing() {
 /// it is listed here, and so is decided for a `watch` device.
 const ROUTES_THAT_CHANGE: &[(&str, &str, &str)] = &[
     ("POST", "/api/upload", "/api/upload?kind=file&name=a.txt"),
+    ("POST", "/api/auth/login", "/api/auth/login"),
+    ("POST", "/api/auth/refresh", "/api/auth/refresh"),
+    ("POST", "/api/auth/session", "/api/auth/session"),
+    ("DELETE", "/api/auth/session", "/api/auth/session"),
+    ("POST", "/api/auth/device", "/api/auth/device"),
+    ("POST", "/api/auth/authorize", "/api/auth/authorize"),
     ("POST", "/api/transcribe", "/api/transcribe"),
     ("POST", "/api/docs/{action}", "/api/docs/add"),
     ("POST", "/api/night/add", "/api/night/add"),

@@ -277,6 +277,7 @@ impl Tab {
             }
         });
         self.upstream_tx = Some(upstream_tx.clone());
+        self.server.login.register(self.id, upstream_tx.clone());
         self.upstream_writer = Some(upstream_writer);
 
         let (server_timer, shared_timer, tx_timer) = (self.server.clone(), self.shared.clone(), upstream_tx.clone());
@@ -771,13 +772,26 @@ pub fn deliver(
         let _ = out.send(event("work://protocol-error", Value::String(text.to_string())));
         return;
     };
-    if take_internal_id(shared, &value) {
+    if take_internal_id(shared, &value) || server.login.take_login_answer(&value) {
         return;
     }
     if let Some((thread, cwd)) = thread_place(&value) {
         shared.places.lock().unwrap_or_else(|p| p.into_inner()).insert(thread.clone(), PathBuf::from(&cwd));
         server.chat_repos.record_thread_place(&thread, PathBuf::from(cwd));
         server.chat_repos.note_tab_thread(shared.tab_id, &thread);
+    }
+    // The app-server asks for fresh tokens of the browser session; the answer comes from the
+    // primary, never from the page (AUTH §5.8).
+    if let Incoming::ServerRequest { method, .. } = &kind
+        && method == "account/chatgptAuthTokens/refresh"
+    {
+        let id = value.get("id").cloned().unwrap_or(Value::Null);
+        let (server, tx) = (server.login.clone(), upstream_tx.clone());
+        tokio::spawn(async move {
+            let answer = server.refresh_answer(id).await;
+            let _ = tx.send(UpstreamMessage::text(answer.to_string()));
+        });
+        return;
     }
     match kind {
         Incoming::ServerRequest { key, method } => {
