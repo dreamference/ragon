@@ -638,13 +638,14 @@ def test_the_service_runs_on_its_own_as_the_container_runs_it(tmp_path):
     """The file is copied into the engine's image and run there, without the package."""
     copy = tmp_path / "model_gate_service.py"
     copy.write_text(SERVICE.read_text())
-    # The adapter rules travel beside it, as ModelGate.start copies them.
-    (tmp_path / "model_gate_adapters.py").write_text(
-        SERVICE.with_name("model_gate_adapters.py").read_text()
-    )
-    (tmp_path / "model_gate_guard.py").write_text(
-        SERVICE.with_name("model_gate_guard.py").read_text()
-    )
+    # The adapter rules, the guard and the TLS port travel beside it, as ModelGate.start copies them.
+    for helper in (
+        "model_gate_adapters.py",
+        "model_gate_guard.py",
+        "model_gate_tls.py",
+        "model_gate_listener.py",
+    ):
+        (tmp_path / helper).write_text(SERVICE.with_name(helper).read_text())
     probe = socket.socket()
     probe.bind(("127.0.0.1", 0))
     port = probe.getsockname()[1]

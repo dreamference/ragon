@@ -12,6 +12,7 @@ import http.client
 import json
 import os
 import shutil
+import socket
 import subprocess
 import time
 import urllib.error
@@ -24,12 +25,15 @@ from dreamference.config.container_log_options import ContainerLogOptions
 from dreamference.config.ports import ENGINE_PORT_OFFSET
 from dreamference.vllm_server.adapter_serving import AdapterServing
 from dreamference.vllm_server.model_gate_service import (
+    NODE_FILE,
     PAUSE_FILE,
     PROBE_PATH,
     RUN_FILE,
     STATE_CLOSED,
     ModelGateService,
 )
+from dreamference.vllm_server.model_gate_tls import STAGED_DIR as TLS_STAGED_DIR
+from dreamference.vllm_server.model_gate_tls import ModelGateTls
 
 # Where the gate's state lives on the host; mounted read-only into its container.
 GATE_DIR: Final[Path] = Path("~/.local/state/dreamference/model-gate").expanduser()
@@ -40,6 +44,9 @@ SERVICE_COPY: Final[str] = "model_gate_service.py"
 ADAPTERS_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_adapters.py")
 # The loop guard's rules (`ragon`'s length cap and sampling arm), copied beside it too.
 GUARD_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_guard.py")
+# The node's certificate and the port that serves TLS beside plain HTTP (AUTH §6), copied too.
+TLS_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_tls.py")
+LISTENER_SOURCE: Final[Path] = Path(__file__).with_name("model_gate_listener.py")
 
 ENGINE_BIND_ADDRESS: Final[str] = "127.0.0.1"
 PUBLIC_BIND_ADDRESS: Final[str] = "0.0.0.0"
@@ -160,8 +167,10 @@ class ModelGate:
         """
         GATE_DIR.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(SERVICE_SOURCE, GATE_DIR / SERVICE_COPY)
-        shutil.copyfile(ADAPTERS_SOURCE, GATE_DIR / ADAPTERS_SOURCE.name)
-        shutil.copyfile(GUARD_SOURCE, GATE_DIR / GUARD_SOURCE.name)
+        for source in (ADAPTERS_SOURCE, GUARD_SOURCE, TLS_SOURCE, LISTENER_SOURCE):
+            shutil.copyfile(source, GATE_DIR / source.name)
+        cls.stage_tls()
+        cls.write_node_info()
         cls.remove(port)
         result = subprocess.run(
             cls.run_command(port, docker_image),
@@ -193,6 +202,60 @@ class ModelGate:
         )
         cls.remove(port)
         return False
+
+    @classmethod
+    def stage_tls(cls) -> bool:
+        """Creates the node's CA and server certificate if needed and stages them for the gate.
+
+        Only the server certificate, its key and the CA certificate are copied beside the gate's
+        state (its container mounts that folder); the CA's key stays where it is. A node where the
+        certificate cannot be made serves plain HTTP, as before, and says why.
+
+        Returns:
+            bool: Whether the gate will serve HTTPS.
+        """
+        try:
+            folder = ModelGateTls.ensure()
+        except (ImportError, OSError, ValueError) as exc:
+            print(  # noqa: T201 - console output of server start
+                f"⚠️  The node's TLS certificate could not be made ({exc}); the gate serves plain HTTP."
+            )
+            shutil.rmtree(GATE_DIR / TLS_STAGED_DIR, ignore_errors=True)
+            return False
+        return ModelGateTls.stage(folder, GATE_DIR)
+
+    @classmethod
+    def node_info(cls) -> dict[str, Any]:
+        """Who this node is, for the gate's `/ragon/v1/info` (specs/DREAMFERENCE_AUTH.md §5.1).
+
+        The node is its own primary when it keeps the account store; otherwise the primary is not
+        known here yet.
+
+        Returns:
+            dict[str, Any]: `node_id`, `name`, `primary_id`, `primary_name` and `issuer`.
+        """
+        from dreamference.accounts.accounts_service import AccountsService
+        from dreamference.accounts.accounts_store import AccountsStore
+        from dreamference.node.node_identity import NodeIdentity
+
+        node_id = NodeIdentity.read()
+        name = socket.gethostname().split(".", 1)[0]
+        primary = AccountsStore.default_path().exists()
+        return {
+            "node_id": node_id,
+            "name": name,
+            "primary_id": node_id if primary else None,
+            "primary_name": name if primary else None,
+            "issuer": AccountsService.issuer(name) if primary else None,
+        }
+
+    @classmethod
+    def write_node_info(cls) -> None:
+        """Writes `node_info()` beside the gate's state, where the gate reads it per request."""
+        target = GATE_DIR / NODE_FILE
+        staging = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+        staging.write_text(json.dumps(cls.node_info()) + "\n")
+        staging.replace(target)
 
     @classmethod
     def stop(cls, port: int) -> None:

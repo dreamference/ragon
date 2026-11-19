@@ -58,6 +58,16 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     gate_guard = importlib.import_module("model_gate_guard")
 GateGuard = gate_guard.ModelGateGuard
+# The node's certificate and the port that serves TLS beside plain HTTP, copied the same way.
+try:
+    gate_tls = importlib.import_module("dreamference.vllm_server.model_gate_tls")
+    gate_listener = importlib.import_module("dreamference.vllm_server.model_gate_listener")
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    gate_tls = importlib.import_module("model_gate_tls")
+    gate_listener = importlib.import_module("model_gate_listener")
+GateTls = gate_tls.ModelGateTls
+GateListener = gate_listener.ModelGateListener
 
 # Answered by the gate itself, never forwarded: what the gate is doing, as JSON.
 PROBE_PATH: Final[str] = "/ragon-gate"
@@ -159,6 +169,23 @@ CHUNK_LINE: Final[re.Pattern[bytes]] = re.compile(rb"\r\n[0-9a-fA-F]+(?:;[^\r\n]
 OPEN_BRACE: Final[int] = ord("{")
 CLOSE_BRACE: Final[int] = ord("}")
 
+# Answered by the gate itself, open to anyone, even while a run holds the gate: who this node is
+# and the CA its certificate is signed by (specs/DREAMFERENCE_AUTH.md §5.1, §6).
+INFO_PATH: Final[str] = "/ragon/v1/info"
+CA_PATH: Final[str] = "/ragon/v1/ca.pem"
+# The node's identity, written by `ModelGate.start` beside the gate's state.
+NODE_FILE: Final[str] = "node.json"
+PEM_TYPE: Final[str] = "application/x-pem-file"
+NOT_FOUND: Final[int] = 404
+# While the gate serves TLS, plain HTTP is served only to requests without credentials (0.9.8
+# clients); one with a credential, or to the sign-in and node routes, is refused (§6).
+API_KEY: Final[bytes] = b"api-key"
+HTTPS_ONLY_PREFIXES: Final[tuple[str, ...]] = ("/oauth", "/ragon/v1")
+HTTPS_REQUIRED: Final[str] = "Use https://"
+HTTPS_REQUIRED_CODE: Final[str] = "https_required"
+# Days of plain-HTTP counts kept for the probe.
+PLAIN_DAYS_KEPT: Final[int] = 7
+
 
 class ModelGateService:
     """The proxy and the rules it applies; the rules are classmethods the host shares."""
@@ -169,6 +196,7 @@ class ModelGateService:
         upstream: tuple[str, int],
         state_dir: str,
         accounts: tuple[str, int] = ACCOUNTS_UPSTREAM,
+        tls_dir: str | None = None,
     ) -> None:
         """Set up the gate service.
 
@@ -177,6 +205,8 @@ class ModelGateService:
             upstream: The engine's loopback address and internal port.
             state_dir: The directory holding `run.json` and `pause.json`.
             accounts: The accounts service's loopback address and port.
+            tls_dir: A directory holding `server.pem`, `server.key` and `ca.pem`; with them the
+                port serves HTTPS beside plain HTTP, without them plain HTTP only.
         """
         self.listen = listen
         self.upstream = upstream
@@ -184,6 +214,14 @@ class ModelGateService:
         self.state_dir = state_dir
         self.server: asyncio.AbstractServer | None = None
         self.adapters = GateAdapters(state_dir, upstream)
+        self.tls_context = GateTls.server_context(tls_dir) if tls_dir else None
+        self.ca_pem: bytes | None = None
+        if self.tls_context is not None and tls_dir:
+            with contextlib.suppress(OSError):
+                self.ca_pem = (Path(tls_dir) / gate_tls.CA_CERT).read_bytes()
+        # Plain-HTTP requests served while TLS is on, per UTC day, and who sent them today.
+        self.plain_counts: dict[str, int] = {}
+        self.plain_peers: set[str] = set()
 
     # -- the rules -----------------------------------------------------------------------------
 
@@ -522,10 +560,36 @@ class ModelGateService:
             extra: More headers.
             head_only: For a HEAD request.
         """
-        data = json.dumps(body).encode("utf-8")
+        await cls.respond_raw(
+            writer,
+            (status, reason, "application/json"),
+            json.dumps(body).encode("utf-8"),
+            extra,
+            head_only,
+        )
+
+    @classmethod
+    async def respond_raw(
+        cls,
+        writer: asyncio.StreamWriter,
+        status: tuple[int, str, str],
+        data: bytes,
+        extra: list[tuple[str, str]] | None = None,
+        head_only: bool = False,
+    ) -> None:
+        """Writes an answer of any type that closes the connection.
+
+        Args:
+            writer: The client.
+            status: The status code, its reason phrase and the content type.
+            data: The body.
+            extra: More headers.
+            head_only: For a HEAD request.
+        """
+        code, reason, content_type = status
         lines = [
-            f"HTTP/1.1 {status} {reason}",
-            "Content-Type: application/json",
+            f"HTTP/1.1 {code} {reason}",
+            f"Content-Type: {content_type}",
             f"Content-Length: {len(data)}",
             "Connection: close",
         ]
@@ -744,17 +808,7 @@ class ModelGateService:
         """Refuses a request while a run holds the gate (503, the body drained first)."""
         method, path, peer_address = request
         self.log(f"refused {method} {path} from {peer_address} ({state.get('run')})")
-        if not expects_continue:
-            with contextlib.suppress(
-                TimeoutError,
-                asyncio.IncompleteReadError,
-                asyncio.LimitOverrunError,
-                ValueError,
-                ConnectionError,
-            ):
-                await asyncio.wait_for(
-                    self.copy_body(reader, framing, None, DRAIN_LIMIT), DRAIN_TIMEOUT_S
-                )
+        await self.drain(reader, framing, expects_continue)
         await self.respond(
             writer,
             503,
@@ -763,6 +817,168 @@ class ModelGateService:
             [("Retry-After", RETRY_AFTER), ("X-Ragon-Gate", "closed")],
             head_only=method == METHOD_HEAD,
         )
+
+    @classmethod
+    async def drain(
+        cls, reader: asyncio.StreamReader, framing: tuple[str, int], expects_continue: bool
+    ) -> None:
+        """Reads a refused request's body, bounded, so the answer is not lost to a reset."""
+        if expects_continue:
+            return
+        with contextlib.suppress(
+            TimeoutError,
+            asyncio.IncompleteReadError,
+            asyncio.LimitOverrunError,
+            ValueError,
+            ConnectionError,
+        ):
+            await asyncio.wait_for(
+                cls.copy_body(reader, framing, None, DRAIN_LIMIT), DRAIN_TIMEOUT_S
+            )
+
+    @classmethod
+    def is_loopback(cls, peer: str) -> bool:
+        """True for a loopback peer, IPv4, IPv6 or IPv4-mapped."""
+        try:
+            address = ipaddress.ip_address(peer.split("%", 1)[0])
+        except ValueError:
+            return False
+        mapped = getattr(address, "ipv4_mapped", None)
+        return bool(address.is_loopback or (mapped is not None and mapped.is_loopback))
+
+    @classmethod
+    def needs_https(cls, path: str, headers: list[tuple[bytes, bytes]]) -> bool:
+        """True for a request plain HTTP may not carry: a credential, or a sign-in or node route."""
+        route = path.split("?", 1)[0]
+        if any(route == prefix or route.startswith(prefix + "/") for prefix in HTTPS_ONLY_PREFIXES):
+            return True
+        return any(name in (AUTHORIZATION, API_KEY) for name, _ in headers)
+
+    def count_plain(self, peer: str) -> None:
+        """Counts a plain-HTTP request served while TLS is on (an older client), per UTC day."""
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        if day not in self.plain_counts:
+            self.plain_peers.clear()
+            for old in sorted(self.plain_counts)[
+                : max(0, len(self.plain_counts) - PLAIN_DAYS_KEPT + 1)
+            ]:
+                del self.plain_counts[old]
+        self.plain_counts[day] = self.plain_counts.get(day, 0) + 1
+        if peer not in self.plain_peers:
+            self.plain_peers.add(peer)
+            self.log(f"plain HTTP from {peer} (an older client; counted for {day})")
+
+    async def check_plain(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        request: tuple[str, str, list[tuple[bytes, bytes]]],
+        peer_address: str,
+    ) -> bool:
+        """Applies the plain-HTTP rule while TLS is on; True when the request was refused.
+
+        Loopback is exempt: the owner's rule keeps plain HTTP there even after 1.0.
+
+        Args:
+            reader: The client's stream.
+            writer: The client's writer.
+            request: Method, path and headers.
+            peer_address: The client's address.
+
+        Returns:
+            bool: True when the request was answered `403` here.
+        """
+        if self.tls_context is None or writer.get_extra_info("ssl_object") is not None:
+            return False
+        if self.is_loopback(peer_address):
+            return False
+        method, path, headers = request
+        if not self.needs_https(path, headers):
+            self.count_plain(peer_address)
+            return False
+        self.log(f"refused plain {method} {path.split('?', 1)[0]} from {peer_address}")
+        await self.drain(
+            reader,
+            self.framing(headers),
+            EXPECT_CONTINUE in dict(headers).get(b"expect", b"").lower(),
+        )
+        await self.respond(
+            writer,
+            FORBIDDEN,
+            "Forbidden",
+            {
+                "error": {
+                    "message": HTTPS_REQUIRED,
+                    "type": "invalid_request_error",
+                    "code": HTTPS_REQUIRED_CODE,
+                    "param": None,
+                }
+            },
+            head_only=method == METHOD_HEAD,
+        )
+        return True
+
+    def node_info(self) -> dict[str, Any]:
+        """`/ragon/v1/info`: the node's id and name, its primary, and its CA's fingerprint."""
+        node = self.read_json(Path(self.state_dir) / NODE_FILE) or {}
+        info: dict[str, Any] = {
+            key: node.get(key)
+            for key in ("node_id", "name", "primary_id", "primary_name", "issuer")
+        }
+        info["tls"] = self.tls_context is not None
+        info["ca_fingerprint_sha256"] = (
+            GateTls.fingerprint(self.ca_pem) if self.ca_pem is not None else None
+        )
+        return info
+
+    async def answer_node_route(self, writer: asyncio.StreamWriter, method: str, path: str) -> bool:
+        """Answers `/ragon/v1/info` and `/ragon/v1/ca.pem`; True when the path was one of them."""
+        route = path.split("?", 1)[0]
+        if route not in (INFO_PATH, CA_PATH) or method not in (METHOD_GET, METHOD_HEAD):
+            return False
+        head_only = method == METHOD_HEAD
+        if route == INFO_PATH:
+            await self.respond(writer, 200, "OK", self.node_info(), head_only=head_only)
+        elif self.ca_pem is None:
+            await self.respond(
+                writer,
+                NOT_FOUND,
+                "Not Found",
+                {"error": {"message": "This node serves no TLS.", "code": "no_tls"}},
+                head_only=head_only,
+            )
+        else:
+            await self.respond_raw(writer, (200, "OK", PEM_TYPE), self.ca_pem, head_only=head_only)
+        return True
+
+    async def answer_here(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        request: tuple[str, str, list[tuple[bytes, bytes]]],
+        context: tuple[str, dict[str, Any]],
+    ) -> bool:
+        """Answers what the gate answers itself: the plain-HTTP refusal, the probe, the node routes.
+
+        Args:
+            reader: The client's stream.
+            writer: The client's writer.
+            request: Method, path and headers.
+            context: The client's address and the gate's state.
+
+        Returns:
+            bool: True when the request was answered here.
+        """
+        method, path, _ = request
+        peer_address, state = context
+        if await self.check_plain(reader, writer, request, peer_address):
+            return True
+        if path == PROBE_PATH and method in (METHOD_GET, METHOD_HEAD):
+            await self.respond(
+                writer, 200, "OK", self.probe_answer(state), head_only=method == METHOD_HEAD
+            )
+            return True
+        return await self.answer_node_route(writer, method, path)
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """Serves one connection: one request, decided, then refused or streamed through."""
@@ -782,8 +998,7 @@ class ModelGateService:
                 return
             method, path, headers = request
             state = self.state(self.state_dir)
-            if path == PROBE_PATH and method in (METHOD_GET, METHOD_HEAD):
-                await self.respond(writer, 200, "OK", state, head_only=method == METHOD_HEAD)
+            if await self.answer_here(reader, writer, request, (peer_address, state)):
                 return
             framing = self.framing(headers)
             expects_continue = EXPECT_CONTINUE in dict(headers).get(b"expect", b"").lower()
@@ -1086,16 +1301,29 @@ class ModelGateService:
             f"{stamp} model gate: {line}", file=sys.stderr, flush=True
         )
 
+    def probe_answer(self, state: dict[str, Any]) -> dict[str, Any]:
+        """The probe's answer: the state, and while TLS is on the plain-HTTP counts per day."""
+        if self.tls_context is None:
+            return state
+        return {**state, "tls": True, "plain_http": dict(self.plain_counts)}
+
     async def start(self) -> int:
-        """Starts serving.
+        """Starts serving: HTTPS beside plain HTTP with a TLS context, plain HTTP without one.
 
         Returns:
             int: The port served on (useful when `listen` asked for port 0).
         """
-        self.server = await asyncio.start_server(
+        if self.tls_context is not None:
+            listener = await GateListener.open(
+                self.listen, self.handle, self.tls_context, HEAD_LIMIT
+            )
+            self.server = listener
+            return int(listener.sockets[0].getsockname()[1])
+        server = await asyncio.start_server(
             self.handle, self.listen[0], self.listen[1], limit=HEAD_LIMIT, reuse_address=True
         )
-        return int(self.server.sockets[0].getsockname()[1])
+        self.server = server
+        return int(server.sockets[0].getsockname()[1])
 
     async def serve(self) -> None:
         """Serves until cancelled."""
@@ -1103,7 +1331,8 @@ class ModelGateService:
         # Not "ready" or "listening on": the model loading monitor reads those words as the engine's.
         self.log(
             f"on {self.listen[0]}:{port} in front of {self.upstream[0]}:{self.upstream[1]}, "
-            f"state in {self.state_dir}"
+            f"state in {self.state_dir}, "
+            + ("HTTPS and plain HTTP" if self.tls_context is not None else "plain HTTP only")
         )
         server = self.server
         assert server is not None
@@ -1122,8 +1351,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--listen", required=True)
     parser.add_argument("--upstream", required=True)
     parser.add_argument("--state", required=True)
+    # The node's certificate; `<state>/tls`, staged there by `ModelGate.start`, unless named.
+    parser.add_argument("--tls")
     args = parser.parse_args(argv)
-    service = ModelGateService(_address(args.listen), _address(args.upstream), args.state)
+    service = ModelGateService(
+        _address(args.listen),
+        _address(args.upstream),
+        args.state,
+        tls_dir=args.tls or str(Path(args.state) / gate_tls.STAGED_DIR),
+    )
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(service.serve())
     return 0

@@ -96,8 +96,8 @@ def test_main_serves_on_the_addresses_it_is_given_and_an_interrupt_ends_it_clean
     built = []
 
     class Service:
-        def __init__(self, listen, upstream, state):
-            built.append((listen, upstream, state))
+        def __init__(self, listen, upstream, state, tls_dir=None):
+            built.append((listen, upstream, state, tls_dir))
 
         async def serve(self):
             raise KeyboardInterrupt
@@ -105,4 +105,7 @@ def test_main_serves_on_the_addresses_it_is_given_and_an_interrupt_ends_it_clean
     monkeypatch.setattr(model_gate_service, "ModelGateService", Service)
     code = main(["--listen", ":8000", "--upstream", "127.0.0.1:18000", "--state", str(tmp_path)])
     assert code == 0
-    assert built == [(("0.0.0.0", 8000), ("127.0.0.1", 18000), str(tmp_path))]
+    # The certificate is looked for beside the state, where ModelGate.start stages it.
+    assert built == [
+        (("0.0.0.0", 8000), ("127.0.0.1", 18000), str(tmp_path), str(tmp_path / "tls"))
+    ]
