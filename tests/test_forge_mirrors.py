@@ -5,12 +5,14 @@ The forge, the pairing and the other nodes are stand-ins; the state file lives i
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from dreamference.forge.forge_accounts import ForgeAccounts
 from dreamference.forge.forge_container import ForgeContainer
 from dreamference.forge.forge_mirrors import ForgeMirrors
+from dreamference.forge.forge_phone import ForgePhone
 from dreamference.forge.forge_repositories import ForgeRepositories
 from dreamference.forge.forge_settings import ForgeSettings
 from dreamference.node.node_pairing import NodePairing
@@ -115,3 +117,14 @@ def test_a_sync_on_a_node_without_the_admin_token_names_it_instead_of_a_403(monk
     lines = ForgeMirrors.apply({**PLAN, "record_node": "rec-1"})
     assert len(lines) == 1 and "forge-admin" in lines[0] and "ragon-admin forge on" in lines[0]
     assert not ForgeMirrors.took(lines)
+
+
+# `ForgePhone.allow_main`
+
+
+def test_forge_phone_allow_main_returns_empty_set_when_config_is_unreadable(monkeypatch):
+    def unreadable(cls):
+        return Path("/nonexistent/config.toml")
+
+    monkeypatch.setattr(ForgeSettings, "config_path", classmethod(unreadable))
+    assert ForgePhone.allow_main() == set()
