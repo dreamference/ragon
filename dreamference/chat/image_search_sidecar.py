@@ -113,7 +113,7 @@ class ImageSearchSidecar:
         image search was set up on this machine.
 
         Returns:
-            Optional[str]: The secret, or None if it could not be stored (see `problem`).
+            str|None: The secret, or None if it could not be stored (see `problem`).
         """
         path = pathlib.Path(IMAGE_SEARCH_SECRET_FILE)
         try:
@@ -391,7 +391,7 @@ class ImageSearchSidecar:
             model (str): The configured model's registry key.
 
         Returns:
-            Optional[bool]: None when this machine is not a node or the container exists already
+            bool|None: None when this machine is not a node or the container exists already
             (running or not); otherwise whether it started (see `problem` when it did not).
         """
         from dreamference.node.node_identity import NodeIdentity
