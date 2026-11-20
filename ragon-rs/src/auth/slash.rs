@@ -8,6 +8,8 @@
 
 use std::time::Duration;
 
+use super::strings::{self, Key};
+
 use base64::Engine;
 use serde_json::{Value, json};
 
@@ -91,16 +93,16 @@ pub fn status_item() -> Option<String> {
 pub fn whoami(account: Option<&Account>, api_key: bool) -> String {
     match (account, api_key) {
         (Some(account), _) => match &account.node {
-            Some(node) => format!("Signed in as {} ({}) at {node}", account.user, account.role),
-            None => format!("Signed in as {} ({})", account.user, account.role),
+            Some(node) => strings::fmt(Key::SignedInAsAt, &[&account.user, &account.role, &node]),
+            None => strings::fmt(Key::SignedInAs, &[&account.user, &account.role]),
         },
-        (None, true) => "Using API key (the gate names its user on the first request).".to_string(),
-        (None, false) => "Not signed in. Run ragon login.".to_string(),
+        (None, true) => strings::t(Key::UsingApiKey).to_string(),
+        (None, false) => strings::t(Key::NotSignedIn).to_string(),
     }
 }
 
 fn usage(text: &str) -> Plan {
-    Plan::Say(vec![format!("Usage: {text}")])
+    Plan::Say(vec![strings::fmt(Key::Usage, &[&text])])
 }
 
 fn ask(method: &'static str, path: String, body: Option<Value>) -> Plan {
@@ -155,21 +157,21 @@ pub fn render(cmd: &str, status: u16, body: &str) -> Vec<String> {
         .map(str::to_string);
     match status {
         200..=299 => {}
-        401 => return vec!["Not signed in, or the session ended. Run ragon login.".to_string()],
-        403 if cmd == "users" => return vec!["/users needs the admin role.".to_string()],
-        _ => return vec![format!("/{cmd}: {}", message.unwrap_or_else(|| format!("the node answered {status}")))],
+        401 => return vec![strings::t(Key::SessionEnded).to_string()],
+        403 if cmd == "users" => return vec![strings::t(Key::NeedsAdmin).to_string()],
+        _ => return vec![format!("/{cmd}: {}", message.unwrap_or_else(|| strings::fmt(Key::NodeAnswered, &[&status.to_string()])))],
     }
     let mut lines = match json {
-        Some(Value::Array(items)) if items.is_empty() => vec!["Nothing to show.".to_string()],
+        Some(Value::Array(items)) if items.is_empty() => vec![strings::t(Key::NothingToShow).to_string()],
         Some(Value::Array(items)) => items.iter().map(describe).collect(),
         Some(Value::Object(map)) => match map.get("key").and_then(Value::as_str) {
-            Some(key) => vec![format!("New API key (shown once): {key}")],
+            Some(key) => vec![strings::fmt(Key::NewApiKey, &[key])],
             None => vec![describe(&Value::Object(map))],
         },
-        _ => vec!["Done.".to_string()],
+        _ => vec![strings::t(Key::Done).to_string()],
     };
     if lines.iter().all(String::is_empty) {
-        lines = vec!["Done.".to_string()];
+        lines = vec![strings::t(Key::Done).to_string()];
     }
     lines
 }
@@ -220,7 +222,7 @@ pub fn command(cmd: &str, args: &str) -> Vec<String> {
         },
     };
     let Some(gate) = std::env::var(super::ISSUER_ENV).ok().filter(|g| !g.is_empty()) else {
-        return vec!["This node has no accounts.".to_string()];
+        return vec![strings::t(Key::NoAccounts).to_string()];
     };
     let bearer = std::env::var(super::API_KEY_ENV).ok().filter(|k| !k.is_empty()).or_else(|| account.as_ref().and_then(|a| a.bearer.clone()));
     match send(&gate, &request, bearer.as_deref()) {

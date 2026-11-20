@@ -12,6 +12,8 @@
 //! and its embedded app-server share one process.
 
 use std::path::{Path, PathBuf};
+
+use super::strings::{self, Key};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
@@ -41,8 +43,6 @@ pub const CLIENT_ID: &str = "ragon";
 const WRONG: &str = "Wrong username or password.";
 const TAKEN: &str = "That username is taken.";
 const BAD_NAME: &str = "Usernames are 1-32 letters, digits, '.', '_' or '-'.";
-const MISMATCH: &str = "The passwords do not match.";
-const PHONES: &str = "Phones need to pair again.";
 
 /// The node the launcher resolved, as [`super::start`] found it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -217,7 +217,7 @@ pub fn classify(status: u16, body: &str) -> Result<Tokens, Outcome> {
     if (200..300).contains(&status) {
         return match (text("id_token"), text("access_token"), text("refresh_token")) {
             (Some(id_token), Some(access_token), Some(refresh_token)) => Ok(Tokens { id_token, access_token, refresh_token }),
-            _ => Err(Outcome::Failed("The accounts server sent no tokens.".to_string())),
+            _ => Err(Outcome::Failed(strings::t(Key::NoTokens).to_string())),
         };
     }
     if matches!(status, 502..=504) {
@@ -230,7 +230,7 @@ pub fn classify(status: u16, body: &str) -> Result<Tokens, Outcome> {
         Some("accounts_unavailable") => Outcome::Unreachable,
         Some("invalid_request") if description.ends_with("already exists.") => Outcome::Taken,
         _ if !description.is_empty() => Outcome::Failed(description),
-        _ => Outcome::Failed(format!("The accounts server answered {status}.")),
+        _ => Outcome::Failed(strings::fmt(Key::ServerAnswered, &[&status.to_string()])),
     })
 }
 
@@ -285,11 +285,11 @@ impl Form {
     }
 
     /// The field labels.
-    pub fn labels(&self) -> &'static [&'static str] {
+    pub fn labels(&self) -> Vec<&'static str> {
         match self.kind {
-            Kind::SignIn => &["Username", "Password"],
-            Kind::Create => &["Username", "Password", "Confirm password"],
-            Kind::Change(_) => &["New password", "Confirm"],
+            Kind::SignIn => vec![strings::t(Key::FieldUsername), strings::t(Key::FieldPassword)],
+            Kind::Create => vec![strings::t(Key::FieldUsername), strings::t(Key::FieldPassword), strings::t(Key::FieldConfirmPassword)],
+            Kind::Change(_) => vec![strings::t(Key::FieldNewPassword), strings::t(Key::FieldConfirm)],
         }
     }
 
@@ -444,8 +444,8 @@ impl Screen {
         let user = form.user();
         let error = match &form.kind {
             Kind::SignIn | Kind::Create if !valid_username(&user) => Some((BAD_NAME, 0)),
-            Kind::Create if form.fields[1] != form.fields[2] => Some((MISMATCH, 1)),
-            Kind::Change(_) if form.fields[0] != form.fields[1] => Some((MISMATCH, 0)),
+            Kind::Create if form.fields[1] != form.fields[2] => Some((strings::t(Key::PasswordMismatch), 1)),
+            Kind::Change(_) if form.fields[0] != form.fields[1] => Some((strings::t(Key::PasswordMismatch), 0)),
             _ => None,
         };
         if let Some((text, focus)) = error {
@@ -529,8 +529,9 @@ impl Screen {
         match &self.view {
             View::Note => {
                 lines.push(Line::from(format!(
-                    "  Ragon now has accounts. Sign in or create one on {}; your repositories and settings are unchanged. {PHONES}",
-                    self.node_name
+                    "  Ragon now has accounts. Sign in or create one on {}; your repositories and settings are unchanged. {}",
+                    self.node_name,
+                    strings::t(Key::PhonesPairAgain)
                 )));
                 lines.push("".into());
                 lines.push(press("to continue"));
@@ -539,10 +540,10 @@ impl Screen {
                 lines.push(title.into());
                 lines.push("".into());
                 let items = [
-                    (format!("Sign in to {}", self.primary_name), "With the username and password of your account".to_string()),
-                    (format!("Create an account on {}", self.primary_name), "Choose a username and a password".to_string()),
-                    ("Sign in with a device code".to_string(), "Sign in from another device with a one-time code".to_string()),
-                    ("Provide your own API key".to_string(), "Paste an API key minted with /apikey or by an admin".to_string()),
+                    (strings::fmt(Key::SignInTitle, &[&self.primary_name]), strings::t(Key::SignInHint).to_string()),
+                    (strings::fmt(Key::CreateTitle, &[&self.primary_name]), strings::t(Key::CreateHint).to_string()),
+                    (strings::t(Key::DeviceTitle).to_string(), strings::t(Key::DeviceHint).to_string()),
+                    (strings::t(Key::ApiKeyTitle).to_string(), strings::t(Key::ApiKeyHint).to_string()),
                 ];
                 for (index, (text, description)) in items.into_iter().enumerate() {
                     if index == self.highlight {
@@ -574,7 +575,7 @@ impl Screen {
                 lines.push("".into());
                 match self.view {
                     View::AskEmpty(_) => lines.push("  Continue without a password? (y/n)".into()),
-                    View::Working(_) => lines.push("  Signing in…".dim().into()),
+                    View::Working(_) => lines.push(format!("  {}", strings::t(Key::SigningIn)).dim().into()),
                     View::Offline(_) => lines.push(Line::from(vec!["  Press ".dim(), "r".into(), " to try again, ".dim(), "Esc".into(), " to go back".dim()])),
                     _ => lines.push(Line::from(vec![
                         "  Press ".dim(),
@@ -588,7 +589,7 @@ impl Screen {
                 }
             }
             View::Welcome { user, admin } => {
-                lines.push(format!("✓ Signed in to {} as {user}", self.primary_name).green().into());
+                lines.push(format!("✓ {}", strings::fmt(Key::SignedIn, &[&self.primary_name, user])).green().into());
                 lines.push("".into());
                 if *admin {
                     let mut text = format!(
@@ -597,14 +598,14 @@ impl Screen {
                     );
                     if self.upgrade {
                         text.push(' ');
-                        text.push_str(PHONES);
+                        text.push_str(strings::t(Key::PhonesPairAgain));
                     }
                     lines.push(text.into());
                     lines.push("".into());
                 }
                 lines.push(press("to continue"));
             }
-            View::Done(user) => lines.push(format!("✓ Signed in to {} as {user}", self.primary_name).green().into()),
+            View::Done(user) => lines.push(format!("✓ {}", strings::fmt(Key::SignedIn, &[&self.primary_name, user])).green().into()),
         }
         if let Some(error) = &self.error {
             lines.push("".into());
@@ -684,7 +685,7 @@ pub fn render(picking: bool, signed: bool, area: Rect, buf: &mut Buffer) -> bool
     }
     let Some(lines) = with(|screen| {
         if signed && !matches!(screen.view, View::Done(_)) {
-            vec![format!("✓ Signed in to {}", screen.primary_name).green().into()]
+            vec![format!("✓ {}", strings::fmt(Key::SignedInOnly, &[&screen.primary_name])).green().into()]
         } else {
             screen.lines()
         }
@@ -717,13 +718,13 @@ fn client(node: &Node) -> anyhow::Result<reqwest::Client> {
 /// Sends the grant and, on success, writes the tokens and reloads every registered auth manager.
 pub fn sign_in(node: &Node, grant: &Grant) -> Outcome {
     if !may_send(&node.gate) {
-        return Outcome::Failed(format!("{} is reached over plain HTTP; the password is not sent.", node.node_name));
+        return Outcome::Failed(strings::fmt(Key::PlainHttp, &[&node.node_name]));
     }
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
-        return Outcome::Failed("Could not start the sign-in.".to_string());
+        return Outcome::Failed(strings::t(Key::CouldNotStart).to_string());
     };
     runtime.block_on(async {
-        let Ok(client) = client(node) else { return Outcome::Failed("Could not read the node's certificate.".to_string()) };
+        let Ok(client) = client(node) else { return Outcome::Failed(strings::t(Key::CertUnreadable).to_string()) };
         let url = format!("{}/oauth/token", node.gate.trim_end_matches('/'));
         let Ok(response) = client.post(url).json(&grant_body(grant, &machine())).send().await else { return Outcome::Unreachable };
         let status = response.status().as_u16();
@@ -733,7 +734,7 @@ pub fn sign_in(node: &Node, grant: &Grant) -> Outcome {
             Err(outcome) => return outcome,
         };
         if let Err(error) = save(&node.codex_home, &tokens) {
-            return Outcome::Failed(format!("Could not save the sign-in: {error}"));
+            return Outcome::Failed(strings::fmt(Key::CouldNotSave, &[&error.to_string()]));
         }
         reload().await;
         Outcome::Signed { admin: grant.create && role(&tokens.id_token) == "admin" }

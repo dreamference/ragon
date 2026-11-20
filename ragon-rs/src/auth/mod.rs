@@ -12,6 +12,7 @@ pub mod pin;
 pub mod screen;
 pub mod signin_rpc;
 pub mod slash;
+pub mod strings;
 pub mod switcher;
 
 pub use local::{NOT_SIGNED_IN, bearer, bearer_from_text, child_env, current_bearer, ragon_home};
