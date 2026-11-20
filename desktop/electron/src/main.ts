@@ -37,6 +37,7 @@ import { insights, readPersonal, writePersonal } from "./insights";
 import { monitorChip } from "./monitor";
 import { addRepeating, addTask, dropRepeating, dropTask, listRepeating, nightStatus, readReport, readReports, readTasks, runNow, taskDetails } from "./night";
 import { applyTask, taskNote } from "./night";
+import { signIn } from "./login";
 import { ARCHIVE, nightUnread, searchArchive } from "./nightinbox";
 import { writeWorkAttachment } from "./attachments";
 import { listMemoryFiles, writeMemoryFile } from "./memoryfiles";
@@ -796,6 +797,12 @@ export async function main(options: MainOptions): Promise<void> {
         return monitorChip(fetch);
       case "voice/transcribe":
         return transcribe(message, fetch, prefs.read().dictationWords);
+      case "account/signIn": {
+        if ((message.mode !== "signIn" && message.mode !== "create") || typeof message.username !== "string" || typeof message.password !== "string") {
+          return { ok: false, code: null, message: "The sign-in form sent something else." };
+        }
+        return signIn(server, message.mode, message.username, message.password);
+      }
       case "work/stop":
         server.stop();
         return null;

@@ -31,6 +31,8 @@ export type FromView =
   | { type: "work/start" }
   | { type: "work/send"; message: unknown }
   | { type: "work/stop" }
+  /** The two-choice sign-in form (login.ts): the account/ragon/signIn answer, an error as `{ error }`. */
+  | { type: "account/signIn"; mode: "signIn" | "create"; username: string; password: string }
   | { type: "work/target" }
   | { type: "work/airgapped"; thread: string | null }
   /** `/airgapped default <level>` from the composer: the level new threads start at. */

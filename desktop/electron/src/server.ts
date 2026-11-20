@@ -93,9 +93,44 @@ export class AppServer {
     }
   }
 
+  /** The app's own requests (`request`), by id: their answers stop here and reach no window. */
+  private readonly own = new Map<string, (answer: unknown) => void>();
+  private ownCount = 0;
+
+  /**
+   * One request the app itself makes (the sign-in form, login.ts): it is not a window's message and
+   * not vetted against the shared policy (which `ragon web` also enforces for browsers), and its
+   * answer, matched by an id no window uses, is returned here instead of being delivered.
+   */
+  request(method: string, params: unknown, timeoutMs = 30_000): Promise<unknown> {
+    const child = this.child;
+    if (!child || !child.stdin.writable) return Promise.reject(new Error("the agent's server is not running"));
+    const id = `app\u241f${++this.ownCount}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.own.delete(JSON.stringify(id));
+        reject(new Error(`${method} did not answer`));
+      }, timeoutMs);
+      this.own.set(JSON.stringify(id), (answer) => {
+        clearTimeout(timer);
+        resolve(answer);
+      });
+      child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+    });
+  }
+
   private incoming(line: string): void {
     if (line.trim() === "") return;
     const [kind, value] = classify(line);
+    if (kind.kind === "response") {
+      const key = JSON.stringify((value as { id?: unknown }).id);
+      const resolve = this.own.get(key);
+      if (resolve) {
+        this.own.delete(key);
+        resolve(value);
+        return;
+      }
+    }
     const place = kind.kind === "notProtocol" ? null : threadPlace(value);
     if (place) this.places.set(place.thread, place.cwd);
     switch (kind.kind) {
@@ -156,6 +191,7 @@ export class AppServer {
     this.initialized = false;
     this.pending.clear();
     this.openers.clear();
+    this.own.clear();
     this.places.clear();
     this.busy = new BusyTracker();
     if (this.marker) {
