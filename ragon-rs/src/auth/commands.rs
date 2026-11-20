@@ -657,12 +657,23 @@ pub async fn run(which: &str, args: &[String], gate: &str, codex_home: &Path, io
     run_login(&primary, cmd, io).await
 }
 
+/// `ragon pair <chat kind>` on Windows: the messenger bridges are not built there yet.
+///
+/// # Errors
+/// Never; the signature matches the Unix build.
+#[cfg(not(unix))]
+pub async fn run_pair(_args: &[String], _gate: &str, _codex_home: &Path, io: &mut Io<'_>) -> anyhow::Result<Outcome> {
+    writeln!(io.out, "`ragon pair` is not available on Windows yet: the messenger bridges run on Linux and macOS only.")?;
+    Ok(Outcome::done(2))
+}
+
 /// `ragon pair <chat kind>`: asks the primary for a pairing code for this signed-in user and
 /// prints it, and leaves the chat bridge what it needs to redeem it: the gate, the node's name and
 /// the primary's CA, in the chat folder (`<codex_home>/chat`).
 ///
 /// # Errors
 /// The accounts server cannot be reached or the chat folder cannot be written.
+#[cfg(unix)]
 pub async fn run_pair(args: &[String], gate: &str, codex_home: &Path, io: &mut Io<'_>) -> anyhow::Result<Outcome> {
     let kinds = ragon_chat::bindings::KINDS;
     let kind = match args {
