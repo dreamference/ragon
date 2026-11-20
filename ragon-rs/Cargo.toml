@@ -65,6 +65,8 @@ ratatui = { workspace = true }
 regex-lite = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 semver = { workspace = true }
+# The Metal recipes file (src/metal_recipe.rs).
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 # Claude Code's agent files: their YAML frontmatter (src/compat_agents.rs).
 serde_yaml = { workspace = true }
@@ -130,7 +132,6 @@ codex-agent-roles = { workspace = true }
 # A custom profile's sandbox, decided exactly as Codex decides it (src/airgapped.rs's tests, patch 0019).
 codex-protocol = { workspace = true }
 codex-sandboxing = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
 tar = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 zip = { workspace = true }
