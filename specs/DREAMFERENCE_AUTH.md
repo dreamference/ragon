@@ -151,6 +151,8 @@ The node's gate serves every path at one base, `https://<node>.local:8000` (owne
 
 **Issuer discovery** (owner 2026-11-19). The launcher resolves the node as today, then asks `GET /ragon/v1/info`. The answer names the primary, whose id selects the `auth.json` entry (§15). The node is never asked at login.
 
+**The advertisement is a node setting** (0.9.8 fix). `/ragon/v1/info` says `"accounts": true` only when the node sets `[accounts] enabled = true` in `~/.config/dreamference/config.toml` (or `DREAMFERENCE_ACCOUNTS_ENABLED=1`); the default is off in 0.9.8, so a launcher sees no accounts and stays unauthenticated as in 0.9.7. **0.9.9 flips the default to on** (`DEFAULT_ACCOUNTS_ENABLED` in `dreamference/node/node_settings.py`).
+
 ### 5.2 Tokens
 
 | Token | Form | Lifetime |
