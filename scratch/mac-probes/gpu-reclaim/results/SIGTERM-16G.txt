@@ -1,0 +1,50 @@
+ready 17179869184 cap 115448725504 cur 17180327936
+-8 free=5535128 comp=9269 swapouts=609392 sysfree=94% gpu=2316632064
+-7 free=5535174 comp=9269 swapouts=609392 sysfree=94% gpu=2299592704
+-6 free=5533802 comp=9269 swapouts=609392 sysfree=94% gpu=2543304704
+-5 free=5523918 comp=9268 swapouts=609392 sysfree=94% gpu=2299592704
+-4 free=5524611 comp=9268 swapouts=609392 sysfree=94% gpu=2522284032
+-3 free=5524643 comp=9268 swapouts=609392 sysfree=94% gpu=2299592704
+-2 free=5527714 comp=9268 swapouts=609392 sysfree=94% gpu=2299592704
+-1 free=5529816 comp=9268 swapouts=609392 sysfree=94% gpu=2299592704
++0 alive free=5547981 comp=9268 swapouts=609392 sysfree=94% gpu=2299592704
++1 gone free=6590865 comp=9268 swapouts=609392 sysfree=96% gpu=16515072
++2 gone free=6591881 comp=9266 swapouts=609392 sysfree=96% gpu=16515072
++3 gone free=6593462 comp=9255 swapouts=609392 sysfree=96% gpu=16515072
++4 gone free=6593620 comp=9255 swapouts=609392 sysfree=96% gpu=16515072
++5 gone free=6593690 comp=9254 swapouts=609392 sysfree=96% gpu=16515072
++7 gone free=6595961 comp=9254 swapouts=609392 sysfree=96% gpu=16515072
++55 gone free=6582465 comp=9258 swapouts=609392 sysfree=96% gpu=259047424
++56 gone free=6582157 comp=9231 swapouts=609392 sysfree=96% gpu=33472512
++57 gone free=6581386 comp=9245 swapouts=609392 sysfree=96% gpu=238026752
++58 gone free=6584517 comp=9244 swapouts=609392 sysfree=96% gpu=33423360
++59 gone free=6586564 comp=9244 swapouts=609392 sysfree=96% gpu=33423360
++60 gone free=6588232 comp=9248 swapouts=609392 sysfree=96% gpu=33423360
++62 gone free=6589506 comp=9248 swapouts=609392 sysfree=96% gpu=33423360
++63 gone free=6590603 comp=9248 swapouts=609392 sysfree=96% gpu=33423360
++64 gone free=6591155 comp=9248 swapouts=609392 sysfree=96% gpu=33423360
++65 gone free=6592183 comp=9248 swapouts=609392 sysfree=96% gpu=33423360
++66 gone free=6592932 comp=9248 swapouts=609392 sysfree=96% gpu=33423360
++67 gone free=6594197 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++68 gone free=6594209 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++69 gone free=6594221 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++70 gone free=6594219 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++71 gone free=6594214 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++72 gone free=6594194 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++73 gone free=6593864 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++74 gone free=6593857 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++75 gone free=6593869 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++77 gone free=6593832 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++78 gone free=6593820 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++79 gone free=6595064 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++80 gone free=6595080 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++81 gone free=6595088 comp=9248 swapouts=609392 sysfree=96% gpu=16646144
++82 gone free=6594725 comp=9250 swapouts=609392 sysfree=96% gpu=16646144
++83 gone free=6594557 comp=9249 swapouts=609392 sysfree=96% gpu=16646144
++84 gone free=6593699 comp=9320 swapouts=609392 sysfree=96% gpu=16646144
++85 gone free=6592785 comp=9429 swapouts=609392 sysfree=96% gpu=16646144
++86 gone free=6592652 comp=9423 swapouts=609392 sysfree=96% gpu=16646144
++87 gone free=6579338 comp=9422 swapouts=609392 sysfree=96% gpu=259047424
++88 gone free=6579501 comp=9422 swapouts=609392 sysfree=96% gpu=33472512
++89 gone free=6578007 comp=9421 swapouts=609392 sysfree=96% gpu=238026752
++90 gone free=6581354 comp=9421 swapouts=609392 sysfree=96% gpu=33423360

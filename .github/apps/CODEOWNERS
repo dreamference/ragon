@@ -22,6 +22,7 @@
 /README.md                                      @dreamference/docs
 /CHANGELOG.md                                   @dreamference/release
 /scratch/discord-phase0/                          @dreamference/messengers
+/scratch/mac-probes/                            @dreamference/quality
 /scripts/rbrb.py                                @dreamference/docs
 /scripts/rbrb_refresh.py                        @dreamference/docs
 /scripts/swe_bench_history.py                   @dreamference/docs
