@@ -9,10 +9,12 @@
 //!
 //! Stage A, here, uses no model: the selection is [`select::digest`]. The raw outputs live in
 //! `$CODEX_HOME/digest/raw/` for a day, within a size cap. With [`Options::last_good`] the lines
-//! the last successful run of the same command printed too are left out ([`good`]).
+//! the last successful run of the same command printed too are left out ([`good`]). With
+//! [`Options::model`] the local model picks lines by number and retells the output ([`model`]).
 
 pub mod command;
 pub mod good;
+pub mod model;
 pub mod select;
 pub mod text;
 
@@ -52,11 +54,14 @@ pub struct Options {
     /// Leave out the lines the last successful run of the same command printed too (owner's
     /// answer 2 of 2026-11-20). Off by default.
     pub last_good: bool,
+    /// Let the local model pick lines by number and retell the output (owner's answer 1 of
+    /// 2026-11-20), through the launcher's [`model::Selector`]. Off by default.
+    pub model: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { min_lines: MIN_LINES, last_good: false }
+        Self { min_lines: MIN_LINES, last_good: false, model: false }
     }
 }
 
@@ -81,7 +86,7 @@ pub fn enabled() -> bool {
 pub async fn inside(command: &str, output: Vec<u8>, exit_code: Option<i32>) -> Vec<u8> {
     match DIGESTER.get() {
         None => output,
-        Some(digester) => digester.process(command, output, exit_code),
+        Some(digester) => digester.process_async(command, output, exit_code).await,
     }
 }
 
@@ -106,6 +111,16 @@ pub struct Digester {
     dir: PathBuf,
     options: Options,
     state: Mutex<State>,
+    /// The model call of this digester; the process's ([`model::set_selector`]) when unset.
+    selector: Option<Box<dyn model::Selector>>,
+}
+
+/// Where stage A left one output.
+enum Staged {
+    /// Handed back as it is, or as a note.
+    Done(Vec<u8>),
+    /// To be digested.
+    Lines { lines: Vec<String>, known: Vec<bool>, path: PathBuf },
 }
 
 impl Digester {
@@ -116,7 +131,20 @@ impl Digester {
 
     /// A digester with every setting.
     pub fn with_options(codex_home: &Path, options: Options) -> Self {
-        Self { dir: codex_home.join("digest"), options, state: Mutex::new(State::default()) }
+        Self { dir: codex_home.join("digest"), options, state: Mutex::new(State::default()), selector: None }
+    }
+
+    /// This digester with its own model call (the tests' stand-in).
+    pub fn with_selector(mut self, selector: Box<dyn model::Selector>) -> Self {
+        self.selector = Some(selector);
+        self
+    }
+
+    fn selector(&self) -> Option<&dyn model::Selector> {
+        match &self.selector {
+            Some(selector) => Some(selector.as_ref()),
+            None => model::selector(),
+        }
     }
 
     /// The folder the last good runs' samples are kept in.
@@ -146,20 +174,53 @@ impl Digester {
     /// What the model is given for `output`. Any failure to keep the raw output hands it back
     /// unchanged.
     pub fn process(&self, command: &str, output: Vec<u8>, exit_code: Option<i32>) -> Vec<u8> {
+        match self.stage(command, output, exit_code) {
+            Staged::Done(bytes) => bytes,
+            Staged::Lines { lines, known, path } => select::digest_with(&lines, exit_code, &path, &known).into_bytes(),
+        }
+    }
+
+    /// [`Digester::process`], then the model step when [`Options::model`] is on and a model call is
+    /// set; any failure of that step leaves stage A's digest.
+    pub async fn process_async(&self, command: &str, output: Vec<u8>, exit_code: Option<i32>) -> Vec<u8> {
+        let (lines, known, path) = match self.stage(command, output, exit_code) {
+            Staged::Done(bytes) => return bytes,
+            Staged::Lines { lines, known, path } => (lines, known, path),
+        };
+        let plan = select::plan(&lines, &known);
+        if self.options.model
+            && let Some(selector) = self.selector()
+        {
+            let (text, outcome) = model::step(selector, command, &plan, &lines, exit_code, &path).await;
+            let event = match &outcome {
+                model::Outcome::Used { picked } => format!("\"event\":\"model_used\",\"picked\":{picked}"),
+                model::Outcome::Discarded(why) => format!("\"event\":\"model_discarded\",\"why\":{}", quote(why)),
+            };
+            self.journal(&[event]);
+            if let Some(text) = text {
+                return text.into_bytes();
+            }
+        }
+        plan.render(&lines, exit_code, &path, &plan.extra, None).into_bytes()
+    }
+
+    /// Stage A up to the selection: the checks that hand an output back, the raw file, the last
+    /// good run.
+    fn stage(&self, command: &str, output: Vec<u8>, exit_code: Option<i32>) -> Staged {
         if output.is_empty() {
-            return output;
+            return Staged::Done(output);
         }
         let raw_dir = self.raw_dir();
         if mentions(command, &raw_dir) {
             self.note_raw_read(command);
-            return output;
+            return Staged::Done(output);
         }
         if command::reads(command) {
-            return output;
+            return Staged::Done(output);
         }
         let kind = command::kind(command);
         if self.is_off(&kind) {
-            return output;
+            return Staged::Done(output);
         }
         let binary = output.len() >= BINARY_MIN_BYTES && text::is_binary(&output);
         // A successful run is sampled whatever its length, so a short good run counts too.
@@ -168,15 +229,15 @@ impl Digester {
             if good {
                 let _ = good::record(&self.good_dir(), command, &text::lines(&output));
             }
-            return output;
+            return Staged::Done(output);
         }
         self.prune_now_and_then();
         let Ok(path) = self.keep(&output) else {
-            return output;
+            return Staged::Done(output);
         };
         self.note_digest(&kind, &path);
         if binary {
-            return select::binary_note(output.len(), exit_code, &path).into_bytes();
+            return Staged::Done(select::binary_note(output.len(), exit_code, &path).into_bytes());
         }
         let lines = text::lines(&output);
         let known = match self.options.last_good.then(|| good::load(&self.good_dir(), command, SystemTime::now())) {
@@ -186,7 +247,7 @@ impl Digester {
         if good {
             let _ = good::record(&self.good_dir(), command, &lines);
         }
-        select::digest_with(&lines, exit_code, &path, &known).into_bytes()
+        Staged::Lines { lines, known, path }
     }
 
     /// Writes the raw output, named by its content so the same output is one file.

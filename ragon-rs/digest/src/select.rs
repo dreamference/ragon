@@ -159,6 +159,82 @@ pub fn digest(lines: &[String], exit_code: Option<i32>, path: &Path) -> String {
 /// for line `i`; empty when there is no such run). It leaves out error lines, which are still named
 /// by line number, and the lines after them; the warnings shown and the last lines stay as they are.
 pub fn digest_with(lines: &[String], exit_code: Option<i32>, path: &Path, known: &[bool]) -> String {
+    let plan = plan(lines, known);
+    plan.render(lines, exit_code, path, &plan.extra, None)
+}
+
+/// What stage A chose for one output, before it is written out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Plan {
+    /// The repeat and warning summary lines.
+    pub summary: Vec<String>,
+    /// The notes naming error lines not shown.
+    pub notes: Vec<String>,
+    /// The error lines shown (indices, sorted): in every digest, the model step's too (C7).
+    pub mandatory: Vec<usize>,
+    /// The other lines shown while there was room (the lines after errors, the first warnings).
+    pub extra: Vec<usize>,
+    /// The first of the last lines, which are always shown.
+    pub tail_start: usize,
+}
+
+impl Plan {
+    /// Room for lines besides the header, the summary, the notes, the mandatory lines and the tail.
+    pub fn room(&self, lines: usize) -> usize {
+        (MAX_LINES - 1)
+            .saturating_sub(self.summary.len() + self.notes.len() + self.mandatory.len() + (lines - self.tail_start))
+    }
+
+    /// The digest showing the mandatory lines, `picked` and the tail; with a retelling, a line for
+    /// it and a header that says the model chose lines.
+    pub fn render(
+        &self,
+        lines: &[String],
+        exit_code: Option<i32>,
+        path: &Path,
+        picked: &[usize],
+        retelling: Option<&str>,
+    ) -> String {
+        let total = lines.len();
+        let tail_start = self.tail_start;
+        let mut selected: Vec<usize> =
+            self.mandatory.iter().chain(picked).copied().filter(|index| *index < tail_start).collect();
+        selected.sort_unstable();
+        selected.dedup();
+        let width = total.to_string().len();
+        let numbered = |index: usize| format!("{:>width$}: {}", index + 1, lines[index]);
+        let (from, to) = match selected.first() {
+            Some(first) => (first + 1, (first + 40).min(total)),
+            None => (tail_start + 1, total),
+        };
+        let shown = if retelling.is_some() {
+            "lines the local model picked and lines found by an error search"
+        } else {
+            "lines found by an error search"
+        };
+        let mut out = vec![format!(
+            "[digest] {total} lines, {}. Shown: {shown}, then the last {} lines, each with its line number; the full output is in {} (read lines with: {}).",
+            status(exit_code),
+            total - tail_start,
+            path.display(),
+            read_hint(path, from.max(1), to.max(1)),
+        )];
+        if let Some(retelling) = retelling {
+            out.push(format!("[digest] Retelling by the local model, not verified: {retelling}"));
+        }
+        out.extend(self.summary.iter().cloned());
+        out.extend(self.notes.iter().cloned());
+        out.extend(selected.into_iter().map(numbered));
+        out.extend((tail_start..total).map(numbered));
+        debug_assert!(out.len() <= MAX_LINES);
+        let mut text = out.join("\n");
+        text.push('\n');
+        text
+    }
+}
+
+/// Stage A's choice for `lines`, leaving out what the last good run printed too (`known`).
+pub fn plan(lines: &[String], known: &[bool]) -> Plan {
     let known = |index: usize| known.get(index).copied().unwrap_or(false);
     let total = lines.len();
     let tail_start = total.saturating_sub(TAIL_LINES);
@@ -250,6 +326,8 @@ pub fn digest_with(lines: &[String], exit_code: Option<i32>, path: &Path, known:
         budget = budget.saturating_sub(1);
     }
     budget = budget.saturating_sub(chosen.len());
+    let mut mandatory: Vec<usize> = chosen.iter().copied().collect();
+    mandatory.sort_unstable();
 
     // The lines after each error, nearest first, while there is room.
     let anchors: Vec<usize> = {
@@ -285,29 +363,9 @@ pub fn digest_with(lines: &[String], exit_code: Option<i32>, path: &Path, known:
         }
     }
 
-    let width = total.to_string().len();
-    let numbered = |index: usize| format!("{:>width$}: {}", index + 1, lines[index]);
-    let mut selected: Vec<usize> = chosen.into_iter().collect();
-    selected.sort_unstable();
-    let (from, to) = match selected.first() {
-        Some(first) => (first + 1, (first + 40).min(total)),
-        None => (tail_start + 1, total),
-    };
-    let mut out = vec![format!(
-        "[digest] {total} lines, {}. Shown: lines found by an error search, then the last {} lines, each with its line number; the full output is in {} (read lines with: {}).",
-        status(exit_code),
-        total - tail_start,
-        path.display(),
-        read_hint(path, from.max(1), to.max(1)),
-    )];
-    out.extend(summary);
-    out.extend(notes);
-    out.extend(selected.into_iter().map(numbered));
-    out.extend((tail_start..total).map(numbered));
-    debug_assert!(out.len() <= MAX_LINES);
-    let mut text = out.join("\n");
-    text.push('\n');
-    text
+    let mut extra: Vec<usize> = chosen.into_iter().filter(|index| mandatory.binary_search(index).is_err()).collect();
+    extra.sort_unstable();
+    Plan { summary, notes, mandatory, extra, tail_start }
 }
 
 #[cfg(test)]

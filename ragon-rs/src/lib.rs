@@ -753,7 +753,7 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
     // Old tool outputs are masked in what is sent once the request nears that limit (mask.rs).
     mask::configure(masking, &args, &codex_home, model.max_model_len);
     // A long command output reaches the model as a digest, when switched on (digest.rs).
-    digest::configure(&codex_home);
+    digest::configure(&codex_home, &host, &model.id);
     // Old tool outputs are dropped first when the session is about to compact, when switched on
     // (compaction.rs; compaction spec §13).
     compaction::prepare_drop(&args, &codex_home, model.max_model_len);
