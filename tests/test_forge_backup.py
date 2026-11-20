@@ -335,3 +335,19 @@ def test_forge_backup_take_reports_a_failed_dump_and_returns_none(monkeypatch, c
     )
     assert ForgeBackup.take() is None
     assert "forgejo dump failed: no space left" in capsys.readouterr().out
+
+
+def test_forge_backup_rebuild_database_runs_the_sql_and_reports_a_failure(tmp_path):
+    good = tmp_path / "good.sql"
+    good.write_text(
+        "CREATE TABLE t (a TEXT); INSERT INTO t VALUES (unistr('x'));", encoding="utf-8"
+    )
+    database = tmp_path / "forgejo.db"
+    ForgeBackup.rebuild_database(good, database)
+    with sqlite3.connect(database) as check:
+        assert check.execute("SELECT a FROM t").fetchall() == [("x",)]
+
+    bad = tmp_path / "bad.sql"
+    bad.write_text("THIS IS NOT SQL;", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="the database could not be rebuilt"):
+        ForgeBackup.rebuild_database(bad, tmp_path / "other.db")
