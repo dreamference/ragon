@@ -165,3 +165,15 @@ async fn the_repair_leaves_a_node_with_bound_chats_alone() {
     assert!(accounts_mode(&dir, None));
     assert_eq!(Bindings::load(&dir).len(), 1);
 }
+
+/// A node that ran 0.9.8 with accounts on keeps the chats bound since: its 0.9.9 marker counts as
+/// the drop already done.
+#[tokio::test]
+async fn with_accounts_after_098_the_bindings_made_since_stay() {
+    let (home, dir, _seen) = setup("after").await;
+    pair(&dir, &home, "telegram", "ABC234", "42", "telegram:42").await.unwrap();
+    std::fs::write(dir.join("bindings.v2"), "0.9.9").unwrap();
+    assert_eq!(settle_pairings(&dir, Some(true)), None);
+    assert_eq!(std::fs::read_to_string(dir.join("bindings.v2")).unwrap(), "0.9.9");
+    assert_eq!(Bindings::load(&dir).len(), 1);
+}
