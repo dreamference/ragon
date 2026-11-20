@@ -351,3 +351,10 @@ def test_forge_backup_rebuild_database_runs_the_sql_and_reports_a_failure(tmp_pa
     bad.write_text("THIS IS NOT SQL;", encoding="utf-8")
     with pytest.raises(RuntimeError, match="the database could not be rebuilt"):
         ForgeBackup.rebuild_database(bad, tmp_path / "other.db")
+
+
+def test_forge_backup_host_name_is_the_short_name_without_the_domain(monkeypatch):
+    monkeypatch.setattr("socket.gethostname", lambda: "puffin-box.example.lan")
+    assert ForgeBackup.host_name() == "puffin-box"
+    monkeypatch.setattr("socket.gethostname", lambda: "plain")
+    assert ForgeBackup.host_name() == "plain"
