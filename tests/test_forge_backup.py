@@ -320,3 +320,18 @@ def test_a_restored_denylist_is_written_private_and_never_replaces_an_existing_o
     (tmp_path / "secrets.json").write_text(json.dumps({"anonymity-denylist": "beta\n"}))
     ForgeBackup.restore_secrets(tmp_path)
     assert target.read_text() == "alpha\n", "this node's own list wins"
+
+
+def test_forge_backup_take_reports_a_failed_dump_and_returns_none(monkeypatch, capsys):
+    monkeypatch.setattr(ForgeBackup, "repository_refs", classmethod(lambda cls, root: {}))
+    monkeypatch.setattr(
+        ForgeContainer,
+        "forgejo",
+        classmethod(
+            lambda cls, arguments, timeout=0: subprocess.CompletedProcess(
+                arguments, 1, "", "no space left"
+            )
+        ),
+    )
+    assert ForgeBackup.take() is None
+    assert "forgejo dump failed: no space left" in capsys.readouterr().out
