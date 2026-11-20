@@ -100,3 +100,7 @@ Three machines run a QA pass every morning (owner's decision): the two idle ones
 
 A commit whose change came from a Ragon task carries the git trailer `Made-with: ragon`, added with `scripts/as_team.py commit <team> -m MSG --made-with ragon` (once, last, after one blank line; any other value is refused). `--ragon-tokens N` (N >= 0, 0 allowed) adds `Ragon-Tokens: N`, the generated tokens Ragon spent on the change even when another model drove it; it goes before `Made-with`, and re-running replaces rather than duplicates either trailer.
 These trailers are the only markers: the public curve reads them with `as_team.ragon_trailers(git, <range>)` (sha, tokens or None, made-with), and no commit names any other tool.
+
+## Stand-ins and opt-ins
+
+A test needs a stand-in for the agent (`FAKE_RAGON` in `test_night_shift.py`); only `test_ragon_slash_commands.py`, marked `installed_binary`, runs the built binary. A test needing a real path must opt in explicitly. Tests never write `/etc/avahi` or run sudo; `ragon-docs` tests never use the real `HOME`.
