@@ -218,6 +218,7 @@ async fn logout_all_deletes_the_sessions_then_hands_the_logout_to_codex() {
     assert!(!stub.seen.lock().unwrap().iter().any(|r| r.contains("/keys")), "API keys are kept");
 }
 
+#[cfg(unix)]
 async fn pair(args: &[&str], stub: &Stub, home: &PathBuf) -> (i32, String) {
     let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
     let mut input = Cursor::new(Vec::new());
@@ -229,6 +230,7 @@ async fn pair(args: &[&str], stub: &Stub, home: &PathBuf) -> (i32, String) {
     (outcome.code, String::from_utf8(out).unwrap())
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn pair_prints_a_code_for_the_signed_in_user_and_leaves_the_bridge_its_primary() {
     let (stub, home) = (stub(&[]), tempdir("pair"));
@@ -243,4 +245,20 @@ async fn pair_prints_a_code_for_the_signed_in_user_and_leaves_the_bridge_its_pri
     assert_eq!((primary["gate"].as_str(), primary["node"].as_str()), (Some(stub.gate.as_str()), Some("box")));
     let (code, out) = pair(&["fax"], &stub, &home).await;
     assert_eq!(code, 2, "{out}");
+}
+
+#[cfg(not(unix))]
+#[tokio::test]
+async fn pair_says_it_is_not_available_on_windows_and_exits_two() {
+    let (stub, home) = (stub(&[]), tempdir("pair"));
+    let args = vec!["telegram".to_string()];
+    let mut input = Cursor::new(Vec::new());
+    let mut out = Vec::new();
+    let outcome = {
+        let mut io = Io { input: &mut input, out: &mut out, tty: false };
+        commands::run_pair(&args, &stub.gate, &home, &mut io).await.unwrap()
+    };
+    let out = String::from_utf8(out).unwrap();
+    assert_eq!(outcome.code, 2, "{out}");
+    assert!(out.contains("not available on Windows"), "{out}");
 }
