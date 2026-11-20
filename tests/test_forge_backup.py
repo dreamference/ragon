@@ -358,3 +358,8 @@ def test_forge_backup_host_name_is_the_short_name_without_the_domain(monkeypatch
     assert ForgeBackup.host_name() == "puffin-box"
     monkeypatch.setattr("socket.gethostname", lambda: "plain")
     assert ForgeBackup.host_name() == "plain"
+
+
+def test_forge_backup_unistr_passes_none_through_and_decodes_escapes():
+    assert ForgeBackup.unistr(None) is None
+    assert ForgeBackup.unistr("a\\0041\\u0042\\+000043\\U00000044\\\\") == "aABCD\\"
