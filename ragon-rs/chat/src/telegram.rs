@@ -39,8 +39,12 @@ const DRAFT_GAP_MS: u64 = 1_000;
 const POLL_TIMEOUT_S: u64 = 50;
 /// Wrong pairing codes tolerated before every pending code is withdrawn.
 const PAIRING_ATTEMPTS: u32 = 10;
-const UNPAIRED_REPLY_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
-pub const UNPAIRED_REPLY: &str = "This is a private Ragon. Ask its owner to pair you.";
+pub const UNPAIRED_REPLY: &str = "This Telegram chat is not paired to a Ragon account. Run `ragon pair telegram` where you are signed in, then send me the code.";
+
+/// The Telegram user ids with a binding.
+fn bound_users(dir: &std::path::Path) -> Vec<i64> {
+    crate::bindings::Bindings::load(dir).identities("telegram").iter().filter_map(|id| id.parse().ok()).collect()
+}
 
 /// A Bot API error, without the request's URL (it carries the token).
 #[derive(Clone, Debug, PartialEq)]
@@ -321,7 +325,6 @@ pub struct Poller {
     /// The Mini App's address (`[chat] telegram_mini_app_url`), when set.
     pub mini_app_url: Option<String>,
     wrong_codes: u32,
-    unpaired_replied: HashMap<i64, Instant>,
 }
 
 /// A new topic's name until the thread's first message names it.
@@ -329,7 +332,7 @@ pub const NEW_TOPIC_NAME: &str = "New thread";
 
 impl Poller {
     pub fn new(api: TelegramApi, dir: PathBuf, hub: mpsc::UnboundedSender<Inbound>) -> Poller {
-        Poller { api, dir, hub, topics: false, mini_app_url: None, wrong_codes: 0, unpaired_replied: HashMap::new() }
+        Poller { api, dir, hub, topics: false, mini_app_url: None, wrong_codes: 0 }
     }
 
     /// Opens a fresh topic in `chat_id` and remembers it as the chat's last used topic.
@@ -414,7 +417,7 @@ impl Poller {
 
     /// One update.
     pub async fn handle(&mut self, update: &Value) {
-        let paired = TelegramConfig::load(&self.dir).map(|config| config.users).unwrap_or_default();
+        let paired = bound_users(&self.dir);
         if let Some(message) = update.get("message") {
             let Some(chat_id) = message.pointer("/chat/id").and_then(Value::as_i64) else { return };
             if message.pointer("/chat/type").and_then(Value::as_str) != Some("private") {
@@ -444,10 +447,10 @@ impl Poller {
                 return;
             }
             if !paired.contains(&user) {
-                let due = self.unpaired_replied.get(&user).is_none_or(|at| at.elapsed() >= UNPAIRED_REPLY_EVERY);
-                if due {
-                    self.unpaired_replied.insert(user, Instant::now());
-                    self.reply(chat_id, UNPAIRED_REPLY).await;
+                if crate::bindings::looks_like_code(&text) {
+                    self.pair(chat_id, user, &text, &paired).await;
+                } else if crate::bindings::hint_due(&self.dir, &format!("telegram:{chat_id}"), store::now_secs()) {
+                    self.reply(chat_id, &crate::bindings::instruction("telegram")).await;
                 }
                 return;
             }
@@ -508,25 +511,27 @@ impl Poller {
             self.reply(chat_id, "This Telegram account is already paired.").await;
             return;
         }
-        if store::take_pairing_code(&self.dir, code) {
-            self.wrong_codes = 0;
-            let Some(mut config) = TelegramConfig::load(&self.dir) else { return };
-            config.users.push(user);
-            if config.save(&self.dir).is_err() {
-                self.reply(chat_id, "Pairing failed: the bridge could not save it.").await;
-                return;
-            }
-            self.reply(chat_id, &format!("Paired. Send a message to start.\n\n{HELP}")).await;
-            if self.mini_app_url.is_some() {
-                let _ = self.api.call("setChatMenuButton", menu_button(chat_id, self.mini_app_url.as_deref())).await;
-            }
-        } else {
-            self.wrong_codes += 1;
-            if self.wrong_codes >= PAIRING_ATTEMPTS {
-                store::withdraw_pairing_codes(&self.dir);
+        let wrong = || crate::bindings::instruction("telegram");
+        if self.wrong_codes >= PAIRING_ATTEMPTS {
+            self.reply(chat_id, &wrong()).await;
+            return;
+        }
+        let home = crate::bindings::home_of(&self.dir);
+        match crate::bindings::pair(&self.dir, &home, "telegram", code, &user.to_string(), &format!("telegram:{chat_id}")).await {
+            Ok((_, line)) => {
                 self.wrong_codes = 0;
+                self.reply(chat_id, &format!("{line}. Send a message to start.\n\n{HELP}")).await;
+                if self.mini_app_url.is_some() {
+                    let _ = self.api.call("setChatMenuButton", menu_button(chat_id, self.mini_app_url.as_deref())).await;
+                }
             }
-            self.reply(chat_id, "That code is not valid. Run `ragon chat telegram pair` on the machine for a new one.").await;
+            Err(crate::bindings::Refused::Invalid) => {
+                self.wrong_codes += 1;
+                self.reply(chat_id, &wrong()).await;
+            }
+            Err(crate::bindings::Refused::Unreachable) => {
+                self.reply(chat_id, "I could not reach the accounts server to check that code; try again in a moment.").await;
+            }
         }
     }
 }
@@ -891,7 +896,7 @@ pub async fn start(
     if me.is_ok() {
         let _ = api.call("setMyCommands", commands(options.mini_app_url.is_some())).await;
         // Each paired user's menu button follows the setting, so removing the address removes it.
-        let users = TelegramConfig::load(&dir).map(|config| config.users).unwrap_or_default();
+        let users = bound_users(&dir);
         for user in users {
             let _ = api.call("setChatMenuButton", menu_button(user, options.mini_app_url.as_deref())).await;
         }

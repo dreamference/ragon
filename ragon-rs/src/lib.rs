@@ -128,7 +128,7 @@ pub const UPSTREAM_TESTS_ENV: &str = "RAGON_UPSTREAM_TESTS";
 /// Codex subcommands that never open a session, so `ragon apply` or `ragon completion bash`
 /// answers at once instead of waiting for a model server that may not be running.
 const COMMANDS_WITHOUT_MODEL: &[&str] = &[
-    "help", "completion", "apply", "a", "features", "doctor", "login", "logout", "sessions", "mcp", "plugin", "archive",
+    "help", "completion", "apply", "a", "features", "doctor", "login", "logout", "sessions", "pair", "mcp", "plugin", "archive",
     "unarchive", "delete", "sandbox", "update", "node", "skill", "web", "chat", "signal", "sync", "monitor", "delegate",
 ];
 
@@ -136,7 +136,7 @@ const COMMANDS_WITHOUT_MODEL: &[&str] = &[
 pub const LAUNCHER_SUBCOMMANDS: &[&str] = &[
     "app", "night", "airgapped", "node", "apps", "ledger", "notice", "skill", "audit", "docs", "prompt", "web", "chat",
     "signal", "refine", "compat", "loop-guard", "guard", "worktree", "sync", "monitor", "delegate",
-    "uninstall", "doctor", "login", "logout", "sessions",
+    "uninstall", "doctor", "login", "logout", "sessions", "pair",
 ];
 
 /// Codex subcommands Ragon does not offer, each with the reason it gives. They are refused here,
@@ -371,6 +371,25 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
         let mut forwarded: Vec<OsString> = args.first().cloned().into_iter().collect();
         forwarded.extend(forward.into_iter().map(OsString::from));
         return Ok(forwarded);
+    }
+    // `ragon pair <kind>` and `ragon chat pair <kind>` print a pairing code for this signed-in user.
+    if let Some(index) = subcommand
+        && (user_args[index] == "pair" || (user_args[index] == "chat" && user_args.get(index + 1).is_some_and(|word| word == "pair")))
+        && std::env::var_os(UPSTREAM_TESTS_ENV).is_none()
+    {
+        let rest = &user_args[index + if user_args[index] == "chat" { 2 } else { 1 }..];
+        let host = node::resolve_host(false).await?;
+        let codex_home = codex_utils_home_dir::find_codex_home()
+            .context("could not resolve CODEX_HOME")?
+            .as_path()
+            .to_path_buf();
+        let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+        let stdin = std::io::stdin();
+        let mut input = stdin.lock();
+        let mut out = std::io::stdout();
+        let mut io = auth::commands::Io { input: &mut input, out: &mut out, tty };
+        let outcome = auth::commands::run_pair(rest, &host, &codex_home, &mut io).await?;
+        std::process::exit(outcome.code);
     }
     if let Some(index) = subcommand
         && user_args[index] == "doctor"

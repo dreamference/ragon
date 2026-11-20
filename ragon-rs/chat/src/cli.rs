@@ -279,11 +279,22 @@ async fn serve(environment: &Environment) -> i32 {
         eprintln!("No messenger is set up: run `ragon chat telegram setup`, `ragon chat discord setup`, or `ragon-admin matrix start`.");
         return 1;
     }
+    if crate::bindings::drop_old_pairings(&dir) {
+        eprintln!("ragon chat: earlier pairings were dropped; pair each chat again with `ragon pair <telegram|discord|matrix>`.");
+    }
     let (agent, commands) = AgentHandle::channel();
     let (events_tx, events) = mpsc::unbounded_channel();
     let (inbound_tx, inbound) = mpsc::unbounded_channel();
     let user_config = environment.user_config();
-    let mut hub = Hub::new(hub_config(environment), agent, Box::new(move || user_airgapped(&user_config)));
+    let state_for_users = ragon_web_server::auth::state_dir(&environment.codex_home);
+    let ragon_for_users = environment.ragon.clone();
+    let events_for_users = events_tx.clone();
+    let mut hub = Hub::new(hub_config(environment), agent, Box::new(move || user_airgapped(&user_config))).with_user_links(Box::new(move |key| {
+        let (handle, commands) = AgentHandle::channel();
+        let target = WebTarget { state: state_for_users.clone(), ragon: Some(ragon_for_users.clone()), key: Some(key.to_string()) };
+        tokio::spawn(crate::agent::run_link(target, commands, events_for_users.clone()));
+        handle
+    }));
     let mut adapters = 0;
     if let Some(config) = telegram_config {
         let (out_tx, out_rx) = mpsc::unbounded_channel();
@@ -340,7 +351,7 @@ async fn serve(environment: &Environment) -> i32 {
     if adapters == 0 {
         return 1;
     }
-    let target = WebTarget { state: ragon_web_server::auth::state_dir(&environment.codex_home), ragon: Some(environment.ragon.clone()) };
+    let target = WebTarget { state: ragon_web_server::auth::state_dir(&environment.codex_home), ragon: Some(environment.ragon.clone()), key: None };
     tokio::spawn(crate::agent::run_link(target, commands, events_tx));
     drop(inbound_tx);
     tokio::select! {
@@ -498,20 +509,9 @@ async fn telegram_setup(dir: &Path) -> i32 {
 }
 
 fn telegram_pair(dir: &Path) -> i32 {
-    if TelegramConfig::load(dir).is_none() {
-        eprintln!("Telegram is off: run `ragon chat telegram setup` first.");
-        return 1;
-    }
-    match store::issue_pairing_code(dir) {
-        Ok(code) => {
-            println!("Send this to your bot in Telegram within 10 minutes:\n\n    /pair {code}\n\nThe code works once.");
-            0
-        }
-        Err(err) => {
-            eprintln!("Could not write a pairing code: {err}");
-            1
-        }
-    }
+    let _ = dir;
+    eprintln!("Telegram chats pair to a Ragon account now: run `ragon pair telegram` where you are signed in, then send the code to the bot.");
+    1
 }
 
 fn telegram_users(dir: &Path) -> i32 {
@@ -633,20 +633,9 @@ async fn discord_setup(dir: &Path, user_config: &Path) -> i32 {
 }
 
 fn discord_pair(dir: &Path) -> i32 {
-    if DiscordConfig::load(dir).is_none() {
-        eprintln!("Discord is off: run `ragon chat discord setup` first.");
-        return 1;
-    }
-    match store::issue_discord_pairing_code(dir) {
-        Ok(code) => {
-            println!("Send this to your bot in a direct message in Discord within 10 minutes:\n\n    /pair {code}\n\nThe code works once.");
-            0
-        }
-        Err(err) => {
-            eprintln!("Could not write a pairing code: {err}");
-            1
-        }
-    }
+    let _ = dir;
+    eprintln!("Discord chats pair to a Ragon account now: run `ragon pair discord` where you are signed in, then send the code to the bot.");
+    1
 }
 
 fn discord_users(dir: &Path) -> i32 {

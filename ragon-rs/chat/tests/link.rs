@@ -145,7 +145,7 @@ async fn a_chat_message_reaches_the_agent_through_ragon_web_an_approval_comes_ba
             }
         }
     });
-    tokio::spawn(ragon_chat::agent::run_link(WebTarget { state: state_dir.clone(), ragon: None }, commands, link_tx));
+    tokio::spawn(ragon_chat::agent::run_link(WebTarget { state: state_dir.clone(), ragon: None, key: None }, commands, link_tx));
     let mut hub = Hub::new(HubConfig::new(scratch.dir.join("chat")), agent, Box::new(|| false));
     let (out_tx, mut out) = mpsc::unbounded_channel();
     hub.add_adapter("telegram", out_tx);

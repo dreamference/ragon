@@ -27,9 +27,6 @@ use crate::hub::Outbound;
 use crate::render;
 use crate::repo_notice::AppThreadId;
 use crate::repo_notice::RepoName;
-use crate::store;
-use crate::store::DiscordConfig;
-use crate::telegram::UNPAIRED_REPLY;
 use crate::telegram::approval_callback;
 
 pub const API_ROOT: &str = "https://discord.com/api/v10";
@@ -555,11 +552,11 @@ impl Events {
     }
 
     fn paired(&self, user: &str, channel: &str) -> bool {
-        DiscordConfig::load(&self.dir).is_some_and(|config| config.users.get(user).is_some_and(|dm| dm == channel))
+        crate::bindings::Bindings::load(&self.dir).get("discord", user).is_some_and(|b| b.chat == format!("discord:{channel}"))
     }
 
     fn is_known(&self, user: &str) -> bool {
-        DiscordConfig::load(&self.dir).is_some_and(|config| config.users.contains_key(user))
+        crate::bindings::Bindings::load(&self.dir).get("discord", user).is_some()
     }
 
     async fn on_message(&mut self, data: &Value) {
@@ -627,7 +624,7 @@ impl Events {
             return;
         }
         self.strangers.insert(user.to_string(), now);
-        let _ = self.api.send(channel, message(UNPAIRED_REPLY)).await;
+        let _ = self.api.send(channel, message(&crate::bindings::instruction("discord"))).await;
     }
 
     async fn on_interaction(&mut self, data: &Value) {
@@ -640,7 +637,7 @@ impl Events {
         let user = data.pointer("/user/id").and_then(Value::as_str).filter(|user| is_snowflake(user));
         let channel = data.get("channel_id").and_then(Value::as_str).or_else(|| data.pointer("/channel/id").and_then(Value::as_str)).filter(|channel| is_snowflake(channel));
         let (Some(user), Some(channel), true) = (user, channel, in_dm) else {
-            let _ = self.api.answer(id, token, ephemeral(UNPAIRED_REPLY)).await;
+            let _ = self.api.answer(id, token, ephemeral(&crate::bindings::instruction("discord"))).await;
             return;
         };
         let kind = data.get("type").and_then(Value::as_u64).unwrap_or_default();
@@ -652,7 +649,7 @@ impl Events {
             return;
         }
         if !self.paired(user, channel) {
-            let _ = self.api.answer(id, token, ephemeral(UNPAIRED_REPLY)).await;
+            let _ = self.api.answer(id, token, ephemeral(&crate::bindings::instruction("discord"))).await;
             return;
         }
         let key = chat_key(channel);
@@ -693,24 +690,23 @@ impl Events {
         if self.is_known(user) {
             return "This Discord account is already paired.".to_string();
         }
-        if !code.is_empty() && store::take_discord_pairing_code(&self.dir, code) {
-            self.wrong_codes = 0;
-            let Some(mut config) = DiscordConfig::load(&self.dir) else {
-                return "Pairing failed: the bridge is not set up.".to_string();
-            };
-            config.users.insert(user.to_string(), channel.to_string());
-            if config.save(&self.dir).is_err() {
-                return "Pairing failed: the bridge could not save it.".to_string();
+        let wrong = crate::bindings::instruction("discord");
+        if code.is_empty() || self.wrong_codes >= PAIRING_ATTEMPTS {
+            return wrong;
+        }
+        let home = crate::bindings::home_of(&self.dir);
+        match crate::bindings::pair(&self.dir, &home, "discord", code, user, &format!("discord:{channel}")).await {
+            Ok((_, line)) => {
+                self.wrong_codes = 0;
+                self.strangers.remove(user);
+                format!("{line}. Send a message to start.\n\n{HELP}")
             }
-            self.strangers.remove(user);
-            return format!("Paired. Send a message to start.\n\n{HELP}");
+            Err(crate::bindings::Refused::Invalid) => {
+                self.wrong_codes += 1;
+                wrong
+            }
+            Err(crate::bindings::Refused::Unreachable) => "I could not reach the accounts server to check that code; try again in a moment.".to_string(),
         }
-        self.wrong_codes += 1;
-        if self.wrong_codes >= PAIRING_ATTEMPTS {
-            store::withdraw_discord_pairing_codes(&self.dir);
-            self.wrong_codes = 0;
-        }
-        "That code is not valid. Run `ragon chat discord pair` on the machine for a new one.".to_string()
     }
 }
 

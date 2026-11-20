@@ -138,6 +138,7 @@ pub struct Primary {
     pub info: Option<Info>,
     home: PathBuf,
     client: reqwest::Client,
+    ca_pem: Option<Vec<u8>>,
 }
 
 fn http_error(error: reqwest::Error) -> anyhow::Error {
@@ -171,8 +172,8 @@ pub async fn connect(gate: &str, codex_home: &Path) -> anyhow::Result<Primary> {
         }
     }
     let mut builder = base();
-    if let Some(pem) = ca_pem
-        && let Ok(cert) = reqwest::Certificate::from_pem(&pem)
+    if let Some(pem) = &ca_pem
+        && let Ok(cert) = reqwest::Certificate::from_pem(pem)
     {
         builder = builder.add_root_certificate(cert);
     }
@@ -180,7 +181,7 @@ pub async fn connect(gate: &str, codex_home: &Path) -> anyhow::Result<Primary> {
     if info.is_none() {
         info = get_text(&client, &format!("{gate}/ragon/v1/info")).await.as_deref().and_then(super::parse_info);
     }
-    Ok(Primary { gate, info, home: codex_home.to_path_buf(), client })
+    Ok(Primary { gate, info, home: codex_home.to_path_buf(), client, ca_pem })
 }
 
 async fn get_text(client: &reqwest::Client, url: &str) -> Option<String> {
@@ -241,8 +242,20 @@ impl Primary {
 
     /// A request with this machine's bearer; one refresh and retry when the gate says it expired.
     async fn authed(&self, method: reqwest::Method, path: &str) -> anyhow::Result<reqwest::Response> {
+        self.authed_json(method, path, None).await
+    }
+
+    /// [`Primary::authed`] with a JSON body.
+    async fn authed_json(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> anyhow::Result<reqwest::Response> {
         let Some(bearer) = self.bearer() else { bail!("not signed in") };
-        let send = |bearer: String| self.client.request(method.clone(), format!("{}{path}", self.gate)).bearer_auth(bearer).send();
+        let send = |bearer: String| {
+            let request = self.client.request(method.clone(), format!("{}{path}", self.gate)).bearer_auth(bearer);
+            match &body {
+                Some(body) => request.json(body),
+                None => request,
+            }
+            .send()
+        };
         let response = send(bearer).await.map_err(http_error)?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED && self.refresh().await
             && let Some(bearer) = self.bearer()
@@ -642,4 +655,42 @@ pub async fn run(which: &str, args: &[String], gate: &str, codex_home: &Path, io
         return Ok(Outcome { code, forward });
     }
     run_login(&primary, cmd, io).await
+}
+
+/// `ragon pair <chat kind>`: asks the primary for a pairing code for this signed-in user and
+/// prints it, and leaves the chat bridge what it needs to redeem it: the gate, the node's name and
+/// the primary's CA, in the chat folder (`<codex_home>/chat`).
+///
+/// # Errors
+/// The accounts server cannot be reached or the chat folder cannot be written.
+pub async fn run_pair(args: &[String], gate: &str, codex_home: &Path, io: &mut Io<'_>) -> anyhow::Result<Outcome> {
+    let kinds = ragon_chat::bindings::KINDS;
+    let kind = match args {
+        [kind] if kinds.contains(&kind.as_str()) => kind.as_str(),
+        _ => {
+            writeln!(io.out, "Usage: ragon pair <{}>", kinds.join("|"))?;
+            return Ok(Outcome::done(2));
+        }
+    };
+    let primary = connect(gate, codex_home).await?;
+    if primary.bearer().is_none() {
+        writeln!(io.out, "Not signed in. Run ragon login, then ragon pair {kind}.")?;
+        return Ok(Outcome::done(1));
+    }
+    let response = primary.authed_json(reqwest::Method::POST, "/ragon/v1/bindings", Some(json!({ "chat_kind": kind }))).await?;
+    let status = response.status();
+    let doc: Value = response.json().await.unwrap_or(Value::Null);
+    let Some(code) = doc.get("code").and_then(Value::as_str).filter(|_| status.is_success()) else {
+        writeln!(io.out, "Could not get a pairing code: {} answered {}.", primary.primary_name(), status.as_u16())?;
+        return Ok(Outcome::done(1));
+    };
+    let minutes = doc.get("expires_in").and_then(Value::as_u64).map_or(60, |secs| secs.div_ceil(60));
+    ragon_chat::bindings::write_primary(&codex_home.join("chat"), &primary.gate, &primary.node_name(), primary.ca_pem.as_deref())?;
+    writeln!(io.out, "Pairing code for {kind}: {code}")?;
+    writeln!(io.out, "Send it to the {kind} bot as a message (or /pair {code}); it works once, for {minutes} minutes.")?;
+    let home = codex_home.parent().unwrap_or(codex_home);
+    if ragon_chat::bindings::service_key(home).is_none() {
+        writeln!(io.out, "Note: this machine has no service key (RAGON_API_KEY or ~/.config/dreamference/service-key); the bridge cannot redeem codes without it.")?;
+    }
+    Ok(Outcome::done(0))
 }

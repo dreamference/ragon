@@ -418,6 +418,40 @@ impl Syncer {
                 if sender == config.user_id || !config.allowed.iter().any(|user| user == sender) {
                     continue;
                 }
+                let mut bindings = crate::bindings::Bindings::load(&self.dir);
+                let bound = bindings.get("matrix", sender).cloned();
+                if let Some(binding) = &bound
+                    && binding.chat != chat_key(room)
+                {
+                    // The user's direct room changed: their binding follows it.
+                    let moved = crate::bindings::Binding { chat: chat_key(room), ..binding.clone() };
+                    bindings.bind("matrix", sender, moved);
+                    let _ = bindings.save(&self.dir);
+                }
+                if bound.is_none() {
+                    if event.get("type").and_then(Value::as_str) == Some("m.room.message") {
+                        let body = event.pointer("/content/body").and_then(Value::as_str).unwrap_or_default();
+                        let text = without_reply_fallback(body);
+                        let text = text.trim();
+                        let code = text.strip_prefix("/pair").map_or(text, str::trim);
+                        let reply = if crate::bindings::looks_like_code(code) {
+                            let home = crate::bindings::home_of(&self.dir);
+                            match crate::bindings::pair(&self.dir, &home, "matrix", code, sender, &chat_key(room)).await {
+                                Ok((_, line)) => Some(format!("{line}. Send a message to start.")),
+                                Err(crate::bindings::Refused::Invalid) => Some(crate::bindings::instruction("matrix")),
+                                Err(crate::bindings::Refused::Unreachable) => Some("I could not reach the accounts server to check that code; try again in a moment.".to_string()),
+                            }
+                        } else if crate::bindings::hint_due(&self.dir, &chat_key(room), crate::store::now_secs()) {
+                            Some(crate::bindings::instruction("matrix"))
+                        } else {
+                            None
+                        };
+                        if let Some(body) = reply {
+                            let _ = self.api.send(room, json!({ "msgtype": "m.notice", "body": body })).await;
+                        }
+                    }
+                    continue;
+                }
                 match event.get("type").and_then(Value::as_str) {
                     Some("m.room.message") => {
                         let msgtype = event.pointer("/content/msgtype").and_then(Value::as_str).unwrap_or_default();

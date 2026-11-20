@@ -126,6 +126,9 @@ pub struct WebTarget {
     pub state: PathBuf,
     /// `ragon`, to run `ragon web start` when nothing answers.
     pub ragon: Option<PathBuf>,
+    /// A bound user's binding key (AUTH §14.1): sent as `Authorization: Bearer <key>`, so the
+    /// agent runs as that user. `None` keeps the device cookie of the loopback sign-in.
+    pub key: Option<String>,
 }
 
 type Socket = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
@@ -143,12 +146,19 @@ async fn open(target: &WebTarget) -> Result<(Socket, u16, String), String> {
             }
         }
     let port = ragon_web_server::cli::running_port(&target.state);
-    let cookie = ragon_web_server::ask_client::sign_in(&target.state, port).await?;
+    let cookie = match &target.key {
+        Some(key) => format!("Bearer {key}"),
+        None => ragon_web_server::ask_client::sign_in(&target.state, port).await?,
+    };
     let stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.map_err(|err| format!("ragon web is not answering on port {port}: {err}"))?;
     let mut request = format!("ws://127.0.0.1:{port}/ws").into_client_request().map_err(|err| err.to_string())?;
     let headers = request.headers_mut();
     headers.insert(header::ORIGIN, HeaderValue::from_str(&format!("http://127.0.0.1:{port}")).map_err(|err| err.to_string())?);
-    headers.insert(header::COOKIE, HeaderValue::from_str(&cookie).map_err(|err| err.to_string())?);
+    let (name, value) = match cookie.strip_prefix("Bearer ") {
+        Some(_) => (header::AUTHORIZATION, cookie.as_str()),
+        None => (header::COOKIE, cookie.as_str()),
+    };
+    headers.insert(name, HeaderValue::from_str(value).map_err(|err| err.to_string())?);
     let (socket, _) = tokio_tungstenite::client_async(request, stream).await.map_err(|err| format!("ragon web refused the bridge: {err}"))?;
     Ok((socket, port, cookie))
 }

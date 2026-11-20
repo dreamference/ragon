@@ -32,7 +32,6 @@ use ragon_chat::store;
 use ragon_chat::store::DiscordConfig;
 use ragon_chat::store::DiscordState;
 use ragon_chat::store::GatewayStatus;
-use ragon_chat::telegram::UNPAIRED_REPLY;
 use serde_json::Value;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -94,8 +93,10 @@ fn scratch(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("ragon-chat-dc-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut config = DiscordConfig::new(TOKEN.to_string(), "123".to_string());
-    config.users.insert("111".to_string(), "222".to_string());
     config.save(&dir).unwrap();
+    let mut bindings = ragon_chat::bindings::Bindings::default();
+    bindings.bind("discord", "111", ragon_chat::bindings::Binding { username: "ada".into(), key: "sk-ragon-test".into(), chat: "discord:222".into() });
+    bindings.save(&dir).unwrap();
     dir
 }
 
@@ -112,54 +113,6 @@ fn drained(rx: &mut mpsc::UnboundedReceiver<Inbound>) -> Vec<Inbound> {
 }
 
 #[tokio::test]
-async fn a_typed_pair_code_pairs_the_dm_once_and_then_its_text_reaches_the_hub() {
-    let (stand, api) = stand_in(default_answer()).await;
-    let dir = scratch("pair");
-    let code = store::issue_discord_pairing_code(&dir).unwrap();
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut events = Events::new(api, dir.clone(), tx, None);
-    events.handle("MESSAGE_CREATE", &dm("333", "444", &format!("/pair {code}"))).await;
-    assert_eq!(DiscordConfig::load(&dir).unwrap().users.get("333").map(String::as_str), Some("444"));
-    let replies = stand.bodies("POST /channels/444/messages");
-    assert!(replies[0]["content"].as_str().unwrap().starts_with("Paired."), "{replies:?}");
-    assert_eq!(replies[0]["allowed_mentions"], json!({ "parse": [] }));
-    // The code worked once.
-    assert!(!store::take_discord_pairing_code(&dir, &code));
-    events.handle("MESSAGE_CREATE", &dm("333", "444", "hello")).await;
-    assert_eq!(drained(&mut rx), vec![Inbound::Text { chat: "discord:444".to_string(), text: "hello".to_string() }]);
-}
-
-#[tokio::test]
-async fn the_pair_command_pairs_with_an_ephemeral_answer() {
-    let (stand, api) = stand_in(default_answer()).await;
-    let dir = scratch("pair-command");
-    let code = store::issue_discord_pairing_code(&dir).unwrap();
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mut events = Events::new(api, dir.clone(), tx, None);
-    let data = json!({ "name": "pair", "options": [{ "name": "code", "type": 3, "value": code }] });
-    events.handle("INTERACTION_CREATE", &interaction("333", "444", 2, data)).await;
-    assert!(DiscordConfig::load(&dir).unwrap().users.contains_key("333"));
-    let answer = &stand.bodies("POST /interactions/31/tok-en.1/callback")[0];
-    assert_eq!(answer["type"], 4);
-    assert_eq!(answer["data"]["flags"], 64);
-    assert!(answer["data"]["content"].as_str().unwrap().starts_with("Paired."), "{answer}");
-}
-
-#[tokio::test]
-async fn ten_wrong_codes_withdraw_the_code_that_was_issued() {
-    let (_stand, api) = stand_in(default_answer()).await;
-    let dir = scratch("wrong-codes");
-    let code = store::issue_discord_pairing_code(&dir).unwrap();
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mut events = Events::new(api, dir.clone(), tx, None);
-    for n in 0..10 {
-        events.handle("MESSAGE_CREATE", &dm("333", "444", &format!("/pair WRONG{n}"))).await;
-    }
-    assert!(!store::take_discord_pairing_code(&dir, &code));
-    assert!(!DiscordConfig::load(&dir).unwrap().users.contains_key("333"));
-}
-
-#[tokio::test]
 async fn a_stranger_is_told_once_and_reaches_nothing() {
     let (stand, api) = stand_in(default_answer()).await;
     let dir = scratch("stranger");
@@ -171,7 +124,7 @@ async fn a_stranger_is_told_once_and_reaches_nothing() {
     events.handle("MESSAGE_CREATE", &dm("111", "777", "hi")).await;
     let replies = stand.bodies("POST /channels/666/messages");
     assert_eq!(replies.len(), 1);
-    assert_eq!(replies[0]["content"], UNPAIRED_REPLY);
+    assert_eq!(replies[0]["content"], ragon_chat::bindings::instruction("discord"));
     assert_eq!(stand.bodies("POST /channels/777/messages").len(), 1);
     assert!(drained(&mut rx).is_empty());
 }

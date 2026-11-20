@@ -157,8 +157,9 @@ fn form_escape(text: &str) -> String {
 /// (`cookie` from [`sign_in`]): the image's text is read and the model's image support reported.
 pub async fn upload(port: u16, cookie: &str, thread: &str, name: &str, image: bool, bytes: &[u8]) -> Result<Saved, String> {
     let kind = if image { "image" } else { "file" };
+    let auth = auth_line(cookie);
     let mut request = format!(
-        "POST /api/upload?thread={}&kind={kind}&name={}&read=1 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nCookie: {cookie}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST /api/upload?thread={}&kind={kind}&name={}&read=1 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n{auth}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         form_escape(thread),
         form_escape(name),
         bytes.len()
@@ -181,9 +182,20 @@ pub async fn upload(port: u16, cookie: &str, thread: &str, name: &str, image: bo
     saved_from(&body)
 }
 
+/// The request header that carries a client's credential: a `Bearer <key>` credential (a bridge's
+/// binding key, AUTH §14.1) goes as `Authorization`, anything else is a session cookie.
+pub fn auth_line(credential: &str) -> String {
+    if credential.starts_with("Bearer ") {
+        format!("Authorization: {credential}")
+    } else {
+        format!("Cookie: {credential}")
+    }
+}
+
 /// A GET to `ragon web` as a signed-in client: (status, body).
 pub async fn get(port: u16, cookie: &str, path_and_query: &str) -> Result<(u16, Vec<u8>), String> {
-    let request = format!("GET {path_and_query} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n");
+    let auth = auth_line(cookie);
+    let request = format!("GET {path_and_query} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{auth}\r\nConnection: close\r\n\r\n");
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .map_err(|err| format!("ragon web is not answering on port {port}: {err}"))?;
@@ -203,8 +215,9 @@ pub async fn web_json(port: u16, cookie: &str, path_and_query: &str, body: Optio
         None => get(port, cookie, path_and_query).await?,
         Some(body) => {
             let body = body.to_string();
+            let auth = auth_line(cookie);
             let request = format!(
-                "POST {path_and_query} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nCookie: {cookie}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "POST {path_and_query} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n{auth}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
@@ -266,8 +279,9 @@ pub async fn made_file(port: u16, cookie: &str, thread: &str, name: &str) -> Res
 /// A voice message as text, through `ragon web`'s `/api/transcribe` (the speech-to-text service on
 /// this machine; MOONSHOT §3.4): the text, or what `ragon web` said went wrong.
 pub async fn transcribe(port: u16, cookie: &str, media: &str, bytes: &[u8]) -> Result<String, String> {
+    let auth = auth_line(cookie);
     let mut request = format!(
-        "POST /api/transcribe HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nCookie: {cookie}\r\nContent-Type: {media}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST /api/transcribe HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n{auth}\r\nContent-Type: {media}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         bytes.len()
     )
     .into_bytes();

@@ -1,0 +1,100 @@
+//! Pairing a chat identity to an account through a stand-in primary (an axum server on
+//! loopback): the redeem call, the binding file, the upgrade drop and the daily hint.
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+
+use axum::Json;
+use axum::Router;
+use axum::extract::State;
+use axum::http::HeaderMap;
+use axum::http::StatusCode;
+use axum::routing::post;
+use ragon_chat::bindings::Bindings;
+use ragon_chat::bindings::Refused;
+use ragon_chat::bindings::drop_old_pairings;
+use ragon_chat::bindings::hint_due;
+use ragon_chat::bindings::instruction;
+use ragon_chat::bindings::pair;
+use ragon_chat::bindings::write_primary;
+use serde_json::Value;
+use serde_json::json;
+
+type Seen = Arc<Mutex<Vec<(String, Value)>>>;
+
+async fn redeem(State(seen): State<Seen>, headers: HeaderMap, Json(body): Json<Value>) -> (StatusCode, Json<Value>) {
+    let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    seen.lock().unwrap().push((auth, body.clone()));
+    if body["code"] == "ABC234" {
+        (StatusCode::OK, Json(json!({ "id": "b1", "username": "ada", "key": "sk-ragon-fresh" })))
+    } else {
+        (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid_code" })))
+    }
+}
+
+async fn setup(tag: &str) -> (PathBuf, PathBuf, Seen) {
+    let seen = Seen::default();
+    let app = Router::new().route("/ragon/v1/bindings/redeem", post(redeem)).with_state(seen.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gate = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = std::env::temp_dir().join(format!("ragon-pairing-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let dir = home.join(".ragon").join("chat");
+    std::fs::create_dir_all(home.join(".config/dreamference")).unwrap();
+    std::fs::write(home.join(".config/dreamference/service-key"), "sk-ragon-service\n").unwrap();
+    write_primary(&dir, &gate, "node-one", None).unwrap();
+    (home, dir, seen)
+}
+
+#[tokio::test]
+async fn a_good_code_binds_the_chat_to_the_account_and_keeps_the_key_private() {
+    let (home, dir, seen) = setup("good").await;
+    let (redeemed, line) = pair(&dir, &home, "telegram", "ABC234", "42", "telegram:42").await.unwrap();
+    assert_eq!((redeemed.username.as_str(), redeemed.key.as_str()), ("ada", "sk-ragon-fresh"));
+    assert_eq!(line, "Paired to ada on node-one");
+    let calls = seen.lock().unwrap().clone();
+    assert_eq!(calls[0].0, "Bearer sk-ragon-service");
+    assert_eq!(calls[0].1, json!({ "code": "ABC234", "chat_kind": "telegram", "chat_identity": "42" }));
+    let bindings = Bindings::load(&dir);
+    assert_eq!(bindings.for_chat("telegram:42").unwrap().key, "sk-ragon-fresh");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join("bindings.json")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+}
+
+#[tokio::test]
+async fn a_wrong_code_binds_nothing_and_an_unconfigured_bridge_cannot_pair() {
+    let (home, dir, _seen) = setup("bad").await;
+    assert_eq!(pair(&dir, &home, "telegram", "ZZZ999", "42", "telegram:42").await.unwrap_err(), Refused::Invalid);
+    assert!(Bindings::load(&dir).is_empty());
+    let empty = home.join("elsewhere").join(".ragon").join("chat");
+    assert_eq!(pair(&empty, &home, "telegram", "ABC234", "42", "telegram:42").await.unwrap_err(), Refused::Unreachable);
+}
+
+#[tokio::test]
+async fn the_upgrade_drops_every_old_pairing_once() {
+    let (_home, dir, _seen) = setup("drop").await;
+    std::fs::write(dir.join("telegram.json"), json!({ "token": "t", "users": [1, 2] }).to_string()).unwrap();
+    std::fs::write(dir.join("discord.json"), json!({ "token": "d", "owner": "9", "users": { "3": "c" } }).to_string()).unwrap();
+    assert!(drop_old_pairings(&dir));
+    let telegram: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("telegram.json")).unwrap()).unwrap();
+    assert_eq!(telegram["token"], "t");
+    assert!(telegram["users"].as_array().is_none_or(Vec::is_empty));
+    let discord: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("discord.json")).unwrap()).unwrap();
+    assert!(discord["users"].as_object().is_none_or(serde_json::Map::is_empty));
+    assert!(!drop_old_pairings(&dir), "the marker makes the drop a one-time step");
+}
+
+#[tokio::test]
+async fn an_unpaired_chat_is_told_how_once_a_day() {
+    let (_home, dir, _seen) = setup("hint").await;
+    assert!(hint_due(&dir, "telegram:7", 1_000));
+    assert!(!hint_due(&dir, "telegram:7", 2_000));
+    assert!(hint_due(&dir, "telegram:8", 2_000));
+    assert!(hint_due(&dir, "telegram:7", 1_000 + 86_400 + 1));
+    assert!(instruction("telegram").contains("ragon pair telegram"));
+}

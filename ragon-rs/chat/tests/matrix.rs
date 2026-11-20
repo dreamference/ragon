@@ -113,6 +113,9 @@ fn setup(tag: &str, root: &str) -> (std::path::PathBuf, MatrixConfig) {
     let _ = std::fs::remove_dir_all(&dir);
     let config = json!({ "homeserver": root, "server_name": "node.tail.ts.net", "user_id": BOT, "access_token": "bot-token", "allowed": [OWNER] });
     write_private(&MatrixConfig::path(&dir), &config.to_string()).unwrap();
+    let mut bindings = ragon_chat::bindings::Bindings::default();
+    bindings.bind("matrix", OWNER, ragon_chat::bindings::Binding { username: "ada".into(), key: "sk-ragon-test".into(), chat: "matrix:!dm:x".into() });
+    bindings.save(&dir).unwrap();
     (dir.clone(), MatrixConfig::load(&dir).unwrap())
 }
 

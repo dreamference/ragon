@@ -81,6 +81,7 @@ fn stub(taken: &'static [&'static str]) -> Stub {
                     json!({"sessions": [{"id": "s1", "machine": "laptop", "client": "ragon-cli", "last_used": "today"}],
                            "bindings": [{"id": "b1", "kind": "signal", "last_used": "never"}]}),
                 ),
+                ("POST", "/ragon/v1/bindings") => (200, json!({"code": "ABC234", "chat_kind": parsed["chat_kind"], "expires_in": 3600})),
                 ("DELETE", _) => (200, json!({})),
                 _ => (404, json!({})),
             };
@@ -215,4 +216,31 @@ async fn logout_all_deletes_the_sessions_then_hands_the_logout_to_codex() {
     assert_eq!(outcome.forward, Some(vec!["logout".to_string()]), "{out}");
     assert!(stub.seen.lock().unwrap().iter().any(|r| r.starts_with("DELETE /ragon/v1/users/me/sessions ")), "all sessions, no key route");
     assert!(!stub.seen.lock().unwrap().iter().any(|r| r.contains("/keys")), "API keys are kept");
+}
+
+async fn pair(args: &[&str], stub: &Stub, home: &PathBuf) -> (i32, String) {
+    let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+    let mut input = Cursor::new(Vec::new());
+    let mut out = Vec::new();
+    let outcome = {
+        let mut io = Io { input: &mut input, out: &mut out, tty: false };
+        commands::run_pair(&args, &stub.gate, home, &mut io).await.unwrap()
+    };
+    (outcome.code, String::from_utf8(out).unwrap())
+}
+
+#[tokio::test]
+async fn pair_prints_a_code_for_the_signed_in_user_and_leaves_the_bridge_its_primary() {
+    let (stub, home) = (stub(&[]), tempdir("pair"));
+    let (code, out) = pair(&["telegram"], &stub, &home).await;
+    assert_eq!((code, out.trim()), (1, "Not signed in. Run ragon login, then ragon pair telegram."));
+    run("login", &["--username", "ann", "--password-stdin"], &stub, &home, "right\n").await;
+    let (code, out) = pair(&["telegram"], &stub, &home).await;
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("Pairing code for telegram: ABC234") && out.contains("60 minutes"), "{out}");
+    assert!(stub.seen.lock().unwrap().iter().any(|r| r.starts_with("POST /ragon/v1/bindings {\"chat_kind\":\"telegram\"} ") && r.ends_with("Bearer at")));
+    let primary: Value = serde_json::from_str(&std::fs::read_to_string(home.join("chat/primary.json")).unwrap()).unwrap();
+    assert_eq!((primary["gate"].as_str(), primary["node"].as_str()), (Some(stub.gate.as_str()), Some("box")));
+    let (code, out) = pair(&["fax"], &stub, &home).await;
+    assert_eq!(code, 2, "{out}");
 }

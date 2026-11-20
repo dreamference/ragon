@@ -93,8 +93,10 @@ fn scratch(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("ragon-chat-tg-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut config = TelegramConfig::new(TOKEN.to_string());
-    config.users = vec![111];
     config.save(&dir).unwrap();
+    let mut bindings = ragon_chat::bindings::Bindings::default();
+    bindings.bind("telegram", "111", ragon_chat::bindings::Binding { username: "ada".into(), key: "sk-ragon-test".into(), chat: "telegram:111".into() });
+    bindings.save(&dir).unwrap();
     dir
 }
 
@@ -117,12 +119,12 @@ async fn a_paired_users_message_reaches_the_hub_and_strangers_get_one_reply_a_da
     poller.handle(&private_message(111, "hello")).await;
     assert_eq!(inbound.try_recv().unwrap(), Inbound::Text { chat: "telegram:111".into(), text: "hello".into() });
     poller.handle(&private_message(222, "let me in")).await;
-    poller.handle(&private_message(222, "please")).await;
+    poller.handle(&private_message(222, "let me in please")).await;
     assert!(inbound.try_recv().is_err());
     let replies = stand.bodies("sendMessage");
     assert_eq!(replies.len(), 1);
     assert_eq!(replies[0]["chat_id"], 222);
-    assert_eq!(replies[0]["text"], ragon_chat::telegram::UNPAIRED_REPLY);
+    assert_eq!(replies[0]["text"], ragon_chat::bindings::instruction("telegram"));
 }
 
 /// A photo (its largest size) and its caption reach the hub as media; what the bridge does not
@@ -170,62 +172,6 @@ async fn groups_are_left_at_once() {
     assert_eq!(stand.bodies("leaveChat"), vec![json!({ "chat_id": -100 })]);
 }
 
-#[tokio::test]
-async fn pairing_takes_a_code_once_and_ten_wrong_codes_withdraw_the_rest() {
-    let (stand, api) = stand_in(default_answer()).await;
-    let dir = scratch("pair");
-    let (hub, _inbound) = mpsc::unbounded_channel();
-    let mut poller = Poller::new(api, dir.clone(), hub);
-    let code = store::issue_pairing_code(&dir).unwrap();
-    poller.handle(&private_message(333, &format!("/pair {code}"))).await;
-    assert_eq!(TelegramConfig::load(&dir).unwrap().users, vec![111, 333]);
-    assert!(stand.bodies("sendMessage").last().unwrap()["text"].as_str().unwrap().starts_with("Paired."));
-    // The same code again, from someone else: refused.
-    poller.handle(&private_message(444, &format!("/pair {code}"))).await;
-    assert_eq!(TelegramConfig::load(&dir).unwrap().users, vec![111, 333]);
-    // Ten wrong codes withdraw a pending good one.
-    let good = store::issue_pairing_code(&dir).unwrap();
-    for n in 0..9 {
-        poller.handle(&private_message(444, &format!("/pair {:08}", n))).await;
-    }
-    poller.handle(&private_message(444, "/pair 99999999")).await;
-    poller.handle(&private_message(444, &format!("/pair {good}"))).await;
-    assert_eq!(TelegramConfig::load(&dir).unwrap().users, vec![111, 333]);
-}
-
-/// `times` wrong codes from an account that is not paired.
-async fn wrong_codes(poller: &mut Poller, times: u32) {
-    for n in 0..times {
-        poller.handle(&private_message(777, &format!("/pair wrong{n}"))).await;
-    }
-}
-
-/// The tenth wrong code in a row withdraws every pending code, not the eleventh, and a code that
-/// binds starts the count again.
-#[tokio::test]
-async fn the_tenth_wrong_code_in_a_row_withdraws_the_codes_and_a_good_one_starts_the_count_again() {
-    let (_stand, api) = stand_in(default_answer()).await;
-    let dir = scratch("count");
-    let (hub, _inbound) = mpsc::unbounded_channel();
-    let mut poller = Poller::new(api, dir.clone(), hub);
-    let users = || TelegramConfig::load(&dir).unwrap().users;
-    // Nine wrong codes, then a good one: it binds.
-    let first = store::issue_pairing_code(&dir).unwrap();
-    wrong_codes(&mut poller, 9).await;
-    poller.handle(&private_message(444, &format!("/pair {first}"))).await;
-    assert_eq!(users(), vec![111, 444]);
-    // The count started again: one more wrong code withdraws nothing.
-    let second = store::issue_pairing_code(&dir).unwrap();
-    wrong_codes(&mut poller, 1).await;
-    poller.handle(&private_message(555, &format!("/pair {second}"))).await;
-    assert_eq!(users(), vec![111, 444, 555]);
-    // Ten wrong codes in a row: the pending code is gone.
-    let third = store::issue_pairing_code(&dir).unwrap();
-    wrong_codes(&mut poller, 10).await;
-    poller.handle(&private_message(666, &format!("/pair {third}"))).await;
-    assert_eq!(users(), vec![111, 444, 555]);
-}
-
 /// A paired account that sends a code is told so: the code is not spent on it, and the account is
 /// not listed twice.
 #[tokio::test]
@@ -234,13 +180,8 @@ async fn a_paired_account_does_not_spend_a_code() {
     let dir = scratch("repair");
     let (hub, _inbound) = mpsc::unbounded_channel();
     let mut poller = Poller::new(api, dir.clone(), hub);
-    let code = store::issue_pairing_code(&dir).unwrap();
-    poller.handle(&private_message(111, &format!("/pair {code}"))).await;
-    assert_eq!(TelegramConfig::load(&dir).unwrap().users, vec![111]);
+    poller.handle(&private_message(111, "/pair ABC234")).await;
     assert_eq!(stand.bodies("sendMessage").last().unwrap()["text"], "This Telegram account is already paired.");
-    // The code is still there for the account it was meant for.
-    poller.handle(&private_message(333, &format!("/pair {code}"))).await;
-    assert_eq!(TelegramConfig::load(&dir).unwrap().users, vec![111, 333]);
 }
 
 /// A message is judged by who sent it, not by the chat it is in.
@@ -252,7 +193,7 @@ async fn a_message_from_a_stranger_is_refused_even_in_a_paired_users_chat() {
     let update = json!({ "update_id": 12, "message": { "message_id": 13, "from": { "id": 999 }, "chat": { "id": 111, "type": "private" }, "text": "hello" } });
     poller.handle(&update).await;
     assert!(inbound.try_recv().is_err());
-    assert_eq!(stand.bodies("sendMessage")[0]["text"], ragon_chat::telegram::UNPAIRED_REPLY);
+    assert_eq!(stand.bodies("sendMessage")[0]["text"], ragon_chat::bindings::instruction("telegram"));
 }
 
 /// Creating, renaming, closing or reopening a topic is not a question: nothing reaches the hub and
@@ -679,19 +620,7 @@ async fn app_answers_with_a_web_app_button_or_how_to_set_one_up_and_is_no_questi
     assert!(inbound.try_recv().is_err());
     // A stranger gets the one unpaired reply, never the button.
     poller.handle(&private_message(999, "/app")).await;
-    assert_eq!(stand.bodies("sendMessage").pop().unwrap()["text"], ragon_chat::telegram::UNPAIRED_REPLY);
-}
-
-#[tokio::test]
-async fn a_newly_paired_user_gets_the_mini_app_button() {
-    let (stand, api) = stand_in(default_answer()).await;
-    let dir = scratch("app-pair");
-    let (hub, _inbound) = mpsc::unbounded_channel();
-    let mut poller = Poller::new(api, dir.clone(), hub);
-    poller.mini_app_url = Some(MINI_APP.to_string());
-    let code = store::issue_pairing_code(&dir).unwrap();
-    poller.handle(&private_message(333, &format!("/pair {code}"))).await;
-    assert_eq!(stand.bodies("setChatMenuButton")[0]["chat_id"], 333);
+    assert_eq!(stand.bodies("sendMessage").pop().unwrap()["text"], ragon_chat::bindings::instruction("telegram"));
 }
 
 #[tokio::test]
@@ -1268,7 +1197,7 @@ async fn repo_turns_send_no_content_to_telegram_or_discord() {
         }
     });
     tokio::spawn(ragon_chat::agent::run_link(
-        WebTarget { state: state_dir.clone(), ragon: None },
+        WebTarget { state: state_dir.clone(), ragon: None, key: None },
         commands,
         link_tx,
     ));

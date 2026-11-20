@@ -33,7 +33,7 @@ fn read_json(path: &Path) -> Value {
     std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or(Value::Null)
 }
 
-pub(crate) fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 

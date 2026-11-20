@@ -140,6 +140,7 @@ pub const HELP: &str = "Ragon, from your phone. Each conversation is an Ask thre
 /night add <task> — queue a task for Night Shift tonight, with this thread's last exchange; /night status — the queue\n\
 /push — push this chat's repository branch to the forge, after you confirm\n\
 /merge — merge its branch into the default branch, after you confirm\n\
+/whoami — the account this chat is paired to; /sessions — chats paired to it\n\
 /help — this list";
 
 /// How long a `/push` or `/merge` confirmation stays open in the chat: inside the ten minutes
@@ -392,6 +393,10 @@ enum Local {
 pub struct Hub {
     config: HubConfig,
     agent: AgentHandle,
+    /// One link to `ragon web` per bound user (their binding key), started on first use.
+    agents: std::sync::Mutex<HashMap<String, AgentHandle>>,
+    /// Starts a link that signs in with a binding key; `None` keeps every chat on `agent`.
+    factory: Option<Box<dyn Fn(&str) -> AgentHandle + Send + Sync>>,
     threads: Threads,
     adapters: HashMap<String, mpsc::UnboundedSender<Outbound>>,
     turns: HashMap<String, Turn>,
@@ -478,6 +483,8 @@ impl Hub {
         Hub {
             config,
             agent,
+            agents: std::sync::Mutex::new(HashMap::new()),
+            factory: None,
             threads,
             adapters: HashMap::new(),
             turns: HashMap::new(),
@@ -492,6 +499,31 @@ impl Hub {
             airgap,
             airgapped,
             airgap_read: Instant::now(),
+        }
+    }
+
+    /// Makes every chat with a binding reach the model as its user: `factory` opens a link that
+    /// signs in with the binding key (specs/DREAMFERENCE_AUTH.md §14.1).
+    pub fn with_user_links(mut self, factory: Box<dyn Fn(&str) -> AgentHandle + Send + Sync>) -> Hub {
+        self.factory = Some(factory);
+        self
+    }
+
+    /// The link a chat's messages go through: its user's, when the chat is bound, else the node's.
+    fn agent_for(&self, chat: &str) -> AgentHandle {
+        let Some(factory) = &self.factory else { return self.agent.clone() };
+        let bindings = crate::bindings::Bindings::load(&self.config.dir);
+        let Some(binding) = bindings.for_chat(base_of(chat)) else { return self.agent.clone() };
+        let mut agents = self.agents.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        agents.entry(binding.key.clone()).or_insert_with(|| factory(&binding.key)).clone()
+    }
+
+    /// The link of the chat that owns `thread`.
+    fn agent_for_thread(&self, thread: &str) -> AgentHandle {
+        let chat = self.threads.chats.iter().find(|(_, c)| c.current.as_deref() == Some(thread) || c.recent.iter().any(|t| t.id == thread)).map(|(key, _)| key.clone());
+        match chat {
+            Some(chat) => self.agent_for(&chat),
+            None => self.agent.clone(),
         }
     }
 
@@ -721,7 +753,47 @@ impl Hub {
             }
             "/help" | "/start" => self.notice(chat, HELP),
             "/pair" => self.notice(chat, "This chat is already paired."),
+            "/whoami" => {
+                let line = match crate::bindings::Bindings::load(&self.config.dir).for_chat(base_of(chat)) {
+                    Some(b) => crate::bindings::whoami(&b.username, &crate::bindings::node_name(&self.config.dir)),
+                    None => crate::bindings::instruction(adapter_of(chat)),
+                };
+                self.notice(chat, line);
+            }
+            "/sessions" => {
+                let rest: Vec<&str> = words.collect();
+                let line = self.sessions(chat, &rest).await;
+                self.notice(chat, line);
+            }
+            other if crate::bindings::REFUSED_COMMANDS.contains(&other) => self.notice(chat, crate::bindings::REFUSAL),
             _ => self.notice(chat, format!("Unknown command {name}. /help lists them.")),
+        }
+    }
+
+    /// `/sessions`: the chats bound to this chat's user; `/sessions revoke <n>` unbinds one.
+    async fn sessions(&mut self, chat: &str, args: &[&str]) -> String {
+        let dir = self.config.dir.clone();
+        let Some(binding) = crate::bindings::Bindings::load(&dir).for_chat(base_of(chat)).cloned() else {
+            return crate::bindings::instruction(adapter_of(chat));
+        };
+        let home = dir.parent().and_then(std::path::Path::parent).map(std::path::Path::to_path_buf).unwrap_or_default();
+        let Some(primary) = crate::bindings::Primary::load(&dir, &home) else { return "The accounts server is not known to this bridge.".to_string() };
+        let Ok(listed) = primary.sessions(&binding.key).await else { return "The accounts server did not answer; try again.".to_string() };
+        match args {
+            ["revoke", n] => {
+                let Some((id, kind, _)) = n.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).and_then(|n| listed.get(n)) else {
+                    return "No such session: /sessions lists them.".to_string();
+                };
+                match primary.revoke(&binding.key, id).await {
+                    Ok(()) => format!("Revoked the {kind} session."),
+                    Err(_) => "The accounts server refused that.".to_string(),
+                }
+            }
+            [] => {
+                let lines: Vec<String> = listed.iter().enumerate().map(|(n, (_, kind, identity))| format!("{}. {kind} {identity}", n + 1)).collect();
+                format!("Chats paired to {}:\n{}\n/sessions revoke <n> unpairs one.", binding.username, lines.join("\n"))
+            }
+            _ => "Usage: /sessions, or /sessions revoke <n>.".to_string(),
         }
     }
 
@@ -732,7 +804,7 @@ impl Hub {
             return;
         };
         self.queued.remove(&thread);
-        if let Err(err) = self.agent.request("turn/interrupt", json!({ "threadId": thread, "turnId": turn })).await {
+        if let Err(err) = self.agent_for(chat).request("turn/interrupt", json!({ "threadId": thread, "turnId": turn })).await {
             self.notice(chat, format!("Could not stop it: {err}"));
         }
     }
@@ -765,20 +837,20 @@ impl Hub {
     async fn ensure_thread(&mut self, chat: &str, first: &str) -> Result<String, String> {
         if let Some(thread) = self.current(chat) {
             if !self.subscribed.contains(&thread) {
-                self.agent.request("thread/resume", json!({ "threadId": thread })).await?;
+                self.agent_for(chat).request("thread/resume", json!({ "threadId": thread })).await?;
                 self.subscribed.insert(thread.clone());
             }
             return Ok(thread);
         }
         // `chat`: Ask with the phone block (RAGON_CHAT §16.3); `ask` from a `ragon web` without it.
-        let started = match self.agent.request("thread/start", json!({ "prompt": "chat" })).await {
-            Err(err) if err.contains("no prompt named") => self.agent.request("thread/start", json!({ "prompt": "ask" })).await?,
+        let started = match self.agent_for(chat).request("thread/start", json!({ "prompt": "chat" })).await {
+            Err(err) if err.contains("no prompt named") => self.agent_for(chat).request("thread/start", json!({ "prompt": "ask" })).await?,
             other => other?,
         };
         let thread = started.pointer("/thread/id").and_then(Value::as_str).ok_or("thread/start named no thread")?.to_string();
         self.subscribed.insert(thread.clone());
         let name = thread_name(first);
-        let _ = self.agent.request("thread/name/set", json!({ "threadId": thread, "name": name })).await;
+        let _ = self.agent_for(chat).request("thread/name/set", json!({ "threadId": thread, "name": name })).await;
         if topic_of(chat).is_some() {
             self.send(Outbound::ThreadNamed { chat: chat.to_string(), name: name.clone() });
         }
@@ -791,7 +863,7 @@ impl Hub {
     /// strictest as `ragon web` resolves them. `None` when `ragon web` gave no answer naming this
     /// thread, as an older one gives only the user's level.
     async fn thread_sealed(&mut self, thread: &str) -> Option<bool> {
-        let answer = self.agent.web(&format!("/api/airgapped?thread={thread}"), None).await.ok()?;
+        let answer = self.agent_for_thread(thread).web(&format!("/api/airgapped?thread={thread}"), None).await.ok()?;
         if answer.get("thread").and_then(Value::as_str) != Some(thread) {
             return None;
         }
@@ -853,7 +925,7 @@ impl Hub {
         let (recordings, files): (Vec<Media>, Vec<Media>) = files.into_iter().partition(Media::is_audio);
         let mut text = text.trim().to_string();
         for recording in recordings {
-            match self.agent.transcribe(&recording.mime, recording.bytes).await {
+            match self.agent_for(chat).transcribe(&recording.mime, recording.bytes).await {
                 Ok(heard) => {
                     self.notice(chat, attachments::heard_notice(&heard));
                     if !text.is_empty() {
@@ -886,7 +958,7 @@ impl Hub {
         let mut uploads = Vec::new();
         for file in files {
             let image = file.is_image();
-            let saved = self.agent.upload(&thread, &file.name, image, file.bytes).await;
+            let saved = self.agent_for(chat).upload(&thread, &file.name, image, file.bytes).await;
             match &saved {
                 Ok(saved) => {
                     let name = std::path::Path::new(&saved.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -940,7 +1012,7 @@ impl Hub {
             },
         );
         self.send(Outbound::Draft { chat: chat.to_string(), text: String::new() });
-        match self.agent.request("turn/start", json!({ "threadId": thread, "input": input })).await {
+        match self.agent_for(chat).request("turn/start", json!({ "threadId": thread, "input": input })).await {
             Ok(result) => {
                 if let (Some(turn), Some(id)) = (self.turns.get_mut(thread), result.pointer("/turn/id").and_then(Value::as_str)) {
                     turn.id.get_or_insert_with(|| id.to_string());
@@ -1086,7 +1158,7 @@ impl Hub {
         if self.airgapped {
             return;
         }
-        let Ok(files) = self.agent.made_files(thread, since_ms.saturating_sub(1_000)).await else { return };
+        let Ok(files) = self.agent_for(chat).made_files(thread, since_ms.saturating_sub(1_000)).await else { return };
         let uploaded = self.uploaded.get(thread).cloned().unwrap_or_default();
         let limit = file_limit(adapter_of(chat));
         let mut offered = 0;
@@ -1128,7 +1200,7 @@ impl Hub {
         match verb {
             "add" if !task.is_empty() => self.night_add(chat, task).await,
             "status" | "list" => {
-                let answer = match self.agent.web("/api/night/status", None).await {
+                let answer = match self.agent_for(chat).web("/api/night/status", None).await {
                     Ok(value) => night_status_text(&value),
                     Err(err) => format!("Night Shift's queue could not be read: {err}"),
                 };
@@ -1141,7 +1213,7 @@ impl Hub {
     /// Asks which repository and confirms before anything is queued: the bridge's own question,
     /// answered by a press or a reply. The task carries the thread's last exchange.
     async fn night_add(&mut self, chat: &str, task: &str) {
-        let repos = match self.agent.web("/api/night/repos", None).await {
+        let repos = match self.agent_for(chat).web("/api/night/repos", None).await {
             Ok(value) => value.get("repos").and_then(Value::as_array).cloned().unwrap_or_default(),
             Err(err) => {
                 self.notice(chat, format!("Night Shift's repositories could not be read: {err}"));
@@ -1157,7 +1229,7 @@ impl Hub {
             self.notice(chat, NO_NIGHT_REPOS);
             return;
         }
-        let task = with_context(task, last_exchange(self.agent.clone(), self.current(chat)).await.as_ref());
+        let task = with_context(task, last_exchange(self.agent_for(chat).clone(), self.current(chat)).await.as_ref());
         let preview = cut(&task, 400);
         let (text, options, replies) = if repos.len() == 1 {
             let (path, name) = &repos[0];
@@ -1217,7 +1289,7 @@ impl Hub {
     /// Queues a confirmed task through `ragon web` and says what Night Shift said.
     fn night_queue(&self, chat: &str, repo: &str, task: &str) {
         let Some(adapter) = self.adapters.get(adapter_of(chat)).cloned() else { return };
-        let (agent, chat, body) = (self.agent.clone(), chat.to_string(), json!({ "repo": repo, "task": task }));
+        let (agent, chat, body) = (self.agent_for(chat).clone(), chat.to_string(), json!({ "repo": repo, "task": task }));
         tokio::spawn(async move {
             let text = match agent.web("/api/night/add", Some(body)).await {
                 Ok(value) => {
@@ -1412,7 +1484,7 @@ impl Hub {
         {
             path.push_str(&format!("&repo={}", query_escape(&repo.to_string())));
         }
-        let checkout = self.agent.web(&path, None).await.ok().and_then(|v| v.get("checkout").cloned()).unwrap_or(Value::Null);
+        let checkout = self.agent_for(chat).web(&path, None).await.ok().and_then(|v| v.get("checkout").cloned()).unwrap_or(Value::Null);
         let (Some(thread), Some(repo), Some(branch), Some(base)) = (
             checkout.get("thread").and_then(Value::as_str).filter(|t| valid_thread(t)),
             checkout.get("repo").and_then(Value::as_str).and_then(RepoName::parse),
@@ -1424,7 +1496,7 @@ impl Hub {
         };
         let notified = checkout.get("notified").and_then(Value::as_bool) == Some(true);
         let intent = if action == RefusedAction::Merge { "merge" } else { "push" };
-        let state = self.agent.web(&format!("/api/repos/state?thread={}&intent={intent}", query_escape(thread)), None).await;
+        let state = self.agent_for(chat).web(&format!("/api/repos/state?thread={}&intent={intent}", query_escape(thread)), None).await;
         let state = state.unwrap_or(Value::Null);
         let confirm = state
             .get("confirm")
@@ -1472,7 +1544,7 @@ impl Hub {
         let Some(adapter) = self.adapters.get(adapter_of(chat)).cloned() else { return };
         let path = if action == RefusedAction::Merge { "/api/repos/merge" } else { "/api/repos/push" };
         let body = json!({ "thread": thread, "confirm": confirm });
-        let (agent, chat, repo) = (self.agent.clone(), chat.to_string(), repo.clone());
+        let (agent, chat, repo) = (self.agent_for(chat).clone(), chat.to_string(), repo.clone());
         let command = if action == RefusedAction::Merge { "/merge" } else { "/push" };
         tokio::spawn(async move {
             let text = match agent.web(path, Some(body)).await {
@@ -1599,7 +1671,7 @@ impl Hub {
     /// loop (a large file must not hold the conversation up).
     fn send_file(&self, chat: &str, thread: &str, name: &str) {
         let Some(adapter) = self.adapters.get(adapter_of(chat)).cloned() else { return };
-        let (agent, chat, thread, name) = (self.agent.clone(), chat.to_string(), thread.to_string(), name.to_string());
+        let (agent, chat, thread, name) = (self.agent_for(chat).clone(), chat.to_string(), thread.to_string(), name.to_string());
         tokio::spawn(async move {
             match agent.made_file(&thread, &name).await {
                 Ok(bytes) => {
@@ -1634,7 +1706,7 @@ impl Hub {
             }
         }
         for (chat, thread, turn_id, steer, notice) in actions {
-            let agent = self.agent.clone();
+            let agent = self.agent_for(&chat);
             match steer {
                 Some(text) => {
                     tokio::spawn(async move {
@@ -1730,7 +1802,7 @@ impl Hub {
                 let questions = params.get("questions").and_then(Value::as_array).cloned().unwrap_or_default();
                 let secret = questions.iter().any(|q| q.get("isSecret") == Some(&Value::Bool(true)));
                 if questions.len() != 1 || secret {
-                    self.agent.respond(id, json!({ "answers": {} }));
+                    self.agent_for(&chat).respond(id, json!({ "answers": {} }));
                     self.notice(
                         &chat,
                         if secret {
@@ -1844,7 +1916,7 @@ impl Hub {
             return;
         }
         let payload = Self::payload(&pending, &reply);
-        self.agent.respond(pending.request.clone(), payload);
+        self.agent_for(&pending.chat).respond(pending.request.clone(), payload);
         let outcome = match &reply {
             Reply::Approve => "Approved.".to_string(),
             Reply::Decline => "Declined.".to_string(),
@@ -1944,7 +2016,7 @@ impl Hub {
                     self.close(pending.chat, approval, outcome);
                     continue;
                 }
-                self.agent.respond(pending.request.clone(), Self::payload(&pending, &Reply::Decline));
+                self.agent_for(&pending.chat).respond(pending.request.clone(), Self::payload(&pending, &Reply::Decline));
                 self.close(pending.chat, approval, "Declined: no answer in time.");
             }
         }

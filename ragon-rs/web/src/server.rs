@@ -511,7 +511,9 @@ async fn guard(State(server): State<Arc<Server>>, request: Request, next: Next) 
     let path = request.uri().path();
     // A signed-in user's JWT opens the socket and the voice upload as a Bearer (AUTH §5.9, §14.4),
     // beside the cookies; it is checked with the accounts service.
-    if matches!(path, "/ws" | "/api/transcribe")
+    // A phone bridge's binding key is a Bearer too (§14.1): the socket, uploads and the files an
+    // Ask thread made.
+    if matches!(path, "/ws" | "/api/transcribe" | "/api/upload" | "/api/ask/files" | "/api/ask/file")
         && !server.authenticated(path, headers)
         && let Some(token) = crate::web_login::bearer(header_str(headers, header::AUTHORIZATION))
         && !same_owner_token(&server, token)

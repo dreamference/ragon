@@ -9,6 +9,7 @@
 
 pub mod agent;
 pub mod attachments;
+pub mod bindings;
 pub mod blocks;
 pub mod cli;
 pub mod discord;
