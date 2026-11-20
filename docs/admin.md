@@ -585,6 +585,23 @@ Import an export.
 |---|---|
 | `file` |  |
 
+#### `ragon-admin node primary`
+
+Show, pin (<node id>) or take (--self) the authentication primary.
+
+| Option | Description |
+|---|---|
+| `primary_id` | The primary's node id. |
+| `--self` |  |
+
+#### `ragon-admin node migrate`
+
+0.9.9 upgrade on the primary: take the role, register the service accounts.
+
+| Option | Description |
+|---|---|
+| `--secondary` | A secondary's node id (repeat); advertised nodes are used when none is named. |
+
 #### `ragon-admin node enable`
 
 Advertise the node and publish the web UI and web search to the local network.
