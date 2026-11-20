@@ -2200,6 +2200,7 @@ def test_against_sets_the_two_arms_side_by_side(bench):
     assert lines["ragon-code calls"].split()[-2:] == ["3", "0"]
     assert lines["instances using"].split()[-2:] == ["3", "0"]
     assert lines["input tokens"].split()[-2:] == ["3,000", "3,000"]
+
     # Per task, for the digest's arms (off, digest, hide-old): steps and the agent model's tokens.
     def cells(label):
         return next(line for line in text.splitlines() if line.startswith(label)).split()[-2:]
