@@ -71,6 +71,7 @@ from dreamference.swe_bench.swe_bench_runner import (
     APPLY_PATCH_ENV,
     BUILT_IN_PROMPTS,
     COMPAT_ENV,
+    DIGEST_INSIDE_ENV,
     DROP_OLD_OUTPUTS_ENV,
     EXEC_TOOL_ENV,
     FINISH_CHECK_ENV,
@@ -5411,6 +5412,42 @@ def test_the_exec_tool_arm_is_kept_on_resume_told_apart_by_against_and_parsed(be
     for form in ("off", "auto", "custom"):
         with pytest.raises(SystemExit):
             parser.parse_args(["swe-bench", "run", "--exec-tool", form, "--name", "z"])
+
+
+# -- the digest arm (`--digest-inside`, Ragon Digest inside Ragon) ---------------------------------
+
+
+def test_the_digest_arm_sets_the_launchers_switch_only_when_asked(bench, monkeypatch):
+    monkeypatch.delenv(DIGEST_INSIDE_ENV, raising=False)
+    assert run(bench, name="digest", instances=["acme__widget-1"], digest_inside=True) == 0
+    env, _ = container_env(bench)
+    assert env[DIGEST_INSIDE_ENV] == "1"
+    assert SweBenchRunStore("digest").manifest()["digest_inside"] is True
+    bench["docker"].calls.clear()
+    assert run(bench, name="plain", instances=["acme__widget-1"]) == 0
+    env, _ = container_env(bench)
+    assert DIGEST_INSIDE_ENV not in env
+    assert SweBenchRunStore("plain").manifest()["digest_inside"] is False
+
+
+def test_the_digest_flag_reaches_the_runner(monkeypatch):
+    import argparse
+
+    seen = {}
+    monkeypatch.setattr(
+        SweBenchRunner, "run", classmethod(lambda cls, **kwargs: seen.update(kwargs) or 0)
+    )
+    parser = argparse.ArgumentParser()
+    SweBenchCommand.add_parser(parser.add_subparsers(dest="command"))
+    assert (
+        SweBenchCommand.dispatch(
+            parser.parse_args(["swe-bench", "run", "--digest-inside", "--name", "x"])
+        )
+        == 0
+    )
+    assert seen["digest_inside"] is True
+    assert SweBenchCommand.dispatch(parser.parse_args(["swe-bench", "run", "--name", "y"])) == 0
+    assert seen["digest_inside"] is False
 
 
 # -- the drop-first compaction arm (`--drop-old-outputs`, compaction spec §13) ---------------------

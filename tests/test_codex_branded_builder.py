@@ -323,7 +323,9 @@ def test_the_patches_stay_small():
     # Raised to 82,000 for 0039 (account slash commands and the Account status item, 5,333 bytes); 81,298 after.
     # Raised to 115,500 for 0042 (the account/ragon/signIn request and its handler, 33,677 bytes,
     # 25,000 of them the regenerated app-server schema; the binary .zst exports stay out); 114,975 after.
-    assert sum(Path(p).stat().st_size for p in CodexBrandedBuilder.patches()) < 115_500
+    # Raised to 116,500 for 0043 (Ragon Digest inside Ragon, 1,071 bytes: one call on each command
+    # output into the leaf crate ragon-rs/digest, off unless the launcher switches it on); 116,046 after.
+    assert sum(Path(p).stat().st_size for p in CodexBrandedBuilder.patches()) < 116_500
 
 
 def test_airgapped_treats_every_profile_without_a_sandbox_like_full_access():

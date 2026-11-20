@@ -473,6 +473,19 @@ def test_the_drop_outputs_arm_reaches_only_its_round_and_stacks(tmp_path):
     assert "--drop-old-outputs --exec-tool function" in runs(recorded)[1]
 
 
+def test_the_digest_arm_reaches_only_its_round(tmp_path):
+    status, recorded, folder = night(tmp_path, "default digest-inside")
+    assert status == 0 and (folder / "done").exists()
+    record, candidate = runs(recorded)
+    assert "--digest-inside" not in record
+    assert "--name n4-digest-inside " in candidate and candidate.count("--digest-inside") == 1
+    assert "--task-rules" not in candidate
+    misspelt = tmp_path / "misspelt"
+    misspelt.mkdir()
+    status, recorded, _ = night(misspelt, "default digest")
+    assert status == 2 and runs(recorded) == []
+
+
 @pytest.mark.parametrize(
     "arm", ["drop-output", "drop_outputs", "drop-outputs-on", "drop-old-outputs"]
 )
