@@ -1518,7 +1518,9 @@ class SweBenchReport:
             # model the digest asks is not in them): steps are its commands and tool calls.
             "steps per task": f"{sum(s.get('commands', 0) for s in stats) / len(both):,.1f}",
             "tokens in per task": f"{sum(s.get('input_tokens', 0) for s in stats) / len(both):,.0f}",
-            "uncached in per task": f"{sum(s.get('input_tokens', 0) - s.get('cached_input_tokens', 0) for s in stats) / len(both):,.0f}",
+            "uncached in per task": (
+                f"{sum(s.get('input_tokens', 0) - s.get('cached_input_tokens', 0) for s in stats) / len(both):,.0f}"
+            ),
             "tokens out per task": f"{sum(s.get('output_tokens', 0) for s in stats) / len(both):,.0f}",
             "ragon-code calls": sum(s.get("ragon_code_calls", 0) for s in stats),
             "instances using it": sum(1 for s in stats if s.get("ragon_code_calls")),
