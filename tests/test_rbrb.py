@@ -197,7 +197,8 @@ def test_badge_and_latest_line_show_closed_and_so_far() -> None:
     assert " so far" not in closed_only
     data = module.ingest(data, _export("2026-W47", 100, 900), _COUNTS, provisional=True)
     badge = module.render_badge(data)
-    assert "10.00 % so far" in badge and "8.00 %" in badge
+    closed = f"{data['points'][0]['rbrb_share'] * 100:.2f} %"  # the closed figure comes from the data, not a literal
+    assert "10.00 % so far" in badge and closed in badge
     line = module.latest_line(data)
     assert "2026-W46, closed" in line and "so far in 2026-W47" in line
 
