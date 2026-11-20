@@ -308,9 +308,18 @@ pub struct Syncer {
     pub dir: PathBuf,
     pub hub: mpsc::UnboundedSender<Inbound>,
     posted: Posted,
+    /// Whether the node has accounts: then a sender also needs a binding (`ragon pair matrix`).
+    accounts: bool,
 }
 
 impl Syncer {
+    /// Sets whether the node has accounts (default: yes).
+    #[must_use]
+    pub fn with_accounts(mut self, accounts: bool) -> Syncer {
+        self.accounts = accounts;
+        self
+    }
+
     async fn ensure_rooms(&self, config: &MatrixConfig, state: &mut MatrixState) {
         let mut changed = false;
         for user in &config.allowed {
@@ -418,39 +427,42 @@ impl Syncer {
                 if sender == config.user_id || !config.allowed.iter().any(|user| user == sender) {
                     continue;
                 }
-                let mut bindings = crate::bindings::Bindings::load(&self.dir);
-                let bound = bindings.get("matrix", sender).cloned();
-                if let Some(binding) = &bound
-                    && binding.chat != chat_key(room)
-                {
-                    // The user's direct room changed: their binding follows it.
-                    let moved = crate::bindings::Binding { chat: chat_key(room), ..binding.clone() };
-                    bindings.bind("matrix", sender, moved);
-                    let _ = bindings.save(&self.dir);
-                }
-                if bound.is_none() {
-                    if event.get("type").and_then(Value::as_str) == Some("m.room.message") {
-                        let body = event.pointer("/content/body").and_then(Value::as_str).unwrap_or_default();
-                        let text = without_reply_fallback(body);
-                        let text = text.trim();
-                        let code = text.strip_prefix("/pair").map_or(text, str::trim);
-                        let reply = if crate::bindings::looks_like_code(code) {
-                            let home = crate::bindings::home_of(&self.dir);
-                            match crate::bindings::pair(&self.dir, &home, "matrix", code, sender, &chat_key(room)).await {
-                                Ok((_, line)) => Some(format!("{line}. Send a message to start.")),
-                                Err(crate::bindings::Refused::Invalid) => Some(crate::bindings::instruction("matrix")),
-                                Err(crate::bindings::Refused::Unreachable) => Some("I could not reach the accounts server to check that code; try again in a moment.".to_string()),
-                            }
-                        } else if crate::bindings::hint_due(&self.dir, &chat_key(room), crate::store::now_secs()) {
-                            Some(crate::bindings::instruction("matrix"))
-                        } else {
-                            None
-                        };
-                        if let Some(body) = reply {
-                            let _ = self.api.send(room, json!({ "msgtype": "m.notice", "body": body })).await;
-                        }
+                // Without accounts the `allowed` list alone admits a sender, as in 0.9.7.
+                if self.accounts {
+                    let mut bindings = crate::bindings::Bindings::load(&self.dir);
+                    let bound = bindings.get("matrix", sender).cloned();
+                    if let Some(binding) = &bound
+                        && binding.chat != chat_key(room)
+                    {
+                        // The user's direct room changed: their binding follows it.
+                        let moved = crate::bindings::Binding { chat: chat_key(room), ..binding.clone() };
+                        bindings.bind("matrix", sender, moved);
+                        let _ = bindings.save(&self.dir);
                     }
-                    continue;
+                    if bound.is_none() {
+                        if event.get("type").and_then(Value::as_str) == Some("m.room.message") {
+                            let body = event.pointer("/content/body").and_then(Value::as_str).unwrap_or_default();
+                            let text = without_reply_fallback(body);
+                            let text = text.trim();
+                            let code = text.strip_prefix("/pair").map_or(text, str::trim);
+                            let reply = if crate::bindings::looks_like_code(code) {
+                                let home = crate::bindings::home_of(&self.dir);
+                                match crate::bindings::pair(&self.dir, &home, "matrix", code, sender, &chat_key(room)).await {
+                                    Ok((_, line)) => Some(format!("{line}. Send a message to start.")),
+                                    Err(crate::bindings::Refused::Invalid) => Some(crate::bindings::instruction("matrix")),
+                                    Err(crate::bindings::Refused::Unreachable) => Some("I could not reach the accounts server to check that code; try again in a moment.".to_string()),
+                                }
+                            } else if crate::bindings::hint_due(&self.dir, &chat_key(room), crate::store::now_secs()) {
+                                Some(crate::bindings::instruction("matrix"))
+                            } else {
+                                None
+                            };
+                            if let Some(body) = reply {
+                                let _ = self.api.send(room, json!({ "msgtype": "m.notice", "body": body })).await;
+                            }
+                        }
+                        continue;
+                    }
                 }
                 match event.get("type").and_then(Value::as_str) {
                     Some("m.room.message") => {
@@ -587,6 +599,7 @@ pub async fn start(
     dir: PathBuf,
     hub: mpsc::UnboundedSender<Inbound>,
     outbound: mpsc::UnboundedReceiver<Outbound>,
+    accounts: bool,
 ) -> Result<(), MatrixError> {
     let ca = (!config.ca_file.is_empty()).then(|| Path::new(&config.ca_file));
     let api = MatrixApi::trusted(&config.homeserver, &config.access_token, ca)?;
@@ -594,7 +607,7 @@ pub async fn start(
     let posted: Posted = Arc::default();
     let renderer = Renderer { api: api.clone(), user_id: config.user_id.clone(), posted: posted.clone(), typing: Mutex::default() };
     tokio::spawn(renderer.run(outbound));
-    tokio::spawn(Syncer { api, dir, hub, posted }.run());
+    tokio::spawn(Syncer { api, dir, hub, posted, accounts }.run());
     Ok(())
 }
 
@@ -602,7 +615,7 @@ pub async fn start(
 pub fn pair_for_tests(api: MatrixApi, dir: PathBuf, user_id: &str, hub: mpsc::UnboundedSender<Inbound>) -> (Syncer, Renderer) {
     let posted: Posted = Arc::default();
     let renderer = Renderer { api: api.clone(), user_id: user_id.to_string(), posted: posted.clone(), typing: Mutex::default() };
-    (Syncer { api, dir, hub, posted }, renderer)
+    (Syncer { api, dir, hub, posted, accounts: true }, renderer)
 }
 
 #[cfg(test)]

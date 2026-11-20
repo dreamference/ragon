@@ -348,3 +348,24 @@ async fn a_file_is_uploaded_and_sent_as_a_file_message() {
     assert_eq!(sent[0].1, json!({ "msgtype": "m.file", "body": "report.md", "filename": "report.md", "url": "mxc://node.tail.ts.net/up1", "info": { "size": 3 } }));
 }
 
+
+/// Without accounts the `allowed` list alone admits a sender, as in 0.9.7; with accounts an
+/// allowed sender also needs a binding.
+#[tokio::test]
+async fn without_accounts_the_allowed_list_alone_admits_a_sender() {
+    const BOB: &str = "@bob:node.tail.ts.net";
+    let (stand, root) = stand_in().await;
+    let (dir, _) = setup("legacy", &root);
+    let config = json!({ "homeserver": root, "server_name": "node.tail.ts.net", "user_id": BOT, "access_token": "bot-token", "allowed": [OWNER, BOB] });
+    write_private(&MatrixConfig::path(&dir), &config.to_string()).unwrap();
+    let config = MatrixConfig::load(&dir).unwrap();
+    let (hub, mut inbound) = mpsc::unbounded_channel();
+    let (syncer, _) = ragon_chat::matrix::pair_for_tests(MatrixApi::new(&root, "bot-token"), dir.clone(), BOT, hub.clone());
+    syncer.handle(&config, &message("!bob:x", BOB, "with accounts"), false).await;
+    assert!(inbound.try_recv().is_err());
+    let (syncer, _) = ragon_chat::matrix::pair_for_tests(MatrixApi::new(&root, "bot-token"), dir, BOT, hub);
+    let syncer = syncer.with_accounts(false);
+    syncer.handle(&config, &message("!bob:x", BOB, "without accounts"), false).await;
+    assert_eq!(inbound.try_recv().unwrap(), Inbound::Text { chat: "matrix:!bob:x".into(), text: "without accounts".into() });
+    let _ = stand;
+}

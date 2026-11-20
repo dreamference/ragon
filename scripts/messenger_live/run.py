@@ -55,6 +55,8 @@ AFTER_MERGE_COMMAND = "after-merge"
 MARKER_KEPT = "kept"
 # The `source` of installed_build() when the latest release is installed and tested.
 SOURCE_RELEASE: Final = "release"
+# The build given with `run --ragon PATH`.
+SOURCE_GIVEN: Final = "given"
 
 
 def _say(text: str) -> None:
@@ -168,7 +170,7 @@ def tested_build(cache: Path) -> dict[str, str]:
 def installed_build(source: str) -> dict[str, str]:
     """What the run tests: the version of `bridge.RAGON`, where it came from, its build key if any."""
     build = {"source": source}
-    if source != SOURCE_RELEASE:
+    if source not in (SOURCE_RELEASE, SOURCE_GIVEN):
         build["build-key"] = gate.installed_stamp() or "none"
     try:
         version = subprocess.run(
@@ -295,13 +297,28 @@ def notify(run: report.Run, md: Path) -> None:
     subprocess.run([str(NOTIFY), text], check=False, timeout=60)
 
 
+def given_build(ragon: Path) -> dict[str, str]:
+    """Points the bridge at a build given on the command line (a local build in a scratch prefix)."""
+    bridge.RAGON = ragon.resolve()
+    return installed_build(SOURCE_GIVEN)
+
+
 def run_suite(
-    only: str | None, take_over: bool, queue_night: bool, send_notice: bool, debug: bool
+    only: str | None,
+    take_over: bool,
+    queue_night: bool,
+    send_notice: bool,
+    debug: bool,
+    ragon: Path | None = None,
 ) -> int:
-    """Runs the chosen messengers' checks and writes the reports."""
+    """Runs the chosen messengers' checks and writes the reports.
+
+    With `ragon`, that binary is tested and the release marker is left as it is: a local build
+    says nothing about a release.
+    """
     cache = paths.private_dir(paths.cache_dir())
     reports = paths.private_dir(cache / "reports")
-    run = report.Run(build=tested_build(cache))
+    run = report.Run(build=given_build(ragon) if ragon else tested_build(cache))
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(run.started))
     if only in (None, "telegram"):
         run_telegram(
@@ -318,7 +335,7 @@ def run_suite(
     _say(f"Reports: {json_path} {md_path}")
     code = run.exit_code()
     failed = [f"{r.messenger}: {r.check}" for r in run.alerts()]
-    marker = gate.update_marker(code, md_path, failed, run.build)
+    marker = MARKER_KEPT if ragon else gate.update_marker(code, md_path, failed, run.build)
     if marker != MARKER_KEPT:
         _say(f"Release marker {gate.marker_path()}: {marker}")
     if send_notice and code != 0:
@@ -362,6 +379,11 @@ def main() -> int:
         action="store_true",
         help="keep the bridge's Note to Self messages the harness saw",
     )
+    go.add_argument(
+        "--ragon",
+        type=Path,
+        help="test this ragon binary instead of the latest release; the release marker is left alone",
+    )
     sub.add_parser(
         INSTALL_TIMER, help="install the nightly user timer (18:00 UTC) and the after-merge one"
     )
@@ -378,7 +400,9 @@ def main() -> int:
         return link_telegram(args.qr, args.minutes, args.password_at_terminal)
     if args.command == LINK_SIGNAL:
         return link_signal(args.qr, args.minutes)
-    return run_suite(args.only, args.take_over, args.signal_night_queue, args.notify, args.debug)
+    return run_suite(
+        args.only, args.take_over, args.signal_night_queue, args.notify, args.debug, args.ragon
+    )
 
 
 if __name__ == "__main__":

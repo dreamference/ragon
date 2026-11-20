@@ -27,7 +27,7 @@ async fn stop_disables_the_unit_so_it_stays_off_until_start() {
     std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).unwrap();
     // SAFETY: this binary has this one test and sets PATH before anything else runs.
     unsafe { std::env::set_var("PATH", &bin) };
-    let environment = Environment { codex_home: scratch.0.join("codex-home"), home: scratch.0.join("home"), ragon: scratch.0.join("bin/ragon") };
+    let environment = Environment { codex_home: scratch.0.join("codex-home"), home: scratch.0.join("home"), ragon: scratch.0.join("bin/ragon"), accounts: None };
     let asked = || std::fs::read_to_string(&log).unwrap_or_default();
 
     assert_eq!(run_cli(&["stop".to_string()], environment.clone()).await, 0);

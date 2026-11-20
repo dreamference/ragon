@@ -1692,3 +1692,54 @@ async fn repo_turns_send_no_content_to_telegram_or_discord() {
 }
 
 
+
+/// A node without accounts keeps 0.9.7's pairing: the `users` list admits, a binding alone does
+/// not, and a code from `ragon chat telegram pair` pairs once.
+fn legacy_scratch(tag: &str) -> std::path::PathBuf {
+    let dir = scratch(tag);
+    let mut config = TelegramConfig::load(&dir).unwrap();
+    config.users = vec![222];
+    config.save(&dir).unwrap();
+    dir
+}
+
+#[tokio::test]
+async fn without_accounts_the_users_list_admits_and_strangers_get_the_owner_hint_once() {
+    let (stand, api) = stand_in(default_answer()).await;
+    let dir = legacy_scratch("legacy-admit");
+    let (hub, mut inbound) = mpsc::unbounded_channel();
+    let mut poller = Poller::new(api, dir, hub).with_accounts(false);
+    poller.handle(&private_message(222, "hello")).await;
+    assert_eq!(inbound.try_recv().unwrap(), Inbound::Text { chat: "telegram:222".into(), text: "hello".into() });
+    // 111 has a binding but is not on the list: a stranger here.
+    poller.handle(&private_message(111, "hi")).await;
+    poller.handle(&private_message(111, "hi again")).await;
+    assert!(inbound.try_recv().is_err());
+    let replies = stand.bodies("sendMessage");
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0]["text"], ragon_chat::telegram::LEGACY_UNPAIRED_REPLY);
+}
+
+#[tokio::test]
+async fn without_accounts_a_local_code_pairs_once_and_ten_wrong_codes_withdraw_the_rest() {
+    let (stand, api) = stand_in(default_answer()).await;
+    let dir = legacy_scratch("legacy-pair");
+    let (hub, mut inbound) = mpsc::unbounded_channel();
+    let mut poller = Poller::new(api, dir.clone(), hub).with_accounts(false);
+    let code = store::issue_pairing_code(&dir).unwrap();
+    poller.handle(&private_message(333, &format!("/pair {code}"))).await;
+    assert_eq!(TelegramConfig::load(&dir).unwrap().users, vec![222, 333]);
+    assert!(stand.bodies("sendMessage").last().unwrap()["text"].as_str().unwrap().starts_with("Paired."));
+    poller.handle(&private_message(333, "hello")).await;
+    assert_eq!(inbound.try_recv().unwrap(), Inbound::Text { chat: "telegram:333".into(), text: "hello".into() });
+    // The same code again, from someone else: refused.
+    poller.handle(&private_message(444, &format!("/pair {code}"))).await;
+    assert_eq!(TelegramConfig::load(&dir).unwrap().users, vec![222, 333]);
+    // Ten wrong codes withdraw a pending good one.
+    let good = store::issue_pairing_code(&dir).unwrap();
+    for n in 0..10 {
+        poller.handle(&private_message(444, &format!("/pair {n:08}"))).await;
+    }
+    poller.handle(&private_message(444, &format!("/pair {good}"))).await;
+    assert_eq!(TelegramConfig::load(&dir).unwrap().users, vec![222, 333]);
+}

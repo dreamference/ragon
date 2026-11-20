@@ -114,7 +114,35 @@ pub async fn run_cli(args: &[String]) -> i32 {
             return 1;
         }
     };
-    ragon_chat::run_cli(args, ragon_chat::Environment { codex_home, home, ragon }).await
+    let accounts = node_accounts(args).await;
+    ragon_chat::run_cli(args, ragon_chat::Environment { codex_home, home, ragon, accounts }).await
+}
+
+/// Seconds `serve` keeps asking a gate that does not answer: the bridge's unit may start before it.
+const SERVE_ASK_FOR_S: u64 = 30;
+
+/// What the node's gate says of accounts (`auth::gate_accounts`), for the subcommands that depend
+/// on it: `serve` and the local `pair` codes. `None` when it never answered; the bridge then goes
+/// by its folder and changes nothing in it.
+async fn node_accounts(args: &[String]) -> Option<bool> {
+    let serve = args.first().map(String::as_str) == Some("serve");
+    let pair = matches!(args.first().map(String::as_str), Some("telegram" | "discord")) && args.get(1).map(String::as_str) == Some("pair");
+    if !serve && !pair {
+        return None;
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(if serve { SERVE_ASK_FOR_S } else { 0 });
+    loop {
+        let host = tokio::time::timeout(std::time::Duration::from_secs(15), crate::node::resolve_host(false)).await;
+        if let Ok(Ok(host)) = host
+            && let Some(answer) = crate::auth::gate_accounts(&host).await
+        {
+            return Some(answer);
+        }
+        if std::time::Instant::now() >= until {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
 }
 
 #[cfg(test)]

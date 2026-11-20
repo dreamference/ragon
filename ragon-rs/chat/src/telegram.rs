@@ -40,6 +40,15 @@ const POLL_TIMEOUT_S: u64 = 50;
 /// Wrong pairing codes tolerated before every pending code is withdrawn.
 const PAIRING_ATTEMPTS: u32 = 10;
 pub const UNPAIRED_REPLY: &str = "This Telegram chat is not paired to a Ragon account. Run `ragon pair telegram` where you are signed in, then send me the code.";
+/// On a node without accounts (0.9.7's pairing), at most once a day per user.
+const LEGACY_UNPAIRED_REPLY_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+pub const LEGACY_UNPAIRED_REPLY: &str = "This is a private Ragon. Ask its owner to pair you.";
+
+/// The Telegram users that may talk to the bot: the bound users on a node with accounts, the
+/// `users` list of telegram.json on a node without (0.9.7's pairing).
+fn paired_users(dir: &std::path::Path, accounts: bool) -> Vec<i64> {
+    if accounts { bound_users(dir) } else { TelegramConfig::load(dir).map(|config| config.users).unwrap_or_default() }
+}
 
 /// The Telegram user ids with a binding.
 fn bound_users(dir: &std::path::Path) -> Vec<i64> {
@@ -325,6 +334,10 @@ pub struct Poller {
     /// The Mini App's address (`[chat] telegram_mini_app_url`), when set.
     pub mini_app_url: Option<String>,
     wrong_codes: u32,
+    /// Whether the node has accounts: then a chat pairs to a signed-in user through `ragon pair`;
+    /// without, through `ragon chat telegram pair`'s local code as in 0.9.7.
+    accounts: bool,
+    unpaired_replied: HashMap<i64, Instant>,
 }
 
 /// A new topic's name until the thread's first message names it.
@@ -332,7 +345,14 @@ pub const NEW_TOPIC_NAME: &str = "New thread";
 
 impl Poller {
     pub fn new(api: TelegramApi, dir: PathBuf, hub: mpsc::UnboundedSender<Inbound>) -> Poller {
-        Poller { api, dir, hub, topics: false, mini_app_url: None, wrong_codes: 0 }
+        Poller { api, dir, hub, topics: false, mini_app_url: None, wrong_codes: 0, accounts: true, unpaired_replied: HashMap::new() }
+    }
+
+    /// Sets whether the node has accounts (default: yes).
+    #[must_use]
+    pub fn with_accounts(mut self, accounts: bool) -> Poller {
+        self.accounts = accounts;
+        self
     }
 
     /// Opens a fresh topic in `chat_id` and remembers it as the chat's last used topic.
@@ -417,7 +437,7 @@ impl Poller {
 
     /// One update.
     pub async fn handle(&mut self, update: &Value) {
-        let paired = bound_users(&self.dir);
+        let paired = paired_users(&self.dir, self.accounts);
         if let Some(message) = update.get("message") {
             let Some(chat_id) = message.pointer("/chat/id").and_then(Value::as_i64) else { return };
             if message.pointer("/chat/type").and_then(Value::as_str) != Some("private") {
@@ -444,6 +464,14 @@ impl Poller {
             }
             if let Some(code) = text.strip_prefix("/pair") {
                 self.pair(chat_id, user, code.trim(), &paired).await;
+                return;
+            }
+            if !paired.contains(&user) && !self.accounts {
+                let due = self.unpaired_replied.get(&user).is_none_or(|at| at.elapsed() >= LEGACY_UNPAIRED_REPLY_EVERY);
+                if due {
+                    self.unpaired_replied.insert(user, Instant::now());
+                    self.reply(chat_id, LEGACY_UNPAIRED_REPLY).await;
+                }
                 return;
             }
             if !paired.contains(&user) {
@@ -511,6 +539,10 @@ impl Poller {
             self.reply(chat_id, "This Telegram account is already paired.").await;
             return;
         }
+        if !self.accounts {
+            self.pair_locally(chat_id, user, code).await;
+            return;
+        }
         let wrong = || crate::bindings::instruction("telegram");
         if self.wrong_codes >= PAIRING_ATTEMPTS {
             self.reply(chat_id, &wrong()).await;
@@ -532,6 +564,31 @@ impl Poller {
             Err(crate::bindings::Refused::Unreachable) => {
                 self.reply(chat_id, "I could not reach the accounts server to check that code; try again in a moment.").await;
             }
+        }
+    }
+
+    /// 0.9.7's pairing, on a node without accounts: a code from `ragon chat telegram pair` adds the
+    /// user to telegram.json's `users`; too many wrong codes withdraw every pending one.
+    async fn pair_locally(&mut self, chat_id: i64, user: i64, code: &str) {
+        if store::take_pairing_code(&self.dir, code) {
+            self.wrong_codes = 0;
+            let Some(mut config) = TelegramConfig::load(&self.dir) else { return };
+            config.users.push(user);
+            if config.save(&self.dir).is_err() {
+                self.reply(chat_id, "Pairing failed: the bridge could not save it.").await;
+                return;
+            }
+            self.reply(chat_id, &format!("Paired. Send a message to start.\n\n{HELP}")).await;
+            if self.mini_app_url.is_some() {
+                let _ = self.api.call("setChatMenuButton", menu_button(chat_id, self.mini_app_url.as_deref())).await;
+            }
+        } else {
+            self.wrong_codes += 1;
+            if self.wrong_codes >= PAIRING_ATTEMPTS {
+                store::withdraw_pairing_codes(&self.dir);
+                self.wrong_codes = 0;
+            }
+            self.reply(chat_id, "That code is not valid. Run `ragon chat telegram pair` on the machine for a new one.").await;
         }
     }
 }
@@ -896,7 +953,7 @@ pub async fn start(
     if me.is_ok() {
         let _ = api.call("setMyCommands", commands(options.mini_app_url.is_some())).await;
         // Each paired user's menu button follows the setting, so removing the address removes it.
-        let users = bound_users(&dir);
+        let users = paired_users(&dir, options.accounts);
         for user in users {
             let _ = api.call("setChatMenuButton", menu_button(user, options.mini_app_url.as_deref())).await;
         }
@@ -910,7 +967,7 @@ pub async fn start(
             .with_mini_app_url(options.mini_app_url.clone())
             .run(outbound),
     );
-    let mut poller = Poller::new(api, dir, hub);
+    let mut poller = Poller::new(api, dir, hub).with_accounts(options.accounts);
     poller.topics = use_topics;
     poller.mini_app_url = options.mini_app_url.clone();
     tokio::spawn(poller.run());
@@ -927,11 +984,13 @@ pub struct Options {
     pub rich: bool,
     /// The Mini App's `https://` address on the user's own network (MOONSHOT §15); none: no app.
     pub mini_app_url: Option<String>,
+    /// Whether the node has accounts (default yes); without, 0.9.7's local pairing.
+    pub accounts: bool,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { topics: true, rich: false, mini_app_url: None }
+        Options { topics: true, rich: false, mini_app_url: None, accounts: true }
     }
 }
 

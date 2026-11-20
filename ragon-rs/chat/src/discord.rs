@@ -509,11 +509,26 @@ pub struct Events {
     wrong_codes: u32,
     /// When each stranger was last told the bot is private.
     strangers: HashMap<String, Instant>,
+    /// Whether the node has accounts: then a DM pairs to a signed-in user through `ragon pair`;
+    /// without, through `ragon chat discord pair`'s local code as in 0.9.7.
+    accounts: bool,
 }
 
 impl Events {
     pub fn new(api: DiscordApi, dir: PathBuf, hub: mpsc::UnboundedSender<Inbound>, front_url: Option<String>) -> Events {
-        Events { api, dir, hub, pending: Pending::default(), front_url, home_server: None, wrong_codes: 0, strangers: HashMap::new() }
+        Events { api, dir, hub, pending: Pending::default(), front_url, home_server: None, wrong_codes: 0, strangers: HashMap::new(), accounts: true }
+    }
+
+    /// Sets whether the node has accounts (default: yes).
+    #[must_use]
+    pub fn with_accounts(mut self, accounts: bool) -> Events {
+        self.accounts = accounts;
+        self
+    }
+
+    /// What a stranger is told: how to pair on a node with accounts, 0.9.7's line without.
+    fn unpaired_reply(&self) -> String {
+        if self.accounts { crate::bindings::instruction("discord") } else { crate::telegram::LEGACY_UNPAIRED_REPLY.to_string() }
     }
 
     pub fn with_home_server(mut self, home_server: Option<String>) -> Events {
@@ -552,10 +567,16 @@ impl Events {
     }
 
     fn paired(&self, user: &str, channel: &str) -> bool {
+        if !self.accounts {
+            return crate::store::DiscordConfig::load(&self.dir).is_some_and(|config| config.users.get(user).is_some_and(|dm| dm == channel));
+        }
         crate::bindings::Bindings::load(&self.dir).get("discord", user).is_some_and(|b| b.chat == format!("discord:{channel}"))
     }
 
     fn is_known(&self, user: &str) -> bool {
+        if !self.accounts {
+            return crate::store::DiscordConfig::load(&self.dir).is_some_and(|config| config.users.contains_key(user));
+        }
         crate::bindings::Bindings::load(&self.dir).get("discord", user).is_some()
     }
 
@@ -624,7 +645,7 @@ impl Events {
             return;
         }
         self.strangers.insert(user.to_string(), now);
-        let _ = self.api.send(channel, message(&crate::bindings::instruction("discord"))).await;
+        let _ = self.api.send(channel, message(&self.unpaired_reply())).await;
     }
 
     async fn on_interaction(&mut self, data: &Value) {
@@ -637,7 +658,7 @@ impl Events {
         let user = data.pointer("/user/id").and_then(Value::as_str).filter(|user| is_snowflake(user));
         let channel = data.get("channel_id").and_then(Value::as_str).or_else(|| data.pointer("/channel/id").and_then(Value::as_str)).filter(|channel| is_snowflake(channel));
         let (Some(user), Some(channel), true) = (user, channel, in_dm) else {
-            let _ = self.api.answer(id, token, ephemeral(&crate::bindings::instruction("discord"))).await;
+            let _ = self.api.answer(id, token, ephemeral(&self.unpaired_reply())).await;
             return;
         };
         let kind = data.get("type").and_then(Value::as_u64).unwrap_or_default();
@@ -649,7 +670,7 @@ impl Events {
             return;
         }
         if !self.paired(user, channel) {
-            let _ = self.api.answer(id, token, ephemeral(&crate::bindings::instruction("discord"))).await;
+            let _ = self.api.answer(id, token, ephemeral(&self.unpaired_reply())).await;
             return;
         }
         let key = chat_key(channel);
@@ -690,6 +711,9 @@ impl Events {
         if self.is_known(user) {
             return "This Discord account is already paired.".to_string();
         }
+        if !self.accounts {
+            return self.pair_locally(user, channel, code);
+        }
         let wrong = crate::bindings::instruction("discord");
         if code.is_empty() || self.wrong_codes >= PAIRING_ATTEMPTS {
             return wrong;
@@ -707,6 +731,29 @@ impl Events {
             }
             Err(crate::bindings::Refused::Unreachable) => "I could not reach the accounts server to check that code; try again in a moment.".to_string(),
         }
+    }
+
+    /// 0.9.7's pairing, on a node without accounts: a code from `ragon chat discord pair` adds the
+    /// user and their DM channel to discord.json's `users`.
+    fn pair_locally(&mut self, user: &str, channel: &str, code: &str) -> String {
+        if !code.is_empty() && crate::store::take_discord_pairing_code(&self.dir, code) {
+            self.wrong_codes = 0;
+            let Some(mut config) = crate::store::DiscordConfig::load(&self.dir) else {
+                return "Pairing failed: the bridge is not set up.".to_string();
+            };
+            config.users.insert(user.to_string(), channel.to_string());
+            if config.save(&self.dir).is_err() {
+                return "Pairing failed: the bridge could not save it.".to_string();
+            }
+            self.strangers.remove(user);
+            return format!("Paired. Send a message to start.\n\n{HELP}");
+        }
+        self.wrong_codes += 1;
+        if self.wrong_codes >= PAIRING_ATTEMPTS {
+            crate::store::withdraw_discord_pairing_codes(&self.dir);
+            self.wrong_codes = 0;
+        }
+        "That code is not valid. Run `ragon chat discord pair` on the machine for a new one.".to_string()
     }
 }
 
@@ -962,11 +1009,13 @@ pub struct Options {
     /// `[chat] discord_home_server`: a server shared with the bot only so it can be messaged, which
     /// it does not leave; messages in it are still ignored.
     pub home_server: Option<String>,
+    /// Whether the node has accounts (default yes); without, 0.9.7's local pairing.
+    pub accounts: bool,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { front_url: None, status_interval: Duration::from_secs(15), identify_limit: 100, home_server: None }
+        Options { front_url: None, status_interval: Duration::from_secs(15), identify_limit: 100, home_server: None, accounts: true }
     }
 }
 
@@ -997,7 +1046,7 @@ pub async fn start(
             .run(outbound),
     );
     let (events_tx, events_rx) = mpsc::unbounded_channel();
-    tokio::spawn(Events::new(api.clone(), dir.clone(), hub, options.front_url.clone()).with_home_server(options.home_server.clone()).with_pending(pending).run(events_rx));
+    tokio::spawn(Events::new(api.clone(), dir.clone(), hub, options.front_url.clone()).with_home_server(options.home_server.clone()).with_accounts(options.accounts).with_pending(pending).run(events_rx));
     tokio::spawn(crate::discord_gateway::run(api, dir, events_tx, options.identify_limit));
     Ok(me.get("username").and_then(Value::as_str).unwrap_or_default().to_string())
 }

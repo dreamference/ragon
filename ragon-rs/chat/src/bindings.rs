@@ -135,7 +135,8 @@ impl Bindings {
 
 /// The upgrade to 0.9.9: every pairing of the earlier releases is dropped, once (§14.1). The paired
 /// user ids of `telegram.json` and `discord.json` go and the allow-list marker is written; every
-/// phone pairs again. Returns whether anything was dropped (false on every later start).
+/// phone pairs again. Runs only on a node whose gate advertises accounts ([`settle_pairings`]).
+/// Returns whether anything was dropped (false on every later start).
 pub fn drop_old_pairings(dir: &Path) -> bool {
     let marker = dir.join("bindings.v2");
     if marker.exists() {
@@ -155,9 +156,58 @@ pub fn drop_old_pairings(dir: &Path) -> bool {
     for sub in ["pairing", "discord/pairing"] {
         let _ = std::fs::remove_dir_all(dir.join(sub));
     }
-    let _ = std::fs::write(&marker, "0.9.9\n");
+    let _ = std::fs::write(&marker, ACCOUNTS_MARKER);
     true
 }
+
+/// What the one-time drop writes to `bindings.v2` when it runs on a node with accounts.
+pub const ACCOUNTS_MARKER: &str = "accounts\n";
+/// What 0.9.8 wrote there: it dropped the pairings whether or not the node had accounts.
+pub const RELEASE_098_MARKER: &str = "0.9.9";
+/// Where [`repair_098_drop`] moves 0.9.8's marker: kept, not deleted, as a record.
+pub const REPAIRED_MARKER: &str = "bindings.v2.dropped-0.9.8";
+
+/// Whether the bridge pairs through accounts, from the gate's answer (`Some(true)`: it advertises
+/// an accounts service; `Some(false)`: it answered without one; `None`: no answer). Without an
+/// answer nothing on disk changes and the folder decides: an accounts drop already ran, or a chat
+/// is bound.
+pub fn accounts_mode(dir: &Path, gate: Option<bool>) -> bool {
+    gate.unwrap_or_else(|| marker_text(dir).as_deref() == Some(ACCOUNTS_MARKER.trim()) || !Bindings::load(dir).is_empty())
+}
+
+fn marker_text(dir: &Path) -> Option<String> {
+    std::fs::read_to_string(dir.join("bindings.v2")).ok().map(|text| text.trim().to_string())
+}
+
+/// What `serve` does to the folder for the gate's answer; returns the line to print, if any.
+/// With accounts: the one-time drop of the 0.9.7 pairings. Without: the repair of a 0.9.8 drop.
+/// Without an answer: nothing.
+pub fn settle_pairings(dir: &Path, gate: Option<bool>) -> Option<&'static str> {
+    match gate {
+        Some(true) => drop_old_pairings(dir).then_some(
+            "ragon chat: earlier pairings were dropped; pair each chat again with `ragon pair <telegram|discord|matrix>`.",
+        ),
+        Some(false) => repair_098_drop(dir).then_some(
+            "ragon chat: 0.9.8 dropped this node's Telegram and Discord pairings, which cannot be restored: pair each user again with `ragon chat telegram pair` or `ragon chat discord pair`. Matrix needs nothing.",
+        ),
+        None => None,
+    }
+}
+
+/// Undoes what 0.9.8 left on a node without accounts: its drop ran there although nothing could
+/// replace the pairings, and its marker would stop the real drop when accounts arrive. The marker
+/// is moved aside (not deleted) so that drop runs again then; the dropped lists themselves are gone
+/// (0.9.8 emptied them in place), so the users pair again. Touches nothing when a chat is bound,
+/// and returns whether it moved the marker.
+pub fn repair_098_drop(dir: &Path) -> bool {
+    if marker_text(dir).as_deref() != Some(RELEASE_098_MARKER) || !Bindings::load(dir).is_empty() {
+        return false;
+    }
+    std::fs::rename(dir.join("bindings.v2"), dir.join(REPAIRED_MARKER)).is_ok()
+}
+
+/// `/whoami` and `/sessions` on a node without accounts.
+pub const NO_ACCOUNTS: &str = "This node has no accounts: everyone paired with this bot talks to it as its owner.";
 
 /// The one reply an unbound chat gets (at most once a day), and a wrong code's reply.
 pub fn instruction(kind: &str) -> String {

@@ -753,6 +753,7 @@ impl Hub {
             }
             "/help" | "/start" => self.notice(chat, HELP),
             "/pair" => self.notice(chat, "This chat is already paired."),
+            "/whoami" | "/sessions" if self.factory.is_none() => self.notice(chat, crate::bindings::NO_ACCOUNTS.to_string()),
             "/whoami" => {
                 let line = match crate::bindings::Bindings::load(&self.config.dir).for_chat(base_of(chat)) {
                     Some(b) => crate::bindings::whoami(&b.username, &crate::bindings::node_name(&self.config.dir)),

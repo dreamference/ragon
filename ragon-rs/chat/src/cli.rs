@@ -63,11 +63,20 @@ pub struct Environment {
     pub home: PathBuf,
     /// The `ragon` binary: the unit runs it, and the bridge starts `ragon web` with it.
     pub ragon: PathBuf,
+    /// What the node's gate said of accounts: `Some(true)` it has them, `Some(false)` it answered
+    /// without them, `None` no answer (or not asked). Chats pair to accounts only with them; without,
+    /// as in 0.9.7 (see [`crate::bindings::accounts_mode`]).
+    pub accounts: Option<bool>,
 }
 
 impl Environment {
     pub fn dir(&self) -> PathBuf {
         store::chat_dir(&self.codex_home)
+    }
+
+    /// Whether chats pair through accounts on this node.
+    pub fn accounts_mode(&self) -> bool {
+        crate::bindings::accounts_mode(&self.dir(), self.accounts)
     }
 
     fn user_config(&self) -> PathBuf {
@@ -231,7 +240,7 @@ pub async fn run_cli(args: &[String], environment: Environment) -> i32 {
         Some("status") => status(&dir),
         Some("telegram") => match args.get(1).map(String::as_str) {
             Some("setup") => telegram_setup(&dir).await,
-            Some("pair") => telegram_pair(&dir),
+            Some("pair") => telegram_pair(&dir, environment.accounts_mode()),
             Some("users") => telegram_users(&dir),
             Some("remove") => match args.get(2) {
                 Some(which) => telegram_remove(&dir, which),
@@ -248,7 +257,7 @@ pub async fn run_cli(args: &[String], environment: Environment) -> i32 {
         },
         Some("discord") => match args.get(1).map(String::as_str) {
             Some("setup") => discord_setup(&dir, &environment.user_config()).await,
-            Some("pair") => discord_pair(&dir),
+            Some("pair") => discord_pair(&dir, environment.accounts_mode()),
             Some("users") => discord_users(&dir),
             Some("remove") => match args.get(2) {
                 Some(which) => discord_remove(&dir, which),
@@ -279,9 +288,11 @@ async fn serve(environment: &Environment) -> i32 {
         eprintln!("No messenger is set up: run `ragon chat telegram setup`, `ragon chat discord setup`, or `ragon-admin matrix start`.");
         return 1;
     }
-    if crate::bindings::drop_old_pairings(&dir) {
-        eprintln!("ragon chat: earlier pairings were dropped; pair each chat again with `ragon pair <telegram|discord|matrix>`.");
+    if let Some(line) = crate::bindings::settle_pairings(&dir, environment.accounts) {
+        eprintln!("{line}");
     }
+    let accounts = environment.accounts_mode();
+    eprintln!("{}", mode_line(environment.accounts, accounts));
     let (agent, commands) = AgentHandle::channel();
     let (events_tx, events) = mpsc::unbounded_channel();
     let (inbound_tx, inbound) = mpsc::unbounded_channel();
@@ -289,12 +300,15 @@ async fn serve(environment: &Environment) -> i32 {
     let state_for_users = ragon_web_server::auth::state_dir(&environment.codex_home);
     let ragon_for_users = environment.ragon.clone();
     let events_for_users = events_tx.clone();
-    let mut hub = Hub::new(hub_config(environment), agent, Box::new(move || user_airgapped(&user_config))).with_user_links(Box::new(move |key| {
-        let (handle, commands) = AgentHandle::channel();
-        let target = WebTarget { state: state_for_users.clone(), ragon: Some(ragon_for_users.clone()), key: Some(key.to_string()) };
-        tokio::spawn(crate::agent::run_link(target, commands, events_for_users.clone()));
-        handle
-    }));
+    let mut hub = Hub::new(hub_config(environment), agent, Box::new(move || user_airgapped(&user_config)));
+    if accounts {
+        hub = hub.with_user_links(Box::new(move |key| {
+            let (handle, commands) = AgentHandle::channel();
+            let target = WebTarget { state: state_for_users.clone(), ragon: Some(ragon_for_users.clone()), key: Some(key.to_string()) };
+            tokio::spawn(crate::agent::run_link(target, commands, events_for_users.clone()));
+            handle
+        }));
+    }
     let mut adapters = 0;
     if let Some(config) = telegram_config {
         let (out_tx, out_rx) = mpsc::unbounded_channel();
@@ -305,6 +319,7 @@ async fn serve(environment: &Environment) -> i32 {
             topics: chat_flag(&text, "telegram_topics").unwrap_or(defaults.topics),
             rich: chat_flag(&text, "telegram_rich").unwrap_or(defaults.rich),
             mini_app_url: ragon_web_server::telegram_app::mini_app_url(&text),
+            accounts,
         };
         if options.mini_app_url.is_none() && text.contains("telegram_mini_app_url") {
             eprintln!("ragon chat: Telegram: `telegram_mini_app_url` is not a plain https:// address; no app is offered.");
@@ -321,7 +336,7 @@ async fn serve(environment: &Environment) -> i32 {
     }
     if let Some(config) = matrix_config {
         let (out_tx, out_rx) = mpsc::unbounded_channel();
-        match crate::matrix::start(&config, dir.clone(), inbound_tx.clone(), out_rx).await {
+        match crate::matrix::start(&config, dir.clone(), inbound_tx.clone(), out_rx, accounts).await {
             Ok(()) => {
                 hub.add_adapter("matrix", out_tx);
                 adapters += 1;
@@ -334,7 +349,7 @@ async fn serve(environment: &Environment) -> i32 {
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         let api = discord::DiscordApi::new(discord::API_ROOT, &config.token);
         let text = std::fs::read_to_string(environment.user_config()).unwrap_or_default();
-        let options = discord_options(&text);
+        let options = discord::Options { accounts, ..discord_options(&text) };
         if options.front_url.is_none() && text.contains("discord_web_url") {
             eprintln!("ragon chat: Discord: `discord_web_url` is not a plain https:// address; no links are offered.");
         }
@@ -359,6 +374,16 @@ async fn serve(environment: &Environment) -> i32 {
         _ = tokio::signal::ctrl_c() => {}
     }
     0
+}
+
+/// The one line `serve` prints about how chats pair here.
+pub fn mode_line(gate: Option<bool>, accounts: bool) -> String {
+    let how = if accounts { "chats pair to Ragon accounts (`ragon pair <telegram|discord|matrix>`)" } else { "no accounts on this node; chats pair as before (`ragon chat <telegram|discord> pair`)" };
+    let why = match gate {
+        Some(_) => "",
+        None => " (the node did not answer; going by this folder)",
+    };
+    format!("ragon chat: {how}{why}")
 }
 
 fn start(environment: &Environment) -> i32 {
@@ -425,6 +450,7 @@ pub fn discord_options(text: &str) -> discord::Options {
         status_interval: chat_setting(text, "discord_status_interval_s").map_or(defaults.status_interval, |s| Duration::from_secs(s.max(5))),
         identify_limit: chat_setting(text, "discord_identify_limit").map_or(defaults.identify_limit, |n| n.clamp(1, 900) as usize),
         home_server: chat_text(text, "discord_home_server").filter(|id| discord::is_snowflake(id)),
+        accounts: defaults.accounts,
     }
 }
 
@@ -508,8 +534,23 @@ async fn telegram_setup(dir: &Path) -> i32 {
     0
 }
 
-fn telegram_pair(dir: &Path) -> i32 {
-    let _ = dir;
+fn telegram_pair(dir: &Path, accounts: bool) -> i32 {
+    if !accounts {
+        if TelegramConfig::load(dir).is_none() {
+            eprintln!("Telegram is off: run `ragon chat telegram setup` first.");
+            return 1;
+        }
+        return match store::issue_pairing_code(dir) {
+            Ok(code) => {
+                println!("Send this to your bot in Telegram within 10 minutes:\n\n    /pair {code}\n\nThe code works once.");
+                0
+            }
+            Err(err) => {
+                eprintln!("Could not write a pairing code: {err}");
+                1
+            }
+        };
+    }
     eprintln!("Telegram chats pair to a Ragon account now: run `ragon pair telegram` where you are signed in, then send the code to the bot.");
     1
 }
@@ -632,8 +673,23 @@ async fn discord_setup(dir: &Path, user_config: &Path) -> i32 {
     0
 }
 
-fn discord_pair(dir: &Path) -> i32 {
-    let _ = dir;
+fn discord_pair(dir: &Path, accounts: bool) -> i32 {
+    if !accounts {
+        if DiscordConfig::load(dir).is_none() {
+            eprintln!("Discord is off: run `ragon chat discord setup` first.");
+            return 1;
+        }
+        return match store::issue_discord_pairing_code(dir) {
+            Ok(code) => {
+                println!("Send this to your bot in a direct message in Discord within 10 minutes:\n\n    /pair {code}\n\nThe code works once.");
+                0
+            }
+            Err(err) => {
+                eprintln!("Could not write a pairing code: {err}");
+                1
+            }
+        };
+    }
     eprintln!("Discord chats pair to a Ragon account now: run `ragon pair discord` where you are signed in, then send the code to the bot.");
     1
 }
@@ -720,6 +776,25 @@ mod tests {
         assert!(!has_extra_words(&words(&["telegram", "remove", "42"])));
         assert!(has_extra_words(&words(&["discord", "remove", "42", "--bogus-flag"])));
         assert!(!has_extra_words(&words(&["discord", "remove", "42"])));
+    }
+
+    /// Without accounts `ragon chat <telegram|discord> pair` issues a local code as in 0.9.7; with
+    /// accounts it points at `ragon pair`.
+    #[test]
+    fn the_bridge_pair_commands_issue_a_local_code_only_without_accounts() {
+        let dir = std::env::temp_dir().join(format!("ragon-chat-cli-pair-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        TelegramConfig::new("t".to_string()).save(&dir).unwrap();
+        DiscordConfig::new("d".to_string(), "1".to_string()).save(&dir).unwrap();
+        assert_eq!(telegram_pair(&dir, true), 1);
+        assert_eq!(discord_pair(&dir, true), 1);
+        assert!(!dir.join("pairing").exists() && !dir.join("discord/pairing").exists());
+        assert_eq!(telegram_pair(&dir, false), 0);
+        assert_eq!(discord_pair(&dir, false), 0);
+        assert!(dir.join("pairing").is_dir() && dir.join("discord/pairing").is_dir());
+        assert!(mode_line(Some(false), false).contains("`ragon chat <telegram|discord> pair`"));
+        assert!(mode_line(Some(true), true).contains("`ragon pair <telegram|discord|matrix>`"));
+        assert!(mode_line(None, false).contains("did not answer"));
     }
 
     #[test]

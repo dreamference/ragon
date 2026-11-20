@@ -519,3 +519,33 @@ async fn the_identify_limit_is_its_own_status() {
     assert_eq!(GatewayStatus::describe(Some(&GatewayStatus::Connected), false), "stopped (the bridge is not running)");
     assert_eq!(GatewayStatus::describe(Some(&GatewayStatus::Connected), true), "connected");
 }
+
+/// A node without accounts keeps 0.9.7's pairing: `users` admits by DM channel, a binding alone
+/// does not, and a code from `ragon chat discord pair` pairs once.
+#[tokio::test]
+async fn without_accounts_the_users_map_admits_and_a_local_code_pairs_once() {
+    let (stand, api) = stand_in(default_answer()).await;
+    let dir = scratch("legacy");
+    let mut config = DiscordConfig::load(&dir).unwrap();
+    config.users.insert("555".to_string(), "666".to_string());
+    config.save(&dir).unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut events = Events::new(api, dir.clone(), tx, None).with_accounts(false);
+    events.handle("MESSAGE_CREATE", &dm("555", "666", "hello")).await;
+    assert_eq!(drained(&mut rx), vec![Inbound::Text { chat: "discord:666".to_string(), text: "hello".to_string() }]);
+    // 111 has a binding but is not in `users`: a stranger here, told once.
+    events.handle("MESSAGE_CREATE", &dm("111", "222", "hi")).await;
+    events.handle("MESSAGE_CREATE", &dm("111", "222", "hi again")).await;
+    assert!(drained(&mut rx).is_empty());
+    let replies = stand.bodies("POST /channels/222/messages");
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0]["content"], ragon_chat::telegram::LEGACY_UNPAIRED_REPLY);
+    // A local code pairs, once.
+    let code = store::issue_discord_pairing_code(&dir).unwrap();
+    events.handle("MESSAGE_CREATE", &dm("333", "444", &format!("/pair {code}"))).await;
+    assert_eq!(DiscordConfig::load(&dir).unwrap().users.get("333").map(String::as_str), Some("444"));
+    assert!(stand.bodies("POST /channels/444/messages")[0]["content"].as_str().unwrap().starts_with("Paired."));
+    assert!(!store::take_discord_pairing_code(&dir, &code));
+    events.handle("MESSAGE_CREATE", &dm("333", "444", "hello")).await;
+    assert_eq!(drained(&mut rx), vec![Inbound::Text { chat: "discord:444".to_string(), text: "hello".to_string() }]);
+}

@@ -12,10 +12,12 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use ragon_chat::bindings::Bindings;
 use ragon_chat::bindings::Refused;
+use ragon_chat::bindings::accounts_mode;
 use ragon_chat::bindings::drop_old_pairings;
 use ragon_chat::bindings::hint_due;
 use ragon_chat::bindings::instruction;
 use ragon_chat::bindings::pair;
+use ragon_chat::bindings::settle_pairings;
 use ragon_chat::bindings::write_primary;
 use serde_json::Value;
 use serde_json::json;
@@ -97,4 +99,69 @@ async fn an_unpaired_chat_is_told_how_once_a_day() {
     assert!(hint_due(&dir, "telegram:8", 2_000));
     assert!(hint_due(&dir, "telegram:7", 1_000 + 86_400 + 1));
     assert!(instruction("telegram").contains("ragon pair telegram"));
+}
+
+fn legacy_folder(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("telegram.json"), json!({ "token": "t", "users": [1, 2] }).to_string()).unwrap();
+    std::fs::write(dir.join("discord.json"), json!({ "token": "d", "owner": "9", "users": { "3": "c" } }).to_string()).unwrap();
+}
+
+fn telegram_users(dir: &std::path::Path) -> Value {
+    serde_json::from_str::<Value>(&std::fs::read_to_string(dir.join("telegram.json")).unwrap()).unwrap()["users"].clone()
+}
+
+/// Without accounts nothing is dropped and the one-time marker is not spent; without an answer
+/// from the gate nothing on disk changes at all (AUTH §14.1).
+#[tokio::test]
+async fn without_accounts_or_without_an_answer_the_pairings_and_the_marker_stay() {
+    let (_home, dir, _seen) = setup("keep").await;
+    legacy_folder(&dir);
+    assert_eq!(settle_pairings(&dir, Some(false)), None);
+    assert_eq!(settle_pairings(&dir, None), None);
+    assert_eq!(telegram_users(&dir), json!([1, 2]));
+    assert!(!dir.join("bindings.v2").exists(), "the marker is not consumed while accounts are off");
+    assert!(!accounts_mode(&dir, None));
+    assert!(!accounts_mode(&dir, Some(false)));
+    assert!(accounts_mode(&dir, Some(true)));
+    // Accounts arrive: the drop runs then, once.
+    assert!(settle_pairings(&dir, Some(true)).is_some());
+    assert_eq!(telegram_users(&dir), json!([]));
+    assert!(settle_pairings(&dir, Some(true)).is_none());
+    // A later start without an answer stays in account mode.
+    assert!(accounts_mode(&dir, None));
+}
+
+/// A node that ran 0.9.8 without accounts: its marker is moved aside (kept, not deleted), so the
+/// real drop runs when accounts arrive; what 0.9.8 emptied stays as it is, and a second start does
+/// nothing.
+#[tokio::test]
+async fn the_repair_moves_the_098_marker_aside_once_and_the_real_drop_runs_later() {
+    let (_home, dir, _seen) = setup("repair").await;
+    legacy_folder(&dir);
+    std::fs::write(dir.join("bindings.v2"), "0.9.9").unwrap();
+    // No answer from the gate: nothing moves.
+    assert_eq!(settle_pairings(&dir, None), None);
+    assert!(dir.join("bindings.v2").exists());
+    assert!(!accounts_mode(&dir, None));
+    let line = settle_pairings(&dir, Some(false)).expect("the repair says what happened");
+    assert!(line.contains("ragon chat telegram pair") && line.contains("cannot be restored"), "{line}");
+    assert!(!dir.join("bindings.v2").exists());
+    assert_eq!(std::fs::read_to_string(dir.join("bindings.v2.dropped-0.9.8")).unwrap(), "0.9.9");
+    assert_eq!(telegram_users(&dir), json!([1, 2]), "the repair touches no list");
+    assert_eq!(settle_pairings(&dir, Some(false)), None, "the repair runs once");
+    assert!(settle_pairings(&dir, Some(true)).is_some(), "the real drop runs when accounts arrive");
+    assert_eq!(std::fs::read_to_string(dir.join("bindings.v2")).unwrap().trim(), "accounts");
+}
+
+/// A 0.9.8 marker on a node with bound chats is left alone: that node paired through accounts.
+#[tokio::test]
+async fn the_repair_leaves_a_node_with_bound_chats_alone() {
+    let (home, dir, _seen) = setup("bound").await;
+    pair(&dir, &home, "telegram", "ABC234", "42", "telegram:42").await.unwrap();
+    std::fs::write(dir.join("bindings.v2"), "0.9.9").unwrap();
+    assert_eq!(settle_pairings(&dir, Some(false)), None);
+    assert!(dir.join("bindings.v2").exists());
+    assert!(accounts_mode(&dir, None));
+    assert_eq!(Bindings::load(&dir).len(), 1);
 }
