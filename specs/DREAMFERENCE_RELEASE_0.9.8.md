@@ -18,7 +18,7 @@ Range: `git log v0.9.7..origin/main`, read at b4670fb29 on 2026-11-19 (112 commi
 
 **SWE-bench Verified, reference set on the 0.9.7 image.** The same image, run repeatedly per slice: slice 1 six runs (25 to 30 of 39, mean 27.5), slice 2 five runs (64 to 73 of 106, mean 68.6), slice 3 four runs (70 to 76 of 106, mean 72.8), slice 4 four runs (67 to 74 of 106, mean 70.3); the set of four slices averages 239, and the sum of each slice's lowest and highest run is 226 to 253. Single runs differ from each other by several tasks, so no slice is claimed to be better or worse than another run or an earlier build beyond that spread. This set is the quality band the Windows and Mac ports are judged against.
 
-**RBRB, week 2026-W47 so far:** 8.7 % of generated development tokens were Ragon's (386,568 of 4.4 million), against the 7 % gate for this cut: the gate passes. 71 of 109 attempted Ragon tasks landed, 0 reverts. Source: `docs/rbrb.json` and `rbrb-gate --week 2026-W47`; the week closes on Sunday and its final value replaces this one.
+**RBRB, week 2026-W47 so far:** 10.3 % of generated development tokens were Ragon's (721,060 of 7.0 million), against the 7 % gate for this cut: the gate passes. 86 of 145 attempted Ragon tasks landed, 0 reverts. Source: `docs/rbrb.json` and `rbrb-gate --week 2026-W47`; the week closes on Sunday and its final value replaces this one.
 
 ### Since 0.9.7
 
@@ -46,5 +46,5 @@ The 0.9.7 engine image is unchanged, so its limits are too: FP8 KV cache stays o
 
 - [ ] Engine image pin on main is still `f4391e2e`.
 - [ ] SWE reference set: add the slice 3 and slice 4 fifth runs when graded (not stated above).
-- [ ] RBRB W47 figures re-read from `rbrb-gate --week 2026-W47` on the cut day.
+- [x] RBRB W47 figures re-read from `rbrb-gate --week 2026-W47` on the cut day (re-read 05:45 UTC).
 - [ ] The dry run of the chain is green.

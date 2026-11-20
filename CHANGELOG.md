@@ -8,7 +8,7 @@ The full notes of each release are in `specs/DREAMFERENCE_RELEASE_<version>.md`.
 - No new engine image: the 0.9.7 image stays pinned.
 - The platform quality specification: the Windows and Mac ports are judged on the same quality, not the same results, by benchmark bands from N = 5 reference runs.
 - SWE-bench Verified reference set on the 0.9.7 image: runs per slice with their spread (the four-slice set averages 239); this set is the band the ports are judged against.
-- RBRB week 2026-W47 so far: 8.7 % of generated tokens were Ragon's against a 7 % gate; the chart shows the running week and the target.
+- RBRB week 2026-W47 so far: 10.3 % of generated tokens were Ragon's against a 7 % gate; the chart shows the running week and the target.
 - 72 small cleanups (typing, test coverage, constants) were landed by Ragon through the RBRB routing, none reverted.
 - The Windows engine port (HIP) passed its decode gate and its first speed lane.
 
