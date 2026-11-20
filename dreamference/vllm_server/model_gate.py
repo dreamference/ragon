@@ -250,6 +250,7 @@ class ModelGate:
         from dreamference.accounts.accounts_service import AccountsService
         from dreamference.accounts.accounts_store import AccountsStore
         from dreamference.node.node_identity import NodeIdentity
+        from dreamference.node.node_settings import NodeSettings
 
         node_id = NodeIdentity.read()
         name = socket.gethostname().split(".", 1)[0]
@@ -260,6 +261,7 @@ class ModelGate:
             "primary_id": node_id if primary else None,
             "primary_name": name if primary else None,
             "issuer": AccountsService.issuer(name) if primary else None,
+            "accounts": NodeSettings.accounts_enabled(),
         }
 
     @classmethod

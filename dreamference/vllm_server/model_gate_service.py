@@ -955,7 +955,9 @@ class ModelGateService:
             key: node.get(key)
             for key in ("node_id", "name", "primary_id", "primary_name", "issuer")
         }
-        info["accounts"] = True  # 0.9.9 or later: the launcher then asks for a sign-in
+        # The launcher asks for a sign-in only when this is true; the node opts in with
+        # `[accounts] enabled` (off in 0.9.8, on by default from 0.9.9).
+        info["accounts"] = node.get("accounts") is True
         info["tls"] = self.tls_context is not None
         info["ca_fingerprint_sha256"] = (
             GateTls.fingerprint(self.ca_pem) if self.ca_pem is not None else None

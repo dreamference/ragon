@@ -13,6 +13,10 @@ from typing import Any, Final
 LOOPBACK: Final[str] = "127.0.0.1"
 EVERY_INTERFACE: Final[str] = "0.0.0.0"
 AUTH_PRIMARY: Final[str] = "primary"
+# Whether the node advertises the accounts service (`[accounts] enabled`). Off in 0.9.8, so the
+# launcher never asks for a sign-in; 0.9.9 turns this default on.
+DEFAULT_ACCOUNTS_ENABLED: Final[bool] = False
+ACCOUNTS_ENABLED_VARIABLE: Final[str] = "DREAMFERENCE_ACCOUNTS_ENABLED"
 
 
 class NodeSettings:
@@ -105,6 +109,23 @@ class NodeSettings:
 
         path = Path("~/.config/dreamference/config.toml").expanduser()
         return NightShiftSettings.read_table(path, section="node").get("auth_enforce") is True
+
+    @classmethod
+    def accounts_enabled(cls) -> bool:
+        """Whether the node advertises accounts (`DREAMFERENCE_ACCOUNTS_ENABLED`, `[accounts] enabled`).
+
+        The variable wins (an empty one counts as unset), then the user-level `config.toml`, then
+        DEFAULT_ACCOUNTS_ENABLED (false in 0.9.8; the launcher asks for a sign-in only when the
+        node advertises accounts).
+        """
+        value = os.environ.get(ACCOUNTS_ENABLED_VARIABLE, "").strip()
+        if value:
+            return value.lower() in ("1", "true", "yes", "on")
+        from dreamference.night_shift.night_shift_settings import NightShiftSettings
+
+        path = Path("~/.config/dreamference/config.toml").expanduser()
+        enabled = NightShiftSettings.read_table(path, section="accounts").get("enabled")
+        return enabled if isinstance(enabled, bool) else DEFAULT_ACCOUNTS_ENABLED
 
     @classmethod
     def advertised(cls) -> bool:
