@@ -22,7 +22,7 @@ handling, and secrets on disk.
 | 6 | Low | Node discovery | A second advert claiming the remembered node's id, at another address, could be followed with only a note | Fixed |
 | 7 | Low | Node pairing | The paired key's `authorized_keys` line named each forbidden capability instead of using `restrict` | Fixed |
 | 8 | Medium | Releases | Releases are not signed: the checksum files come from the same release they check | Fixed on `release/signing` ([RELEASE_SIGNING](./DREAMFERENCE_RELEASE_SIGNING.md)) |
-| 9 | — | Model server (port 8000) | Answers anyone on the local network, with no key | Accepted by design |
+| 9 | — | Model server (port 8000) | Answers anyone on the local network, with no key | Accepted by design; served and counted in 0.9.9, refused without a sign-in at version 1.0 ([AUTH](./DREAMFERENCE_AUTH.md) §10) |
 | 10 | Low | Node discovery | The first node found on a network is trusted on first use | Accepted (trusted-LAN premise) |
 
 ### 1. The GitHub token followed download URLs (fixed)
@@ -128,7 +128,7 @@ recommended there.
 
 By design, the model server listens on every interface with no key, because image search and
 OpenHands reach it through Docker's bridge and the local network is assumed trusted. This is
-stated in `docs/privacy.md`, with the firewall rule to apply on an untrusted network. Not changed.
+stated in `docs/privacy.md`, with the firewall rule to apply on an untrusted network. In 0.9.9 the gate serves and counts requests without credentials; at version 1.0 it refuses them ([AUTH](./DREAMFERENCE_AUTH.md) §10). The 3.0 list follows AUTH §19.
 
 ### 10. Trust on first use (accepted)
 

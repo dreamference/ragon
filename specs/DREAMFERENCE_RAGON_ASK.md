@@ -166,7 +166,7 @@ Copying still works over plain HTTP: selecting and copying text, Ctrl+V and past
 
 - No telemetry, no analytics, no remote fonts or scripts. The pages carry a strict CSP (`default-src 'none'`, scripts and styles `'self'`, `connect-src 'self'`).
 - No route to the model server, SearXNG or the sidecars beyond the four listed in §4.1.
-- No account system, no password: devices are paired, sessions are cookies.
+- No account system of its own. From 0.9.9 `ragon web` shows the signed-in user of `~/.ragon/auth.json` and, on the primary, the login page and the Account page of [AUTH](./DREAMFERENCE_AUTH.md) §14.4; devices are still paired and sessions are cookies.
 
 ---
 

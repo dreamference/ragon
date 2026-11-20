@@ -187,6 +187,7 @@ Use `rg -n "^class Foo"` for a definition and `ast-grep` for call sites by shape
 - [remote-access.md](docs/dev/remote-access.md): remote access over a NetBird overlay, its DNS and its migration
 - [adapters.md](docs/dev/adapters.md): LoRA adapters: `ragon-admin adapter`, the signature, serving them
 - [messengers.md](docs/dev/messengers.md): `ragon signal`, `ragon chat` and `ragon-admin matrix`
+- [accounts.md](docs/dev/accounts.md): the accounts service, the launcher's auth module, patches 0038 to 0042 and the cap
 - [sync.md](docs/dev/sync.md): `ragon sync`
 - [search-backends.md](docs/dev/search-backends.md): the `ragon-search` backend seam and the URL router (provisional interface)
 - [searching.md](docs/dev/searching.md): `ast-grep` and `rg` on this tree

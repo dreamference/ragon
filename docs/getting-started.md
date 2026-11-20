@@ -95,12 +95,17 @@ already done. Check that the server is answering at any time:
 ragon-admin endpoints
 ```
 
-## 4. Run it
+## 4. Sign in and run it
 
 ```bash
 cd ~/my-project
 ragon
 ```
+
+The first start shows the sign-in step: sign in, create an account (the first one on a node is its
+admin), use a device code, or paste an API key. Pick "Create an account" on a fresh node. Later
+starts go straight in. [Accounts and signing in](accounts.md) has the rest: sessions, API keys,
+the node's certificate, and the primary and its secondaries.
 
 See [Terminal agent](ragon.md) for what it can do.
 
