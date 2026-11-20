@@ -1,0 +1,284 @@
+##[group]Run python -c "import sys; from dreamference.runner.codex_branded_builder import CodexBrandedBuilder as B; sys.exit(0 if B.build(force=True) else 1)"
+[36;1mpython -c "import sys; from dreamference.runner.codex_branded_builder import CodexBrandedBuilder as B; sys.exit(0 if B.build(force=True) else 1)"[0m
+shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+env:
+  PYTHONUTF8: 1
+  PYTHONIOENCODING: utf-8
+  pythonLocation: C:\actions-runner\_work\_tool\Python\3.12.10\x64
+  PKG_CONFIG_PATH: C:\actions-runner\_work\_tool\Python\3.12.10\x64/lib/pkgconfig
+  Python_ROOT_DIR: C:\actions-runner\_work\_tool\Python\3.12.10\x64
+  Python2_ROOT_DIR: C:\actions-runner\_work\_tool\Python\3.12.10\x64
+  Python3_ROOT_DIR: C:\actions-runner\_work\_tool\Python\3.12.10\x64
+  CARGO_HOME: C:\Users\runner\.cargo
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  INCLUDE: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt
+  LIB: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\lib\x64;C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\\lib\10.0.26100.0\\um\x64
+  LIBPATH: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\lib\x64;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\lib\x86\store\references;C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0;C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+  PATH: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\VC\VCPackages;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\bin\Roslyn;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Team Tools\DiagnosticsHub\Collector;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\Llvm\x64\bin;C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\\x64;C:\Program Files (x86)\Windows Kits\10\bin\\x64;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\\MSBuild\Current\Bin\amd64;C:\Windows\Microsoft.NET\Framework64\v4.0.30319;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\;C:\Program Files\PowerShell\7;C:\Users\runner\.cargo\bin;C:\Users\runner\AppData\Roaming\Python\Python312\Scripts;C:\actions-runner\_work\_tool\Python\3.12.10\x64\Scripts;C:\actions-runner\_work\_tool\Python\3.12.10\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Program Files\Git\cmd;C:\Program Files\PowerShell\7\;C:\Program Files\Git\bin;C:\Program Files\Git\usr\bin;C:\Users\runner\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\VC\Linux\bin\ConnectionManagerExe;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\vcpkg
+  UCRTVersion: 10.0.26100.0
+  UniversalCRTSdkDir: C:\Program Files (x86)\Windows Kits\10\
+  VCINSTALLDIR: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\
+  VCToolsInstallDir: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\
+  WindowsLibPath: C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0
+  WindowsSdkBinPath: C:\Program Files (x86)\Windows Kits\10\bin\
+  WindowsSdkDir: C:\Program Files (x86)\Windows Kits\10\
+  WindowsSDKLibVersion: 10.0.26100.0\
+  WindowsSDKVersion: 10.0.26100.0\
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: C:\Users\runner\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe
+##[endgroup]
+🔨 Building ragon-search, ragon-fetch...
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.29s
+✅ Installed ragon-search, ragon-fetch in C:\Users\runner\.local\share\dreamference\ragon\bin
+🔨 Building ragon-code...
+[1m[93mwarning[0m[1m[97m: unused variable: `follow`[0m
+   [1m[96m--> [0msrc\paths.rs:325:39
+    [1m[96m|[0m
+[1m[96m325[0m [1m[96m|[0m fn read_capped(path: &Path, cap: u64, follow: bool) -> Option<Vec<u8>> {
+    [1m[96m|[0m                                       [1m[93m^^^^^^[0m [1m[93mhelp: if this is intentional, prefix it with an underscore: `_follow`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mnote[0m: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m: `ragon-code` (lib) generated 1 warning (run `cargo fix --lib -p ragon-code` to apply 1 suggestion)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.12s
+✅ Installed ragon-code in C:\Users\runner\.local\share\dreamference\ragon\bin
+📦 Installing the Ragon UI's packages (desktop/ui)...
+
+added 166 packages in 5s
+🔨 Building the Ragon UI for ragon web...
+
+> ragon-work@0.1.0 build
+> tsc --noEmit -p . && vite build
+
+[36mvite v8.3.2 [32mbuilding client environment for production...[36m[39m
+transforming...
+✓ 2254 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                                        1.06 kB │ gzip:   0.58 kB
+dist/assets/32x32-Dubt_AaW.png                                         1.40 kB
+dist/assets/jetbrains-mono-latin-ext-wght-normal-DBQx-q_a.woff2       15.19 kB
+dist/assets/atkinson-hyperlegible-latin-400-normal-BrHNak5F.woff2     17.20 kB
+dist/assets/atkinson-hyperlegible-latin-700-normal-GZI4o3u0.woff2     17.52 kB
+dist/assets/jetbrains-mono-latin-wght-normal-B9CIFXIH.woff2           40.40 kB
+dist/assets/inter-latin-wght-normal-Dx4kXJAl.woff2                    48.25 kB
+dist/assets/inter-latin-ext-wght-normal-DO1Apj_S.woff2                85.06 kB
+dist/assets/pdf.worker.min-yatZIOMy.mjs                            1,375.83 kB
+dist/assets/index-iCcUBQl4.css                                        86.58 kB │ gzip:  16.48 kB
+dist/assets/pdf.worker.min-EipBoiTd.js                                 0.08 kB │ gzip:   0.10 kB
+dist/assets/array-BifhSqXX.js                                          0.10 kB │ gzip:   0.11 kB
+dist/assets/channel-DNtkK91v.js                                        0.11 kB │ gzip:   0.12 kB
+dist/assets/pie-XZMESJXO-D_fL-tC8.js                                   0.12 kB │ gzip:   0.12 kB
+dist/assets/info-OHQRW6UA-D5v_EDd4.js                                  0.12 kB │ gzip:   0.12 kB
+dist/assets/radar-ABXABTNO-BLAIV1PR.js                                 0.12 kB │ gzip:   0.12 kB
+dist/assets/packet-JDAUHWVQ-BvbjETC6.js                                0.12 kB │ gzip:   0.12 kB
+dist/assets/cynefin-EF2NZ3EQ-B8fhGQrC.js                               0.12 kB │ gzip:   0.13 kB
+dist/assets/treemap-SAJKECNS-Y0GHlWbt.js                               0.12 kB │ gzip:   0.12 kB
+dist/assets/wardley-7MLQ67FV-Cxhq67Pt.js                               0.12 kB │ gzip:   0.13 kB
+dist/assets/gitGraph-VSP46ZUC-DosSbx4U.js                              0.12 kB │ gzip:   0.13 kB
+dist/assets/railroad-I3PHUGI6-BCm7kLgW.js                              0.12 kB │ gzip:   0.13 kB
+dist/assets/treeView-D4JQ5SDB-CmDgMIqa.js                              0.12 kB │ gzip:   0.13 kB
+dist/assets/railroad-peg-JR7BVNR7-BvyoLadx.js                          0.13 kB │ gzip:   0.13 kB
+dist/assets/architecture-WOLXFQ4H-CK89wT-u.js                          0.13 kB │ gzip:   0.13 kB
+dist/assets/railroad-abnf-LNEFI6M7-dzQmMHTk.js                         0.13 kB │ gzip:   0.13 kB
+dist/assets/railroad-ebnf-DWYD2UWJ-CK9d69YK.js                         0.13 kB │ gzip:   0.13 kB
+dist/assets/eventmodeling-K75KTNOO-GJJWDfkE.js                         0.13 kB │ gzip:   0.13 kB
+dist/assets/init-C-OQMol4.js                                           0.14 kB │ gzip:   0.12 kB
+dist/assets/chunk-Y2CYZVJY-DsF7k-Jl.js                                 0.15 kB │ gzip:   0.14 kB
+dist/assets/chunk-2Q5K7J3B-C1jixKkw.js                                 0.19 kB │ gzip:   0.16 kB
+dist/assets/chunk-JWPE2WC7-DVXcaiue.js                                 0.22 kB │ gzip:   0.17 kB
+dist/assets/chunk-XXDRQBXY-LS0xsyAW.js                                 0.26 kB │ gzip:   0.22 kB
+dist/assets/chunk-5VM5RSS4-ZNzvKenW.js                                 0.36 kB │ gzip:   0.27 kB
+dist/assets/chunk-KQW6MTUR-pqmvM15E.js                                 0.57 kB │ gzip:   0.40 kB
+dist/assets/flowDiagram-OXPTDLAJ-B8g1mt0Z.js                           0.57 kB │ gzip:   0.31 kB
+dist/assets/chunk-J5ZVWO5B-oDCd-gWO.js                                 0.63 kB │ gzip:   0.43 kB
+dist/assets/infoDiagram-5W2HQ5XZ-VuxzUKeB.js                           0.65 kB │ gzip:   0.42 kB
+dist/assets/swimlanesDiagram-K3J5GTZL-978tZSfj.js                      0.83 kB │ gzip:   0.48 kB
+dist/assets/sizeCapture-INFHLROL-3uHXrFqA.js                           0.87 kB │ gzip:   0.51 kB
+dist/assets/chunk-DUW6YSOI-Dgx8z5s3.js                                 0.89 kB │ gzip:   0.46 kB
+dist/assets/line-e7jUwtxz.js                                           0.94 kB │ gzip:   0.47 kB
+dist/assets/ordinal-BDEzSJ7C.js                                        1.17 kB │ gzip:   0.56 kB
+dist/assets/chunk-DBDB3WZW-ua0cM_8W.js                                 1.41 kB │ gzip:   0.79 kB
+dist/assets/railroadDiagram-SM67HX2B-CnYuSp3J.js                       1.65 kB │ gzip:   0.77 kB
+dist/assets/abnfDiagram-YUKMZFIV-DbQ2J8-s.js                           1.84 kB │ gzip:   0.89 kB
+dist/assets/chunk-4EA7E6EY-ByejFiQK.js                                 1.95 kB │ gzip:   0.95 kB
+dist/assets/chunk-7TKQ45FW-CNL_Wkv4.js                                 1.97 kB │ gzip:   0.88 kB
+dist/assets/pegDiagram-BGZESJAR-CmUJ12rd.js                            2.01 kB │ gzip:   0.94 kB
+dist/assets/ebnfDiagram-VR2GEFS7-CKDUtK6T.js                           2.05 kB │ gzip:   0.89 kB
+dist/assets/dist-Bsd8S7tK.js                                           2.16 kB │ gzip:   0.96 kB
+dist/assets/path-fybaL0A-.js                                           2.27 kB │ gzip:   0.98 kB
+dist/assets/arc-BvfgnvVe.js                                            3.47 kB │ gzip:   1.46 kB
+dist/assets/diagram-UMYRVEAY-NPlAe3m4.js                               4.34 kB │ gzip:   1.90 kB
+dist/assets/defaultLocale-BFoDCU3G.js                                  4.63 kB │ gzip:   2.12 kB
+dist/assets/chunk-HTAEGDNF-B3eBoluH.js                                 5.43 kB │ gzip:   2.50 kB
+dist/assets/linear-Dd9LiEa_.js                                         5.51 kB │ gzip:   2.25 kB
+dist/assets/chunk-HJ2JQQFS-B00oAHJI.js                                 5.83 kB │ gzip:   2.68 kB
+dist/assets/diagram-YEKJPTXX-BIf_HQFB.js                               6.07 kB │ gzip:   2.57 kB
+dist/assets/pieDiagram-CAPJLFHJ-pS6Ih_AB.js                            6.22 kB │ gzip:   2.59 kB
+dist/assets/diagram-PFPMY2P6-BLObzEVN.js                               8.19 kB │ gzip:   3.65 kB
+dist/assets/cynefinDiagram-3GCD6N5R-eLSGytGs.js                        9.94 kB │ gzip:   3.51 kB
+dist/assets/chunk-FVRAUYC3-BPFfPgxp.js                                10.37 kB │ gzip:   4.31 kB
+dist/assets/diagram-ZIFT7M5P-BRGVPQB5.js                              10.92 kB │ gzip:   4.26 kB
+dist/assets/chunk-NTY3LDVX-DvXFjUBo.js                                14.83 kB │ gzip:   4.19 kB
+dist/assets/chunk-AW2ZBBNX-Ip0BHW50.js                                15.64 kB │ gzip:   4.35 kB
+dist/assets/diagram-OVF4WLC6-BBLGeO34.js                              15.75 kB │ gzip:   5.52 kB
+dist/assets/mermaid-parser.core-D4muiSkx.js                           16.61 kB │ gzip:   3.92 kB
+dist/assets/ishikawaDiagram-K3B6WC7H-KATSgFci.js                      17.30 kB │ gzip:   6.54 kB
+dist/assets/kanban-definition-P3RFRI5V-DLccHEXh.js                    20.26 kB │ gzip:   7.15 kB
+dist/assets/sankeyDiagram-UM26HJRW-DmjXjcrZ.js                        22.79 kB │ gzip:   8.26 kB
+dist/assets/journeyDiagram-COXZFDF6-K0SNGtHI.js                       23.15 kB │ gzip:   8.16 kB
+dist/assets/mindmap-definition-LZFPQGKD-CfJqDk-x.js                   23.44 kB │ gzip:   7.99 kB
+dist/assets/graphlib-DS17s2tU.js                                      23.90 kB │ gzip:   8.31 kB
+dist/assets/wardleyDiagram-YMQ3BMBF-D6A7MNUT.js                       25.20 kB │ gzip:   6.55 kB
+dist/assets/rough.esm-Dy-Kn_BL.js                                     27.10 kB │ gzip:   8.85 kB
+dist/assets/gitGraphDiagram-XJZIOB7I-B5tZuVfh.js                      29.01 kB │ gzip:   8.55 kB
+dist/assets/chunk-3YJQHVM4-BI7PQdRh.js                                30.36 kB │ gzip:   8.44 kB
+dist/assets/timeline-definition-YOQAKGHF-3IVxNuF5.js                  30.45 kB │ gzip:  10.03 kB
+dist/assets/erDiagram-O2IAPWRE-B5Vz7ME4.js                            30.65 kB │ gzip:  10.58 kB
+dist/assets/requirementDiagram-X7JNWC4A-DW1Kc4lM.js                   31.07 kB │ gzip:   9.83 kB
+dist/assets/quadrantDiagram-GDMTTRAM-Dk0hgI3x.js                      33.52 kB │ gzip:   9.74 kB
+dist/assets/chunk-2BW5OAIV-CedIKFRj.js                                37.85 kB │ gzip:   8.19 kB
+dist/assets/vennDiagram-BLWOH2XV-3Ap76khI.js                          41.18 kB │ gzip:  15.12 kB
+dist/assets/stateDiagram-v2-TBUQTH76-CyhGbZLv.js                      41.55 kB │ gzip:  13.89 kB
+dist/assets/blockDiagram-E7TT5TSB-CL5fNd_d.js                         42.44 kB │ gzip:  13.88 kB
+dist/assets/xychartDiagram-TAQBALBS-CfAmaUci.js                       44.52 kB │ gzip:  12.35 kB
+dist/assets/src-BJZpxAKS.js                                           45.67 kB │ gzip:  16.00 kB
+dist/assets/dagre-W4DXFKR2-DyYG_CR8.js                                47.83 kB │ gzip:  17.11 kB
+dist/assets/classDiagram-v2-K4WV4PDN-mjmTg6Du.js                      49.70 kB │ gzip:  16.16 kB
+dist/assets/chunk-E2ZNV5FY-Dm12ZSpe.js                                51.87 kB │ gzip:  16.64 kB
+dist/assets/chunk-EU5HNXII-BuFgwAYz.js                                62.79 kB │ gzip:  20.37 kB
+dist/assets/c4Diagram-CRA5TL53-BHutfMGt.js                            65.08 kB │ gzip:  18.61 kB
+dist/assets/ganttDiagram-R7TSEDQI-COvQ4lyZ.js                         70.03 kB │ gzip:  23.01 kB
+dist/assets/diagram-2UJZ2QOL-BKCMf-0j.js                              80.48 kB │ gzip:  25.15 kB
+dist/assets/cose-bilkent-JH36ORCC-DRwoQNlz.js                         81.24 kB │ gzip:  21.53 kB
+dist/assets/mermaid.core-DUHbW63G.js                                  84.94 kB │ gzip:  29.32 kB
+dist/assets/swimlanes-N4OXWK64-go7QqJTJ.js                           106.24 kB │ gzip:  36.12 kB
+dist/assets/chunk-XC4XBNZT-CLjVcHFZ.js                               115.49 kB │ gzip:  29.24 kB
+dist/assets/sequenceDiagram-ZO4K6R2Y-C8PmLAdo.js                     117.67 kB │ gzip:  31.38 kB
+dist/assets/architectureDiagram-47P4ROYG-1vtpzWkb.js                 148.90 kB │ gzip:  41.12 kB
+dist/assets/usecaseDiagram-VIAY4XPW-Bp26YW2H.js                      187.92 kB │ gzip:  49.21 kB
+dist/assets/chunk-VPRB5NB3-RQjJ6s9P.js                               241.42 kB │ gzip:  40.32 kB
+dist/assets/katex-ZlcWpGUi.js                                        258.68 kB │ gzip:  77.43 kB
+dist/assets/pdf-De-u3HOU.js                                          329.85 kB │ gzip:  97.01 kB
+dist/assets/cytoscape.esm-ZKjJ8woK.js                                434.99 kB │ gzip: 137.81 kB
+dist/assets/chunk-NGNAAXSQ-DqoPQk1a.js                               629.05 kB │ gzip: 127.32 kB
+dist/assets/index-Btp1_W5l.js                                      1,199.24 kB │ gzip: 344.79 kB
+dist/assets/elk-IJKZMXRS-C0ztv2Ik.js                               1,462.92 kB │ gzip: 455.81 kB
+
+[33m[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.[39m
+[32m✓ built in 964ms[39m
+🔨 Building ragon (upstream rust-v0.158.0, 38 patches)...
+[1m[92m    Updating[0m crates.io index
+[1m[92m   Compiling[0m codex-otel v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\otel)
+[1m[92m   Compiling[0m ragon-airgapped v0.1.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ragon\airgapped)
+[1m[92m   Compiling[0m libsqlite3-sys v0.37.0
+[1m[92m   Compiling[0m codex-install-context v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\install-context)
+[1m[92m   Compiling[0m codex-skills v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\skills)
+[1m[92m   Compiling[0m codex-code-mode-protocol v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\code-mode-protocol)
+[1m[92m   Compiling[0m ragon-tools v0.1.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ragon\tools)
+[1m[92m   Compiling[0m ragon-masking v0.1.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ragon\masking)
+[1m[92m   Compiling[0m ragon-safegit v0.1.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ragon\safegit)
+[1m[92m   Compiling[0m ragon-node-locator v0.1.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ragon\node-locator)
+[1m[92m   Compiling[0m ragon-skills v0.1.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ragon\skills)
+[1m[92m   Compiling[0m ragon-log v0.1.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ragon\log)
+[1m[92m   Compiling[0m ragon-loop-guard v0.1.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ragon\loop-guard)
+[1m[92m   Compiling[0m codex-cli v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\cli)
+[1m[92m   Compiling[0m ragon-delegate v0.1.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ragon\delegate)
+[1m[92m   Compiling[0m codex-build-info v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\build-info)
+[1m[92m   Compiling[0m ragon-monitor v0.1.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ragon\monitor)
+[1m[92m   Compiling[0m ragon-apps v0.1.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ragon\apps)
+[1m[92m   Compiling[0m codex-realtime-webrtc v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\realtime-webrtc)
+[1m[92m   Compiling[0m codex-code-mode-runtime v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\code-mode-runtime)
+[1m[92m   Compiling[0m codex-windows-sandbox v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\windows-sandbox-rs)
+[1m[92m   Compiling[0m codex-code-mode v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\code-mode)
+[1m[92m   Compiling[0m codex-code-mode-host v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\code-mode-host)
+[1m[92m   Compiling[0m codex-rollout-trace v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\rollout-trace)
+[1m[92m   Compiling[0m codex-config v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\config)
+[1m[92m   Compiling[0m codex-mxc-sandbox v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\mxc-sandbox)
+[1m[92m   Compiling[0m codex-exec-server-protocol v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\exec-server-protocol)
+[1m[92m   Compiling[0m codex-sandboxing v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\sandboxing)
+[1m[92m   Compiling[0m sqlx-sqlite v0.9.0
+[1m[92m   Compiling[0m sqlx v0.9.0
+[1m[92m   Compiling[0m codex-state v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\state)
+[1m[92m   Compiling[0m codex-login v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\login)
+[1m[92m   Compiling[0m codex-exec-server v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\exec-server)
+[1m[92m   Compiling[0m codex-rollout v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\rollout)
+[1m[92m   Compiling[0m codex-models-manager v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\models-manager)
+[1m[92m   Compiling[0m codex-agent-roles v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\agent-roles)
+[1m[92m   Compiling[0m codex-agent-graph-store v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\agent-graph-store)
+[1m[92m   Compiling[0m codex-utils-plugins v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\utils\plugins)
+[1m[92m   Compiling[0m codex-plugin v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\plugin)
+[1m[92m   Compiling[0m codex-feedback v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\feedback)
+[1m[92m   Compiling[0m codex-connectors v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\connectors)
+[1m[92m   Compiling[0m codex-model-provider v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\model-provider)
+[1m[92m   Compiling[0m codex-rmcp-client v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\rmcp-client)
+[1m[92m   Compiling[0m codex-tools v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\tools)
+[1m[92m   Compiling[0m codex-mcp v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\codex-mcp)
+[1m[92m   Compiling[0m codex-app-server-protocol v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\app-server-protocol)
+[1m[92m   Compiling[0m codex-hooks v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\hooks)
+[1m[92m   Compiling[0m codex-apply-patch v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\apply-patch)
+[1m[92m   Compiling[0m codex-extension-api v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ext\extension-api)
+[1m[92m   Compiling[0m codex-agent-message-board-extension v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ext\agent-message-board)
+[1m[92m   Compiling[0m codex-backend-client v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\backend-client)
+[1m[92m   Compiling[0m codex-cloud-config v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\cloud-config)
+[1m[92m   Compiling[0m codex-git-attribution v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ext\git-attribution)
+[1m[92m   Compiling[0m codex-home v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\codex-home)
+[1m[92m   Compiling[0m ragon-launcher v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\ragon)
+[1m[92m   Compiling[0m codex-arg0 v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\arg0)
+[1m[92m   Compiling[0m codex-cloud-tasks-client v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\cloud-tasks-client)
+[1m[91merror[E0433][0m[1m[97m: cannot find module or crate `ragon_chat` in this scope[0m
+   [1m[96m--> [0mragon\src\auth\commands.rs:667:17
+    [1m[96m|[0m
+[1m[96m667[0m [1m[96m|[0m     let kinds = ragon_chat::bindings::KINDS;
+    [1m[96m|[0m                 [1m[91m^^^^^^^^^^[0m [1m[91muse of unresolved module or unlinked crate `ragon_chat`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mhelp[0m: if you wanted to use a crate named `ragon_chat`, use `cargo add ragon_chat` to add it to your `Cargo.toml`
+
+[1m[91merror[E0433][0m[1m[97m: cannot find module or crate `ragon_chat` in this scope[0m
+   [1m[96m--> [0mragon\src\auth\commands.rs:688:5
+    [1m[96m|[0m
+[1m[96m688[0m [1m[96m|[0m     ragon_chat::bindings::write_primary(&codex_home.join("chat"), &primary.gate, &primary.node_name(), primary.ca_pem.as_deref())?;
+    [1m[96m|[0m     [1m[91m^^^^^^^^^^[0m [1m[91muse of unresolved module or unlinked crate `ragon_chat`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mhelp[0m: if you wanted to use a crate named `ragon_chat`, use `cargo add ragon_chat` to add it to your `Cargo.toml`
+
+[1m[91merror[E0433][0m[1m[97m: cannot find module or crate `ragon_chat` in this scope[0m
+   [1m[96m--> [0mragon\src\auth\commands.rs:692:8
+    [1m[96m|[0m
+[1m[96m692[0m [1m[96m|[0m     if ragon_chat::bindings::service_key(home).is_none() {
+    [1m[96m|[0m        [1m[91m^^^^^^^^^^[0m [1m[91muse of unresolved module or unlinked crate `ragon_chat`[0m
+    [1m[96m|[0m
+    [1m[96m= [0m[1m[97mhelp[0m: if you wanted to use a crate named `ragon_chat`, use `cargo add ragon_chat` to add it to your `Cargo.toml`
+
+[1m[93mwarning[0m[1m[97m: unused import: `std::process::Command`[0m
+  [1m[96m--> [0mragon\src\guard.rs:31:5
+   [1m[96m|[0m
+[1m[96m31[0m [1m[96m|[0m use std::process::Command;
+   [1m[96m|[0m     [1m[93m^^^^^^^^^^^^^^^^^^^^^[0m
+   [1m[96m|[0m
+   [1m[96m= [0m[1m[97mnote[0m: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+[1m[93mwarning[0m[1m[97m: unused import: `std::process::Stdio`[0m
+  [1m[96m--> [0mragon\src\guard.rs:32:5
+   [1m[96m|[0m
+[1m[96m32[0m [1m[96m|[0m use std::process::Stdio;
+   [1m[96m|[0m     [1m[93m^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[93mwarning[0m[1m[97m: unused import: `std::process::Command`[0m
+  [1m[96m--> [0mragon\src\night.rs:22:5
+   [1m[96m|[0m
+[1m[96m22[0m [1m[96m|[0m use std::process::Command;
+   [1m[96m|[0m     [1m[93m^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[92m   Compiling[0m codex-message-history v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\message-history)
+[1m[92m   Compiling[0m codex-cloud-tasks-mock-client v0.9.0 (C:\Users\runner\.cache\dreamference\ragon-codex\src\codex-rs\cloud-tasks-mock-client)
+[1m[97mFor more information about this error, try `rustc --explain E0433`.[0m
+[1m[93mwarning[0m: `ragon-launcher` (lib) generated 3 warnings
+[1m[91merror[0m: could not compile `ragon-launcher` (lib) due to 3 previous errors; 3 warnings emitted
+[1m[93mwarning[0m: build failed, waiting for other jobs to finish...
+❌ The ragon build failed; see the cargo output above.
+##[error]Process completed with exit code 1.

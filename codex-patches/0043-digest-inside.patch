@@ -1,0 +1,20 @@
+diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
+--- a/codex-rs/core/Cargo.toml
++++ b/codex-rs/core/Cargo.toml
+@@ -76,2 +76,3 @@ ragon-tools = { path = "../ragon/tools" }
+ ragon-masking = { path = "../ragon/masking" }
++ragon-digest = { path = "../ragon/digest" }
+ codex-utils-absolute-path = { workspace = true }
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -834,3 +834,3 @@ impl UnifiedExecProcessManager {
+             wall_time,
+-            raw_output: collected,
++            raw_output: ragon_digest::inside(&request.hook_command, collected, exit_code).await,
+             truncation_policy: context
+@@ -1102,3 +1102,3 @@ impl UnifiedExecProcessManager {
+             wall_time,
+-            raw_output: collected,
++            raw_output: ragon_digest::inside(&hook_command, collected, exit_code).await,
+             truncation_policy: request.truncation_policy,

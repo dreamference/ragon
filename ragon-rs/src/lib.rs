@@ -54,6 +54,7 @@ pub mod compat_print;
 pub mod compat_tui;
 pub mod compaction;
 pub mod delegate;
+pub mod digest;
 pub mod docs_index;
 pub mod exec_tool;
 pub mod guard;
@@ -751,6 +752,8 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
     let args = compaction::prepare(args, &codex_home, &host, &model).await;
     // Old tool outputs are masked in what is sent once the request nears that limit (mask.rs).
     mask::configure(masking, &args, &codex_home, model.max_model_len);
+    // A long command output reaches the model as a digest, when switched on (digest.rs).
+    digest::configure(&codex_home);
     // Old tool outputs are dropped first when the session is about to compact, when switched on
     // (compaction.rs; compaction spec §13).
     compaction::prepare_drop(&args, &codex_home, model.max_model_len);

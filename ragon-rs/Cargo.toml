@@ -45,6 +45,9 @@ ragon-log = { path = "log" }
 ragon-apps = { path = "apps" }
 # Observation masking: the rule Codex's core calls (patch 0021); the launcher sets its policy.
 ragon-masking = { path = "masking" }
+# Ragon Digest inside Ragon: Codex's core hands it each command output (patch 0043); the launcher
+# switches it on (src/digest.rs).
+ragon-digest = { path = "digest" }
 ragon-node-locator = { path = "node-locator" }
 # Code Mode's `exec` as a function on a server that drops custom tools: the launcher sets the
 # choice, Codex's core translates (patch 0020; src/exec_tool.rs).

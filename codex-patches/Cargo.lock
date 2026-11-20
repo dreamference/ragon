@@ -3102,6 +3102,7 @@ dependencies = [
  "insta",
  "libc",
  "ragon-airgapped",
+ "ragon-digest",
  "ragon-masking",
  "ragon-tools",
  "maplit",
@@ -10239,6 +10240,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ragon-digest"
+version = "0.1.0"
+
+[[package]]
 name = "ragon-launcher"
 version = "1.7.2"
 dependencies = [
@@ -10265,6 +10270,7 @@ dependencies = [
  "ragon-apps",
  "ragon-chat",
  "ragon-delegate",
+ "ragon-digest",
  "ragon-log",
  "ragon-loop-guard",
  "ragon-masking",

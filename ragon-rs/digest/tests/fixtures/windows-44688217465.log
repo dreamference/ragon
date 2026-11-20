@@ -1,0 +1,41 @@
+##[group]Run python -c "import sys; from dreamference.runner.codex_branded_builder import CodexBrandedBuilder as B; sys.exit(0 if B.build(force=True) else 1)"
+[36;1mpython -c "import sys; from dreamference.runner.codex_branded_builder import CodexBrandedBuilder as B; sys.exit(0 if B.build(force=True) else 1)"[0m
+shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+env:
+  PYTHONUTF8: 1
+  PYTHONIOENCODING: utf-8
+  pythonLocation: C:\actions-runner\_work\_tool\Python\3.12.10\x64
+  PKG_CONFIG_PATH: C:\actions-runner\_work\_tool\Python\3.12.10\x64/lib/pkgconfig
+  Python_ROOT_DIR: C:\actions-runner\_work\_tool\Python\3.12.10\x64
+  Python2_ROOT_DIR: C:\actions-runner\_work\_tool\Python\3.12.10\x64
+  Python3_ROOT_DIR: C:\actions-runner\_work\_tool\Python\3.12.10\x64
+  CARGO_HOME: C:\Users\runner\.cargo
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  INCLUDE: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\include;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\VS\include;C:\Program Files (x86)\Windows Kits\10\include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\um;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\shared;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\winrt;C:\Program Files (x86)\Windows Kits\10\\include\10.0.26100.0\\cppwinrt
+  LIB: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\lib\x64;C:\Program Files (x86)\Windows Kits\10\lib\10.0.26100.0\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\\lib\10.0.26100.0\\um\x64
+  LIBPATH: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\lib\x64;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\lib\x86\store\references;C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0;C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+  PATH: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\VC\VCPackages;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\TestWindow;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\bin\Roslyn;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Team Tools\DiagnosticsHub\Collector;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\Llvm\x64\bin;C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\\x64;C:\Program Files (x86)\Windows Kits\10\bin\\x64;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\\MSBuild\Current\Bin\amd64;C:\Windows\Microsoft.NET\Framework64\v4.0.30319;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\;C:\Program Files\PowerShell\7;C:\Users\runner\.cargo\bin;C:\Users\runner\AppData\Roaming\Python\Python312\Scripts;C:\actions-runner\_work\_tool\Python\3.12.10\x64\Scripts;C:\actions-runner\_work\_tool\Python\3.12.10\x64;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Program Files\Git\cmd;C:\Program Files\PowerShell\7\;C:\Program Files\Git\bin;C:\Program Files\Git\usr\bin;C:\Users\runner\AppData\Local\Microsoft\WindowsApps;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\VC\Linux\bin\ConnectionManagerExe;C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\vcpkg
+  UCRTVersion: 10.0.26100.0
+  UniversalCRTSdkDir: C:\Program Files (x86)\Windows Kits\10\
+  VCINSTALLDIR: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\
+  VCToolsInstallDir: C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207\
+  WindowsLibPath: C:\Program Files (x86)\Windows Kits\10\UnionMetadata\10.0.26100.0;C:\Program Files (x86)\Windows Kits\10\References\10.0.26100.0
+  WindowsSdkBinPath: C:\Program Files (x86)\Windows Kits\10\bin\
+  WindowsSdkDir: C:\Program Files (x86)\Windows Kits\10\
+  WindowsSDKLibVersion: 10.0.26100.0\
+  WindowsSDKVersion: 10.0.26100.0\
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: C:\Users\runner\.rustup\toolchains\stable-x86_64-pc-windows-msvc\lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe
+##[endgroup]
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "C:\actions-runner\_work\ragon\ragon\dreamference\runner\__init__.py", line 6, in <module>
+    from dreamference.runner.codex_runner import CodexRunner
+  File "C:\actions-runner\_work\ragon\ragon\dreamference\runner\codex_runner.py", line 20, in <module>
+    from dreamference.node.service_key import ServiceKey
+  File "C:\actions-runner\_work\ragon\ragon\dreamference\node\__init__.py", line 16, in <module>
+    from dreamference.node.node_job import NodeJob
+  File "C:\actions-runner\_work\ragon\ragon\dreamference\node\node_job.py", line 26, in <module>
+    import fcntl
+ModuleNotFoundError: No module named 'fcntl'
+##[error]Process completed with exit code 1.

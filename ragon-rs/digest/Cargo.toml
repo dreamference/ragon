@@ -1,0 +1,14 @@
+# Ragon Digest inside Ragon: a long command output is replaced in the model's context by a digest of
+# at most 60 lines, and the full output is kept in a file the agent reads by line numbers. Its own
+# crate with no dependencies, because Codex's core calls it (patch 0043) and the launcher crate
+# depends on crates that depend on core. Off unless the launcher switches it on (digest.rs).
+[package]
+name = "ragon-digest"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "ragon_digest"
+path = "src/lib.rs"
