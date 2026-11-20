@@ -37,6 +37,7 @@ INDEX_ARG: Final[str] = "index"
 NON_INTERACTIVE: Final[frozenset] = frozenset(
     {
         "exec",
+        "pair",
         "e",
         "app-server",
         "mcp-server",
