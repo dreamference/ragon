@@ -67,6 +67,7 @@ pub mod mask;
 pub mod monitor;
 pub mod night;
 pub mod node;
+pub mod node_advertise_macos;
 pub mod node_command;
 pub mod notice;
 pub mod plugins;

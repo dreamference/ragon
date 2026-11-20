@@ -3809,3 +3809,29 @@ def test_a_forced_command_ending_in_a_backslash_is_refused():
     # that follow would become part of the command.
     with pytest.raises(ValueError):
         NodePairing.authorized_line(PUBLIC_KEY, "/x node serve-job --key a\\")
+
+
+def test_the_txt_keys_are_the_shared_vector():
+    """Rust's TXT record (ragon-rs/src/node_advertise_macos.rs) is tested against the same file."""
+    vector = json.loads(
+        (Path(__file__).parent.parent / "ragon-rs" / "vectors" / "node-txt-keys.json").read_text()
+    )
+    text = NodeServiceFile.render(
+        port=vector["port"],
+        node_id=vector["node_id"],
+        version=vector["version"],
+        state=vector["state"],
+        web_port=vector["web_port"],
+        search_port=vector["search_port"],
+        main=vector["main"],
+        remote=vector["remote"],
+        forge=(vector["forge"]["role"], vector["forge"]["port"]),
+    )
+    node_block = NodeServiceFile.service_block(text, "_ragon-node._tcp")
+    records = NodeServiceFile.parse(text)
+    assert records is not None and node_block is not None
+    keys = re.findall(r"<txt-record>([a-z]+)=", node_block)
+    assert keys == vector["keys"]
+    assert {k: records[k] for k in keys} == vector["values"]
+    forge_block = NodeServiceFile.service_block(text, "_ragon-forge._tcp")
+    assert re.findall(r"<txt-record>([a-z]+)=", forge_block or "") == vector["forge"]["keys"]
