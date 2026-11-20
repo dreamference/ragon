@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "model": "qwen3.8-27b-nvfp4-dflash2",
+  "weights_sha256": null,
+  "gate_memory_gb": 128,
+  "recipes": [
+    {
+      "memory_gb": 36,
+      "gpu_cap_gb": 27,
+      "sessions": 2,
+      "max_context": 32768,
+      "prefill_chunk": 512,
+      "vision": false,
+      "sparse_head_dir": "sparse-head"
+    },
+    {
+      "memory_gb": 48,
+      "gpu_cap_gb": 36,
+      "sessions": 2,
+      "max_context": 65536,
+      "prefill_chunk": 1024,
+      "vision": true,
+      "sparse_head_dir": "sparse-head"
+    },
+    {
+      "memory_gb": 64,
+      "gpu_cap_gb": 48,
+      "sessions": 2,
+      "max_context": 131072,
+      "prefill_chunk": 2048,
+      "vision": true,
+      "sparse_head_dir": "sparse-head"
+    },
+    {
+      "memory_gb": 128,
+      "gpu_cap_gb": 96,
+      "sessions": 4,
+      "batch": 4,
+      "max_context": 262144,
+      "prefill_chunk": 2048,
+      "vision": true,
+      "sparse_head_dir": "sparse-head"
+    },
+    {
+      "memory_gb": 256,
+      "gpu_cap_gb": 192,
+      "sessions": 8,
+      "max_context": 262144,
+      "prefill_chunk": 2048,
+      "vision": true,
+      "sparse_head_dir": "sparse-head"
+    }
+  ]
+}
