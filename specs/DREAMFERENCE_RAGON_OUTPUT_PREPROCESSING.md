@@ -1,6 +1,6 @@
 # Ragon Output Preprocessing
 
-**Status:** decided by the owner on 2026-11-20 (a question round of 100 questions, §0.1); spec only, nothing built. This is revision 2: it replaces the first draft of the same day wherever the owner chose differently. The points the answers leave open are in §0.3, each with a proposed default. The replay set starts at once; the product code starts after the 0.9.9 release (decision 99).
+**Status:** decided by the owner on 2026-11-20 (a question round of 100 questions, §0.1); the stage inside Ragon (§2.6) is built ahead of stage 1 and off by default (owner, 2026-11-20 14:25); the rest is spec only. This is revision 3: revision 2 replaced the first draft of the same day wherever the owner chose differently, and revision 3 adds the owner's four answers of the same evening (§0.4): line numbers instead of quotes, the last good run, hiding old outputs and the SWE arms. The points the answers leave open are in §0.3, each with a proposed default. The replay set starts at once; the product code starts after the 0.9.9 release (decision 99).
 
 **User-facing name:** **Ragon Digest**. The command is `ragon digest`. This spec keeps the title Ragon Output Preprocessing (decision 97).
 
@@ -35,8 +35,8 @@ Each answer in one line, with its number. Where a later answer refines an earlie
 | 6 | Result: selected lines verbatim with their numbers, plus a short retelling by Ragon marked as unverified (its length: at most three sentences, decision 42). |
 | 7 | Length threshold: configurable, 200 lines by default. |
 | 8 | The caller always says what it looks for ("why did the build fail?"); in the plugin this is the run tool's mandatory field (decision 92). |
-| 9 | One quote that does not match the raw output discards the whole answer: plain truncation (head and tail) with a "preprocessing failed" note. |
-| 10 | The retelling comes after the quotes, marked "not verified". |
+| 9 | One line number that does not name a line the model was shown discards the whole answer: plain truncation (head and tail) with a "preprocessing failed" note. Refined by P1 (§0.4): the model returns line numbers, not quotes, so there is no quote left to mismatch; the number check is the discard path. |
+| 10 | The retelling comes after the selected lines, marked "not verified". |
 | 11 | Always kept, whatever the model does: the exit code, the last 20 lines, every line with an error or failure word (found by plain search; the model cannot drop them), the raw file's path and its line count. |
 | 12 | Raw outputs kept for one day, and rotated earlier when they take too much space (a size cap). |
 | 13 | While the model serves a user's session, preprocessing runs at the same time, sharing the model; it never waits for the user's turn to end. |
@@ -63,7 +63,7 @@ Each answer in one line, with its number. Where a later answer refines an earlie
 | 37 | The simple part (error search, truncation, quote verification) runs on the node; the whole output goes to the node (one implementation, also the client's fallback, decision 89). |
 | 38 | Language: Rust, inside `ragon` (one code base for Linux, Mac and Windows). |
 | 39 | Node unreachable or model still loading: truncation at once, no waiting, marked "the model did not take part" (made by the same code on the client, decision 89). |
-| 40 | A local-only journal of preprocessing failures (a quote mismatch; the agent opened the raw file afterwards); never sent anywhere. |
+| 40 | A local-only journal of preprocessing failures (a number out of range; the agent opened the raw file afterwards); never sent anywhere. |
 | 41 | The retelling is always in English. |
 | 42 | The retelling is at most three sentences. |
 | 43 | The retelling states what happened only; no advice on what to do next. |
@@ -127,7 +127,7 @@ Each answer in one line, with its number. Where a later answer refines an earlie
 
 ### 0.2 Conflicts the answers resolved: the final rules
 
-- **C1. Where the work runs** (decisions 37, 39, 89, 96). One Rust implementation in `ragon` does the simple part: cleaning, the mandatory lines, error search, windows, truncation and the quote check. It normally runs on the node, which receives the whole output. When a configured node cannot be reached or its model is still loading, the same code runs on the client and gives the plain truncation at once, marked "the model did not take part". With no node configured at all, `ragon digest` says that a node is needed; the client-side truncation is a fallback, never a product mode.
+- **C1. Where the work runs** (decisions 37, 39, 89, 96). One Rust implementation in `ragon` does the simple part: cleaning, the mandatory lines, error search, windows, truncation and the number check. It normally runs on the node, which receives the whole output. When a configured node cannot be reached or its model is still loading, the same code runs on the client and gives the plain truncation at once, marked "the model did not take part". With no node configured at all, `ragon digest` says that a node is needed; the client-side truncation is a fallback, never a product mode.
 - **C2. The question** (decisions 8, 23, 92). Every preprocessing has a question. In the plugin the run tool's field `what I want to learn` is mandatory, so the automatic mode always has one. `ragon digest` takes it as an argument; a call without a question gets plain truncation and no model.
 - **C3. A successful command** (decisions 31, 91). When the exit code is 0 and no mandatory error line was found, the caller gets the exit code, the line count, the raw path and the summary lines (the last 20 lines) at once. The model is still asked the caller's question, and its verified reply is appended to a file beside the raw output (`<raw>.digest`), which the agent reads only if it wants.
 - **C4. Concurrency** (decisions 13, 22, 52, 90). No cap per node and no limit on how much a user's own session slows down: the model is shared equally among requests, preprocessing included, and nothing waits for a user's turn to end. Each request goes to the least busy of the available nodes that serve the model; the project's agents use the routing nodes, wherever one is free (decision 78).
@@ -135,7 +135,19 @@ Each answer in one line, with its number. Where a later answer refines an earlie
 - **C6. The retelling's length** (decisions 6, 42, 80). At most three sentences.
 - **C7. The mandatory lines are in every result** (decisions 9, 11, 39, 45). The exit code, the last 20 lines, every error and failure line, the raw path and the line count are computed by code before the model is asked, and they appear in every result: the full digest, the plain truncation after a failed check or a timeout, and the truncation made on the client when the model did not take part. "Plain truncation" therefore means the mandatory lines plus the first lines of the output, within the size limit.
 - **C8. Secrets** (decisions 30, 46). The feature adds no masking and removes none: the local model and the raw file see the output as it is, and whatever masking the strong model's side applies today stays where it is.
+- **C10. Line numbers, not quotes** (decisions 9, 84, P1). The model answers with line numbers and a retelling; code copies every shown line from the output. A reply that does not parse is asked once more (decision 84). A number that names no line of the output, or a line the model was not shown, discards the whole answer at once, with no retry: the caller gets the result made without the model (C7), and the case goes to the journal.
 - **C9. The start** (decisions 69, 70, 99). The replay set track starts at once. The command and the node interface start after the 0.9.9 release. The plugin's automatic mode follows the command.
+
+### 0.4 Decided by the owner on the evening of 2026-11-20 (the papers study)
+
+Four answers to the questions of the study of published work similar to Ragon Digest. They are numbered P1 to P4 so that they do not collide with the round of §0.1.
+
+| # | Decision |
+|---|---|
+| P1 | The model names line numbers and writes the retelling; the program copies the text of each line from the output. A number out of range is the only discard path left (C10, §3.4). |
+| P2 | Compare with the last good run: keep line samples of the last successful run of the same command and leave out of a digest the lines that run printed too. No model takes part; the samples are bounded and kept for one day (§3.8). |
+| P3 | The SWE check counts resolved tasks, steps and the paid model's tokens per task, and has a third arm that only hides old outputs (§9). |
+| P4 | Inside Ragon, every output older than the last 10 steps is replaced by one line naming where the whole output is: a separate setting, off by default (§2.6). |
 
 ### 0.3 Open points
 
@@ -148,7 +160,9 @@ The answers leave these open. Each has a proposed default, which the work list u
 | X3 | The cache key of decision 83 (the node never stores the output, decision 47). | The cache sits on the client beside the raw files, for one day. Key: a hash of the cleaned output, the exact question text, the model's name and the feature's version. |
 | X4 | More error lines than the 60-line result holds (decisions 11, 24 and 32). | The 60-line cap holds. Error lines take the 40 selected places first, after the repeated-line rule collapses them; when they still exceed 40, the result shows the first 20 and the last 20, with the count and the line ranges of the rest, and says so in its first line. Every error line stays in the raw file. |
 | X5 | A benchmark round, a GPU test window or a night holding the node (the answers cover a user's session only). | The node's existing busy check still applies there: plain truncation marked "the model did not take part", so a measurement is never disturbed. |
-| X6 | Credit for an answer that was discarded (a quote mismatch, a timeout). | Only answers that passed the quote check and reached the caller are credited in RBRB; the others appear in the journal and the statistics as failures. |
+| X6 | Credit for an answer that was discarded (a number out of range, a timeout). | Only answers that passed the number check and reached the caller are credited in RBRB; the others appear in the journal and the statistics as failures. |
+| X7 | The question inside Ragon, where no caller writes one (decisions 8, 23). | The command itself is the question: the model is asked which lines an agent that ran it must see. |
+| X8 | Which runs count as "the same command" for P2. | The same command text, spaces at both ends trimmed. |
 
 **Design values set by this spec** (not owner decisions; changed by a spec edit when the replay set shows the need):
 
@@ -163,6 +177,10 @@ The answers leave these open. Each has a proposed default, which the work list u
 | Which lines the 60-line cap of decision 24 counts | the output's lines: the last 20 and up to 40 selected. The first line, the section headings, the warnings block and the retelling line are written by code on top of them, at most 12 more lines |
 | `ragon digest` with no node configured | after the message that a node is needed, the output passes through unchanged, so a pipe never loses it |
 | The three off switches of decision 35 | off at any level wins |
+| The model's answer (P1) | `LINES:` with numbers or ranges, at most 30 lines, or `none`; `SUMMARY:` with at most three sentences, cut at 400 characters |
+| One prompt inside Ragon | at most 1,500 lines and 40,000 characters of output, each line cut at 300 characters; a longer output is shown as its head (15 %), its error lines with the two lines after each (45 %) and its tail (40 %) |
+| The last good run's samples (P2) | at most 20,000 line hashes per command, 32 MB for all commands together; a line is compared with its leading time stamps removed and every run of digits made one `#` |
+| The steps kept whole (P4) | the last 10 tool outputs |
 
 ---
 
@@ -222,10 +240,10 @@ Retelling (not verified): <at most three sentences, in English>
 
 - **At most 60 lines** (decision 24): the 20 last lines plus up to 40 selected ones. Error and failure lines are selected first and in full (decision 32); the model's choices fill the rest of the 40 places; X4 covers a log with more error lines than fit.
 - **Warnings** are given as a count and the first five distinct ones (decision 32).
-- **The retelling** comes after the quotes and is marked "not verified" (decision 10): at most three sentences (decision 42), in English (decision 41), stating what happened and never what to do next (decision 43). The user may switch it off and get the verbatim lines only (decision 76).
+- **The retelling** comes after the selected lines and is marked "not verified" (decision 10): at most three sentences (decision 42), in English (decision 41), stating what happened and never what to do next (decision 43). The user may switch it off and get the verbatim lines only (decision 76).
 - **The first line always carries** the line count, the exit code, whether the model took part and the raw path (decision 11). The notes are fixed: `model took part`, `model reply pending: <raw>.digest` (decision 91), `preprocessing failed: <reason>` (decision 9), `the model did not take part: <reason>` (decision 39), `no question` (decision 23).
 - **Empty or binary output**: a one-line factual note ("no output", "binary output, 3.2 MB"), without the model (decision 81).
-- **A successful command** (exit code 0 and no error line found; decisions 31 and 91): the result goes back at once, with the note `model reply pending: <raw>.digest`, the exit code, the line count, the raw path and the last 20 lines. The model still answers the caller's question; once its reply passes the quote check, the reply is appended to `<raw>.digest` beside the raw file, in the same form as a full result. A reply that fails the check, or a time-out, writes the matching note to that file instead. The agent reads the file only if it wants.
+- **A successful command** (exit code 0 and no error line found; decisions 31 and 91): the result goes back at once, with the note `model reply pending: <raw>.digest`, the exit code, the line count, the raw path and the last 20 lines. The model still answers the caller's question; once its reply passes the number check, the reply is appended to `<raw>.digest` beside the raw file, in the same form as a full result. A reply that fails the check, or a time-out, writes the matching note to that file instead. The agent reads the file only if it wants.
 
 ### 2.3 What is preprocessed, and what passes through
 
@@ -243,9 +261,22 @@ Retelling (not verified): <at most three sentences, in English>
 ### 2.5 The node interface
 
 - A documented, stable endpoint on the node's model gate (decision 68). Request: the output (with stream tags and time order when known), the question, the exit code or "unknown", the command line, the threshold, the user's and the project's important-line patterns, and whether a retelling is wanted. Answer: the result of §2.2 as JSON (`{exit_code, total_lines, model_took_part, note, selected: [{n, stream, text}], warnings: {count, distinct, first}, last: [...], retelling}`) and as the printed text.
-- `ragon digest`, the plugin's `run` tool and, later, the stage-2 users all call it. Third-party tools and CI may call it with the same sign-in as any model request.
+- `ragon digest`, the plugin's `run` tool and, later, the stage-2 users all call it; the stage inside Ragon built first (§2.6) asks the node's model directly until the interface exists. Third-party tools and CI may call it with the same sign-in as any model request.
 - The interface is versioned; a change that breaks a field is a new version, and the old one stays served for one release.
 - From 0.9.9 the interface requires sign-in like any model request and every request is attributed to the user (decision 48).
+
+### 2.6 Inside Ragon (stage 2, built first)
+
+The outputs of the commands the agent runs in a `ragon` session (decision 3), built ahead of stage 1 (owner, 2026-11-20 14:25) as the leaf crate `ragon-rs/digest`, which Codex's core calls through a numbered patch in `codex-patches/`; `codex/` is untouched. Every part is off by default; the keys sit in the `[digest]` table of the Dreamference config file, each with an environment variable that wins over it:
+
+| Key | Variable | What it does |
+|---|---|---|
+| `inside` | `DREAMFERENCE_DIGEST_INSIDE` | An output of at least `min_lines` lines (200) reaches the model as a digest without a model: the mandatory lines, the error lines with their context, a few warnings and the last 20 lines, at most 60 lines, with the raw file's path. The raw files are kept for one day. |
+| `model` | `DREAMFERENCE_DIGEST_MODEL` | With `inside` on: the node's model picks further lines by number and retells the output (P1, §3.3, §3.4). Any failure, a timeout or a number out of range leaves the digest made without it. |
+| `last_good` | `DREAMFERENCE_DIGEST_LAST_GOOD` | With `inside` on: the lines the last successful run of the same command printed too are left out of the digest (P2, §3.8). |
+| `hide_old` | `DREAMFERENCE_DIGEST_HIDE_OLD` | Separate from the others (P4): in what is sent to the model, every tool output older than the last 10 steps becomes one line naming where the whole output is, the digest's raw file or a copy kept for one day. What the session stores is unchanged, and a resumed session sends the same view. |
+
+A step is one tool call and its output. Each decision is journalled locally (`digest/journal.jsonl` beside the raw files), never sent anywhere.
 
 ---
 
@@ -264,7 +295,7 @@ They appear in every result, including every fallback (C7).
 
 ### 3.2 Cleaning before the model and the check
 
-- **Colours, progress bars and terminal control characters are stripped** before the model sees the output and before the quote check; the raw file keeps them (decision 62). A carriage-return progress line keeps only its last state.
+- **Colours, progress bars and terminal control characters are stripped** before the model sees the output and before the number check; the raw file keeps them (decision 62). A carriage-return progress line keeps only its last state.
 - **Repeated similar lines are collapsed** by a plain rule before the model: a run of lines that differ only in a name, a number or a path becomes one line, "lines like Compiling: 1340" (decision 44). The line numbers of the run stay known, so a selected line inside it is still quoted from the raw file.
 - **Long lines are not shortened** (decision 63).
 - **Stream priority**: in the selection, lines of the error stream come before lines of standard output (decision 82).
@@ -275,13 +306,14 @@ The cleaning rules live in one Rust file with a test per rule on a sample output
 
 - **The model is the one already loaded on the node**; no second model is loaded (decision 93). **Thinking is off** (decision 94).
 - **Very long outputs**: plain search first; the model reads only windows around the error lines and the end (decision 15; window sizes in the design values of §0.3).
-- **What the model returns**: line numbers, each with the start of its line as a quote, and the retelling. It never supplies the text that is shown: code copies every shown line from the cleaned output.
-- **A reply in the wrong format** (it does not parse, a line number does not exist, the retelling has more than three sentences): one retry inside the same 20 seconds, then plain truncation (decision 84).
+- **The question**: the caller's; inside Ragon, the command itself (X7).
+- **What the model returns** (P1): line numbers, single or as ranges, and the retelling, in the fixed form `LINES: 12, 40-45` and `SUMMARY: <at most three sentences>`. It never supplies the text that is shown: code copies every shown line from the cleaned output, beside the mandatory lines, which stay whatever the model picks (C7). A retelling longer than three sentences or 400 characters is cut, not refused.
+- **A reply in the wrong format** (it does not parse): one retry inside the same 20 seconds, then plain truncation (decision 84).
 - **The time limit** is 20 seconds per output, from the end of the command to the result, the retry included; past it, plain truncation (decision 14).
 
-### 3.4 The quote check
+### 3.4 The number check
 
-Every quote is compared with the cleaned line at its number. **One mismatch discards the whole answer** (decision 9): the caller gets the plain truncation (C7) with the note `preprocessing failed: quote mismatch`, and the case goes to the journal (§5.3). A model that misread one line may have misread the rest.
+Every number must name a line of the output that the model was shown (P1). **One number out of range discards the whole answer** (decision 9, refined by P1), with no retry: the caller gets the plain truncation (C7) with the note `preprocessing failed: line number out of range`, and the case goes to the journal (§5.3). A model that named a line it never saw may have misread the rest. Inside Ragon the result is the digest made without the model.
 
 ### 3.5 Orders written into the output
 
@@ -294,6 +326,10 @@ With the retelling off (decision 76), the model still selects lines, and the res
 ### 3.7 Secrets
 
 The feature does nothing about secrets (decision 46): the local model and the raw file see the output as it is. Whatever masks secrets on the strong model's side today keeps doing so (decision 30).
+
+### 3.8 The last good run
+
+When a command succeeds (exit code 0), a bounded sample of its lines is kept as the last good run of that command, replacing the one before (P2). When the same command later prints a digest, the error lines and the lines around them that the last good run printed too are left out, and the digest says how many and names them by line number, so the agent can still read them; the warnings and the last 20 lines are never left out. No model takes part. A sample is a hash of each line with its leading time stamps removed and every run of digits made one `#`, so a line that differs only in a time, a count or a duration still matches; the smallest hashes are kept up to the bound (§0.3), so a long output gives the same subset each time, and a line hashing above the kept range is never treated as known. Samples older than one day are not used and are deleted with the raw files.
 
 ---
 
@@ -333,7 +369,7 @@ The same output with the same question within one day gets the earlier result fr
 
 ### 5.3 The journal
 
-A local-only journal of preprocessing failures, never sent anywhere (decision 40): each quote mismatch, wrong format, time-out, and each time the agent opened the raw file after a digest. The journal stores the raw id, the question, the reason and the time; the output itself stays only in the raw file, which expires with it.
+A local-only journal of preprocessing failures, never sent anywhere (decision 40): each number out of range, wrong format, time-out, and each time the agent opened the raw file after a digest. The journal stores the raw id, the question, the reason and the time; the output itself stays only in the raw file, which expires with it.
 
 ### 5.4 Switching itself off
 
@@ -357,7 +393,7 @@ When the agent opens the raw file anyway after three digests in a row of the sam
 ### 7.1 RBRB
 
 - Generated tokens only, as for every model since 2026-11-12 (the owner's revert in rows 18, 21 and 25-28 of §0.1): preprocessing credits the tokens Ragon writes, the quote selection and the retelling, and nothing it reads.
-- They are counted together with all other Ragon work, in the one RBRB figure, with no separate line (decision 17). By default only answers that passed the quote check and reached the caller are credited (X6).
+- They are counted together with all other Ragon work, in the one RBRB figure, with no separate line (decision 17). By default only answers that passed the number check and reached the caller are credited (X6).
 - No RBRB target for preprocessing yet: it is measured for one week, then a target is set (decision 79).
 - The share grows by the number of preprocessed outputs and Ragon's tasks, never by longer text (decision 80).
 
@@ -402,7 +438,7 @@ A public claim on the site and in the README, with the project's own measured fi
 - **Release** (decision 36): the first release after the replay check passes, and no later than version 1.0.
 - **Stage 1**: `ragon digest`, the node interface, and the plugin's automatic mode with the field `what I want to learn` for Claude Code and Codex (decisions 5, 33, 68, 86, 92). Long-running commands are preprocessed at their end (decision 61). The documentation page with three real before-and-after examples (a build, a test run, a service log) ships with it (decision 87).
 - **Stage 2**, inside Ragon:
-  - The outputs of the commands `ragon` runs (decision 3): a numbered patch in `codex-patches/`, never a change to `codex/`. One SWE slice runs with and without it; it is switched on inside Ragon only if the result is at or above the middle of the band (decision 66).
+  - The outputs of the commands `ragon` runs (decision 3): a numbered patch in `codex-patches/`, never a change to `codex/` (§2.6, built first). One SWE slice runs with and without it; it is switched on inside Ragon only if the result is at or above the middle of the band (decision 66). The comparison has three arms (P3): off, the digest, and hiding old outputs only; it reports per task whether it was resolved, the steps and the paid model's tokens. A night holds two arms, so the three are two nights that share the off arm.
   - Night Shift gets it with this stage (decision 65).
   - The phone bridges: long command outputs sent to the phone are preprocessed too (decision 67).
   - Streaming preprocessing of long-running commands (decision 61).
@@ -412,8 +448,8 @@ A public claim on the site and in the README, with the project's own measured fi
 ## 10. Risks
 
 - **Dropping the one line that matters.** The four Windows build failures of 2026-11-20 each sat on one line among thousands. Answered by the mandatory lines (§3.1), the 100 % bar (§8.2) and the re-runs (§8.3).
-- **A selection that points at wrong lines.** Answered by code copying the text and the quote check (§3.4).
-- **A retelling that is wrong.** It is marked "not verified", comes after the quotes, states only what happened, and can be switched off.
+- **A selection that points at wrong lines.** Answered by code copying the text and the number check (§3.4).
+- **A retelling that is wrong.** It is marked "not verified", comes after the selected lines, states only what happened, and can be switched off.
 - **Rewriting output a program reads.** Machine formats pass through unchanged (§2.3).
 - **A saving that is not real** because agents open the raw file anyway. Measured by the journal (§5.3), answered by the self switch-off (§5.4).
 - **Orders hidden in an output.** Not protected in this version (decision 45); bounded by the correctness rules (§3.5).
@@ -450,9 +486,9 @@ One job each. Two tracks run in parallel, one agent each (decision 70); the orde
 |---|---|---|---|---|---|
 | B1 | **[Ragon]** Cleaning rules: colours, progress bars, control characters, the repeated-line collapse, stream tags (§3.2). | product | `ragon-rs/src/digest/clean.rs` (new) | one test per rule on a sample output | A3 |
 | B2 | **[Ragon]** Error word lists: English and the product's six languages (X2), and the project's patterns. | product | `ragon-rs/src/digest/words.rs` (new) | one test line per word | A3 |
-| B3 | **The simple part**, one implementation for node and client (C1): mandatory lines, kinds that pass through, empty and binary notes, windows, plain truncation, the 60-line result, text and JSON forms; the quote check's comparison is part of this code and is built and reviewed in B5. | product | `ragon-rs/src/digest/mod.rs` (new) | unit tests per rule; the A1 cases with no model keep every mandatory line | B1, B2 |
+| B3 | **The simple part**, one implementation for node and client (C1): mandatory lines, kinds that pass through, empty and binary notes, windows, plain truncation, the 60-line result, text and JSON forms; the number check's comparison is part of this code and is built and reviewed in B5. | product | `ragon-rs/src/digest/mod.rs` (new) | unit tests per rule; the A1 cases with no model keep every mandatory line | B1, B2 |
 | B4 | **[Opus review]** **The node interface** (§2.5): the endpoint on the model gate, sign-in and attribution, memory only, least busy node, the documentation page of the interface. | product | the gate's endpoint, `docs/` | request and answer tests; an unsigned request is refused; nothing is written to disk | B3 |
-| B5 | **[Opus review]** **The model step and the quote check** (§3.3, §3.4): prompt, thinking off, windows, one retry, the 20-second limit, the retelling's checks. | product | `ragon-rs/src/digest/model.rs` (new) | a scripted model: a correct answer, one wrong quote, a bad format then a good one, two bad formats, a time-out | B4 |
+| B5 | **[Opus review]** **The model step and the number check** (§3.3, §3.4): prompt, thinking off, windows, one retry, the 20-second limit, the retelling's checks. | product | `ragon-rs/src/digest/model.rs` (new) | a scripted model: a correct answer, one wrong quote, a bad format then a good one, two bad formats, a time-out | B4 |
 | B6 | **`ragon digest`** (§2.1): run and pipe modes, raw files for one day with the size cap (X1), follow-up `ask` and `lines`, the cache (X3), `on`, `off` and `status`, the settings and the project's patterns (§6), the no-node message, the client fallback. | product | `ragon-rs/src/digest/cli.rs` (new), `ragon-rs/src/lib.rs` | command tests with a scripted node: unreachable, loading, no node, under the threshold, no question, a successful command that returns at once and later finds the model's reply in `<raw>.digest` | B5 |
 | B7 | **The journal and the self switch-off** (§5.3, §5.4). | product | `ragon-rs/src/digest/journal.rs` (new) | three raw reads in a row switch the kind off for the session; nothing leaves the machine | B6 |
 | B8 | **Statistics and accounting**: `ragon digest stats`, the generated-token rows in RBRB's sources (X6), the weekly block in the web UI and the desktop app (§7). | product, coordinator tools (RBRB) | `cli.rs`, the web UI, the desktop app | a digest's written tokens count once in the one RBRB figure; no money figure shown | B6 |
@@ -466,4 +502,4 @@ One job each. Two tracks run in parallel, one agent each (decision 70); the orde
 | C3 | **The documentation page** with three real before-and-after examples: a build, a test run, a service log (decision 87). | product | `docs/` | the docs tests | C2 |
 | C4 | **Switch on by default** once the check passes (decision 4); the project's worker agents use it for builds, tests and logs (decision 51). | product, coordinator tools | the default setting; the worker rules | the check's report at 100 % | C1, C2 |
 
-**Stage 2** (planned after stage 1 ships): D1 inside Ragon, a numbered patch with the SWE slice comparison (decisions 3, 66); D2 Night Shift (decision 65); D3 the phone bridges (decision 67); D4 streaming preprocessing (decision 61).
+**Stage 2** (planned after stage 1 ships, except D1): D1 inside Ragon, a numbered patch with the SWE slice comparison (decisions 3, 66; built first, §2.6: the digest without a model, the model step, the last good run and hiding old outputs, each off by default, and the SWE harness's three arms; the comparison round is still to run); D2 Night Shift (decision 65); D3 the phone bridges (decision 67); D4 streaming preprocessing (decision 61).
