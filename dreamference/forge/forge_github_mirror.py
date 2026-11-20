@@ -22,7 +22,6 @@ GitHub's credentials are the `gh` login of the configured account, asked for at 
 file, a URL or a log. At `/airgapped on` the job sends nothing and says so.
 """
 
-import fcntl
 import json
 import os
 import re
@@ -32,6 +31,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Final
 
+from dreamference.config.file_lock import FileLock
 from dreamference.forge.forge_accounts import ForgeAccounts
 from dreamference.forge.forge_anonymity import ForgeAnonymity
 from dreamference.forge.forge_repositories import ForgeRepositories
@@ -484,7 +484,7 @@ class ForgeGithubMirror:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with Path(lock_path).open("w") as lock:
             # The path unit and the timer may both start a run; the second waits for the first.
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            FileLock.lock(lock)
             return cls.run_locked()
 
     @classmethod

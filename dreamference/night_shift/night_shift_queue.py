@@ -6,7 +6,6 @@ and replace its JSON file whole, so a `/night drop` and a status change never ov
 See specs/DREAMFERENCE_RAGON_NIGHT_SHIFT.md §4.
 """
 
-import fcntl
 import json
 import os
 from collections.abc import Callable, Iterator
@@ -14,6 +13,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
+
+from dreamference.config.file_lock import FileLock
 
 # Statuses a night run picks up: new tasks, and tasks a previous window cut off.
 RUNNABLE_STATUSES: Final[tuple] = ("queued", "interrupted")
@@ -164,7 +165,7 @@ class NightShiftQueue:
         # Opened for appending: truncating here would erase the name of a run that holds it.
         with Path(night_dir / "runner.lock").open("a") as handle:
             try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                FileLock.lock(handle, wait=False)
             except BlockingIOError:
                 yield False
                 return
@@ -174,7 +175,7 @@ class NightShiftQueue:
                 handle.flush()
                 yield True
             finally:
-                fcntl.flock(handle, fcntl.LOCK_UN)
+                FileLock.unlock(handle)
 
     @classmethod
     def runner_holder(cls, night_dir: Path | None = None) -> str | None:
@@ -213,10 +214,10 @@ class NightShiftQueue:
             return False
         with Path(path).open("a") as handle:
             try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                FileLock.lock(handle, wait=False)
             except BlockingIOError:
                 return True
-            fcntl.flock(handle, fcntl.LOCK_UN)
+            FileLock.unlock(handle)
             return False
 
     @classmethod
@@ -233,11 +234,11 @@ class NightShiftQueue:
     def _locked(cls, path: Path) -> Iterator[None]:
         path.parent.mkdir(parents=True, exist_ok=True)
         with Path(path).open("a") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
+            FileLock.lock(handle)
             try:
                 yield
             finally:
-                fcntl.flock(handle, fcntl.LOCK_UN)
+                FileLock.unlock(handle)
 
     @classmethod
     def _read(cls, path: Path) -> dict[str, Any] | None:

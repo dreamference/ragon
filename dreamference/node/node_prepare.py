@@ -25,13 +25,18 @@ which takes effect at the next reconnect, and `iw dev <interface> set power_save
 effect now; neither reconnects, so an SSH session that runs it survives.
 """
 
-import grp
 import os
-import pwd
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Final
+
+try:  # POSIX only: a node never runs on Windows yet, so its account helpers fail there, not at import
+    import grp
+    import pwd
+except ImportError:  # pragma: no cover
+    grp = None  # type: ignore[assignment]
+    pwd = None  # type: ignore[assignment]
 
 ROOT_USER: Final[str] = "root"
 DOCKER_GROUP: Final[str] = "docker"

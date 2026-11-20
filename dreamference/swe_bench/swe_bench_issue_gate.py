@@ -22,7 +22,6 @@ from this package; the tests import it as a module and call the same methods. It
 conditions the runner wrote, live in `<directory>` (the instance's scratch, on the host).
 """
 
-import fcntl
 import json
 import os
 import re
@@ -611,6 +610,8 @@ class SweBenchIssueGate:
             Optional[str]: The reason to block, or None.
         """
         base = Path(directory)
+        import fcntl  # POSIX only; the gate runs inside Linux images, so it loads on Windows
+
         with (base / LOCK_FILE).open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             state_path = base / STATE_FILE

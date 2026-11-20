@@ -7,7 +7,6 @@ Every probe reads; none starts, stops or loads anything. The model server may be
 default) or vLLM, so each metric is read under both engines' names.
 """
 
-import fcntl
 import json
 import os
 import re
@@ -16,6 +15,7 @@ import urllib.request
 from pathlib import Path
 from typing import Final
 
+from dreamference.config.file_lock import FileLock
 from dreamference.runner.codex_branded_builder import BUILD_CACHE_DIR
 from dreamference.runner.codex_installer import CodexInstaller
 
@@ -554,8 +554,8 @@ class NightShiftHost:
         if Path(lock_path).exists():
             with Path(lock_path).open("a") as handle:
                 try:
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    fcntl.flock(handle, fcntl.LOCK_UN)
+                    FileLock.lock(handle, wait=False)
+                    FileLock.unlock(handle)
                 except BlockingIOError:
                     found.append("a ragon build holds the build lock")
         for entry in Path("/proc").iterdir():

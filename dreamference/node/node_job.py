@@ -23,7 +23,6 @@ artifacts named with `--out` are kept beside the job, never committed (§13.3). 
 pruned a day after the sender fetched them, and unfetched ones after 14 days (§13.7).
 """
 
-import fcntl
 import hashlib
 import json
 import os
@@ -39,6 +38,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO, Final
 
+from dreamference.config.file_lock import FileLock
 from dreamference.runner.safe_git import SafeGit
 
 GIT_DIR_FLAG: Final[str] = "--git-dir"
@@ -808,7 +808,7 @@ class NodeJob:
         env_dir = cls.jobs_dir() / "envs" / key
         env_dir.parent.mkdir(parents=True, exist_ok=True)
         with Path(env_dir.parent / f"{key}.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            FileLock.lock(lock)
             try:
                 if (env_dir / ".complete").is_file():
                     record["environment"] = f"{key} (reused)"
@@ -838,7 +838,7 @@ class NodeJob:
                 record["environment"] = f"{key} (built)"
                 return env_dir, None
             finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
+                FileLock.unlock(lock)
 
     @classmethod
     def _mark_complete(cls, marker: Path, setup: str) -> None:
