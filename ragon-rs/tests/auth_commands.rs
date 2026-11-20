@@ -67,7 +67,7 @@ fn stub(taken: &'static [&'static str]) -> Stub {
             let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
             let user = parsed.get("username").and_then(Value::as_str).unwrap_or("");
             let (status, answer) = match (method.as_str(), path.as_str()) {
-                ("GET", "/ragon/v1/info") => (200, json!({"node_id": "n1", "node_name": "box", "primary_id": "p1", "primary_name": "main-box"})),
+                ("GET", "/ragon/v1/info") => (200, json!({"node_id": "n1", "node_name": "box", "primary_id": "p1", "primary_name": "main-box", "accounts": true})),
                 ("POST", "/oauth/token") if parsed["password"] == "right" => {
                     (200, json!({"id_token": jwt(user, "user"), "access_token": "at", "refresh_token": "rt", "expires_in": 3600, "token_type": "Bearer"}))
                 }
@@ -245,6 +245,47 @@ async fn pair_prints_a_code_for_the_signed_in_user_and_leaves_the_bridge_its_pri
     assert_eq!((primary["gate"].as_str(), primary["node"].as_str()), (Some(stub.gate.as_str()), Some("box")));
     let (code, out) = pair(&["fax"], &stub, &home).await;
     assert_eq!(code, 2, "{out}");
+}
+
+/// A gate that answers 404 to everything: a node without accounts (0.9.8's default).
+#[cfg(unix)]
+fn no_accounts_gate() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let gate = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                line.clear();
+            }
+            let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        }
+    });
+    gate
+}
+
+/// Against a node without accounts, `ragon pair` names the 0.9.7 way to pair instead of a sign-in
+/// that cannot happen; a gate that does not answer at all still gets the sign-in line.
+#[cfg(unix)]
+#[tokio::test]
+async fn pair_against_a_node_without_accounts_names_the_bridge_pairing() {
+    let home = tempdir("pair-off");
+    let stub = Stub { gate: no_accounts_gate(), seen: Arc::new(Mutex::new(Vec::new())) };
+    let (code, out) = pair(&["telegram"], &stub, &home).await;
+    assert_eq!((code, out.trim()), (1, commands::no_accounts_pair_line("telegram").as_str()));
+    assert!(out.contains("ragon chat telegram pair"), "{out}");
+    let (_, out) = pair(&["discord"], &stub, &home).await;
+    assert!(out.contains("ragon chat discord pair"), "{out}");
+    let (_, out) = pair(&["matrix"], &stub, &home).await;
+    assert!(out.contains("ragon-admin matrix add-user"), "{out}");
+    assert!(!home.join("chat/primary.json").exists(), "nothing is written for the bridge");
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let gate = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+    let (code, out) = pair(&["telegram"], &Stub { gate, seen: Arc::new(Mutex::new(Vec::new())) }, &home).await;
+    assert_eq!((code, out.trim()), (1, "Not signed in. Run ragon login, then ragon pair telegram."));
 }
 
 #[cfg(not(unix))]

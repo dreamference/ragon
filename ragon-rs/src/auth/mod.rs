@@ -119,6 +119,25 @@ pub fn no_accounts_line(gate: &str) -> String {
     format!("node {} has no accounts yet (0.9.8 or older); running without sign-in", node_label(gate))
 }
 
+/// What a gate's info says of accounts, telling "no" from "no answer": `Some(true)` when it
+/// advertises an accounts service, `Some(false)` when it answered without one (a 4xx such as an
+/// older node's 404, or an info without the field), `None` when it gave no answer (refused, timed
+/// out, a 5xx). The chat bridge acts on a definite answer only (AUTH §14.1).
+pub async fn gate_accounts(gate: &str) -> Option<bool> {
+    let gate = gate.trim_end_matches('/');
+    let client = reqwest::Client::builder().no_proxy().danger_accept_invalid_certs(wants_pin(gate)).timeout(Duration::from_secs(5)).build().ok()?;
+    let response = client.get(format!("{gate}/ragon/v1/info")).send().await.ok()?;
+    let status = response.status();
+    if status.is_server_error() {
+        return None;
+    }
+    if !status.is_success() {
+        return Some(false);
+    }
+    let text = response.text().await.ok()?;
+    Some(parse_info(&text).is_some_and(|info| info.accounts))
+}
+
 /// Whether a gate runs in account mode: its info says it has an accounts service. A 404, a refused
 /// connection or an info without the field mean no (a 0.9.8 gate or a plain model server).
 pub async fn gate_has_accounts(gate: &str) -> bool {

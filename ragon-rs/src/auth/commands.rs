@@ -667,6 +667,14 @@ pub async fn run_pair(_args: &[String], _gate: &str, _codex_home: &Path, io: &mu
     Ok(Outcome::done(2))
 }
 
+/// What `ragon pair <kind>` says against a node without accounts: the 0.9.7 way to pair.
+pub fn no_accounts_pair_line(kind: &str) -> String {
+    match kind {
+        "matrix" => "This node has no accounts, so Matrix needs no pairing: the accounts `ragon-admin matrix add-user` makes can talk to the bot.".to_string(),
+        _ => format!("This node has no accounts, so {kind} pairs as before: run `ragon chat {kind} pair` on the machine the bridge runs on and send the bot the /pair line it prints."),
+    }
+}
+
 /// `ragon pair <chat kind>`: asks the primary for a pairing code for this signed-in user and
 /// prints it, and leaves the chat bridge what it needs to redeem it: the gate, the node's name and
 /// the primary's CA, in the chat folder (`<codex_home>/chat`).
@@ -685,6 +693,11 @@ pub async fn run_pair(args: &[String], gate: &str, codex_home: &Path, io: &mut I
     };
     let primary = connect(gate, codex_home).await?;
     if primary.bearer().is_none() {
+        // A node without accounts (0.9.8's default) pairs phones as 0.9.7 did, on the bridge's machine.
+        if super::gate_accounts(gate).await == Some(false) {
+            writeln!(io.out, "{}", no_accounts_pair_line(kind))?;
+            return Ok(Outcome::done(1));
+        }
         writeln!(io.out, "Not signed in. Run ragon login, then ragon pair {kind}.")?;
         return Ok(Outcome::done(1));
     }
