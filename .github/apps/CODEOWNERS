@@ -168,6 +168,9 @@
 /dreamference/node/                             @dreamference/nodes
 /dreamference/accounts/                          @dreamference/nodes @dreamference/security
 /tests/test_service_key_callers.py             @dreamference/nodes
+/scripts/mac_node_gate.sh                       @dreamference/nodes
+/scripts/mac_node_gate_client.sh                @dreamference/nodes
+/tests/test_mac_node_gate.py                    @dreamference/nodes
 /dreamference/forge/                            @dreamference/nodes @dreamference/security
 /ragon-rs/node-locator/                          @dreamference/nodes
 /ragon-rs/node-monitor/                          @dreamference/nodes
