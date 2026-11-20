@@ -300,8 +300,9 @@ def test_starting_the_gate_stages_the_certificate_and_the_node_info(monkeypatch)
     assert not list(model_gate.GATE_DIR.rglob("ca.key"))
     assert (staged / "ca.pem").read_bytes() == (ModelGateTls.directory() / "ca.pem").read_bytes()
     node = json.loads((model_gate.GATE_DIR / "node.json").read_text())
-    assert set(node) == {"node_id", "name", "primary_id", "primary_name", "issuer"}
+    assert set(node) == {"node_id", "name", "primary_id", "primary_name", "issuer", "accounts"}
     assert node["primary_id"] is None  # no account store on this machine
+    assert node["accounts"] is False  # accounts ship dark in 0.9.8
 
 
 def test_a_node_that_cannot_make_its_certificate_serves_plain_http(monkeypatch, capsys):
@@ -375,3 +376,32 @@ def test_the_copied_service_serves_https_on_its_own_as_the_container_runs_it(tmp
         process.terminate()
         _, errors = process.communicate(timeout=10)
     assert "Traceback" not in errors
+
+
+def test_the_node_info_advertises_accounts_only_when_the_node_opted_in(tls_gate):
+    context = client_context(tls_gate)
+    info = json.loads(ask(tls_gate["port"], "/ragon/v1/info", context=context)[1])
+    assert info["accounts"] is False  # the fixture's node.json says nothing about accounts
+    node = tls_gate["gate"] / "node.json"
+    node.write_text(json.dumps({"node_id": "id-1", "name": "box", "accounts": True}))
+    info = json.loads(ask(tls_gate["port"], "/ragon/v1/info", context=context)[1])
+    assert info["accounts"] is True
+
+
+def test_accounts_are_off_by_default_and_the_variable_and_the_toml_turn_them_on(
+    tmp_path, monkeypatch
+):
+    from dreamference.node.node_settings import NodeSettings
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("DREAMFERENCE_ACCOUNTS_ENABLED", raising=False)
+    assert NodeSettings.accounts_enabled() is False
+    config = tmp_path / ".config" / "dreamference" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[accounts]\nenabled = true\n")
+    assert NodeSettings.accounts_enabled() is True
+    monkeypatch.setenv("DREAMFERENCE_ACCOUNTS_ENABLED", "false")
+    assert NodeSettings.accounts_enabled() is False
+    monkeypatch.setenv("DREAMFERENCE_ACCOUNTS_ENABLED", "1")
+    config.write_text("")
+    assert NodeSettings.accounts_enabled() is True
