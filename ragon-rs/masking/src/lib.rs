@@ -26,6 +26,9 @@
 //! items and the same segment key: when Codex is about to compact, it drops old outputs from the
 //! stored history instead, and skips the summary when that is enough (patch `0026`).
 //!
+//! **Hiding old outputs** ([`window`]) runs in the same call, after masking: a separate setting,
+//! off by default, that replaces every output older than the last ten steps by one line.
+//!
 //! Items are read through serde as JSON in the Responses API's shape (`type`, `call_id`,
 //! `output`), so this crate needs none of Codex's types.
 
@@ -43,6 +46,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 pub mod dropping;
+pub mod window;
 
 pub use dropping::DropPolicy;
 pub use dropping::drop_first;
@@ -157,15 +161,16 @@ impl State {
 /// request's size as auto-compaction measures it. `item` reaches the response item inside whatever
 /// wraps it (Codex keeps metadata beside each item). Outputs that drop-first compaction dropped
 /// are shown as their placeholders first ([`dropping::show_dropped`]), which matters only in a
-/// resumed session.
+/// resumed session. Then old outputs are hidden when that is on ([`window`]).
 pub fn apply<E, T>(items: &mut [E], size: i64, item: impl Fn(&mut E) -> &mut T)
 where
     T: Serialize + DeserializeOwned,
 {
     dropping::show_dropped(items, &item);
     if let Some(setup) = SETUP.get() {
-        apply_with(&setup.policy, &setup.dir, items, u64::try_from(size).unwrap_or(0), item);
+        apply_with(&setup.policy, &setup.dir, items, u64::try_from(size).unwrap_or(0), &item);
     }
+    window::apply(items, &item);
 }
 
 /// [`apply`] with an explicit policy and folder. Every failure leaves the item as it was: masking

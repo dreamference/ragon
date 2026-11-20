@@ -8,9 +8,11 @@
 //! is handed back as it came, the same bytes in the same buffer.
 //!
 //! Stage A, here, uses no model: the selection is [`select::digest`]. The raw outputs live in
-//! `$CODEX_HOME/digest/raw/` for a day, within a size cap.
+//! `$CODEX_HOME/digest/raw/` for a day, within a size cap. With [`Options::last_good`] the lines
+//! the last successful run of the same command printed too are left out ([`good`]).
 
 pub mod command;
+pub mod good;
 pub mod select;
 pub mod text;
 
@@ -42,10 +44,31 @@ const PRUNE_EVERY: Duration = Duration::from_secs(60 * 60);
 
 static DIGESTER: OnceLock<Digester> = OnceLock::new();
 
+/// The settings of one process's digest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Options {
+    /// Outputs shorter than this many lines are handed back as they are.
+    pub min_lines: usize,
+    /// Leave out the lines the last successful run of the same command printed too (owner's
+    /// answer 2 of 2026-11-20). Off by default.
+    pub last_good: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self { min_lines: MIN_LINES, last_good: false }
+    }
+}
+
 /// Switches the digest on for this process, keeping raw outputs under `codex_home`. Returns false
 /// when it was already on.
 pub fn configure(codex_home: &Path, min_lines: usize) -> bool {
-    DIGESTER.set(Digester::new(codex_home, min_lines)).is_ok()
+    configure_with(codex_home, Options { min_lines, ..Options::default() })
+}
+
+/// [`configure`] with every setting.
+pub fn configure_with(codex_home: &Path, options: Options) -> bool {
+    DIGESTER.set(Digester::with_options(codex_home, options)).is_ok()
 }
 
 /// Whether [`configure`] has run.
@@ -81,14 +104,24 @@ struct State {
 /// The digest of one session: where raw outputs go, and the per-kind switch-off.
 pub struct Digester {
     dir: PathBuf,
-    min_lines: usize,
+    options: Options,
     state: Mutex<State>,
 }
 
 impl Digester {
     /// A digester keeping raw outputs in `codex_home/digest/raw`.
     pub fn new(codex_home: &Path, min_lines: usize) -> Self {
-        Self { dir: codex_home.join("digest"), min_lines, state: Mutex::new(State::default()) }
+        Self::with_options(codex_home, Options { min_lines, ..Options::default() })
+    }
+
+    /// A digester with every setting.
+    pub fn with_options(codex_home: &Path, options: Options) -> Self {
+        Self { dir: codex_home.join("digest"), options, state: Mutex::new(State::default()) }
+    }
+
+    /// The folder the last good runs' samples are kept in.
+    pub fn good_dir(&self) -> PathBuf {
+        self.dir.join("good")
     }
 
     /// The folder raw outputs are kept in.
@@ -129,7 +162,12 @@ impl Digester {
             return output;
         }
         let binary = output.len() >= BINARY_MIN_BYTES && text::is_binary(&output);
-        if !binary && (text::line_count(&output) < self.min_lines || structured(&output)) {
+        // A successful run is sampled whatever its length, so a short good run counts too.
+        let good = self.options.last_good && !binary && exit_code == Some(0);
+        if !binary && (text::line_count(&output) < self.options.min_lines || structured(&output)) {
+            if good {
+                let _ = good::record(&self.good_dir(), command, &text::lines(&output));
+            }
             return output;
         }
         self.prune_now_and_then();
@@ -140,7 +178,15 @@ impl Digester {
         if binary {
             return select::binary_note(output.len(), exit_code, &path).into_bytes();
         }
-        select::digest(&text::lines(&output), exit_code, &path).into_bytes()
+        let lines = text::lines(&output);
+        let known = match self.options.last_good.then(|| good::load(&self.good_dir(), command, SystemTime::now())) {
+            Some(Some(samples)) => samples.mark(&lines),
+            _ => Vec::new(),
+        };
+        if good {
+            let _ = good::record(&self.good_dir(), command, &lines);
+        }
+        select::digest_with(&lines, exit_code, &path, &known).into_bytes()
     }
 
     /// Writes the raw output, named by its content so the same output is one file.
@@ -221,6 +267,7 @@ impl Digester {
             state.pruned = Some(now);
         }
         prune(&self.raw_dir(), now, CAP_BYTES);
+        prune(&self.good_dir(), now, good::CAP_BYTES);
     }
 }
 

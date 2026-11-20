@@ -743,7 +743,7 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
         docs: docs_block.clone(),
         glossary,
         rg_installed: code_index::rg_installed(),
-        masking: mask::instruction(masking).to_string(),
+        masking: mask::instruction(masking || digest::hide_old_now()).to_string(),
     };
     airgapped::prune_session_files();
     adapter::prune_session_files();

@@ -152,6 +152,14 @@ pub fn binary_note(bytes: usize, exit_code: Option<i32>, path: &Path) -> String 
 /// The digest of `lines` (cleaned, line `i` being line `i + 1` of the raw file at `path`): at most
 /// [`MAX_LINES`] lines.
 pub fn digest(lines: &[String], exit_code: Option<i32>, path: &Path) -> String {
+    digest_with(lines, exit_code, path, &[])
+}
+
+/// [`digest`], leaving out the lines the last good run of the same command printed too (`known[i]`
+/// for line `i`; empty when there is no such run). It leaves out error lines, which are still named
+/// by line number, and the lines after them; the warnings shown and the last lines stay as they are.
+pub fn digest_with(lines: &[String], exit_code: Option<i32>, path: &Path, known: &[bool]) -> String {
+    let known = |index: usize| known.get(index).copied().unwrap_or(false);
     let total = lines.len();
     let tail_start = total.saturating_sub(TAIL_LINES);
     let classes: Vec<Class> = lines.iter().map(|line| classify(line)).collect();
@@ -197,7 +205,18 @@ pub fn digest(lines: &[String], exit_code: Option<i32>, path: &Path) -> String {
 
     // Every error line before the tail; when they do not fit, identical ones are named by line
     // number, then the first and the last are shown and the rest named by line number.
-    let errors: Vec<usize> = (0..tail_start).filter(|index| classes[*index] == Class::Error).collect();
+    let (seen, errors): (Vec<usize>, Vec<usize>) =
+        (0..tail_start).filter(|index| classes[*index] == Class::Error).partition(|index| known(*index));
+    if !seen.is_empty() {
+        let named: Vec<String> = seen.iter().take(200).map(|index| (index + 1).to_string()).collect();
+        notes.push(format!(
+            "[digest] {} error lines also printed by the last successful run of this command, not shown: at lines {}{}.",
+            seen.len(),
+            named.join(", "),
+            if seen.len() > named.len() { ", …" } else { "" }
+        ));
+        budget = budget.saturating_sub(1);
+    }
     if errors.len() <= budget {
         chosen.extend(errors.iter().copied());
     } else {
@@ -249,7 +268,7 @@ pub fn digest(lines: &[String], exit_code: Option<i32>, path: &Path) -> String {
                 open[slot] = false;
                 continue;
             }
-            if chosen.insert(index) {
+            if !known(index) && chosen.insert(index) {
                 budget -= 1;
             }
         }
