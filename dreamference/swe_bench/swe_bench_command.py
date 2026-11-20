@@ -115,6 +115,13 @@ class SweBenchCommand:
             "that is not enough; sets the launcher's switch in every session (compaction spec §13)",
         )
         run.add_argument(
+            "--digest-inside",
+            action="store_true",
+            help="A command output of 200 lines or more reaches the model as a digest (exit code, error "
+            "lines, the last 20 lines), the output kept in a file read by line numbers; sets the "
+            "launcher's switch in every session (Ragon Digest inside Ragon)",
+        )
+        run.add_argument(
             "--loop-guard",
             action="store_true",
             help="Switch on ragon's loop detector in every session: a response that repeats itself is "
@@ -593,6 +600,7 @@ class SweBenchCommand:
                 exec_tool=args.exec_tool,
                 compat=args.compat,
                 drop_old_outputs=args.drop_old_outputs,
+                digest_inside=args.digest_inside,
                 loop_guard=args.loop_guard,
                 output_budget=args.output_budget,
                 sampling=args.sampling,

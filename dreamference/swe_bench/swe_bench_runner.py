@@ -86,6 +86,9 @@ AUTO_COMPAT: Final[str] = "auto"
 # The drop-first compaction arm (compaction spec §13): the launcher's switch (ragon-rs/src/compaction.rs,
 # `DROP_ENV`), set to this value only when the run asks.
 DROP_OLD_OUTPUTS_ENV: Final[str] = "DREAMFERENCE_RAGON_DROP_OLD_OUTPUTS"
+# The digest arm (Ragon Digest inside Ragon): the launcher's switch (ragon-rs/src/digest.rs, `ENV`),
+# set to this value only when the run asks.
+DIGEST_INSIDE_ENV: Final[str] = "DREAMFERENCE_DIGEST_INSIDE"
 # The loop guard's arms (docs/dev/loop-guard.md; ragon-rs/src/loop_guard.rs): the detector, the cap on
 # each response and the sampling arm, each the launcher's variable. `ragon exec` sets none of them by
 # default, so a run without the flags sends what it always sent.
@@ -367,6 +370,7 @@ class SweBenchRunner:
         apply_patch: str | None = None,
         exec_tool: str | None = None,
         drop_old_outputs: bool = False,
+        digest_inside: bool = False,
         loop_guard: bool = False,
         output_budget: int | None = None,
         sampling: str | None = None,
@@ -445,6 +449,7 @@ class SweBenchRunner:
             "exec_tool": exec_tool or AUTO_EXEC_TOOL,
             "compat": compat or AUTO_COMPAT,
             "drop_old_outputs": bool(drop_old_outputs),
+            "digest_inside": bool(digest_inside),
             "loop_guard": bool(loop_guard),
             "output_budget": int(output_budget or 0),
             "sampling": sampling or DEFAULT_SAMPLING,
@@ -560,6 +565,7 @@ class SweBenchRunner:
         exec_tool: str | None = None,
         compat: str | None = None,
         drop_old_outputs: bool = False,
+        digest_inside: bool = False,
         loop_guard: bool = False,
         output_budget: int | None = None,
         sampling: str | None = None,
@@ -629,6 +635,10 @@ class SweBenchRunner:
                 `DREAMFERENCE_RAGON_DROP_OLD_OUTPUTS`: when a session is about to compact, its
                 older tool outputs are dropped first and the summary runs only if that is not
                 enough (compaction spec §13). Off by default. A new run only, like `code_index`.
+            digest_inside: Ragon Digest inside Ragon in every session, through
+                `DREAMFERENCE_DIGEST_INSIDE`: a command output of 200 lines or more reaches the
+                model as a digest, the output itself kept in a file it reads by line numbers.
+                Off by default. A new run only, like `code_index`.
             loop_guard: The launcher's loop detector in every session (`DREAMFERENCE_RAGON_LOOP_GUARD=on`):
                 a response that repeats itself is cut where the loop began, and the model is told once to
                 stop and answer. Off by default. A new run only, like `code_index`.
@@ -767,6 +777,7 @@ class SweBenchRunner:
             "exec_tool": exec_tool,
             "compat": compat,
             "drop_old_outputs": drop_old_outputs,
+            "digest_inside": digest_inside,
             "loop_guard": loop_guard,
             "output_budget": output_budget,
             "sampling": sampling,
@@ -1015,6 +1026,10 @@ class SweBenchRunner:
         # when the run asks. A run made before the option existed has no key and ran without.
         if manifest.get("drop_old_outputs"):
             extra_env[DROP_OLD_OUTPUTS_ENV] = "1"
+        # The digest arm: the launcher's switch, only when the run asks. A run made before the
+        # option existed has no key and ran without.
+        if manifest.get("digest_inside"):
+            extra_env[DIGEST_INSIDE_ENV] = "1"
         # The loop guard's arms: the launcher's variables, only when the run asks. A run made
         # before the options existed has no keys and ran with none.
         extra_env.update(cls.loop_guard_env(manifest))

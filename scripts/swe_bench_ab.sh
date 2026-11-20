@@ -215,7 +215,7 @@ pin_build() {
 # arm, `--restart-after-compactions N`, SWE_BENCH spec §21), `apply-patch-FORM` (FORM freeform
 # or off: `--apply-patch FORM`, spec §22; the pinned Codex has no function form, so ragon refuses it), `exec-tool-FORM` (FORM function or freeform:
 # `--exec-tool FORM`, spec §23), `drop-outputs` (drop-first compaction: `--drop-old-outputs`,
-# compaction spec §13), `test-guard` and `finish-check` (the launcher's guards: `--test-guard`,
+# compaction spec §13), `digest-inside` (Ragon Digest inside Ragon: `--digest-inside`), `test-guard` and `finish-check` (the launcher's guards: `--test-guard`,
 # `--finish-check`, spec §29), `sampling-nonthinking` (the model card's non-thinking sampling, filled in by the
 # model gate: `--sampling nonthinking`, docs/dev/loop-guard.md), `compat-claude` (the launcher's compatibility
 # mode in every session: `--compat claude`, RAGON_CLAUDE §11), `diverse` (BEST_OF > 1 only: a strategy
@@ -238,6 +238,8 @@ arm_flags() {
             exec-tool*|exec_tool*) echo "❌ Arm $1: write the Code Mode arm as exec-tool-function or exec-tool-freeform." >&2; return 2 ;;
             drop-outputs) flags="$flags --drop-old-outputs" ;;
             drop-*|drop_*) echo "❌ Arm $1: write the drop-first compaction arm as drop-outputs." >&2; return 2 ;;
+            digest-inside) flags="$flags --digest-inside" ;;
+            digest*) echo "❌ Arm $1: write the digest arm as digest-inside." >&2; return 2 ;;
             on-sglang|on-engine) ;;  # the model server, not an option of the run (arm_server)
             on-*) echo "❌ Arm $1: write the model server as on-sglang or on-engine." >&2; return 2 ;;
             engine-*)  # a flag of the arm's engine (LOCAL_ARMS=1: engine_args), not an option of the run
@@ -544,6 +546,17 @@ start() {
         ragon=$("$PY" -c "from dreamference.runner.codex_branded_builder import CodexBrandedBuilder; print(CodexBrandedBuilder.executable_path())") || exit 1
         if ! grep -q -a DREAMFERENCE_RAGON_DROP_OLD_OUTPUTS "$ragon"; then
             echo "❌ $ragon does not read DREAMFERENCE_RAGON_DROP_OLD_OUTPUTS: rebuild it (\`ragon-admin codex build\`) from a commit that has drop-first compaction."; exit 1
+        fi ;;
+    esac
+    case "$ARMS" in *digest-inside*)
+        if ! grep -q -- '"--digest-inside"' "$WT/dreamference/swe_bench/swe_bench_command.py"; then
+            echo "❌ $WT does not have --digest-inside: pin REF to a commit that has it."; exit 1
+        fi
+        # The arm only sets the launcher's switch (DREAMFERENCE_DIGEST_INSIDE); a `ragon` built
+        # without patch 0043 ignores it, and the night would measure the record arm twice.
+        ragon=$("$PY" -c "from dreamference.runner.codex_branded_builder import CodexBrandedBuilder; print(CodexBrandedBuilder.executable_path())") || exit 1
+        if ! grep -q -a DREAMFERENCE_DIGEST_INSIDE "$ragon"; then
+            echo "❌ $ragon does not read DREAMFERENCE_DIGEST_INSIDE: rebuild it (\`ragon-admin codex build\`) from a commit that has Ragon Digest inside Ragon."; exit 1
         fi ;;
     esac
     # The guard arms only set the launcher's switches (spec §29); a `ragon` built before guard.rs
