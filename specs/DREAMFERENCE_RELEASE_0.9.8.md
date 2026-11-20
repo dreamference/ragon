@@ -38,7 +38,7 @@ User accounts on the node: you sign in or create an account at first start, the 
 
 ### Known limits
 
-The 0.9.7 engine image is unchanged, so its limits are too: FP8 KV cache stays off by default and the 24-row speculative tree stays off. The limits of 0.9.0 still apply: models are served on a GB10 only, one model is served at a time, and the messenger bridges are off until you turn them on.
+The 0.9.7 engine image is unchanged, so its limits are too: FP8 KV cache stays off by default and the 24-row speculative tree stays off. The limits of 0.9.0 still apply: models are served on a GB10 only, one model is served at a time, and the messenger bridges are off until you turn them on. The accounts code is present but off: the node advertises accounts only when `accounts.enabled` is set, so the launcher asks for no sign-in.
 
 ---
 
