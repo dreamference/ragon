@@ -85,7 +85,7 @@ mod registration {
     type DnsServiceRef = *mut c_void;
 
     #[link(name = "System")]
-    extern "C" {
+    unsafe extern "C" {
         fn DNSServiceRegister(
             sd_ref: *mut DnsServiceRef,
             flags: u32,
