@@ -181,6 +181,8 @@
 /ragon-rs/src/node.rs                            @dreamference/nodes
 /ragon-rs/src/node_advertise_macos.rs            @dreamference/nodes
 /ragon-rs/vectors/node-txt-keys.json             @dreamference/nodes
+/ragon-rs/src/metal_recipe.rs                   @dreamference/nodes
+/ragon-rs/vectors/metal-recipes.json             @dreamference/nodes
 /ragon-rs/src/node_command.rs                    @dreamference/nodes
 /dreamference/vllm_server/model_gate*.py        @dreamference/nodes @dreamference/models
 /dreamference/vllm_server/wifi_power_save.py    @dreamference/nodes
