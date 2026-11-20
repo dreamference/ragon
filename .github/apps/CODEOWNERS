@@ -194,6 +194,7 @@
 /ragon-rs/tests/auth_screen.rs                    @dreamference/security
 /ragon-rs/tests/auth_commands.rs                  @dreamference/security
 /ragon-rs/tests/auth_slash.rs                     @dreamference/security
+/ragon-rs/tests/auth_device.rs                    @dreamference/security
 /ragon-rs/web/policy.json                        @dreamference/security @dreamference/web @dreamference/desktop
 /codex-patches/0013-*                           @dreamference/security @dreamference/agent
 /codex-patches/0015-*                           @dreamference/security @dreamference/agent
@@ -201,6 +202,7 @@
 /codex-patches/0019-*                           @dreamference/security @dreamference/agent
 /codex-patches/0037-*                           @dreamference/security @dreamference/agent
 /codex-patches/0038-*                           @dreamference/security @dreamference/agent
+/codex-patches/0042-*                           @dreamference/security @dreamference/agent
 /dreamference/vllm_server/sandbox_prerequisite.py   @dreamference/security @dreamference/models
 /.github/workflows/release.yml                  @dreamference/release @dreamference/security
 /.github/workflows/release-build.yml            @dreamference/release @dreamference/security
