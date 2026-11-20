@@ -9,11 +9,16 @@ import http.server
 import os
 import re
 import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX shell scripts; the gate runs on macOS"
+)
 
 REPO = Path(__file__).resolve().parent.parent
 GATE = REPO / "scripts" / "mac_node_gate.sh"
@@ -74,10 +79,27 @@ def stand_in() -> Iterator[str]:
 
 
 def _env(tmp_path: Path) -> dict[str, str]:
+    """Stub every command that would touch the machine; each stub logs its call to `ran`."""
+    stubs = tmp_path / "stubs"
+    stubs.mkdir(exist_ok=True)
     env = dict(os.environ, PATH="/usr/bin:/bin", TMPDIR=str(tmp_path))
-    for name in ("RAGON", "RAGON_ADMIN", "RAGON_SEARCH", "SSH", "SSH_KEYGEN"):
-        env[name] = "/bin/false"
+    for name in ("RAGON", "RAGON_ADMIN", "RAGON_SEARCH", "SSH", "SSH_KEYGEN", "ENGINE_PID_CMD"):
+        stub = stubs / name.lower()
+        stub.write_text(f'#!/bin/sh\necho "{name} $*" >> "{tmp_path / "ran"}"\nexit 1\n')
+        stub.chmod(0o755)
+        env[name] = str(stub)
+    # Linux on every box, so a Mac checkout never starts a real gate run.
+    uname = stubs / "uname"
+    uname.write_text("#!/bin/sh\necho Linux\n")
+    uname.chmod(0o755)
+    env["UNAME"] = str(uname)
     return env
+
+
+def _ran(tmp_path: Path) -> str:
+    """The stubbed commands a run called, empty when it ran none."""
+    marker = tmp_path / "ran"
+    return marker.read_text() if marker.exists() else ""
 
 
 def _gate(tmp_path: Path, *args: str) -> tuple[int, dict[str, tuple[str, str]], str]:
@@ -150,6 +172,7 @@ def test_preview_dry_run_skips_the_engine_checks_with_a_reason(
             assert status == "dry", (check, detail)
     assert "DRY RUN" in text
     assert "answers /v1/models" in rows["G1"][1]
+    assert _ran(tmp_path) == "", "a dry run ran a command"
 
 
 def test_one_report_per_run(tmp_path: Path, stand_in: str) -> None:
@@ -219,6 +242,7 @@ def test_full_stage_runs_the_engine_checks_against_their_evidence(
     assert "host_gap_ms=1.4>1" in rows["G4"][1]
     assert rows["G20"][0] == "fail"
     assert rows["G5"][0] == "dry"
+    assert _ran(tmp_path) == "", "a dry run ran a command"
 
 
 def test_l3_evidence_for_another_candidate_fails(tmp_path: Path, stand_in: str) -> None:
@@ -268,6 +292,7 @@ def test_twin_dry_run_lists_every_client_check(tmp_path: Path) -> None:
     ]
     assert {fields[1] for fields in lines} == {"dry"}
     assert {fields[3] for fields in lines} == {"linux"}
+    assert _ran(tmp_path) == ""
 
 
 def test_twin_fails_on_evidence_out_of_line(tmp_path: Path) -> None:
