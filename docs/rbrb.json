@@ -53,10 +53,10 @@
       "from": "2026-11-16",
       "to": "2026-11-22",
       "ragon_generated_tokens": 721060,
-      "other_generated_tokens": 5749929,
-      "rbrb_share": 0.1114,
+      "other_generated_tokens": 6412327,
+      "rbrb_share": 0.1011,
       "ragon_tasks": {"attempted": 145, "landed": 86},
-      "commits": {"ragon": 88, "all": 194},
+      "commits": {"ragon": 88, "all": 227},
       "notes": "Running week so far (provisional): generated tokens only, replaced by the final value when the week is closed.",
       "method_version": 0,
       "provisional": true
@@ -68,7 +68,7 @@
       "ragon_reverted": 0,
       "ragon_commits": 88,
       "other_reverted": 0,
-      "other_commits": 106,
+      "other_commits": 139,
       "rework": null,
       "provisional": true,
       "band": "met"

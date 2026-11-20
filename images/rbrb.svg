@@ -16,8 +16,8 @@
 <polyline class="ln" points="112.0,204.0 336.0,128.3" fill="none" stroke-width="2"/>
 <circle class="dot" cx="112.0" cy="204.0" r="4"/>
 <circle class="dot" cx="336.0" cy="128.3" r="4"/>
-<line class="ln" x1="336.0" y1="128.3" x2="560.0" y2="114.9" stroke-width="1.5" stroke-dasharray="4 3"/>
-<circle class="hollow" cx="560.0" cy="114.9" r="5"/>
+<line class="ln" x1="336.0" y1="128.3" x2="560.0" y2="123.1" stroke-width="1.5" stroke-dasharray="4 3"/>
+<circle class="hollow" cx="560.0" cy="123.1" r="5"/>
 <text class="hd" x="56" y="246" font-size="14" font-weight="bold">Ragon tasks landed per week</text>
 <line class="gr" x1="56" y1="340.0" x2="616" y2="340.0"/>
 <text class="tx" x="50" y="344.0" text-anchor="end">0</text>
@@ -40,7 +40,7 @@
 <text class="tx" x="560.0" y="222" text-anchor="middle">2026-W47</text>
 <text class="hd" x="112.0" y="193.0" text-anchor="middle" font-size="12" font-weight="bold">0.00 %</text>
 <text class="hd" x="336.0" y="117.3" text-anchor="middle" font-size="12" font-weight="bold">9.46 %</text>
-<text class="hd" x="560.0" y="136.9" text-anchor="end" font-size="12" font-weight="bold">2026-W47 so far 11.14 %</text>
+<text class="hd" x="560.0" y="145.1" text-anchor="end" font-size="12" font-weight="bold">2026-W47 so far 10.11 %</text>
 <text class="hd" x="56" y="386" font-size="14" font-weight="bold">Quality band: revert rate (%), Ragon vs others</text>
 <line class="gr" x1="56" y1="560.0" x2="616" y2="560.0"/>
 <text class="tx" x="50" y="564.0" text-anchor="end">0</text>
