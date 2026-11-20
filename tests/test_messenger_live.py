@@ -756,3 +756,21 @@ def test_the_run_tests_the_release_in_its_own_prefix_and_names_it(tmp_path, monk
 
     monkeypatch.setattr(release, "install_latest", broken)
     assert "release install failed" in live_run.tested_build(tmp_path)["source"]
+
+
+def test_a_given_build_is_tested_and_leaves_the_release_marker_alone(tmp_path, monkeypatch):
+    import run as live_run
+    from mlive import gate, paths
+
+    monkeypatch.setattr(gate, "state_dir", lambda: tmp_path / "state")
+    monkeypatch.setattr(paths, "cache_dir", lambda: tmp_path / "cache")
+    monkeypatch.setattr(bridge, "RAGON", bridge.RAGON)
+    given = tmp_path / "prefix" / "bin" / "ragon"
+
+    def failing(run, *args):
+        run.add(report.Result("telegram", "/new", "bridge", "fail", 1.0, 1.0, "no answer"))
+
+    monkeypatch.setattr(live_run, "run_telegram", failing)
+    assert live_run.run_suite("telegram", False, False, False, False, given) != 0
+    assert given.resolve() == bridge.RAGON
+    assert not gate.marker_path().exists()
