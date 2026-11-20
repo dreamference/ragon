@@ -89,6 +89,9 @@ DROP_OLD_OUTPUTS_ENV: Final[str] = "DREAMFERENCE_RAGON_DROP_OLD_OUTPUTS"
 # The digest arm (Ragon Digest inside Ragon): the launcher's switch (ragon-rs/src/digest.rs, `ENV`),
 # set to this value only when the run asks.
 DIGEST_INSIDE_ENV: Final[str] = "DREAMFERENCE_DIGEST_INSIDE"
+# The hide-old arm (owner's answer 3 of 2026-11-20): the launcher's switch (ragon-rs/src/digest.rs,
+# `HIDE_OLD_ENV`), set to this value only when the run asks.
+HIDE_OLD_ENV: Final[str] = "DREAMFERENCE_DIGEST_HIDE_OLD"
 # The loop guard's arms (docs/dev/loop-guard.md; ragon-rs/src/loop_guard.rs): the detector, the cap on
 # each response and the sampling arm, each the launcher's variable. `ragon exec` sets none of them by
 # default, so a run without the flags sends what it always sent.
@@ -371,6 +374,7 @@ class SweBenchRunner:
         exec_tool: str | None = None,
         drop_old_outputs: bool = False,
         digest_inside: bool = False,
+        hide_old: bool = False,
         loop_guard: bool = False,
         output_budget: int | None = None,
         sampling: str | None = None,
@@ -450,6 +454,7 @@ class SweBenchRunner:
             "compat": compat or AUTO_COMPAT,
             "drop_old_outputs": bool(drop_old_outputs),
             "digest_inside": bool(digest_inside),
+            "hide_old": bool(hide_old),
             "loop_guard": bool(loop_guard),
             "output_budget": int(output_budget or 0),
             "sampling": sampling or DEFAULT_SAMPLING,
@@ -566,6 +571,7 @@ class SweBenchRunner:
         compat: str | None = None,
         drop_old_outputs: bool = False,
         digest_inside: bool = False,
+        hide_old: bool = False,
         loop_guard: bool = False,
         output_budget: int | None = None,
         sampling: str | None = None,
@@ -638,6 +644,9 @@ class SweBenchRunner:
             digest_inside: Ragon Digest inside Ragon in every session, through
                 `DREAMFERENCE_DIGEST_INSIDE`: a command output of 200 lines or more reaches the
                 model as a digest, the output itself kept in a file it reads by line numbers.
+                Off by default. A new run only, like `code_index`.
+            hide_old: Every tool output older than the last ten steps sent as one line naming
+                where the whole output is, in every session, through `DREAMFERENCE_DIGEST_HIDE_OLD`.
                 Off by default. A new run only, like `code_index`.
             loop_guard: The launcher's loop detector in every session (`DREAMFERENCE_RAGON_LOOP_GUARD=on`):
                 a response that repeats itself is cut where the loop began, and the model is told once to
@@ -778,6 +787,7 @@ class SweBenchRunner:
             "compat": compat,
             "drop_old_outputs": drop_old_outputs,
             "digest_inside": digest_inside,
+            "hide_old": hide_old,
             "loop_guard": loop_guard,
             "output_budget": output_budget,
             "sampling": sampling,
@@ -1030,6 +1040,9 @@ class SweBenchRunner:
         # option existed has no key and ran without.
         if manifest.get("digest_inside"):
             extra_env[DIGEST_INSIDE_ENV] = "1"
+        # The hide-old arm: the launcher's switch, only when the run asks.
+        if manifest.get("hide_old"):
+            extra_env[HIDE_OLD_ENV] = "1"
         # The loop guard's arms: the launcher's variables, only when the run asks. A run made
         # before the options existed has no keys and ran with none.
         extra_env.update(cls.loop_guard_env(manifest))

@@ -68,6 +68,7 @@ COMPARED_FIELDS: Final[tuple] = (
     "compat",
     "drop_old_outputs",
     "digest_inside",
+    "hide_old",
     "loop_guard",
     "output_budget",
     "sampling",
@@ -93,6 +94,7 @@ MISSING_FIELDS: Final[dict] = {
     "compat": "auto",
     "drop_old_outputs": False,
     "digest_inside": False,
+    "hide_old": False,
     "loop_guard": False,
     "output_budget": 0,
     "sampling": "default",
@@ -1512,6 +1514,12 @@ class SweBenchReport:
             "input tokens": f"{sum(s.get('input_tokens', 0) for s in stats):,}",
             "output tokens": f"{sum(s.get('output_tokens', 0) for s in stats):,}",
             "commands": f"{sum(s.get('commands', 0) for s in stats):,}",
+            # Per task, the agent model's own counts (the model a paid account would bill; a local
+            # model the digest asks is not in them): steps are its commands and tool calls.
+            "steps per task": f"{sum(s.get('commands', 0) for s in stats) / len(both):,.1f}",
+            "tokens in per task": f"{sum(s.get('input_tokens', 0) for s in stats) / len(both):,.0f}",
+            "uncached in per task": f"{sum(s.get('input_tokens', 0) - s.get('cached_input_tokens', 0) for s in stats) / len(both):,.0f}",
+            "tokens out per task": f"{sum(s.get('output_tokens', 0) for s in stats) / len(both):,.0f}",
             "ragon-code calls": sum(s.get("ragon_code_calls", 0) for s in stats),
             "instances using it": sum(1 for s in stats if s.get("ragon_code_calls")),
             "index time": cls.duration(sum(index)) if summary["code_index"] != _OFF else "none",

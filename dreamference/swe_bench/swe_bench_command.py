@@ -122,6 +122,12 @@ class SweBenchCommand:
             "launcher's switch in every session (Ragon Digest inside Ragon)",
         )
         run.add_argument(
+            "--hide-old",
+            action="store_true",
+            help="Every tool output older than the last 10 steps reaches the model as one line naming "
+            "where the whole output is; sets the launcher's switch in every session (Ragon Digest)",
+        )
+        run.add_argument(
             "--loop-guard",
             action="store_true",
             help="Switch on ragon's loop detector in every session: a response that repeats itself is "
@@ -601,6 +607,7 @@ class SweBenchCommand:
                 compat=args.compat,
                 drop_old_outputs=args.drop_old_outputs,
                 digest_inside=args.digest_inside,
+                hide_old=args.hide_old,
                 loop_guard=args.loop_guard,
                 output_budget=args.output_budget,
                 sampling=args.sampling,

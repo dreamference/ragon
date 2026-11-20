@@ -486,6 +486,24 @@ def test_the_digest_arm_reaches_only_its_round(tmp_path):
     assert status == 2 and runs(recorded) == []
 
 
+def test_the_hide_old_arm_reaches_only_its_round_and_stacks_on_the_digest(tmp_path):
+    # The digest's three arms are two nights that share the off arm: `default digest-inside` and
+    # `default hide-old` (a night has at most two arms); `digest-inside+hide-old` stacks them.
+    status, recorded, folder = night(tmp_path, "default hide-old")
+    assert status == 0 and (folder / "done").exists()
+    record, candidate = runs(recorded)
+    assert "--hide-old" not in record and "--digest-inside" not in candidate
+    assert "--name n4-hide-old " in candidate and candidate.count("--hide-old") == 1
+    stacked = tmp_path / "stacked"
+    stacked.mkdir()
+    _, recorded, _ = night(stacked, "default digest-inside+hide-old")
+    assert "--digest-inside --hide-old" in runs(recorded)[1]
+    misspelt = tmp_path / "misspelt"
+    misspelt.mkdir()
+    status, recorded, _ = night(misspelt, "default hide-old-outputs")
+    assert status == 2 and runs(recorded) == []
+
+
 @pytest.mark.parametrize(
     "arm", ["drop-output", "drop_outputs", "drop-outputs-on", "drop-old-outputs"]
 )

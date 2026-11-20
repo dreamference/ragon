@@ -2200,6 +2200,16 @@ def test_against_sets_the_two_arms_side_by_side(bench):
     assert lines["ragon-code calls"].split()[-2:] == ["3", "0"]
     assert lines["instances using"].split()[-2:] == ["3", "0"]
     assert lines["input tokens"].split()[-2:] == ["3,000", "3,000"]
+    # Per task, for the digest's arms (off, digest, hide-old): steps and the agent model's tokens.
+    def cells(label):
+        return next(line for line in text.splitlines() if line.startswith(label)).split()[-2:]
+
+    commands = [int(value.replace(",", "")) for value in cells("commands ")]
+    assert cells("steps per task") == [f"{value / 3:,.1f}" for value in commands]
+    assert cells("tokens in per task") == ["1,000", "1,000"]
+    for label in ("uncached in per task", "tokens out per task"):
+        first, second = cells(label)
+        assert first == second and first.replace(",", "").isdigit(), label
     assert "Resolved in both: 1, only with: 1, only without: 1, neither: 0" in text
     assert "In with the agent called ragon-code in 3 of 3 instances" in text
     assert "No measurable difference." in text
@@ -5448,6 +5458,40 @@ def test_the_digest_flag_reaches_the_runner(monkeypatch):
     assert seen["digest_inside"] is True
     assert SweBenchCommand.dispatch(parser.parse_args(["swe-bench", "run", "--name", "y"])) == 0
     assert seen["digest_inside"] is False
+    assert seen["hide_old"] is False
+
+
+# -- the hide-old arm (`--hide-old`, owner's answer 3 of 2026-11-20) -------------------------------
+
+
+def test_the_hide_old_arm_sets_its_own_switch_only_when_asked(bench, monkeypatch):
+    from dreamference.swe_bench.swe_bench_runner import HIDE_OLD_ENV
+
+    monkeypatch.delenv(HIDE_OLD_ENV, raising=False)
+    assert run(bench, name="hide", instances=["acme__widget-1"], hide_old=True) == 0
+    env, _ = container_env(bench)
+    assert env[HIDE_OLD_ENV] == "1" and DIGEST_INSIDE_ENV not in env
+    manifest = SweBenchRunStore("hide").manifest()
+    assert manifest["hide_old"] is True and manifest["digest_inside"] is False
+    bench["docker"].calls.clear()
+    assert run(bench, name="plain", instances=["acme__widget-1"]) == 0
+    env, _ = container_env(bench)
+    assert HIDE_OLD_ENV not in env
+    assert SweBenchRunStore("plain").manifest()["hide_old"] is False
+
+
+def test_the_hide_old_flag_reaches_the_runner(monkeypatch):
+    import argparse
+
+    seen = {}
+    monkeypatch.setattr(
+        SweBenchRunner, "run", classmethod(lambda cls, **kwargs: seen.update(kwargs) or 0)
+    )
+    parser = argparse.ArgumentParser()
+    SweBenchCommand.add_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["swe-bench", "run", "--hide-old", "--name", "x"])
+    assert SweBenchCommand.dispatch(args) == 0
+    assert seen["hide_old"] is True and seen["digest_inside"] is False
 
 
 # -- the drop-first compaction arm (`--drop-old-outputs`, compaction spec §13) ---------------------
