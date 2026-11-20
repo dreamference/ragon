@@ -59,11 +59,16 @@ fn a_ca_is_pinned_once_and_a_different_one_is_changed() {
 fn the_trust_store_commands_stay_in_the_users_own_store() {
     let home = Path::new("/home/u");
     let pem = Path::new("/home/u/.ragon/nodes/n1/ca.pem");
+    // The stores are under `home`, joined with this platform's separator (Windows runs these too).
+    let nss = format!("sql:{}", home.join(".pki").join("nssdb").display());
+    let keychain = home.join("Library").join("Keychains").join("login.keychain-db").display().to_string();
+    #[cfg(unix)]
+    assert_eq!((nss.as_str(), keychain.as_str()), ("sql:/home/u/.pki/nssdb", "/home/u/Library/Keychains/login.keychain-db"));
     let linux = pin::trust_commands("linux", home, pem, "n1");
     assert_eq!(linux[0][0], "certutil");
-    assert!(linux[0].contains(&"sql:/home/u/.pki/nssdb".to_string()));
+    assert!(linux[0].contains(&nss));
     let mac = pin::trust_commands("macos", home, pem, "n1");
-    assert!(mac[0].contains(&"/home/u/Library/Keychains/login.keychain-db".to_string()));
+    assert!(mac[0].contains(&keychain));
     let win = pin::trust_commands("windows", home, pem, "n1");
     assert_eq!(&win[0][..4], ["certutil", "-user", "-addstore", "Root"]);
     assert!(pin::trust_commands("plan9", home, pem, "n1").is_empty());
