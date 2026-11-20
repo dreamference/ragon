@@ -5,19 +5,17 @@
 <text class="hd" x="56" y="30" font-size="14" font-weight="bold">RBRB: Ragon-Builds-Ragon share (%)</text>
 <line class="gr" x1="56" y1="204.0" x2="616" y2="204.0"/>
 <text class="tx" x="50" y="208.0" text-anchor="end">0</text>
-<line class="gr" x1="56" y1="164.0" x2="616" y2="164.0"/>
-<text class="tx" x="50" y="168.0" text-anchor="end">5</text>
-<line class="gr" x1="56" y1="124.0" x2="616" y2="124.0"/>
-<text class="tx" x="50" y="128.0" text-anchor="end">10</text>
-<line class="gr" x1="56" y1="84.0" x2="616" y2="84.0"/>
-<text class="tx" x="50" y="88.0" text-anchor="end">15</text>
+<line class="gr" x1="56" y1="150.7" x2="616" y2="150.7"/>
+<text class="tx" x="50" y="154.7" text-anchor="end">5</text>
+<line class="gr" x1="56" y1="97.3" x2="616" y2="97.3"/>
+<text class="tx" x="50" y="101.3" text-anchor="end">10</text>
 <line class="gr" x1="56" y1="44.0" x2="616" y2="44.0"/>
-<text class="tx" x="50" y="48.0" text-anchor="end">20</text>
-<polyline class="ln" points="112.0,204.0 336.0,128.3" fill="none" stroke-width="2"/>
+<text class="tx" x="50" y="48.0" text-anchor="end">15</text>
+<polyline class="ln" points="112.0,204.0 336.0,103.0" fill="none" stroke-width="2"/>
 <circle class="dot" cx="112.0" cy="204.0" r="4"/>
-<circle class="dot" cx="336.0" cy="128.3" r="4"/>
-<line class="ln" x1="336.0" y1="128.3" x2="560.0" y2="123.1" stroke-width="1.5" stroke-dasharray="4 3"/>
-<circle class="hollow" cx="560.0" cy="123.1" r="5"/>
+<circle class="dot" cx="336.0" cy="103.0" r="4"/>
+<line class="ln" x1="336.0" y1="103.0" x2="560.0" y2="110.2" stroke-width="1.5" stroke-dasharray="4 3"/>
+<circle class="hollow" cx="560.0" cy="110.2" r="5"/>
 <text class="hd" x="56" y="246" font-size="14" font-weight="bold">Ragon tasks landed per week</text>
 <line class="gr" x1="56" y1="340.0" x2="616" y2="340.0"/>
 <text class="tx" x="50" y="344.0" text-anchor="end">0</text>
@@ -39,8 +37,8 @@
 <text class="tx" x="336.0" y="222" text-anchor="middle">2026-W46</text>
 <text class="tx" x="560.0" y="222" text-anchor="middle">2026-W47</text>
 <text class="hd" x="112.0" y="193.0" text-anchor="middle" font-size="12" font-weight="bold">0.00 %</text>
-<text class="hd" x="336.0" y="117.3" text-anchor="middle" font-size="12" font-weight="bold">9.46 %</text>
-<text class="hd" x="560.0" y="145.1" text-anchor="end" font-size="12" font-weight="bold">2026-W47 so far 10.11 %</text>
+<text class="hd" x="336.0" y="92.0" text-anchor="middle" font-size="12" font-weight="bold">9.46 %</text>
+<text class="hd" x="560.0" y="132.2" text-anchor="end" font-size="12" font-weight="bold">2026-W47 so far 8.79 %</text>
 <text class="hd" x="56" y="386" font-size="14" font-weight="bold">Quality band: revert rate (%), Ragon vs others</text>
 <line class="gr" x1="56" y1="560.0" x2="616" y2="560.0"/>
 <text class="tx" x="50" y="564.0" text-anchor="end">0</text>
