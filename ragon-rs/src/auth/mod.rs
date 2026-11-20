@@ -10,6 +10,7 @@ pub mod commands;
 pub mod local;
 pub mod pin;
 pub mod screen;
+pub mod signin_rpc;
 pub mod slash;
 pub mod switcher;
 

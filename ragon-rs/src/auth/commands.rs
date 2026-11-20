@@ -312,6 +312,11 @@ impl Primary {
         Ok(Ok(()))
     }
 
+    /// The username and role in the id token of this primary's stored entry.
+    pub fn identity(&self) -> Option<(String, String)> {
+        claims_of(&self.entry()?)
+    }
+
     async fn me(&self) -> Option<(String, String)> {
         let response = self.authed(reqwest::Method::GET, "/ragon/v1/users/me").await.ok()?;
         if !response.status().is_success() {
