@@ -1,338 +1,469 @@
 # Ragon Output Preprocessing
 
-**Status:** proposed, 2026-11-20; spec only, nothing built. The idea and its conditions are the owner's (2026-11-20); the decisions this spec still needs are in §0.1, each with a proposed answer.
+**Status:** decided by the owner on 2026-11-20 (a question round of 100 questions, §0.1); spec only, nothing built. This is revision 2: it replaces the first draft of the same day wherever the owner chose differently. The points the answers leave open are in §0.3, each with a proposed default. The replay set starts at once; the product code starts after the 0.9.9 release (decision 99).
 
-**In one sentence:** when an agent runs a command whose output is long, the local model (Ragon) first picks out the lines that matter, quoted exactly as printed and with their line numbers, so that the strong model reads a short, checked extract instead of thousands of lines, and the full output stays one file away.
+**User-facing name:** **Ragon Digest**. The command is `ragon digest`. This spec keeps the title Ragon Output Preprocessing (decision 97).
 
-**Who it is for:** the agents that run commands and read what they print: the coordinator's session, the worker agents it starts, any agent that uses Ragon's delegation plugin, and later `ragon` itself (§1).
+**In one sentence:** when a command prints a long output, the user's local node reads it instead of the paid model: Ragon picks the lines that answer the caller's question, quoted exactly as printed with their line numbers, adds a short retelling marked "not verified", and the full output stays in a file one path away.
+
+**The pitch** (decision 85): "Your local node reads the logs instead of the paid model."
+
+**Why** (decisions 1 and 80): the main goal is to raise Ragon's share of the work (RBRB); fewer tokens spent on the strong model is the side effect. The share grows by the number of outputs Ragon preprocesses and the tasks it does, never by longer text: brevity and accuracy come first.
 
 **Builds on:**
-- The delegation plugin ([its spec](./DREAMFERENCE_RAGON_CLAUDE_PLUGIN.md), [docs/dev/claude-plugin.md](../docs/dev/claude-plugin.md)): the `ragon-delegate` binary in `ragon-rs/delegate/`, its exact tools (`lookup`, `run_test`, `git_log`, `diff_stat`), its model tools (`task`, `watch`), the busy check (plugin spec §5.3), the verification of model answers (plugin spec §6.2) and the rule that a model's words are a hint while code-checked text is fact (plugin spec D1).
-- The local helpers that run outside the repository today: a digest helper that asks the local model for a ten-line summary of a log, and the **output shrinker**, an after-command hook for shell output. The shrinker saves outputs over 200 lines to a file (after the secret masker), shows the model's ten-line summary, every line matching an error pattern with its line number, and the file's path; it falls back to the last 40 lines when the model is busy or slow (18 s budget). Outputs of 61 to 200 lines are cut to the first 12 and last 30 lines plus up to 12 error lines, with no model. This spec keeps the shrinker's shape and replaces the model summary, which is prose, with a verified selection (§3).
-- The coordinator's result cap (another after-command hook, for file reads, web results and a few shell commands), which already owns those results; shell output stays with the shrinker, so the two never answer for the same result (§5.4).
-- RBRB ([DREAMFERENCE_RBRB.md](./DREAMFERENCE_RBRB.md)) and its sources, for the accounting (§6).
-- The context budget work ([DREAMFERENCE_RAGON_CONTEXT_BUDGET.md](./DREAMFERENCE_RAGON_CONTEXT_BUDGET.md)), which plans shell-output filtering for `ragon` as a later phase; `ragon`'s own use (§1) is that phase.
+- The delegation plugin ([its spec](./DREAMFERENCE_RAGON_CLAUDE_PLUGIN.md), [docs/dev/claude-plugin.md](../docs/dev/claude-plugin.md)): the `ragon-delegate` binary in `ragon-rs/delegate/`, its tools, the verification of model answers (plugin spec §6.2) and the rule that a model's words are a hint while code-checked text is fact (plugin spec D1).
+- The node and its model gate ([DREAMFERENCE_RAGON_NODE.md](./DREAMFERENCE_RAGON_NODE.md)), sign-in on the node from 0.9.9 ([DREAMFERENCE_AUTH.md](./DREAMFERENCE_AUTH.md)), and the Windows and Mac nodes ([DREAMFERENCE_WINDOWS_NODE.md](./DREAMFERENCE_WINDOWS_NODE.md), [DREAMFERENCE_MAC_NODE.md](./DREAMFERENCE_MAC_NODE.md)).
+- RBRB ([DREAMFERENCE_RBRB.md](./DREAMFERENCE_RBRB.md)), for the accounting (§7).
+- `/airgapped on` ([DREAMFERENCE_RAGON_AIRGAPPED.md](./DREAMFERENCE_RAGON_AIRGAPPED.md)), under which the feature keeps working (§4.4).
+- For stage 2: Night Shift ([DREAMFERENCE_RAGON_NIGHT_SHIFT.md](./DREAMFERENCE_RAGON_NIGHT_SHIFT.md)), the phone bridges, the context budget work ([DREAMFERENCE_RAGON_CONTEXT_BUDGET.md](./DREAMFERENCE_RAGON_CONTEXT_BUDGET.md)) and the platform quality bands ([DREAMFERENCE_PLATFORM_QUALITY.md](./DREAMFERENCE_PLATFORM_QUALITY.md)).
 
 ---
 
 ## 0. Decisions
 
-Agreed with the owner on 2026-11-20 (the conditions of the idea):
+### 0.1 Decided by the owner on 2026-11-20
 
-- **P1. The raw output is always kept in a file.** The extract names the file; the agent can open it with a line range at any time. Nothing is lost, only not shown. The one exception: where no secret masker is available, nothing is saved and nothing is preprocessed; the output passes through exactly as today (§3.5).
-- **P2. Ragon selects; it never paraphrases.** The model returns line numbers. The extract shows those lines **copied by code from the raw file**, exactly as printed. No sentence the model writes reaches the strong model as fact.
-- **P3. Every selection is checked against the raw file.** The model quotes the start of each line it selects; code compares the quote with the line at that number. One mismatch discards the whole selection, and the plain fallback (§3.4) is shown instead.
-- **P4. Exact questions keep exact tools.** A count, a search for a string, a list of every match: those are answered by code (search, count, the exact tools), never by the model (§3.6).
-- **P5. No preprocessing while a benchmark holds the GPU.** The plain fallback is shown; the agent never waits for the model (§4).
-- **P6. The Ragon tokens it spends are counted in RBRB's "tool" source**, which records nothing today (§6).
+Each answer in one line, with its number. Where a later answer refines an earlier one, the earlier line gives the final rule and names the refining answer; §0.2 states those rules in full. Answers 18, 21 and 25 to 28 are void.
 
-Decided by this spec:
+| # | Decision |
+|---|---|
+| 1 | Main goal: a larger Ragon share of the work (RBRB); fewer strong-model tokens is the side effect. |
+| 2 | Straight into the product, as a Ragon feature for every user; the project's own agents use it as ordinary users. |
+| 3 | Inside Ragon itself (the outputs of the commands `ragon` runs): yes, as a later stage. |
+| 4 | Off by default until the replay check passes; then on by default. |
+| 5 | Access: the plugin, automatic on long outputs, plus a command for manual use and for scripts. |
+| 6 | Result: selected lines verbatim with their numbers, plus a short retelling by Ragon marked as unverified (its length: at most three sentences, decision 42). |
+| 7 | Length threshold: configurable, 200 lines by default. |
+| 8 | The caller always says what it looks for ("why did the build fail?"); in the plugin this is the run tool's mandatory field (decision 92). |
+| 9 | One quote that does not match the raw output discards the whole answer: plain truncation (head and tail) with a "preprocessing failed" note. |
+| 10 | The retelling comes after the quotes, marked "not verified". |
+| 11 | Always kept, whatever the model does: the exit code, the last 20 lines, every line with an error or failure word (found by plain search; the model cannot drop them), the raw file's path and its line count. |
+| 12 | Raw outputs kept for one day, and rotated earlier when they take too much space (a size cap). |
+| 13 | While the model serves a user's session, preprocessing runs at the same time, sharing the model; it never waits for the user's turn to end. |
+| 14 | Time limit per output: 20 seconds, then plain truncation. |
+| 15 | Very long outputs: plain search first (windows around the errors and the end); the model reads only those windows. |
+| 16 | Works under `/airgapped on` (local model, nothing leaves). |
+| 17 | RBRB: preprocessing is counted together with all other Ragon work, in one figure, with no separate line. |
+| 18 | Void: the owner reverted it in the same round; the RBRB measure stays generated tokens only (row 25-28). |
+| 19 | Bar for on by default: the important line kept in 100 % of the replay set. |
+| 20 | Replay set: real failures from the project's own work plus public build and test logs in several languages; only public material is committed. |
+| 21 | Void: the owner reverted it in the same round; the RBRB measure stays generated tokens only (row 25-28). |
+| 22 | No limit on how much concurrent preprocessing slows a user's own session; the model is shared equally among requests. |
+| 23 | No question from the caller: no preprocessing, plain truncation (the plugin always has one, decision 92). |
+| 24 | Result size: at most 60 lines (the 20 mandatory last lines plus up to 40 selected); §0.3 says which lines count. |
+| 25-28 | Void: reverted by the owner in the same round ("revert, use only written tokens"). The RBRB measure stays generated tokens only, for every model, as since 2026-11-12: preprocessing credits only the tokens Ragon writes (the quote selection and the retelling), inside the one figure (decision 17). No discount coefficient, no recalculation of history, thresholds unchanged. |
+| 29 | Preprocessed: builds and compilation, test runs, service and container logs. Not preprocessed: code search and file listings. |
+| 30 | Never given to the model: the contents of code files, diffs, machine formats (JSON, CSV). Outputs with secrets are not excluded: they go to the local model; secrets are masked in what the strong model receives, as today. |
+| 31 | A successful command with no errors still gets a model call (it answers the caller's question); the caller does not wait for it (decision 91). |
+| 32 | Warnings: their count and the first few distinct ones; errors always in full. |
+| 33 | Product command: `ragon digest` (example: `command \| ragon digest "why did it fail?"`). |
+| 34 | Savings shown by a statistics command: outputs preprocessed, reduction factor, strong-model tokens not spent. |
+| 35 | Off switch at three levels: user setting, project setting, a flag for one run. |
+| 36 | Release: the first release after the replay check passes, no later than version 1.0. |
+| 37 | The simple part (error search, truncation, quote verification) runs on the node; the whole output goes to the node (one implementation, also the client's fallback, decision 89). |
+| 38 | Language: Rust, inside `ragon` (one code base for Linux, Mac and Windows). |
+| 39 | Node unreachable or model still loading: truncation at once, no waiting, marked "the model did not take part" (made by the same code on the client, decision 89). |
+| 40 | A local-only journal of preprocessing failures (a quote mismatch; the agent opened the raw file afterwards); never sent anywhere. |
+| 41 | The retelling is always in English. |
+| 42 | The retelling is at most three sentences. |
+| 43 | The retelling states what happened only; no advice on what to do next. |
+| 44 | Repeated similar lines are collapsed by a plain rule before the model ("lines like Compiling: 1340"). |
+| 45 | No special protection against text in the output that reads like an order to the model; security work goes to version 3.0. The correctness rules (quote verification, mandatory lines) still apply. |
+| 46 | Secrets: this feature does nothing about them (no masking added here); the local model sees the output as it is. |
+| 47 | On the node the output is held in memory only during processing, never stored. |
+| 48 | With accounts on the node (0.9.9), preprocessing requires sign-in like any model request and is attributed to the user. |
+| 49 | Follow-up: a second question to the same raw file, and reading lines by number without the model; the command is not run again. |
+| 50 | The agent opens the raw file anyway three times in a row: preprocessing is switched off for that kind of command until the session ends, and the case goes to the journal. |
+| 51 | The project's worker agents must use it for builds, tests and logs once the replay check has passed (the coordinator is not made to). |
+| 52 | No cap on concurrent preprocessing jobs per node; a request goes to the least busy available node (decision 90). |
+| 53 | Savings shown in tokens and reduction factor; no money figures. |
+| 54 | A public claim on the site and in the README with the project's own measured figures after a month of own use, with the counting method. |
+| 55 | Nothing in Ragon's status line; statistics only. |
+| 56 | A small statistics block in the web UI and the desktop app: outputs preprocessed and savings for the week. |
+| 57 | The replay check runs again before every release and at every change of the model, the engine or the feature's code. |
+| 58 | Below 100 % before a release: the release ships with preprocessing off by default; it comes back on when the check passes again. |
+| 59 | Replay set for the first switch-on: 100 outputs. |
+| 60 | The "important line" of each case is labelled by a strong model; the coordinator re-checks one tenth of the labels. |
+| 61 | Long-running commands: preprocessed at the end in the first version; streaming preprocessing is a later stage. |
+| 62 | Colours, progress bars and terminal control characters are stripped before the model and before verification; the raw file keeps them. |
+| 63 | Very long single lines are not shortened. |
+| 64 | Output in other languages: an error word list for the product's six languages, plus the exit code and the end of the output. |
+| 65 | Night Shift gets it together with the "inside Ragon" stage. |
+| 66 | A SWE slice is run with and without preprocessing inside Ragon; it is switched on inside Ragon only if the result is at or above the middle of the band. |
+| 67 | Phone bridges: long command outputs sent to the phone are preprocessed too. |
+| 68 | A documented, stable node interface for preprocessing; `ragon digest` and the plugin use it, and third-party tools and CI may too. |
+| 69 | Build order: the replay set first, then the command, then the plugin's automatic mode. |
+| 70 | Two agents in parallel on the feature: one on the replay set, one on the command and the node interface. |
+| 71 | Small pieces go to Ragon itself: cleaning rules, error word lists, tests on sample outputs. |
+| 72 | Opus review before landing for the quote verification and the node interface; ordinary checks for the rest. |
+| 73 | Settings by command (`ragon digest on\|off\|status`) and in the settings file. |
+| 74 | A project may list patterns of lines that are always important there; the stricter of the project's and the user's rules wins. |
+| 75 | The user may set the length threshold to any value (no lower bound). |
+| 76 | The user may switch the retelling off and get the verbatim lines only. |
+| 77 | The coordinator uses it too, except while working on a release-blocking failure (then it reads the raw output). |
+| 78 | The project's own agents preprocess on the routing nodes, wherever one is free. |
+| 79 | No RBRB target for preprocessing yet: measure for one week first, then set one. |
+| 80 | Brevity and accuracy over share: the retelling stays at three sentences; the share grows by the number of preprocessed outputs and Ragon's tasks, not by longer text. |
+| 81 | Empty or binary output: a short factual note, without the model. |
+| 82 | Standard output and the error stream are shown together in time order, each line tagged with its stream; the error stream has priority in the selection. |
+| 83 | The same output with the same question again: the earlier result, from a cache kept for one day. |
+| 84 | A reply in the wrong format: one retry inside the same 20 seconds, then truncation. |
+| 85 | Pitch: "Your local node reads the logs instead of the paid model." |
+| 86 | Ready-made integration in the first version for Claude Code and Codex; other agents use the command. |
+| 87 | A documentation page with three real before-and-after examples: a build, a test run, a service log. |
+| 88 | A headline item of the 1.0 announcement if a month of the project's own measured figures exists by then; otherwise one line. |
+| 89 | The simple part is one Rust implementation in `ragon`: it normally runs on the node, and when the node is unreachable the same code gives the truncation on the client. |
+| 90 | No cap on concurrency, but a request goes to the least busy of the available nodes. |
+| 91 | On success the caller gets the exit code and the summary lines at once; the model still answers the question, and its reply is appended to a file beside the raw output, which the agent reads if it wants. |
+| 92 | The plugin's run tool has a mandatory field `what I want to learn`, filled by the agent, so a question always exists and the automatic mode works. |
+| 93 | The model: the one already loaded on the node; no second model. |
+| 94 | The model's thinking mode is off for preprocessing. |
+| 95 | Windows and Mac nodes support it from their first day; the replay set joins the new-node gate. |
+| 96 | With no node at all, `ragon digest` says that a node is needed (there is no model-free mode as a product; the client-side truncation of decision 89 is only the fallback when a configured node is unreachable). |
+| 97 | User-facing name: Ragon Digest; the spec keeps the title Ragon Output Preprocessing. |
+| 98 | The finished spec is shown to the owner as a short retelling in chat plus the file. |
+| 99 | Start: the replay set at once; the product code after the Monday 0.9.9 release. |
+| 100 | The owner names the size of each future question round. |
 
-- **D1. A fixed floor, then the model.** Before the model is asked, code marks the lines that are always kept: the exit code, the last lines, and every line that matches the error and summary patterns (§3.2). The model may only **add** lines to the floor; it can never remove one. The worst the model can do is add noise or be discarded, so the extract is never worse than today's shrinker at keeping the line that matters.
-- **D2. One implementation, in Rust, in the delegation binary** (`ragon-delegate preprocess`), so the product (whose client install has no Python) and the coordinator's hook run the same code, the same quote check and the same busy check. The coordinator's hook becomes a thin caller (§5.4).
-- **D3. One owner per output.** Preprocessing takes over the shrinker's model tier for shell output over the threshold. It is not a third hook: two hooks writing the same result, last write winning, is the failure to avoid.
-- **D4. Machine-readable output is never touched.** If the output is JSON or JSON lines, or the command asked for it, the preprocessor passes it through byte for byte: no model, no selection, no rewrite (§3.5).
-- **D5. Command families, not every command.** In the first version only outputs that are logs are preprocessed: test runs, builds, installs, CI logs, service logs. Every other command's output is left as it is today (§3.6).
-- **D6. Shadow first.** It runs for a week computing extracts that nobody reads, beside today's output, before the replay gate (§7) and the owner turn it on.
+### 0.2 Conflicts the answers resolved: the final rules
 
-### 0.1 Decisions for the owner
+- **C1. Where the work runs** (decisions 37, 39, 89, 96). One Rust implementation in `ragon` does the simple part: cleaning, the mandatory lines, error search, windows, truncation and the quote check. It normally runs on the node, which receives the whole output. When a configured node cannot be reached or its model is still loading, the same code runs on the client and gives the plain truncation at once, marked "the model did not take part". With no node configured at all, `ragon digest` says that a node is needed; the client-side truncation is a fallback, never a product mode.
+- **C2. The question** (decisions 8, 23, 92). Every preprocessing has a question. In the plugin the run tool's field `what I want to learn` is mandatory, so the automatic mode always has one. `ragon digest` takes it as an argument; a call without a question gets plain truncation and no model.
+- **C3. A successful command** (decisions 31, 91). When the exit code is 0 and no mandatory error line was found, the caller gets the exit code, the line count, the raw path and the summary lines (the last 20 lines) at once. The model is still asked the caller's question, and its verified reply is appended to a file beside the raw output (`<raw>.digest`), which the agent reads only if it wants.
+- **C4. Concurrency** (decisions 13, 22, 52, 90). No cap per node and no limit on how much a user's own session slows down: the model is shared equally among requests, preprocessing included, and nothing waits for a user's turn to end. Each request goes to the least busy of the available nodes that serve the model; the project's agents use the routing nodes, wherever one is free (decision 78).
+- **C5. The RBRB measure** (decision 17; 18, 21 and 25 to 28 void). Generated tokens only, as for every model since 2026-11-12: preprocessing credits the tokens Ragon writes (the quote selection and the retelling) and nothing it reads, inside the one RBRB figure, with no separate line and no coefficient.
+- **C6. The retelling's length** (decisions 6, 42, 80). At most three sentences.
+- **C7. The mandatory lines are in every result** (decisions 9, 11, 39, 45). The exit code, the last 20 lines, every error and failure line, the raw path and the line count are computed by code before the model is asked, and they appear in every result: the full digest, the plain truncation after a failed check or a timeout, and the truncation made on the client when the model did not take part. "Plain truncation" therefore means the mandatory lines plus the first lines of the output, within the size limit.
+- **C8. Secrets** (decisions 30, 46). The feature adds no masking and removes none: the local model and the raw file see the output as it is, and whatever masking the strong model's side applies today stays where it is.
+- **C9. The start** (decisions 69, 70, 99). The replay set track starts at once. The command and the node interface start after the 0.9.9 release. The plugin's automatic mode follows the command.
 
-| # | Question | Proposed answer | Why |
-|---|---|---|---|
-| O1 | On by default, or opt-in? | **Opt-in until the replay gate (§7) passes and the shadow week shows no miss; then on by default for the coordinator and the workers.** For plugin users it stays opt-in in the first release that ships it. | A dropped line costs more than the tokens saved; the gate proves it does not happen before anybody depends on it. |
-| O2 | Which agents first? | **The coordinator's own session and the worker agents on the coordinator's machine** (one hook, both accounts). Plugin users second (§1, phase 2). `ragon` itself last (phase 3). | The coordinator and the workers read the most long output (land-queue tests, CI logs, builds); their outputs also feed the replay set and the weekly check. |
-| O3 | The threshold | **More than 200 lines, or more than 16,000 characters on fewer lines.** Below it, the output is unchanged, or cut by today's cap tier (61 to 200 lines) with no model. | 200 lines is the shrinker's threshold today; the character bound catches a few very long lines (minified or one-line JSON-less logs). Short outputs are cheaper to read than to preprocess. |
-| O4 | Does `ragon` get it as a product feature in 1.0? | **Yes for plugin users, opt-in, if the gate passes before the 1.0 cut; not for `ragon`'s own command outputs in 1.0** (that needs a Codex patch and its own measurement against the context budget work). | The plugin path needs no Codex patch and reuses the plugin's busy check; `ragon`'s own path saves context, not strong-model tokens, and is a different measurement. |
-| O5 | Which Ragon tokens count in RBRB | **Only the tokens of extracts that were delivered** (selection verified and shown). Discarded attempts are reported in the weekly lines but not credited. | The share should measure Ragon's useful work, not attempts the agent never saw. |
-| O6 | Where the replay set lives | **Outside the repository**, in the coordinator's private files, with a small redacted copy (host names, paths and names removed) committed as test fixtures. | Real outputs carry host names, home paths and account names, which may not enter the repository. |
+### 0.3 Open points
+
+The answers leave these open. Each has a proposed default, which the work list uses until the owner decides otherwise.
+
+| # | Open point | Proposed default |
+|---|---|---|
+| X1 | The size cap that rotates raw files before their day is over (decision 12). | 1 GB of raw files per user; above it the oldest files go first. A single output larger than 200 MB is kept up to 200 MB, and the result says where it was cut. |
+| X2 | The error word list for the product's six languages (decision 64). | Ragon drafts it (decision 71) from the localised messages of the common compilers, test runners and package tools; every word gets a test line from a public log; the list grows with the replay set. |
+| X3 | The cache key of decision 83 (the node never stores the output, decision 47). | The cache sits on the client beside the raw files, for one day. Key: a hash of the cleaned output, the exact question text, the model's name and the feature's version. |
+| X4 | More error lines than the 60-line result holds (decisions 11, 24 and 32). | The 60-line cap holds. Error lines take the 40 selected places first, after the repeated-line rule collapses them; when they still exceed 40, the result shows the first 20 and the last 20, with the count and the line ranges of the rest, and says so in its first line. Every error line stays in the raw file. |
+| X5 | A benchmark round, a GPU test window or a night holding the node (the answers cover a user's session only). | The node's existing busy check still applies there: plain truncation marked "the model did not take part", so a measurement is never disturbed. |
+| X6 | Credit for an answer that was discarded (a quote mismatch, a timeout). | Only answers that passed the quote check and reached the caller are credited in RBRB; the others appear in the journal and the statistics as failures. |
+
+**Design values set by this spec** (not owner decisions; changed by a spec edit when the replay set shows the need):
+
+| Value | Default |
+|---|---|
+| The first few distinct warnings (decision 32) | 5 |
+| Head lines in a plain truncation | as many as fit the 60-line limit after the mandatory lines, at most 10 |
+| "Very long" output for the windows of decision 15 | more lines than fit one request to the loaded model with the prompt and the answer |
+| A window around an error line | 15 lines before and 15 after; overlapping windows merge; the last 200 lines are always a window |
+| "Kind of command" for decision 50 | the program name and its first sub-command (for example `cargo test`) |
+| Replay runs per check | 3; every run must keep every important line |
+| Which lines the 60-line cap of decision 24 counts | the output's lines: the last 20 and up to 40 selected. The first line, the section headings, the warnings block and the retelling line are written by code on top of them, at most 12 more lines |
+| `ragon digest` with no node configured | after the message that a node is needed, the output passes through unchanged, so a pipe never loses it |
+| The three off switches of decision 35 | off at any level wins |
 
 ---
 
 ## 1. What it is, and who uses it
 
-An agent runs a command. The command prints 4,000 lines: a build's progress, 700 passing tests, one failing test and a summary. Today the agent either reads all of it (expensive, and the strong model re-reads it from its cache on every later turn of the session), or a cut-down version that keeps the head, the tail and the lines matching an error pattern, plus a prose summary by the local model.
+A command prints 4,000 lines: a build's progress, 700 passing tests, one failing test and a summary. Today the agent reads all of it, and the paid model reads it again from its cache on every later turn of the session. With Ragon Digest the agent receives at most 60 lines of the output plus a short header written by code: the exit code, the lines that answer its question (each exactly as printed, with its number and its stream), the last 20 lines, a warning count, the raw file's path, and a retelling of up to three sentences marked "not verified". If any of Ragon's work fails its check, the agent receives a plain truncation instead, never a worse one (§3.4).
 
-With preprocessing, the agent reads a short extract: the exit code, the failing test's lines, the error lines, the final summary, each exactly as printed with its line number, then what was left out and how much, and the path of the full output. If anything in the model's work does not check out, the agent gets today's cut-down version instead, never a worse one.
+**Stage 1** (the first release that ships it):
 
-**Users, and which are in the first version:**
+| User | How it reaches them |
+|---|---|
+| Anyone, by hand or in a script | `ragon digest` (§2.1) |
+| Agents in Claude Code and Codex | The plugin's run tool, automatic on outputs over the threshold, with the mandatory field `what I want to learn` (§2.4, decisions 5, 86, 92) |
+| Other agents, third-party tools, CI | The command, or the node interface directly (§2.5, decision 68) |
+| The project's own worker agents and the coordinator | As ordinary users of the plugin (decision 2). Once the replay check has passed, worker agents must use it for builds, tests and logs (decision 51); the coordinator uses it too, except while working on a release-blocking failure, when it reads the raw output (decision 77). |
 
-| User | How it reaches them | First version? |
-|---|---|---|
-| The coordinator's session | The after-command hook for shell output (the shrinker's place), calling `ragon-delegate preprocess` | **Yes** |
-| Worker agents started by the coordinator | The same hook, registered for both accounts on the coordinator's machine; the job id from the worker's environment tags the request | **Yes** |
-| Any agent using Ragon's delegation plugin | An opt-in hook the plugin installs (`ragon-delegate hooks enable preprocess`), and a plugin tool `preprocess` that takes a saved output file and an optional question | Phase 2 |
-| `ragon` itself, for the outputs of the commands it runs | A Codex patch at the point where a command's output enters the session's history | Phase 3, after the context budget work measures it |
-
-**On the plugin and "no hook that routes work"** (plugin spec D11 and its non-goals): that rule forbids a hook that takes a decision away from the strong model, such as diverting its searches to Ragon. Preprocessing decides nothing for the agent: it runs after the agent's own command, changes only how much of the output is shown, and the full output is one path away. It is still opt-in for plugin users (O1, O4), and the explicit tool exists for agents that prefer to ask.
-
-**On `ragon` itself:** there the reader is the local model, so nothing is saved on a strong model; what is saved is the session's context. That is the context budget's measure, not this spec's, which is why it comes last and is not in version 1.0 (O4).
+**Stage 2** (later; §9): inside Ragon itself for the outputs of the commands `ragon` runs (decision 3), switched on there only after a SWE slice comparison (decision 66); Night Shift with it (decision 65); the phone bridges (decision 67); streaming preprocessing of long-running commands (decision 61).
 
 ---
 
-## 2. The contract
+## 2. The command, the result and the node interface
 
-### 2.1 Input
-
-| Field | Required | Meaning |
-|---|---|---|
-| `command` | yes | The command line as the agent ran it (masked like the output, §3.5). Used to pick the command family (§3.6) and given to the model as context. |
-| `raw` | yes | The path of the raw output file: standard output, then standard error, each line as printed, after the secret masker (§3.5). |
-| `exit_code` | where the caller has it | The command's exit code. The plugin tool and `ragon` always have it. The after-command hook may not: today's hook input carries the output and an "interrupted" flag; whether the harness passes the exit code, or only marks a failed command in the output text, is checked by work item W2. **When it is unknown, the extract says "exit code: unknown"; it is never guessed.** |
-| `question` | no | The caller's question about the output ("why did the build fail?"). The hook has none; it asks the default question: what failed, and what is the final result. An exact question is refused (§3.6). |
-| `job` | no | The job tag for accounting (§6): the worker's job id, or `coordinator` for the coordinator's own session. |
-
-### 2.2 Output
-
-A plain-text extract in a fixed order, every group titled by code:
+### 2.1 `ragon digest`
 
 ```
-[output preprocessed: 4,112 lines, exit code 101; full output: <raw path>]
-Errors (3 of 3):
-  2,915: <the line, exactly as printed>
-  ...
-Failures (1 of 1):
-  3,870: <...>
-Final summary:
-  4,104: <...>
-  ...
-Also selected by the local model (5):
-  2,910: <...>
-Left out: 4,090 lines: 1-2,909 (hint: build progress), 2,920-3,860 (hint: passing tests), ...
-Last lines:
-  4,106: <...>
-  ...
+<command> 2>&1 | ragon digest "why did the build fail?"     # pipe mode
+ragon digest "why did the build fail?" -- <command> [args]  # run mode
+ragon digest ask <raw-id> "which test failed first?"        # a follow-up question (§5.1)
+ragon digest lines <raw-id> 2900-2950                       # lines by number, no model
+ragon digest on | off | status                              # the user setting (§6)
+ragon digest stats                                          # the statistics (§7.2)
 ```
 
-- **Groups.** Errors, failures and the final summary come from the floor (§3.2) and, where the model adds lines, from its selection; "also selected" holds the model's additions that fit no group. A group title says how many of its lines are shown ("3 of 3").
-- **Left out** lists the line ranges not shown and their counts, computed by code. Each range may carry a short label from a fixed list (build progress, passing tests, downloads, warnings, repeated lines, other), chosen by the model and marked **hint**. A wrong label misleads less than a missing range would, and the ranges themselves are code's.
-- **The raw path** is always on the first line.
-- **The plugin tool** returns the same content as JSON (`{exit_code, total_lines, raw, groups: [{name, shown, total, lines: [{n, text}]}], left_out: [{from, to, hint}], source: "model" | "fallback", reason}`), so that a caller can read line numbers without parsing text.
+- **Run mode** starts the command itself, so it knows the exit code and keeps standard output and the error stream apart, each line tagged with its stream and in time order (decision 82). **Pipe mode** sees one stream: the exit code is "unknown" unless given with `--exit-code N`, and no line is tagged. The digest never guesses an exit code.
+- **Under the threshold** (200 lines by default, any value allowed, decisions 7 and 75): the output is printed unchanged.
+- **Without a question**: plain truncation, no model (decision 23).
+- **`--off`** is the flag for one run (decision 35): the output is printed unchanged and only the raw file is written.
+- **No node configured**: the command prints that a node is needed (decision 96); this spec passes the output through unchanged after that message (design value, §0.3).
+- `ragon digest` never preprocesses its own output or another `ragon digest`, so it cannot loop.
 
-### 2.3 Size limits
+### 2.2 The result
 
-| Limit | Proposed value | When exceeded |
-|---|---|---|
-| Extract length | 80 lines and 8,000 characters | The overflow rule of §3.3 |
-| One shown line | 400 characters | Cut, with `[line cut; full line <n> in the raw file]` |
-| Raw file | 100 MB | Kept up to the limit; the extract says the file was cut and where |
-| What the model reads | At most 4 windows of about 12,000 tokens each, with line numbers | The rest is described as "not read by the model" in the extract, and only the floor covers it (§3.3) |
-| Raw files kept | The last 500, at most 7 days | Older files are deleted, as the shrinker does today |
+In this order, every heading written by code:
 
-### 2.4 Time limit
+```
+[Ragon Digest: 4112 lines, exit code 101, model took part; raw: <path>]
+Selected, 12 lines:
+  2915 err: <the line, exactly as printed>
+  ...
+Warnings: 1912 lines, 37 distinct; first 5:
+  <line> ...
+Last 20 lines:
+  4093 out: <...>
+  ...
+Retelling (not verified): <at most three sentences, in English>
+```
 
-- **Hook:** 20 s from the command's end to the extract, the whole call. The floor is computed first (well under a second for 100 MB); the model gets what is left. Past the limit the model call is cancelled and the plain fallback is shown.
-- **Plugin tool:** 60 s, because the caller asked and is waiting for this answer only.
-- The model windows of one output are sent at the same time, never one after another.
+- **At most 60 lines** (decision 24): the 20 last lines plus up to 40 selected ones. Error and failure lines are selected first and in full (decision 32); the model's choices fill the rest of the 40 places; X4 covers a log with more error lines than fit.
+- **Warnings** are given as a count and the first five distinct ones (decision 32).
+- **The retelling** comes after the quotes and is marked "not verified" (decision 10): at most three sentences (decision 42), in English (decision 41), stating what happened and never what to do next (decision 43). The user may switch it off and get the verbatim lines only (decision 76).
+- **The first line always carries** the line count, the exit code, whether the model took part and the raw path (decision 11). The notes are fixed: `model took part`, `model reply pending: <raw>.digest` (decision 91), `preprocessing failed: <reason>` (decision 9), `the model did not take part: <reason>` (decision 39), `no question` (decision 23).
+- **Empty or binary output**: a one-line factual note ("no output", "binary output, 3.2 MB"), without the model (decision 81).
+- **A successful command** (exit code 0 and no error line found; decisions 31 and 91): the result goes back at once, with the note `model reply pending: <raw>.digest`, the exit code, the line count, the raw path and the last 20 lines. The model still answers the caller's question; once its reply passes the quote check, the reply is appended to `<raw>.digest` beside the raw file, in the same form as a full result. A reply that fails the check, or a time-out, writes the matching note to that file instead. The agent reads the file only if it wants.
+
+### 2.3 What is preprocessed, and what passes through
+
+- **Preprocessed** (decision 29): builds and compilation, test runs, service and container logs.
+- **Passed through unchanged, never given to the model** (decisions 29 and 30): code search results, file listings, the contents of code files, diffs, and machine formats (JSON, CSV). Code decides this from the command (a list of programs and flags, with a test per entry) and from the content (a whole output that parses as JSON, nine in ten lines that parse as JSON lines or CSV, a diff's headers). Leaving machine formats untouched also keeps a program that reads them working.
+- **Outputs with secrets are not excluded** (decisions 30, 46): they go to the local model as they are (§3.7).
+
+### 2.4 The plugin's automatic mode (Claude Code and Codex)
+
+- The plugin gets a run tool, `run`, beside its other tools: a command, the mandatory field `what I want to learn`, an optional `digest: off` for one run (decision 35), and an optional time-out.
+- When the output is over the threshold, the tool returns the digest instead of the output, automatically (decision 5). Under the threshold it returns the output unchanged.
+- The skill tells the agent to use `run` for builds, tests and logs, and to put its question in the field, so the automatic mode always has a question (decision 92).
+- Other agents use the command (decision 86).
+
+### 2.5 The node interface
+
+- A documented, stable endpoint on the node's model gate (decision 68). Request: the output (with stream tags and time order when known), the question, the exit code or "unknown", the command line, the threshold, the user's and the project's important-line patterns, and whether a retelling is wanted. Answer: the result of §2.2 as JSON (`{exit_code, total_lines, model_took_part, note, selected: [{n, stream, text}], warnings: {count, distinct, first}, last: [...], retelling}`) and as the printed text.
+- `ragon digest`, the plugin's `run` tool and, later, the stage-2 users all call it. Third-party tools and CI may call it with the same sign-in as any model request.
+- The interface is versioned; a change that breaks a field is a new version, and the old one stays served for one release.
+- From 0.9.9 the interface requires sign-in like any model request and every request is attributed to the user (decision 48).
 
 ---
 
 ## 3. Correctness rules
 
-### 3.1 Verbatim only
+### 3.1 The mandatory lines (code, before any model)
 
-The model is asked for line numbers, each with the first 40 characters of the line as a quote. It never supplies the text that is shown: code copies every shown line from the raw file. A model that invents a line therefore cannot put it in front of the strong model; at worst it points at the wrong line, which the quote check catches.
+Code computes them first and the model cannot remove them (decision 11):
 
-### 3.2 The floor: what code always keeps
+1. **The exit code**, or "unknown".
+2. **The last 20 lines.**
+3. **Every error or failure line**, found by plain search with the error word list: the English words (`error`, `failed`, `FAIL`, `fatal`, `panicked`, `Traceback`, `Exception`, `assertion` and the like), the words of the product's six languages (decision 64, list open: X2), and the project's and the user's important-line patterns (decision 74; when both exist, every pattern of both applies).
+4. **The raw file's path and its line count.**
 
-Before any model call, code marks:
+They appear in every result, including every fallback (C7).
 
-1. **The exit code** (or "unknown"), and whether the command was interrupted.
-2. **The last 20 lines.** The end of a log is where test runners, compilers and installers print their verdict.
-3. **Every error line**: lines matching the error pattern that the shrinker uses today, widened with today's evidence (the four Windows failures, §7.1): `error`, `Error`, `ERROR`, `error[E` (the Rust compiler's error codes), `FAILED`, `FAIL`, `Traceback`, `ModuleNotFoundError`, `ImportError`, `panicked`, `assertion` and `AssertionError`, `Exception`, `fatal`, lines starting `E ` (the Python test runner's failure detail), `exit code [1-9]`, `Segmentation fault`, `command not found`, `No such file or directory`, `Permission denied`.
-4. **Every summary line**: the test runners' and builders' result lines (`test result:`, `N passed`, `N failed`, `short test summary`, `error: could not compile`, `Tests:`, `FAIL ` with a file name, and the like), kept in a pattern list next to the error pattern and grown from the replay set.
-5. **Two lines of context** before and after each error and summary line, so a failed test's name, usually printed directly above the failure, is never cut off.
+### 3.2 Cleaning before the model and the check
 
-The patterns live in one file in `ragon-rs/delegate/` with a test per pattern, each test a real line from the replay set (redacted).
+- **Colours, progress bars and terminal control characters are stripped** before the model sees the output and before the quote check; the raw file keeps them (decision 62). A carriage-return progress line keeps only its last state.
+- **Repeated similar lines are collapsed** by a plain rule before the model: a run of lines that differ only in a name, a number or a path becomes one line, "lines like Compiling: 1340" (decision 44). The line numbers of the run stay known, so a selected line inside it is still quoted from the raw file.
+- **Long lines are not shortened** (decision 63).
+- **Stream priority**: in the selection, lines of the error stream come before lines of standard output (decision 82).
 
-### 3.3 When the floor is larger than the extract
+The cleaning rules live in one Rust file with a test per rule on a sample output (decision 71).
 
-A log with thousands of warnings matches the error pattern thousands of times; today's shrinker shows only the first 25 such lines, so one real error behind the warnings is lost. The order in which the floor is cut when it does not fit:
+### 3.3 The model step
 
-1. The exit code, the first line and the "left out" summary: never cut.
-2. Lines matching the hard error patterns (`error[E`, `Traceback`, `ModuleNotFoundError`, `ImportError`, `panicked`, `FAILED`, `fatal`, `assertion`): the **first 10 and the last 10** of them, then the rest by model rank if the model answered.
-3. Summary lines: all of them, up to 15 lines.
-4. The last 20 lines.
-5. Warning-like matches (`warning`, `deprecated`): only as counts ("1,912 warning lines left out, lines …").
-6. The model's own additions: whatever room is left.
+- **The model is the one already loaded on the node**; no second model is loaded (decision 93). **Thinking is off** (decision 94).
+- **Very long outputs**: plain search first; the model reads only windows around the error lines and the end (decision 15; window sizes in the design values of §0.3).
+- **What the model returns**: line numbers, each with the start of its line as a quote, and the retelling. It never supplies the text that is shown: code copies every shown line from the cleaned output.
+- **A reply in the wrong format** (it does not parse, a line number does not exist, the retelling has more than three sentences): one retry inside the same 20 seconds, then plain truncation (decision 84).
+- **The time limit** is 20 seconds per output, from the end of the command to the result, the retry included; past it, plain truncation (decision 14).
 
-Whatever is cut is named in "left out" with its count and ranges. **A count of dropped error lines is always shown**; an extract never implies "no errors" when some were cut.
+### 3.4 The quote check
 
-### 3.4 The quote check and the fallbacks
+Every quote is compared with the cleaned line at its number. **One mismatch discards the whole answer** (decision 9): the caller gets the plain truncation (C7) with the note `preprocessing failed: quote mismatch`, and the case goes to the journal (§5.3). A model that misread one line may have misread the rest.
 
-- Every selected line number must exist and its line must start with the model's quote, after both are trimmed of surrounding spaces. **One failure discards the whole model selection**: a model that misread one line may have misread the rest.
-- **The plain fallback** is the floor alone, shaped like the extract and titled `[output preprocessed without the local model: <reason>]`. It is today's shrinker without the summary, plus the overflow rule of §3.3.
-- Reasons, each written to the run log and counted weekly (§6.3): `busy` (benchmark or GPU window, §4), `airgapped`, `unreachable`, `timeout`, `quote_mismatch`, `bad_answer` (the model's answer did not parse), `too_large`. (A missing masker is not a fallback: the output passes through untouched, §3.5.)
-- A fallback is never an error for the agent: the command's result stands, only the presentation changes.
+### 3.5 Orders written into the output
 
-### 3.5 Secrets and machine-readable output
+Text in the output that reads like an order to the model gets no special protection (decision 45); security work on this goes to version 3.0. What reaches the caller stays bounded by the rules above: shown lines are copied by code and checked, the mandatory lines are code's, and the retelling is marked "not verified".
 
-- **Secrets are masked the same way as today**, before the raw file is written and before the model sees a line: the coordinator's shared secret filter, which the shrinker and the result cap already use. The product needs the same masker in Rust (W5), tested against the same cases. **Without a masker nothing is saved and nothing is preprocessed** (logged as `masker_missing`, never shown as a fallback): the output passes through as it is today.
-- **Masking must not change the line count**: it replaces inside a line, never adds or removes a line break, so the line numbers in the extract, in the raw file and in the model's view are the same numbers.
-- **Machine-readable output is never touched.** It is left byte for byte as the command printed it, with no selection and no model, when any of these holds:
-  - the command asks for it (`--json`, `--format json`, `--format=json`, `-o json`, `--output json`, `--porcelain`, a pipe into a JSON tool);
-  - the whole output parses as one JSON document;
-  - at least nine in ten of its non-empty lines parse as JSON (JSON lines).
+### 3.6 Retelling switched off
 
-  This is the lesson of 2026-11-20: the secret masker rewrote the field names of a release check's JSON output, the check failed, and the release waited. Whatever the masker's JSON-safe mode does to such output today stays outside this feature; the preprocessor adds nothing to it.
+With the retelling off (decision 76), the model still selects lines, and the result has no retelling line.
 
-### 3.6 When it does not run
+### 3.7 Secrets
 
-- **Under the threshold** (O3): the output is unchanged, or cut by today's cap tier with no model.
-- **Exact questions** (P4): a question asking how many, whether a string appears, which lines contain something, or for every match is refused with `exact question: use a search or a count`, and the plugin's skill tells the agent to run the search itself. Code decides this from the question's words; the model never answers it.
-- **Commands outside the log families** (D5): the first version preprocesses only
-  - test runs (the Python, Rust and JavaScript test runners, and the repository's own test scripts);
-  - builds and installs (compilers, package installers, container builds);
-  - CI logs fetched from the forge, service logs, and the journal.
-
-  Everything else (file reads through the shell, searches, diffs, listings, version control commands, anything machine-readable) is left as it is today. The list is a file with a test per entry; a family joins it only after the replay set has cases of it.
-- **The preprocessor's own commands** (and the digest helpers) are never preprocessed, so it cannot loop.
+The feature does nothing about secrets (decision 46): the local model and the raw file see the output as it is. Whatever masks secrets on the strong model's side today keeps doing so (decision 30).
 
 ---
 
-## 4. When it must not use the model, and what happens then
+## 4. Where it runs
 
-In every case below the agent gets the plain fallback (§3.4) at once, with the reason on its first line. Nothing waits, nothing queues, nothing retries.
+### 4.1 Node and client
 
-| Condition | How it is detected | Reason shown |
-|---|---|---|
-| A SWE round, a benchmark night or a GPU test window holds the model | The plugin's busy check (plugin spec §5.3): the runner lock, an active `ragon-swe-*` unit, the model gate's 503, and on the coordinator's machines the GPU lock of the node | `busy: <what holds it>, until about <time>` when known |
-| `/airgapped on` in a `ragon` session | `ragon airgapped --json`, failing closed. At `on` no plugin is loaded anyway; the check stays for the phase-3 path inside `ragon` | `airgapped` |
-| The node cannot be reached | The busy check's one-token request times out (3 s) | `unreachable` |
-| The model server is up but slow | The time limit (§2.4) | `timeout` |
+- The client sends the whole output to the node (decision 37); the node runs the simple part and the model, and returns the result. On the node the output is held in memory only, during processing, and never stored (decision 47).
+- The client keeps the raw file for one day, rotated earlier by the size cap (decision 12; the cap is open: X1).
+- **Fallback on the client**: when the configured node cannot be reached, or its model is still loading, the same Rust code runs on the client and returns the plain truncation at once, marked "the model did not take part" (decisions 39, 89). Nothing waits.
 
-**Another node:** the busy check's step 3 (another node serving the same model, not reserved by the owner) applies to the plugin tool only, which a caller is waiting for. The hook never moves to another node: a fallback is cheaper than a second node's time for an extract.
+### 4.2 Sharing the model
 
----
+- No cap on concurrent preprocessing jobs per node, and no limit on how much a user's own session slows down: the model is shared equally among requests (decision 13, decision 22, decision 52).
+- A request goes to the least busy of the available nodes that serve the model (decision 90). The project's own agents preprocess on the routing nodes, wherever one is free (decision 78).
+- During a benchmark round, a GPU test window or a night, the node's busy check still answers "the model did not take part" (proposed default, X5).
 
-## 5. Where it runs
+### 4.3 Platforms
 
-### 5.1 Which node serves it
+Windows and Mac nodes support it from their first day; the replay set joins the new-node gate, so a new node does not pass the gate unless the replay check passes on it (decision 95). The code is Rust inside `ragon`, one code base for Linux, Mac and Windows (decision 38).
 
-The node that serves the user's model, reached the way the plugin reaches it: the launcher's node resolution, by name or id, never by address. On the coordinator's machines, the node named in the coordinator's helper settings, as the digest helper does today. The preprocessor itself runs where the agent runs (the client); only the windows of masked output go to the node's model gate, as ordinary chat requests tagged `preprocess` (§6.1).
+### 4.4 Air-gapped
 
-### 5.2 Memory beside a resident model server
-
-- **No second model.** Preprocessing is requests to the model the node already serves; it loads nothing.
-- **The client side streams the raw file**: the floor is computed line by line, so a 100 MB output costs a few megabytes of memory, under a 256 MB bound tested by W3.
-- **On the node,** each window uses the model server's ordinary memory for one request of about 13,000 tokens. At most **two preprocessing requests at once per node** (a small counter at the gate, or a lock file on a single node), so the memory the server keeps for user sessions is never taken by extracts.
-
-### 5.3 Never slowing a user's own session
-
-- Preprocessing requests go at the lowest priority the gate has (the batch priority of the delegation tools); when the gate reports a waiting interactive request, or the two-request limit is reached, the call answers `busy` at once and the fallback is shown.
-- No queue: an extract that would wait is replaced by the fallback. A queue would turn a saved minute of strong-model reading into an agent waiting on a log.
-- On a node, the client side runs in the batch slice at low CPU priority, as the delegation tools do (`ragon-batch.slice`, `nice 10`).
-
-### 5.4 How the coordinator's hook fits
-
-Today two after-command hooks look at a shell result in the coordinator's session: the result cap (a few commands only) and the shrinker (all other long shell output). They run side by side on the same original output and the last write wins, so they are kept apart by command. Preprocessing goes **into the shrinker's place, for outputs over the threshold**: the shrinker masks and saves the raw file as today, calls `ragon-delegate preprocess --raw <file> --command <cmd> --job <job>` instead of the digest helper, and prints its extract. The result cap and the cap tier (61 to 200 lines) are unchanged. The shrinker and the digest helper are local files outside this repository; their change is a coordinator-tools item (W6), not a product change.
+Under `/airgapped on` the feature works as usual: the model is local and nothing leaves (decision 16).
 
 ---
 
-## 6. Accounting
+## 5. Follow-up, cache, journal and the self switch-off
 
-### 6.1 Ragon tokens spent
+### 5.1 Follow-up
 
-- Every preprocessing request carries the job tag (`job`: the worker's job id, or `coordinator`) and the workload `preprocess`.
-- After each preprocessing, the preprocessor writes one row to the same usage file the `ragon exec` shim writes today, the file RBRB's **"tool"** source reads: `{finished, job, workload: "preprocess", generated, input, cached, delivered, reason}`, with the token counts from the model server's usage answer. Rows carry no output text, no command and no question.
-- **RBRB today composes each job from one source, the first that has rows** (gate, then tool, then node, then trailer). A worker job that also ran `task` has gate rows, so its preprocessing rows would be ignored, and a gate that logs the `preprocess` requests too would count them under "gate". The rule: **gate rows with workload `preprocess` are skipped, and `preprocess` rows from the tool file are added to the job on top of whichever source the job's other work came from.** Each token is counted once, under "tool". (W8 changes the composition and its test.)
-- Per O5, only rows with `delivered: true` are credited; the others appear in the weekly lines as spent but not credited.
-- **Honest scale.** RBRB's published method counts generated tokens. Preprocessing reads a great deal and writes little (line numbers and short quotes), so its effect on the published share is small while that method stands. Its main effect is the other side: fewer strong-model tokens spent. The weekly report shows the two separately and never presents the saving as share.
+A second question goes to the same raw file (`ragon digest ask <raw-id> "<question>"`) and is preprocessed again without running the command again; `ragon digest lines <raw-id> <from>-<to>` prints lines by number, without the model (decision 49). The plugin's `run` tool answers with the raw id, so the agent can ask again.
 
-### 6.2 Strong-model tokens saved
+### 5.2 Cache
 
-Measured per preprocessing, from the agent's transcript afterwards, not estimated at the time:
+The same output with the same question within one day gets the earlier result from a cache (decision 83). Where the cache lives and its key are open (X3); the default keeps it on the client, beside the raw files.
 
-- **First read:** the raw output's tokens minus the extract's, at the input weight. Tokens are estimated from characters with one ratio, measured once against the usage ledger and stated in the weekly report.
-- **Every later turn:** the same difference again at the cache-read weight, for each later call the session made (known afterwards from the transcript). A long output read early in a long session is paid on every turn after it; this is usually the larger part.
-- **Minus the re-reads:** if the agent opens the raw file afterwards (a read of the raw path), what it read is subtracted. The share of extracts followed by such a read is reported on its own: it is the best live sign that an extract missed something.
+### 5.3 The journal
 
-### 6.3 The weekly lines
+A local-only journal of preprocessing failures, never sent anywhere (decision 40): each quote mismatch, wrong format, time-out, and each time the agent opened the raw file after a digest. The journal stores the raw id, the question, the reason and the time; the output itself stays only in the raw file, which expires with it.
 
-One block in the coordinator's weekly report: preprocessings, delivered, fallbacks by reason, extracts followed by a raw read, estimated strong-model tokens saved (net), Ragon tokens spent and credited. No figure from it enters a release note or a spec until the owner asks for it.
+### 5.4 Switching itself off
+
+When the agent opens the raw file anyway after three digests in a row of the same kind of command, preprocessing is switched off for that kind of command until the session ends, and the case goes to the journal (decision 50).
 
 ---
 
-## 7. The quality gate before it is on by default
+## 6. Settings
 
-### 7.1 The replay set
-
-Each case is a real past output with a known important line:
-
-`{command, exit_code, raw (the output file), important: [{line, text}], family, source, note}`
-
-- **The four Windows failures of 2026-11-20**, each of which sat on one line among thousands: the Python import of a POSIX-only module (`fcntl`) that stopped the package from importing at all; the Rust compiler's "undeclared crate" error for a Linux-only crate referenced without its platform gate; the one failing test among hundreds in the launcher; and the test that asserted a Linux path for the trust store.
-- **Twenty land-queue rejections**: the test or build output that made the land queue refuse a change, with the important line being the one the fixing job named in its report. Chosen across families (Python tests, Rust tests, builds, lint ratchets), most recent first.
-- **Controls**, which must pass too: ten green runs (the important line is the final summary, and the extract must not invent an error), five machine-readable outputs (must pass through byte for byte), five outputs with secrets planted in them (the secret must not appear in the extract or the raw file), five outputs slightly under the threshold (must be untouched), and one output of each fallback reason, forced.
-- Every miss found later (§7.3) becomes a new case. Cases are never removed.
-- Per O6 the set lives in the coordinator's private files; the redacted copy in `ragon-rs/delegate/` tests holds only what the anonymity rules allow.
-
-### 7.2 The bar
-
-Run against the model and the node as they serve today, three times (the model's answers vary):
-
-1. **The important line is shown in 100 % of the failure cases, in every one of the three runs**, in the delivered extract or in the fallback. One miss fails the gate. A preprocessor that drops the line that matters is worse than none.
-2. **Size: the median extract is at most one fifth of the raw output** over the cases above the threshold, and no extract exceeds the limits of §2.3.
-3. **Controls:** machine-readable outputs byte-identical, no secret visible, no output under the threshold changed, no green run's extract showing an error that is not in the output.
-4. **Time:** nine in ten extracts within the hook's 20 s.
-5. **Fallbacks** at most one in ten cases outside the forced ones; a higher rate means the prompt or the windows need work, even if no line was missed.
-
-The gate's report lists every case with its result and is attached to the owner's question (O1).
-
-### 7.3 The weekly check
-
-- Every Monday in the day window (never in a night or a GPU window), the replay set runs once against the current model, prompt and patterns. Any miss of an important line, or a control failing, **turns preprocessing off by itself** (back to today's shrinker) and reports to the owner; it goes back on only when the gate passes again.
-- Twenty extracts of the week that were followed by a raw read are compared by code with the raw lines the agent read afterwards: when the agent read a range the extract left out, the case is added to the replay set with that range as its important line, after a person-free review by the coordinator.
-- A change to the model, the prompt, the patterns or the window size runs the full gate before it is used.
-
-### 7.4 Shadow week
-
-Before the owner's decision on O1: for one week the hook computes the extract for every eligible output, writes it next to the raw file, and shows the agent today's output. The comparison (would the extract have kept every error and summary line; would the agent's later commands have needed something it left out) goes into the gate's report.
+- **On by default once the replay check passes; off before** (decision 4).
+- **Three levels** (decision 35): the user setting, the project setting, and the flag for one run (`--off`, or `digest: off` in the run tool). Off at any level wins (design value, §0.3).
+- **By command and in the settings file** (decision 73): `ragon digest on|off|status` for the user setting; the same keys in the user's and the project's settings files (`digest.enabled`, `digest.threshold_lines`, `digest.retelling`, `digest.important_patterns`).
+- **Important-line patterns** (decision 74): a project may list patterns of lines that are always important there; the stricter rule wins, so the patterns of both the project and the user apply.
+- **Threshold**: any value, no lower bound (decision 75).
+- **Retelling** on or off (decision 76).
 
 ---
 
-## 8. Risks
+## 7. Accounting and statistics
 
-- **Dropping the one line that matters.** The evidence is today's: four Windows build failures in a row each sat on a single line among thousands (an import, an undeclared crate, one failed test, one asserted path); an agent that reads an extract without that line fixes the wrong thing or calls a red run green. Answered by the floor (D1, §3.2), the overflow order (§3.3), the 100 % bar (§7.2) and the weekly check (§7.3).
-- **A model selection that looks right but points at wrong lines.** Answered by code copying the text (§3.1) and the quote check (§3.4).
-- **Rewriting output a program reads.** Answered by §3.5; the lesson is the masker's damage to a release check's JSON on 2026-11-20.
-- **Slowing the user's own session.** Answered by §5.3: lowest priority, two requests at most, no queue.
-- **A saving that is not real** because agents re-open the raw file. Measured, not assumed (§6.2); a high re-read rate is a reason to turn it off.
-- **Inflating RBRB.** Only delivered extracts count (O5), and the saving is reported apart from the share (§6.1).
+### 7.1 RBRB
+
+- Generated tokens only, as for every model since 2026-11-12 (the owner's revert in rows 18, 21 and 25-28 of §0.1): preprocessing credits the tokens Ragon writes, the quote selection and the retelling, and nothing it reads.
+- They are counted together with all other Ragon work, in the one RBRB figure, with no separate line (decision 17). By default only answers that passed the quote check and reached the caller are credited (X6).
+- No RBRB target for preprocessing yet: it is measured for one week, then a target is set (decision 79).
+- The share grows by the number of preprocessed outputs and Ragon's tasks, never by longer text (decision 80).
+
+### 7.2 What the user sees
+
+- `ragon digest stats` (decision 34): outputs preprocessed, the reduction factor, and the strong-model tokens not spent, in tokens only, no money figures (decision 53).
+- A small statistics block in the web UI and the desktop app: outputs preprocessed and savings for the week (decision 56).
+- Nothing in Ragon's status line (decision 55).
+
+### 7.3 Public figures
+
+A public claim on the site and in the README, with the project's own measured figures and the counting method, after a month of own use (decision 54). It is a headline item of the 1.0 announcement if that month of figures exists by then; otherwise one line (decision 88). No figure enters a spec, a release note or the site before then.
 
 ---
 
-## 9. Goals and non-goals
+## 8. The replay check
 
-**Goals**
-- Fewer strong-model tokens per long output, net of re-reads, measured from the transcripts.
-- No loss: every line the agent needs is in the extract or in the floor; the raw output is always one path away.
-- Ragon's work on it counted honestly in RBRB's "tool" source.
-- One implementation for the coordinator, the workers and the plugin.
+### 8.1 The set
 
-**Non-goals**
-- Summaries in the model's own words. The existing digest helper may still be called by hand for a report; it is not part of this feature.
-- Preprocessing file reads, web pages or mail (the result cap's ground).
-- Answering questions about the output: the caller's question only guides the selection.
-- Moving an extract to another node from the hook.
-- Any change to `codex/` (the phase-3 path is a numbered patch, under the patch-size cap, when it comes).
+- **100 outputs** for the first switch-on (decision 59), each with a known important line: `{command, exit_code, output, question, important: [{line, text}], kind, source, public}`.
+- **Sources** (decision 20): real failures from the project's own work (the four Windows build failures of 2026-11-20, each of which sat on one line among thousands; land-queue rejections; CI failures) plus public build and test logs in several languages.
+- **Only public material is committed**, as test fixtures in the repository; the cases from the project's own work stay in the coordinator's private files.
+- **Labelling** (decision 60): a strong model labels the important line of each case; the coordinator re-checks one tenth of the labels.
+- **Controls** run beside the 100 and are reported with them: green runs (the result must not show an error that is not in the output), machine formats and diffs (must pass through unchanged), outputs a few lines under the threshold (must be unchanged), and one forced case of each fallback.
+- Every miss found later (from the journal, §5.3) becomes a new case. Cases are never removed.
+
+### 8.2 The bar
+
+**The important line is kept in 100 % of the replay set** (decision 19), in every one of the replay runs (§0.3), in the digest or in its fallback. One miss fails the check.
+
+### 8.3 When it runs, and what a failure does
+
+- Before every release, and at every change of the model, the engine or the feature's code (decision 57).
+- Below 100 % before a release: the release ships with preprocessing off by default; it comes back on when the check passes again (decision 58).
+- On every new node, as part of the new-node gate (decision 95).
+- Once it has passed, the project's worker agents must use the feature for builds, tests and logs (decision 51).
+
+---
+
+## 9. Stages and release
+
+- **Release** (decision 36): the first release after the replay check passes, and no later than version 1.0.
+- **Stage 1**: `ragon digest`, the node interface, and the plugin's automatic mode with the field `what I want to learn` for Claude Code and Codex (decisions 5, 33, 68, 86, 92). Long-running commands are preprocessed at their end (decision 61). The documentation page with three real before-and-after examples (a build, a test run, a service log) ships with it (decision 87).
+- **Stage 2**, inside Ragon:
+  - The outputs of the commands `ragon` runs (decision 3): a numbered patch in `codex-patches/`, never a change to `codex/`. One SWE slice runs with and without it; it is switched on inside Ragon only if the result is at or above the middle of the band (decision 66).
+  - Night Shift gets it with this stage (decision 65).
+  - The phone bridges: long command outputs sent to the phone are preprocessed too (decision 67).
+  - Streaming preprocessing of long-running commands (decision 61).
+
+---
+
+## 10. Risks
+
+- **Dropping the one line that matters.** The four Windows build failures of 2026-11-20 each sat on one line among thousands. Answered by the mandatory lines (§3.1), the 100 % bar (§8.2) and the re-runs (§8.3).
+- **A selection that points at wrong lines.** Answered by code copying the text and the quote check (§3.4).
+- **A retelling that is wrong.** It is marked "not verified", comes after the quotes, states only what happened, and can be switched off.
+- **Rewriting output a program reads.** Machine formats pass through unchanged (§2.3).
+- **A saving that is not real** because agents open the raw file anyway. Measured by the journal (§5.3), answered by the self switch-off (§5.4).
+- **Orders hidden in an output.** Not protected in this version (decision 45); bounded by the correctness rules (§3.5).
+
+---
+
+## 11. Non-goals
+
+- A model-free product mode (decision 96).
+- A second model on the node (decision 93).
+- Money figures, or anything in the status line (decision 53, decision 55).
+- Masking secrets, or protecting against orders in the output, in this feature (decision 45, decision 46).
+- Preprocessing code search, file listings, code files, diffs or machine formats (decision 29, decision 30).
+- Any change to `codex/`.
 - New Python in `dreamference/`; if any is needed later, it follows the Python quality ratchet ([DREAMFERENCE_PYTHON_QUALITY.md](./DREAMFERENCE_PYTHON_QUALITY.md)).
 
 ---
 
-## 10. Work list
+## 12. Work list
 
-One job each, in order; the repository is named for each. "Product" is this repository; "coordinator tools" is the private coordinator-tools repository.
+One job each. Two tracks run in parallel, one agent each (decision 70); the order follows decision 69: the replay set first, then the command, then the plugin's automatic mode. **[Ragon]** marks a small item for Ragon itself (decision 71); **[Opus review]** marks an item that needs an Opus review before landing (decision 72); every other item has the ordinary checks. "Product" is this repository; "coordinator tools" is the private coordinator-tools repository.
+
+**Track A: the replay set** (starts at once, decision 99)
 
 | # | Item | Repository | Files | Test | Depends on |
 |---|---|---|---|---|---|
-| W1 | **The replay set.** Collect the four Windows failures and twenty land-queue rejections with their important lines, plus the controls (§7.1), into the coordinator's private files; write a redacted copy of five cases as fixtures. | coordinator tools (set), product (fixtures) | private replay folder; `ragon-rs/delegate/tests/fixtures/preprocess/` | a loader test: every case has a raw file, an important line that matches the raw file, a family | none |
-| W2 | **What the hook receives.** Find out, from a recorded hook input, whether the after-command hook gets the exit code, and how a failed command is marked; write the finding into `docs/dev/claude-plugin.md`. | product (doc) | `docs/dev/claude-plugin.md` | the docs tests | none |
-| W3 | **The floor and the extract, no model.** `ragon-delegate preprocess --no-model`: streaming read, error, summary and context patterns, the overflow order, the left-out ranges, the text and JSON outputs, the size limits, the machine-readable pass-through, the command families. | product | `ragon-rs/delegate/src/preprocess.rs` (new), `preprocess_patterns.rs` (new), `cli.rs` | unit tests per pattern and per rule; a 100 MB file under the memory bound | W1 fixtures |
-| W4 | **The model step.** Windows with line numbers, the prompt (line numbers and 40-character quotes only, a label from the fixed list for each left-out range), parallel requests, the quote check, the fallbacks and their reasons, the busy check and the air-gap check reused from the plugin, the time limits. | product | `preprocess.rs`, `exec.rs` | tests with the scripted model runner (a correct answer, a wrong quote, a bad answer, a timeout, busy, air-gapped) | W3 |
-| W5 | **The secret masker in Rust**, with the same cases as the coordinator's filter and the line-count rule. | product | `ragon-rs/delegate/src/mask.rs` (new) | shared vectors; line count unchanged on every vector | none |
-| W6 | **The coordinator's hook.** The shrinker's model tier calls `ragon-delegate preprocess`; shadow mode switch; job tag from the worker's environment; registration for both accounts. (Re-scopes backlog row `ct-output-digest-by-ragon`.) | coordinator tools | the shrinker, its settings | a test with a recorded hook input per family and per fallback | W4 |
-| W7 | **The replay runner and the gate report.** `ragon-delegate preprocess --replay <dir> --runs 3` writes the per-case table and the bar's verdict (§7.2); the weekly timer and the automatic switch-off (§7.3). | product (runner), coordinator tools (timer, switch) | `preprocess.rs`; a weekly unit | the runner on the fixtures, with a scripted model that misses one line, must fail | W4, W1 |
-| W8 | **Accounting.** The usage row per preprocessing; RBRB's composition adds `preprocess` rows on top and skips gate rows with that workload; the re-read and saving measures from transcripts; the weekly block. | product (row), coordinator tools (RBRB, weekly) | `preprocess.rs`; RBRB composition | a job with gate rows and preprocess rows counts each token once, under "tool"; undelivered rows are not credited | W4 |
-| W9 | **Shadow week and the gate.** Turn on shadow mode for a week, run the gate, write the report for O1. | coordinator tools | report only | the gate's bar | W6, W7, W8 |
-| W10 | **Plugin users (phase 2).** The plugin tool `preprocess`, the opt-in hook (`ragon-delegate hooks enable preprocess`), the skill's lines, the user docs. | product | `ragon-rs/delegate/src/mcp.rs`, the plugin's files, `docs/dev/claude-plugin.md` | the delegation server's tool tests; a hook test on a scripted harness input | W9, O4 |
-| W11 | **`ragon` itself (phase 3).** A Codex patch at the point where a command's output enters the history, measured against the context budget spec's replay. Planned only after the owner's answer to O4 and the context budget's next measurement. | product | a numbered patch in `codex-patches/` | the context budget replay | W9, O4 |
+| A1 | **Collect the 100 cases**: the four Windows failures, land-queue rejections and CI failures from the project's own work, plus public build and test logs in several languages; a question per case; the controls (§8.1). | coordinator tools (private cases), product (public cases) | private replay folder; `ragon-rs/tests/fixtures/digest/` | a loader test: every case has an output, a question, a kind, and an important line that matches its output | none |
+| A2 | **Label the important lines** with a strong model; the coordinator re-checks one tenth (decision 60). | coordinator tools | the replay folder's labels | the re-check's record: every re-checked label confirmed or corrected | A1 |
+| A3 | **[Ragon]** Public sample outputs as fixtures for the cleaning and word-list tests (one per rule, one per language). | product | `ragon-rs/tests/fixtures/digest/` | the loader test of A1 | A1 |
+
+**Track B: the command and the node interface** (after the 0.9.9 release, decision 99)
+
+| # | Item | Repository | Files | Test | Depends on |
+|---|---|---|---|---|---|
+| B1 | **[Ragon]** Cleaning rules: colours, progress bars, control characters, the repeated-line collapse, stream tags (§3.2). | product | `ragon-rs/src/digest/clean.rs` (new) | one test per rule on a sample output | A3 |
+| B2 | **[Ragon]** Error word lists: English and the product's six languages (X2), and the project's patterns. | product | `ragon-rs/src/digest/words.rs` (new) | one test line per word | A3 |
+| B3 | **The simple part**, one implementation for node and client (C1): mandatory lines, kinds that pass through, empty and binary notes, windows, plain truncation, the 60-line result, text and JSON forms; the quote check's comparison is part of this code and is built and reviewed in B5. | product | `ragon-rs/src/digest/mod.rs` (new) | unit tests per rule; the A1 cases with no model keep every mandatory line | B1, B2 |
+| B4 | **[Opus review]** **The node interface** (§2.5): the endpoint on the model gate, sign-in and attribution, memory only, least busy node, the documentation page of the interface. | product | the gate's endpoint, `docs/` | request and answer tests; an unsigned request is refused; nothing is written to disk | B3 |
+| B5 | **[Opus review]** **The model step and the quote check** (§3.3, §3.4): prompt, thinking off, windows, one retry, the 20-second limit, the retelling's checks. | product | `ragon-rs/src/digest/model.rs` (new) | a scripted model: a correct answer, one wrong quote, a bad format then a good one, two bad formats, a time-out | B4 |
+| B6 | **`ragon digest`** (§2.1): run and pipe modes, raw files for one day with the size cap (X1), follow-up `ask` and `lines`, the cache (X3), `on`, `off` and `status`, the settings and the project's patterns (§6), the no-node message, the client fallback. | product | `ragon-rs/src/digest/cli.rs` (new), `ragon-rs/src/lib.rs` | command tests with a scripted node: unreachable, loading, no node, under the threshold, no question, a successful command that returns at once and later finds the model's reply in `<raw>.digest` | B5 |
+| B7 | **The journal and the self switch-off** (§5.3, §5.4). | product | `ragon-rs/src/digest/journal.rs` (new) | three raw reads in a row switch the kind off for the session; nothing leaves the machine | B6 |
+| B8 | **Statistics and accounting**: `ragon digest stats`, the generated-token rows in RBRB's sources (X6), the weekly block in the web UI and the desktop app (§7). | product, coordinator tools (RBRB) | `cli.rs`, the web UI, the desktop app | a digest's written tokens count once in the one RBRB figure; no money figure shown | B6 |
+
+**After both tracks**
+
+| # | Item | Repository | Files | Test | Depends on |
+|---|---|---|---|---|---|
+| C1 | **The replay runner and the check** (§8): `ragon digest replay <dir> --runs 3`, the per-case table, the bar's verdict; wired into the release checklist and the new-node gate. | product | `ragon-rs/src/digest/replay.rs` (new), the release checklist, the node gate | the runner on the public fixtures with a scripted model that misses one line must fail | A2, B6 |
+| C2 | **The plugin's automatic mode** for Claude Code and Codex (§2.4): the `run` tool with the field `what I want to learn`, the skill's lines, the user docs. | product | `ragon-rs/delegate/src/mcp.rs`, the plugin's files, `docs/dev/claude-plugin.md` | the delegation server's tool tests; a call without the field is refused | B6 |
+| C3 | **The documentation page** with three real before-and-after examples: a build, a test run, a service log (decision 87). | product | `docs/` | the docs tests | C2 |
+| C4 | **Switch on by default** once the check passes (decision 4); the project's worker agents use it for builds, tests and logs (decision 51). | product, coordinator tools | the default setting; the worker rules | the check's report at 100 % | C1, C2 |
+
+**Stage 2** (planned after stage 1 ships): D1 inside Ragon, a numbered patch with the SWE slice comparison (decisions 3, 66); D2 Night Shift (decision 65); D3 the phone bridges (decision 67); D4 streaming preprocessing (decision 61).
