@@ -1,0 +1,14 @@
+{
+ "comment": "The TXT keys of the node's `_ragon-node._tcp` record, in order, for a node that shares everything: Rust (ragon-rs/src/node_advertise_macos.rs, txt_records) and Python (NodeServiceFile.render) are each tested against this case. The forge's second service, `_ragon-forge._tcp`, carries `node` and `role`.",
+ "node_id": "0123abcd",
+ "version": "0.9.9",
+ "port": 8000,
+ "web_port": 3100,
+ "search_port": 8888,
+ "state": "ready",
+ "main": true,
+ "remote": "ragon-0123.example.net",
+ "keys": ["proto", "node", "version", "web", "search", "state", "main", "remote"],
+ "values": {"proto": "1", "node": "0123abcd", "version": "0.9.9", "web": "3100", "search": "8888", "state": "ready", "main": "1", "remote": "ragon-0123.example.net"},
+ "forge": {"role": "record", "port": 3000, "keys": ["node", "role"]}
+}
