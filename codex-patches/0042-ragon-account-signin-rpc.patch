@@ -1,0 +1,474 @@
+diff --git a/codex-rs/app-server/src/message_processor.rs b/codex-rs/app-server/src/message_processor.rs
+--- a/codex-rs/app-server/src/message_processor.rs
++++ b/codex-rs/app-server/src/message_processor.rs
+@@ -1766,2 +1766,7 @@
+             }
++            ClientRequest::RagonSignIn { params, .. } => {
++                self.account_processor
++                    .ragon_sign_in(request_id.clone(), params)
++                    .await
++            }
+             ClientRequest::LogoutAccount { .. } => {
+diff --git a/codex-rs/app-server/src/request_processors/account_processor.rs b/codex-rs/app-server/src/request_processors/account_processor.rs
+--- a/codex-rs/app-server/src/request_processors/account_processor.rs
++++ b/codex-rs/app-server/src/request_processors/account_processor.rs
+@@ -11,2 +11,5 @@
+ use codex_app_server_protocol::GetAccountRateLimitsParams;
++use codex_app_server_protocol::RagonSignInMode;
++use codex_app_server_protocol::RagonSignInParams;
++use codex_app_server_protocol::RagonSignInResponse;
+ use codex_login::LoginOnboardingEntrypoint;
+@@ -1002,2 +1005,29 @@
+ 
++    pub(crate) async fn ragon_sign_in(
++        &self,
++        request_id: ConnectionRequestId,
++        params: RagonSignInParams,
++    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
++        let create = params.mode == RagonSignInMode::Create;
++        let home = self.config.codex_home.to_path_buf();
++        let done =
++            ragon_launcher::auth::signin_rpc::sign_in(&home, create, &params.username, &params.password).await;
++        let result = done.map_err(|r| JSONRPCErrorError { code: r.code, message: r.message, data: None });
++        if result.is_ok() {
++            self.auth_manager.reload();
++        }
++        let response = result.map(|s| RagonSignInResponse::Ragon {
++            username: s.username,
++            role: s.role,
++            must_change_password: s.must_change_password,
++        });
++        let signed_in = response.is_ok();
++        self.outgoing.send_result(request_id, response).await;
++        if signed_in {
++            let payload = self.current_account_updated_notification();
++            self.outgoing.send_server_notification(ServerNotification::AccountUpdated(payload)).await;
++        }
++        Ok(None)
++    }
++
+     async fn logout_v2(&self, request_id: ConnectionRequestId) -> Result<(), JSONRPCErrorError> {
+diff --git a/codex-rs/app-server-protocol/schema/json/ClientRequest.json b/codex-rs/app-server-protocol/schema/json/ClientRequest.json
+--- a/codex-rs/app-server-protocol/schema/json/ClientRequest.json
++++ b/codex-rs/app-server-protocol/schema/json/ClientRequest.json
+@@ -2745,2 +2745,28 @@
+     },
++    "RagonSignInMode": {
++      "enum": [
++        "signIn",
++        "create"
++      ],
++      "type": "string"
++    },
++    "RagonSignInParams": {
++      "properties": {
++        "mode": {
++          "$ref": "#/definitions/RagonSignInMode"
++        },
++        "password": {
++          "type": "string"
++        },
++        "username": {
++          "type": "string"
++        }
++      },
++      "required": [
++        "mode",
++        "password",
++        "username"
++      ],
++      "type": "object"
++    },
+     "RealtimeConversationVersion": {
+@@ -7919,2 +7945,26 @@
+     },
++    {
++      "properties": {
++        "id": {
++          "$ref": "#/definitions/RequestId"
++        },
++        "method": {
++          "enum": [
++            "account/ragon/signIn"
++          ],
++          "title": "Account/ragon/signInRequestMethod",
++          "type": "string"
++        },
++        "params": {
++          "$ref": "#/definitions/RagonSignInParams"
++        }
++      },
++      "required": [
++        "id",
++        "method",
++        "params"
++      ],
++      "title": "Account/ragon/signInRequest",
++      "type": "object"
++    },
+     {
+diff --git a/codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json b/codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json
+--- a/codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json
++++ b/codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json
+@@ -2194,2 +2194,26 @@
+         },
++        {
++          "properties": {
++            "id": {
++              "$ref": "#/definitions/v2/RequestId"
++            },
++            "method": {
++              "enum": [
++                "account/ragon/signIn"
++              ],
++              "title": "Account/ragon/signInRequestMethod",
++              "type": "string"
++            },
++            "params": {
++              "$ref": "#/definitions/v2/RagonSignInParams"
++            }
++          },
++          "required": [
++            "id",
++            "method",
++            "params"
++          ],
++          "title": "Account/ragon/signInRequest",
++          "type": "object"
++        },
+         {
+@@ -17848,2 +17872,64 @@
+       },
++      "RagonSignInMode": {
++        "enum": [
++          "signIn",
++          "create"
++        ],
++        "type": "string"
++      },
++      "RagonSignInParams": {
++        "$schema": "http://json-schema.org/draft-07/schema#",
++        "properties": {
++          "mode": {
++            "$ref": "#/definitions/v2/RagonSignInMode"
++          },
++          "password": {
++            "type": "string"
++          },
++          "username": {
++            "type": "string"
++          }
++        },
++        "required": [
++          "mode",
++          "password",
++          "username"
++        ],
++        "title": "RagonSignInParams",
++        "type": "object"
++      },
++      "RagonSignInResponse": {
++        "$schema": "http://json-schema.org/draft-07/schema#",
++        "oneOf": [
++          {
++            "properties": {
++              "mustChangePassword": {
++                "type": "boolean"
++              },
++              "role": {
++                "type": "string"
++              },
++              "type": {
++                "enum": [
++                  "ragon"
++                ],
++                "title": "Ragonv2::RagonSignInResponseType",
++                "type": "string"
++              },
++              "username": {
++                "type": "string"
++              }
++            },
++            "required": [
++              "mustChangePassword",
++              "role",
++              "type",
++              "username"
++            ],
++            "title": "Ragonv2::RagonSignInResponse",
++            "type": "object"
++          }
++        ],
++        "title": "RagonSignInResponse"
++      },
+       "RateLimitReachedType": {
+diff --git a/codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json b/codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json
+--- a/codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json
++++ b/codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json
+@@ -3743,2 +3743,26 @@
+         },
++        {
++          "properties": {
++            "id": {
++              "$ref": "#/definitions/RequestId"
++            },
++            "method": {
++              "enum": [
++                "account/ragon/signIn"
++              ],
++              "title": "Account/ragon/signInRequestMethod",
++              "type": "string"
++            },
++            "params": {
++              "$ref": "#/definitions/RagonSignInParams"
++            }
++          },
++          "required": [
++            "id",
++            "method",
++            "params"
++          ],
++          "title": "Account/ragon/signInRequest",
++          "type": "object"
++        },
+         {
+@@ -13880,2 +13904,64 @@
+     },
++    "RagonSignInMode": {
++      "enum": [
++        "signIn",
++        "create"
++      ],
++      "type": "string"
++    },
++    "RagonSignInParams": {
++      "$schema": "http://json-schema.org/draft-07/schema#",
++      "properties": {
++        "mode": {
++          "$ref": "#/definitions/RagonSignInMode"
++        },
++        "password": {
++          "type": "string"
++        },
++        "username": {
++          "type": "string"
++        }
++      },
++      "required": [
++        "mode",
++        "password",
++        "username"
++      ],
++      "title": "RagonSignInParams",
++      "type": "object"
++    },
++    "RagonSignInResponse": {
++      "$schema": "http://json-schema.org/draft-07/schema#",
++      "oneOf": [
++        {
++          "properties": {
++            "mustChangePassword": {
++              "type": "boolean"
++            },
++            "role": {
++              "type": "string"
++            },
++            "type": {
++              "enum": [
++                "ragon"
++              ],
++              "title": "Ragonv2::RagonSignInResponseType",
++              "type": "string"
++            },
++            "username": {
++              "type": "string"
++            }
++          },
++          "required": [
++            "mustChangePassword",
++            "role",
++            "type",
++            "username"
++          ],
++          "title": "Ragonv2::RagonSignInResponse",
++          "type": "object"
++        }
++      ],
++      "title": "RagonSignInResponse"
++    },
+     "RateLimitReachedType": {
+diff --git a/export/codex-rs/app-server-protocol/schema/json/v2/RagonSignInParams.json b/codex-rs/app-server-protocol/schema/json/v2/RagonSignInParams.json
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/app-server-protocol/schema/json/v2/RagonSignInParams.json
+@@ -0,0 +1,30 @@
++{
++  "$schema": "http://json-schema.org/draft-07/schema#",
++  "definitions": {
++    "RagonSignInMode": {
++      "enum": [
++        "signIn",
++        "create"
++      ],
++      "type": "string"
++    }
++  },
++  "properties": {
++    "mode": {
++      "$ref": "#/definitions/RagonSignInMode"
++    },
++    "password": {
++      "type": "string"
++    },
++    "username": {
++      "type": "string"
++    }
++  },
++  "required": [
++    "mode",
++    "password",
++    "username"
++  ],
++  "title": "RagonSignInParams",
++  "type": "object"
++}
+\ No newline at end of file
+diff --git a/export/codex-rs/app-server-protocol/schema/json/v2/RagonSignInResponse.json b/codex-rs/app-server-protocol/schema/json/v2/RagonSignInResponse.json
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/app-server-protocol/schema/json/v2/RagonSignInResponse.json
+@@ -0,0 +1,34 @@
++{
++  "$schema": "http://json-schema.org/draft-07/schema#",
++  "oneOf": [
++    {
++      "properties": {
++        "mustChangePassword": {
++          "type": "boolean"
++        },
++        "role": {
++          "type": "string"
++        },
++        "type": {
++          "enum": [
++            "ragon"
++          ],
++          "title": "Ragonv2::RagonSignInResponseType",
++          "type": "string"
++        },
++        "username": {
++          "type": "string"
++        }
++      },
++      "required": [
++        "mustChangePassword",
++        "role",
++        "type",
++        "username"
++      ],
++      "title": "Ragonv2::RagonSignInResponse",
++      "type": "object"
++    }
++  ],
++  "title": "RagonSignInResponse"
++}
+\ No newline at end of file
+diff --git a/codex-rs/app-server-protocol/schema/typescript/ClientRequest.ts b/codex-rs/app-server-protocol/schema/typescript/ClientRequest.ts
+--- a/codex-rs/app-server-protocol/schema/typescript/ClientRequest.ts
++++ b/codex-rs/app-server-protocol/schema/typescript/ClientRequest.ts
+@@ -63,2 +63,3 @@
+ import type { PluginUninstallParams } from "./v2/PluginUninstallParams";
++import type { RagonSignInParams } from "./v2/RagonSignInParams";
+ import type { ReviewStartParams } from "./v2/ReviewStartParams";
+@@ -106,2 +107,2 @@
+  */
+-export type ClientRequest ={ "method": "initialize", id: RequestId, params: InitializeParams, } | { "method": "thread/start", id: RequestId, params: ThreadStartParams, } | { "method": "thread/resume", id: RequestId, params: ThreadResumeParams, } | { "method": "thread/fork", id: RequestId, params: ThreadForkParams, } | { "method": "thread/archive", id: RequestId, params: ThreadArchiveParams, } | { "method": "thread/delete", id: RequestId, params: ThreadDeleteParams, } | { "method": "thread/unsubscribe", id: RequestId, params: ThreadUnsubscribeParams, } | { "method": "thread/name/set", id: RequestId, params: ThreadSetNameParams, } | { "method": "thread/goal/set", id: RequestId, params: ThreadGoalSetParams, } | { "method": "thread/goal/get", id: RequestId, params: ThreadGoalGetParams, } | { "method": "thread/goal/clear", id: RequestId, params: ThreadGoalClearParams, } | { "method": "thread/metadata/update", id: RequestId, params: ThreadMetadataUpdateParams, } | { "method": "thread/attachment/add", id: RequestId, params: ThreadAttachmentAddParams, } | { "method": "thread/attachment/list", id: RequestId, params: ThreadAttachmentListParams, } | { "method": "thread/attachment/remove", id: RequestId, params: ThreadAttachmentRemoveParams, } | { "method": "thread/section/move", id: RequestId, params: ThreadSectionMoveParams, } | { "method": "thread/unarchive", id: RequestId, params: ThreadUnarchiveParams, } | { "method": "thread/compact/start", id: RequestId, params: ThreadCompactStartParams, } | { "method": "thread/shellCommand", id: RequestId, params: ThreadShellCommandParams, } | { "method": "thread/approveGuardianDeniedAction", id: RequestId, params: ThreadApproveGuardianDeniedActionParams, } | { "method": "thread/revert", id: RequestId, params: ThreadRevertParams, } | { "method": "thread/list", id: RequestId, params: ThreadListParams, } | { "method": "threadSection/list", id: RequestId, params: ThreadSectionListParams, } | { "method": "threadSection/create", id: RequestId, params: ThreadSectionCreateParams, } | { "method": "threadSection/update", id: RequestId, params: ThreadSectionUpdateParams, } | { "method": "threadSection/delete", id: RequestId, params: ThreadSectionDeleteParams, } | { "method": "thread/loaded/list", id: RequestId, params: ThreadLoadedListParams, } | { "method": "thread/read", id: RequestId, params: ThreadReadParams, } | { "method": "thread/turns/list", id: RequestId, params: ThreadTurnsListParams, } | { "method": "thread/items/list", id: RequestId, params: ThreadItemsListParams, } | { "method": "thread/inject_items", id: RequestId, params: ThreadInjectItemsParams, } | { "method": "skills/list", id: RequestId, params: SkillsListParams, } | { "method": "skills/extraRoots/set", id: RequestId, params: SkillsExtraRootsSetParams, } | { "method": "hooks/list", id: RequestId, params: HooksListParams, } | { "method": "marketplace/add", id: RequestId, params: MarketplaceAddParams, } | { "method": "marketplace/remove", id: RequestId, params: MarketplaceRemoveParams, } | { "method": "marketplace/upgrade", id: RequestId, params: MarketplaceUpgradeParams, } | { "method": "plugin/list", id: RequestId, params: PluginListParams, } | { "method": "plugin/installed", id: RequestId, params: PluginInstalledParams, } | { "method": "plugin/reconcile", id: RequestId, params: PluginReconcileParams, } | { "method": "plugin/read", id: RequestId, params: PluginReadParams, } | { "method": "plugin/skill/read", id: RequestId, params: PluginSkillReadParams, } | { "method": "plugin/share/save", id: RequestId, params: PluginShareSaveParams, } | { "method": "plugin/share/updateTargets", id: RequestId, params: PluginShareUpdateTargetsParams, } | { "method": "plugin/share/list", id: RequestId, params: PluginShareListParams, } | { "method": "plugin/share/checkout", id: RequestId, params: PluginShareCheckoutParams, } | { "method": "plugin/share/delete", id: RequestId, params: PluginShareDeleteParams, } | { "method": "app/read", id: RequestId, params: AppsReadParams, } | { "method": "app/list", id: RequestId, params: AppsListParams, } | { "method": "app/installed", id: RequestId, params: AppsInstalledParams, } | { "method": "fs/readFile", id: RequestId, params: FsReadFileParams, } | { "method": "fs/writeFile", id: RequestId, params: FsWriteFileParams, } | { "method": "fs/createDirectory", id: RequestId, params: FsCreateDirectoryParams, } | { "method": "fs/getMetadata", id: RequestId, params: FsGetMetadataParams, } | { "method": "fs/readDirectory", id: RequestId, params: FsReadDirectoryParams, } | { "method": "fs/remove", id: RequestId, params: FsRemoveParams, } | { "method": "fs/copy", id: RequestId, params: FsCopyParams, } | { "method": "fs/watch", id: RequestId, params: FsWatchParams, } | { "method": "fs/unwatch", id: RequestId, params: FsUnwatchParams, } | { "method": "skills/config/write", id: RequestId, params: SkillsConfigWriteParams, } | { "method": "plugin/install", id: RequestId, params: PluginInstallParams, } | { "method": "plugin/uninstall", id: RequestId, params: PluginUninstallParams, } | { "method": "turn/start", id: RequestId, params: TurnStartParams, } | { "method": "turn/steer", id: RequestId, params: TurnSteerParams, } | { "method": "turn/interrupt", id: RequestId, params: TurnInterruptParams, } | { "method": "review/start", id: RequestId, params: ReviewStartParams, } | { "method": "model/list", id: RequestId, params: ModelListParams, } | { "method": "account/gatewayOAuth/read", id: RequestId, params: undefined, } | { "method": "account/gatewayOAuth/login", id: RequestId, params: undefined, } | { "method": "account/gatewayOAuth/cancel", id: RequestId, params: undefined, } | { "method": "modelProvider/capabilities/read", id: RequestId, params: ModelProviderCapabilitiesReadParams, } | { "method": "experimentalFeature/list", id: RequestId, params: ExperimentalFeatureListParams, } | { "method": "permissionProfile/list", id: RequestId, params: PermissionProfileListParams, } | { "method": "experimentalFeature/enablement/set", id: RequestId, params: ExperimentalFeatureEnablementSetParams, } | { "method": "mcpServer/oauth/login", id: RequestId, params: McpServerOauthLoginParams, } | { "method": "config/mcpServer/reload", id: RequestId, params: undefined, } | { "method": "mcpServerStatus/list", id: RequestId, params: ListMcpServerStatusParams, } | { "method": "mcpServer/resource/read", id: RequestId, params: McpResourceReadParams, } | { "method": "mcpServer/tool/call", id: RequestId, params: McpServerToolCallParams, } | { "method": "windowsSandbox/setupStart", id: RequestId, params: WindowsSandboxSetupStartParams, } | { "method": "windowsSandbox/readiness", id: RequestId, params: undefined, } | { "method": "account/login/start", id: RequestId, params: LoginAccountParams, } | { "method": "account/login/cancel", id: RequestId, params: CancelLoginAccountParams, } | { "method": "account/logout", id: RequestId, params: undefined, } | { "method": "account/rateLimits/read", id: RequestId, params?: GetAccountRateLimitsParams | undefined, } | { "method": "account/rateLimitResetCredit/consume", id: RequestId, params: ConsumeAccountRateLimitResetCreditParams, } | { "method": "account/usage/read", id: RequestId, params?: GetAccountTokenUsageParams | undefined, } | { "method": "account/workspaceMessages/read", id: RequestId, params: undefined, } | { "method": "account/sendAddCreditsNudgeEmail", id: RequestId, params: SendAddCreditsNudgeEmailParams, } | { "method": "feedback/upload", id: RequestId, params: FeedbackUploadParams, } | { "method": "command/exec", id: RequestId, params: CommandExecParams, } | { "method": "command/exec/write", id: RequestId, params: CommandExecWriteParams, } | { "method": "command/exec/terminate", id: RequestId, params: CommandExecTerminateParams, } | { "method": "command/exec/resize", id: RequestId, params: CommandExecResizeParams, } | { "method": "config/read", id: RequestId, params: ConfigReadParams, } | { "method": "externalAgentConfig/detect", id: RequestId, params: ExternalAgentConfigDetectParams, } | { "method": "externalAgentConfig/import", id: RequestId, params: ExternalAgentConfigImportParams, } | { "method": "externalAgentConfig/import/recordHistory", id: RequestId, params: ExternalAgentConfigImportHistoryRecordParams, } | { "method": "externalAgentConfig/import/readHistories", id: RequestId, params: undefined, } | { "method": "config/value/write", id: RequestId, params: ConfigValueWriteParams, } | { "method": "config/batchWrite", id: RequestId, params: ConfigBatchWriteParams, } | { "method": "configRequirements/read", id: RequestId, params: undefined, } | { "method": "account/read", id: RequestId, params: GetAccountParams, } | { "method": "getConversationSummary", id: RequestId, params: GetConversationSummaryParams, } | { "method": "gitDiffToRemote", id: RequestId, params: GitDiffToRemoteParams, } | { "method": "getAuthStatus", id: RequestId, params: GetAuthStatusParams, } | { "method": "fuzzyFileSearch", id: RequestId, params: FuzzyFileSearchParams, };
++export type ClientRequest ={ "method": "initialize", id: RequestId, params: InitializeParams, } | { "method": "thread/start", id: RequestId, params: ThreadStartParams, } | { "method": "thread/resume", id: RequestId, params: ThreadResumeParams, } | { "method": "thread/fork", id: RequestId, params: ThreadForkParams, } | { "method": "thread/archive", id: RequestId, params: ThreadArchiveParams, } | { "method": "thread/delete", id: RequestId, params: ThreadDeleteParams, } | { "method": "thread/unsubscribe", id: RequestId, params: ThreadUnsubscribeParams, } | { "method": "thread/name/set", id: RequestId, params: ThreadSetNameParams, } | { "method": "thread/goal/set", id: RequestId, params: ThreadGoalSetParams, } | { "method": "thread/goal/get", id: RequestId, params: ThreadGoalGetParams, } | { "method": "thread/goal/clear", id: RequestId, params: ThreadGoalClearParams, } | { "method": "thread/metadata/update", id: RequestId, params: ThreadMetadataUpdateParams, } | { "method": "thread/attachment/add", id: RequestId, params: ThreadAttachmentAddParams, } | { "method": "thread/attachment/list", id: RequestId, params: ThreadAttachmentListParams, } | { "method": "thread/attachment/remove", id: RequestId, params: ThreadAttachmentRemoveParams, } | { "method": "thread/section/move", id: RequestId, params: ThreadSectionMoveParams, } | { "method": "thread/unarchive", id: RequestId, params: ThreadUnarchiveParams, } | { "method": "thread/compact/start", id: RequestId, params: ThreadCompactStartParams, } | { "method": "thread/shellCommand", id: RequestId, params: ThreadShellCommandParams, } | { "method": "thread/approveGuardianDeniedAction", id: RequestId, params: ThreadApproveGuardianDeniedActionParams, } | { "method": "thread/revert", id: RequestId, params: ThreadRevertParams, } | { "method": "thread/list", id: RequestId, params: ThreadListParams, } | { "method": "threadSection/list", id: RequestId, params: ThreadSectionListParams, } | { "method": "threadSection/create", id: RequestId, params: ThreadSectionCreateParams, } | { "method": "threadSection/update", id: RequestId, params: ThreadSectionUpdateParams, } | { "method": "threadSection/delete", id: RequestId, params: ThreadSectionDeleteParams, } | { "method": "thread/loaded/list", id: RequestId, params: ThreadLoadedListParams, } | { "method": "thread/read", id: RequestId, params: ThreadReadParams, } | { "method": "thread/turns/list", id: RequestId, params: ThreadTurnsListParams, } | { "method": "thread/items/list", id: RequestId, params: ThreadItemsListParams, } | { "method": "thread/inject_items", id: RequestId, params: ThreadInjectItemsParams, } | { "method": "skills/list", id: RequestId, params: SkillsListParams, } | { "method": "skills/extraRoots/set", id: RequestId, params: SkillsExtraRootsSetParams, } | { "method": "hooks/list", id: RequestId, params: HooksListParams, } | { "method": "marketplace/add", id: RequestId, params: MarketplaceAddParams, } | { "method": "marketplace/remove", id: RequestId, params: MarketplaceRemoveParams, } | { "method": "marketplace/upgrade", id: RequestId, params: MarketplaceUpgradeParams, } | { "method": "plugin/list", id: RequestId, params: PluginListParams, } | { "method": "plugin/installed", id: RequestId, params: PluginInstalledParams, } | { "method": "plugin/reconcile", id: RequestId, params: PluginReconcileParams, } | { "method": "plugin/read", id: RequestId, params: PluginReadParams, } | { "method": "plugin/skill/read", id: RequestId, params: PluginSkillReadParams, } | { "method": "plugin/share/save", id: RequestId, params: PluginShareSaveParams, } | { "method": "plugin/share/updateTargets", id: RequestId, params: PluginShareUpdateTargetsParams, } | { "method": "plugin/share/list", id: RequestId, params: PluginShareListParams, } | { "method": "plugin/share/checkout", id: RequestId, params: PluginShareCheckoutParams, } | { "method": "plugin/share/delete", id: RequestId, params: PluginShareDeleteParams, } | { "method": "app/read", id: RequestId, params: AppsReadParams, } | { "method": "app/list", id: RequestId, params: AppsListParams, } | { "method": "app/installed", id: RequestId, params: AppsInstalledParams, } | { "method": "fs/readFile", id: RequestId, params: FsReadFileParams, } | { "method": "fs/writeFile", id: RequestId, params: FsWriteFileParams, } | { "method": "fs/createDirectory", id: RequestId, params: FsCreateDirectoryParams, } | { "method": "fs/getMetadata", id: RequestId, params: FsGetMetadataParams, } | { "method": "fs/readDirectory", id: RequestId, params: FsReadDirectoryParams, } | { "method": "fs/remove", id: RequestId, params: FsRemoveParams, } | { "method": "fs/copy", id: RequestId, params: FsCopyParams, } | { "method": "fs/watch", id: RequestId, params: FsWatchParams, } | { "method": "fs/unwatch", id: RequestId, params: FsUnwatchParams, } | { "method": "skills/config/write", id: RequestId, params: SkillsConfigWriteParams, } | { "method": "plugin/install", id: RequestId, params: PluginInstallParams, } | { "method": "plugin/uninstall", id: RequestId, params: PluginUninstallParams, } | { "method": "turn/start", id: RequestId, params: TurnStartParams, } | { "method": "turn/steer", id: RequestId, params: TurnSteerParams, } | { "method": "turn/interrupt", id: RequestId, params: TurnInterruptParams, } | { "method": "review/start", id: RequestId, params: ReviewStartParams, } | { "method": "model/list", id: RequestId, params: ModelListParams, } | { "method": "account/gatewayOAuth/read", id: RequestId, params: undefined, } | { "method": "account/gatewayOAuth/login", id: RequestId, params: undefined, } | { "method": "account/gatewayOAuth/cancel", id: RequestId, params: undefined, } | { "method": "modelProvider/capabilities/read", id: RequestId, params: ModelProviderCapabilitiesReadParams, } | { "method": "experimentalFeature/list", id: RequestId, params: ExperimentalFeatureListParams, } | { "method": "permissionProfile/list", id: RequestId, params: PermissionProfileListParams, } | { "method": "experimentalFeature/enablement/set", id: RequestId, params: ExperimentalFeatureEnablementSetParams, } | { "method": "mcpServer/oauth/login", id: RequestId, params: McpServerOauthLoginParams, } | { "method": "config/mcpServer/reload", id: RequestId, params: undefined, } | { "method": "mcpServerStatus/list", id: RequestId, params: ListMcpServerStatusParams, } | { "method": "mcpServer/resource/read", id: RequestId, params: McpResourceReadParams, } | { "method": "mcpServer/tool/call", id: RequestId, params: McpServerToolCallParams, } | { "method": "windowsSandbox/setupStart", id: RequestId, params: WindowsSandboxSetupStartParams, } | { "method": "windowsSandbox/readiness", id: RequestId, params: undefined, } | { "method": "account/login/start", id: RequestId, params: LoginAccountParams, } | { "method": "account/login/cancel", id: RequestId, params: CancelLoginAccountParams, } | { "method": "account/ragon/signIn", id: RequestId, params: RagonSignInParams, } | { "method": "account/logout", id: RequestId, params: undefined, } | { "method": "account/rateLimits/read", id: RequestId, params?: GetAccountRateLimitsParams | undefined, } | { "method": "account/rateLimitResetCredit/consume", id: RequestId, params: ConsumeAccountRateLimitResetCreditParams, } | { "method": "account/usage/read", id: RequestId, params?: GetAccountTokenUsageParams | undefined, } | { "method": "account/workspaceMessages/read", id: RequestId, params: undefined, } | { "method": "account/sendAddCreditsNudgeEmail", id: RequestId, params: SendAddCreditsNudgeEmailParams, } | { "method": "feedback/upload", id: RequestId, params: FeedbackUploadParams, } | { "method": "command/exec", id: RequestId, params: CommandExecParams, } | { "method": "command/exec/write", id: RequestId, params: CommandExecWriteParams, } | { "method": "command/exec/terminate", id: RequestId, params: CommandExecTerminateParams, } | { "method": "command/exec/resize", id: RequestId, params: CommandExecResizeParams, } | { "method": "config/read", id: RequestId, params: ConfigReadParams, } | { "method": "externalAgentConfig/detect", id: RequestId, params: ExternalAgentConfigDetectParams, } | { "method": "externalAgentConfig/import", id: RequestId, params: ExternalAgentConfigImportParams, } | { "method": "externalAgentConfig/import/recordHistory", id: RequestId, params: ExternalAgentConfigImportHistoryRecordParams, } | { "method": "externalAgentConfig/import/readHistories", id: RequestId, params: undefined, } | { "method": "config/value/write", id: RequestId, params: ConfigValueWriteParams, } | { "method": "config/batchWrite", id: RequestId, params: ConfigBatchWriteParams, } | { "method": "configRequirements/read", id: RequestId, params: undefined, } | { "method": "account/read", id: RequestId, params: GetAccountParams, } | { "method": "getConversationSummary", id: RequestId, params: GetConversationSummaryParams, } | { "method": "gitDiffToRemote", id: RequestId, params: GitDiffToRemoteParams, } | { "method": "getAuthStatus", id: RequestId, params: GetAuthStatusParams, } | { "method": "fuzzyFileSearch", id: RequestId, params: FuzzyFileSearchParams, };
+diff --git a/export/codex-rs/app-server-protocol/schema/typescript/v2/RagonSignInMode.ts b/codex-rs/app-server-protocol/schema/typescript/v2/RagonSignInMode.ts
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/app-server-protocol/schema/typescript/v2/RagonSignInMode.ts
+@@ -0,0 +1,5 @@
++// GENERATED CODE! DO NOT MODIFY BY HAND!
++
++// This file was generated by [ts-rs](https://github.com/Aleph-Alpha/ts-rs). Do not edit this file manually.
++
++export type RagonSignInMode = "signIn" | "create";
+diff --git a/export/codex-rs/app-server-protocol/schema/typescript/v2/RagonSignInParams.ts b/codex-rs/app-server-protocol/schema/typescript/v2/RagonSignInParams.ts
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/app-server-protocol/schema/typescript/v2/RagonSignInParams.ts
+@@ -0,0 +1,6 @@
++// GENERATED CODE! DO NOT MODIFY BY HAND!
++
++// This file was generated by [ts-rs](https://github.com/Aleph-Alpha/ts-rs). Do not edit this file manually.
++import type { RagonSignInMode } from "./RagonSignInMode";
++
++export type RagonSignInParams = { mode: RagonSignInMode, username: string, password: string, };
+diff --git a/export/codex-rs/app-server-protocol/schema/typescript/v2/RagonSignInResponse.ts b/codex-rs/app-server-protocol/schema/typescript/v2/RagonSignInResponse.ts
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/app-server-protocol/schema/typescript/v2/RagonSignInResponse.ts
+@@ -0,0 +1,5 @@
++// GENERATED CODE! DO NOT MODIFY BY HAND!
++
++// This file was generated by [ts-rs](https://github.com/Aleph-Alpha/ts-rs). Do not edit this file manually.
++
++export type RagonSignInResponse = { "type": "ragon", username: string, role: string, mustChangePassword: boolean, };
+diff --git a/codex-rs/app-server-protocol/schema/typescript/v2/index.ts b/codex-rs/app-server-protocol/schema/typescript/v2/index.ts
+--- a/codex-rs/app-server-protocol/schema/typescript/v2/index.ts
++++ b/codex-rs/app-server-protocol/schema/typescript/v2/index.ts
+@@ -411,2 +411,5 @@
+ export type { QueuedSubmission } from "./QueuedSubmission";
++export type { RagonSignInMode } from "./RagonSignInMode";
++export type { RagonSignInParams } from "./RagonSignInParams";
++export type { RagonSignInResponse } from "./RagonSignInResponse";
+ export type { RateLimitReachedType } from "./RateLimitReachedType";
+diff --git a/codex-rs/app-server-protocol/src/protocol/common.rs b/codex-rs/app-server-protocol/src/protocol/common.rs
+--- a/codex-rs/app-server-protocol/src/protocol/common.rs
++++ b/codex-rs/app-server-protocol/src/protocol/common.rs
+@@ -1302,2 +1302,7 @@
+ 
++    RagonSignIn => "account/ragon/signIn" {
++        params: v2::RagonSignInParams,
++        serialization: global("account-auth"),
++        response: v2::RagonSignInResponse,
++    },
+     LogoutAccount => "account/logout" {
+diff --git a/codex-rs/app-server-protocol/src/protocol/v2/account.rs b/codex-rs/app-server-protocol/src/protocol/v2/account.rs
+--- a/codex-rs/app-server-protocol/src/protocol/v2/account.rs
++++ b/codex-rs/app-server-protocol/src/protocol/v2/account.rs
+@@ -829 +829,33 @@
+ }
++
++#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
++#[serde(rename_all = "camelCase")]
++#[ts(rename_all = "camelCase")]
++#[ts(export_to = "v2/")]
++pub enum RagonSignInMode {
++    SignIn,
++    Create,
++}
++
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
++#[serde(rename_all = "camelCase")]
++#[ts(export_to = "v2/")]
++pub struct RagonSignInParams {
++    pub mode: RagonSignInMode,
++    pub username: String,
++    pub password: String,
++}
++
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
++#[serde(tag = "type", rename_all = "camelCase")]
++#[ts(tag = "type")]
++#[ts(export_to = "v2/")]
++pub enum RagonSignInResponse {
++    #[serde(rename = "ragon", rename_all = "camelCase")]
++    #[ts(rename = "ragon", rename_all = "camelCase")]
++    Ragon {
++        username: String,
++        role: String,
++        must_change_password: bool,
++    },
++}
