@@ -2,6 +2,12 @@
 
 The full notes of each release are in `specs/DREAMFERENCE_RELEASE_<version>.md`.
 
+## 0.9.8 patch (unreleased)
+
+- 0.9.8's chat bridge dropped every Telegram and Discord pairing at its first start and then accepted only pairings to a Ragon account, which a node without accounts cannot make, so paired phones were refused and `ragon pair` answered "Not signed in".
+- Every node that ran 0.9.8 without accounts, the default, is affected: its Telegram, Discord and Matrix chats stopped answering.
+- After this patch Matrix works again with nothing to do, but the dropped Telegram and Discord pairings cannot be restored: pair each phone again with `ragon chat telegram pair` or `ragon chat discord pair`, as in 0.9.7.
+
 ## 0.9.8 "Illuyanka" (2026-11-20)
 
 - Signal sends one new message per progress step instead of editing a message, so nothing flickers; editing stays an option (`ragon signal delivery edit`).
