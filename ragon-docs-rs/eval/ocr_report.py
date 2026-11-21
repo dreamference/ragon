@@ -1,4 +1,5 @@
 """Summarise the OCR runs: ocr_report.py -> results/ocr-summary.json.
+
 1. Word recall by script group and image quality, seconds per page and peak memory, per engine.
 2. Model sizes on disk.
 3. Picking the recognition model per page: script detection by Tesseract OSD, by best confidence over
@@ -77,7 +78,8 @@ def sweep(rows):
 
 
 summary = {"note": "word recall: multiset of the source text layer's words (characters for Chinese, Japanese and "
-                   "Korean) found in the OCR output; Arabic truth in logical order (after the bidi fix); 39 pages = 13 sources x scan (200 dpi), phone photo "
+                   "Korean) found in the OCR output; Arabic truth in logical order (after the bidi fix); "
+                   "39 pages = 13 sources x scan (200 dpi), phone photo "
                    "(170 dpi, perspective, shading, blur, JPEG) and poor (100 dpi, noise, low contrast)",
            "engines": {}}
 for name in ("v6-tiny", "v6-small", "v6-medium", "v5-oracle", "tesseract"):
@@ -119,7 +121,8 @@ if v5:
                                          if k.startswith("recall")}}
     oracle = {fid: dict(p, r=p["models"][V5_OF[p["script"]]]["word_recall"],
                         s=p["models"][V5_OF[p["script"]]]["seconds"]) for fid, p in v5["pages"].items()}
-    sel["oracle (real script's v5 model)"] = {k: v for k, v in table(oracle, lambda p: p["r"], lambda p: p["s"]).items()}
+    sel["oracle (real script's v5 model)"] = {
+        k: v for k, v in table(oracle, lambda p: p["r"], lambda p: p["s"]).items()}
     if osd:
         right, pages = 0, {}
         for fid, p in v5["pages"].items():
