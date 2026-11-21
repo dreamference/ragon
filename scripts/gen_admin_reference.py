@@ -19,17 +19,22 @@ from dreamference.cli.dreamference_cli_controller import DreamferenceCLIControll
 
 OUTPUT: Final[str] = str(pathlib.Path(__file__).resolve().parent.parent / "docs" / "admin.md")
 
-HEADER: Final[str] = """# `ragon-admin` reference
-
-`ragon-admin` runs everything around the agent: the model server, the sidecars (search, images, voice, Google), the desktop app,
-models, and the mail commands the agent calls (`gmail`). The agent itself is `ragon`, and its web
-commands are programs of their own, `ragon-search` and `ragon-fetch`; see [Terminal agent](ragon.md).
-
-!!! note "Generated from the CLI"
-    This page is generated from `ragon-admin`'s own argument parser by
-    `scripts/gen_admin_reference.py`. Run `ragon-admin <command> --help` for the same text locally.
-
-"""
+HEADER: Final[str] = (
+    "# `ragon-admin` reference\n"
+    "\n"
+    # l3 is split so the source line stays under 120 chars
+    "`ragon-admin` runs everything around the agent: the model server, the sidecars "
+    "(search, images, voice, Google), the desktop app,\n"
+    "models, and the mail commands the agent calls (`gmail`). The agent itself is "
+    "`ragon`, and its web\n"
+    "commands are programs of their own, `ragon-search` and `ragon-fetch`; "
+    "see [Terminal agent](ragon.md).\n"
+    "\n"
+    '!!! note "Generated from the CLI"\n'
+    "    This page is generated from `ragon-admin`'s own argument parser by\n"
+    "    `scripts/gen_admin_reference.py`. Run `ragon-admin <command> --help` for the same text locally.\n"
+    "\n"
+)
 
 
 def subparsers_of(parser: argparse.ArgumentParser) -> List[argparse._SubParsersAction]:
