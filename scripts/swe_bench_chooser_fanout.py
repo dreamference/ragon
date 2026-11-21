@@ -489,10 +489,10 @@ def yes_no(token: str) -> Optional[str]:
 
 
 def answer_of(probe: Probe, choice: Dict[str, Any]) -> Optional[float]:
-    """
-    A probe's answer: P(yes) for a yes/no probe, P(x) for a pairwise one, normalised over the two
-    readings; the sampled token as a vote (1.0 or 0.0) when the logprobs name neither; None when
-    the answer is neither.
+    """A probe's answer, normalised over the two readings.
+
+    P(yes) for a yes/no probe, P(x) for a pairwise one; the sampled token as a vote (1.0 or 0.0)
+    when the logprobs name neither; None when the answer is neither.
     """
     if probe.kind == "pairwise":
         x, y = probe.labels
@@ -622,7 +622,8 @@ class Server:
     """The model server: one-token probes with logprobs, the checks question, and its counters."""
 
     def __init__(self, base: str, timeout: float = 300.0) -> None:
-        """
+        """The client's URL and timeout.
+
         Args:
             base: The server's URL (``http://<node>.local:8000``), with or without ``/v1``.
             timeout: Seconds to wait for one answer.
@@ -667,9 +668,10 @@ class BudgetSpent(RuntimeError):
 
 
 def answer_start(choice: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    The choice with its logprobs and content starting at the answer's first word: past a closing
-    ``</think>`` and any markdown (``**Yes.**``), so a reasoning model's probe reads like a one-token one.
+    """The choice with its logprobs and content starting at the answer's first word.
+
+    Past a closing ``</think>`` and any markdown (``**Yes.**``), so a reasoning model's probe reads
+    like a one-token one.
     """
     content = list(((choice.get("logprobs") or {}).get("content") or []))
     ends = [
@@ -697,7 +699,8 @@ class OpenRouterServer:
         effort: Optional[str] = None,
         thinking_tokens: int = 512,
     ) -> None:
-        """
+        """The client's configuration.
+
         Args:
             model: OpenRouter's model id (``z-ai/glm-5.3``).
             provider: The one provider (endpoint tag) every request goes to.
@@ -783,9 +786,9 @@ CHECKS_PARAMS: Final[Dict[str, Any]] = {
 
 
 def fan_out(server: Any, context: Context, rng: random.Random, workers: int) -> Dict[str, Any]:
-    """
-    One task's fan-out: the checks question first (it also puts the prefix in the cache), then
-    every probe at once.
+    """One task's fan-out: the checks question first, then every probe at once.
+
+    The checks question also puts the prefix in the cache.
 
     Returns:
         Dict[str, Any]: `scores` (``candidate_scores``), `checks`, `answers` (probe key to answer),
