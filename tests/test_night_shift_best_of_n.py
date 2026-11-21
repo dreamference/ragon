@@ -1028,3 +1028,33 @@ def test_the_report_why_line_names_the_deciding_stage_in_plain_words():
     best = {"chosen": 2, "stage": "regression filter", "reason": "r", "attempts": []}
     text = "\n".join(NightShiftReport._best_of_lines(best))
     assert "  - Why: r (deciding stage: the tests removed every other attempt)" in text
+
+
+def test_night_shift_best_of_n_no_candidate_keeps_the_last_message_of_an_interrupted_task(
+    bon, monkeypatch
+):
+    record = queue(bon["night"], bon["repo"], test=TEST)
+    run = NightShiftBestOfN.task_run(
+        bon["night"],
+        record,
+        NightShiftSettings({"best_of": 2}),
+        bon["ragon"],
+        time.time() + 60,
+        model_host="http://x",
+    )
+    finished = {}
+    monkeypatch.setattr(run, "_discard", lambda outcomes: None)
+    monkeypatch.setattr(run, "_timing", lambda outcomes: {})
+    monkeypatch.setattr(run, "_record", lambda choice, outcomes: choice)
+    monkeypatch.setattr(
+        run,
+        "_finish",
+        lambda status, result: finished.update(status=status, result=result) or status,
+    )
+    outcomes = [
+        {"status": "interrupted", "result": {"last_message": "first words"}},
+        {"status": "interrupted", "result": {}},
+    ]
+    assert run._no_candidate(outcomes) == "interrupted"
+    assert finished["result"]["last_message"] == "first words"
+    assert "window closed" in finished["result"]["note"]
