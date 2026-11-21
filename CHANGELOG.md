@@ -2,7 +2,7 @@
 
 The full notes of each release are in `specs/DREAMFERENCE_RELEASE_<version>.md`.
 
-## 0.9.8 patch (unreleased)
+## 0.9.8.1 "Illuyanka" (2026-11-21)
 
 - 0.9.8's chat bridge dropped every Telegram and Discord pairing at its first start and then accepted only pairings to a Ragon account, which a node without accounts cannot make, so paired phones were refused and `ragon pair` answered "Not signed in".
 - Every node that ran 0.9.8 without accounts, the default, is affected: its Telegram, Discord and Matrix chats stopped answering.

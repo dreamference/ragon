@@ -12,7 +12,7 @@ Range: `git log v0.9.7..origin/main`, read at b4670fb29 on 2026-11-19 (112 commi
 
 ### What you will notice
 
-- **Signal sends new messages, not edits.** A long turn now gets one progress message after about 20 seconds (none if the answer is already arriving), then the answer. Editing a status message stays available: set `delivery = "edit"` or run `ragon signal delivery edit`. A bridge you already installed picks up the new default; `ragon signal delivery messages` sets it back. Telegram and Matrix are unchanged.
+- **Signal sends new messages, not edits.** A long turn now gets one progress message after about 20 seconds (none if the answer is already arriving), then the answer. Editing a status message stays available: set `delivery = "edit"` or run `ragon signal delivery edit`. A bridge you already installed picks up the new default; `ragon signal delivery messages` sets it back. Telegram and Matrix deliver as before, but on a node without accounts (the default) 0.9.8 dropped the Telegram and Discord pairings and refused paired phones on every bridge; 0.9.8.1 fixes this (see `specs/DREAMFERENCE_RELEASE_0.9.8.1.md`).
 
 ### Measured
 
@@ -34,7 +34,7 @@ The Windows engine port (HIP) passed its decode gate and its first speed lane.
 
 ### Coming in 0.9.9 (2026-12-01)
 
-User accounts on the node: you sign in or create an account at first start, the same way Codex's login works against the node. API keys for other tools. Phones pair again.
+User accounts on the node: you sign in or create an account at first start, the same way Codex's login works against the node. API keys for other tools. Phones pair with your account. Without accounts, phones pair again in 0.9.8.1 with the 0.9.7 commands (see `specs/DREAMFERENCE_RELEASE_0.9.8.1.md`).
 
 ### Known limits
 
