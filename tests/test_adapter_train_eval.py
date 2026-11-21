@@ -99,6 +99,22 @@ def test_missing_hosts_are_refused(tmp_path: Path) -> None:
         AdapterTrainEval(tmp_path, {"base": "http://base"})
 
 
+def test_adapter_train_eval_check_speed_notes_the_missing_base_drafter_row(tmp_path: Path) -> None:
+    hosts = dict(HOSTS)
+    del hosts["adapter_base_drafter"]
+    stage = AdapterTrainEval(
+        tmp_path,
+        hosts,
+        holdout_runner=_holdout(["a"], ["a", "b", "c"]),
+        speed_runner=_speed({"http://base": 100.0, "http://adapter": 98.0}),
+        completer=lambda host, prompt: prompt.upper(),
+        auditor=lambda host: 0,
+    )
+    entry = stage.check_speed()
+    assert entry["note"] == "no base-drafter server named: that row is not recorded"
+    assert "adapter_base_drafter" not in entry["tokens_per_second"]
+
+
 def test_run_without_hosts_says_what_is_missing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
