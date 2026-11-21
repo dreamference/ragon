@@ -1,5 +1,8 @@
-"""Check every question's snippet occurs in its document (PDFs through PDFium, the spec's engine) and
-fill in the locator: validate.py corpus questions.jsonl."""
+"""Check every question's snippet occurs in its document and fill in the locator.
+
+PDFs go through PDFium, the spec's engine; usage: validate.py corpus questions.jsonl.
+"""
+
 import json
 import os
 import sys
@@ -14,6 +17,7 @@ for q in qs:
     if q["doc"] not in cache:
         if q["doc"].endswith(".pdf"):
             import pypdfium2 as pdfium
+
             doc = pdfium.PdfDocument(os.path.join(root, q["doc"]))
             pages = [doc[i].get_textpage().get_text_bounded() for i in range(len(doc))]
             cache[q["doc"]] = evallib.units_pdf(pages)
