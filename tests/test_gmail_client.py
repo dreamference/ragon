@@ -542,6 +542,15 @@ def test_extract_text_handles_multipart_attachments_html_and_bad_charsets():
     assert "hello charset" in GmailSearchService._extract_text(bad_charset_msg)
 
 
+def test_gmail_search_service_decode_part_returns_empty_for_non_bytes_payload():
+    from email.message import EmailMessage
+
+    from dreamference.chat.gmail_search_service import GmailSearchService
+
+    empty = EmailMessage()
+    assert GmailSearchService._decode_part(empty) == ""
+
+
 def test_workspace_dispatch_covers_drive_and_calendar_routes(monkeypatch):
     from dreamference.chat.gmail_search_service import (
         NOT_CONNECTED_MESSAGE,
