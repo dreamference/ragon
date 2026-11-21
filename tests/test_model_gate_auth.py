@@ -298,3 +298,16 @@ def test_a_forged_or_expired_jwt_is_refused_locally():
         assert (
             verify(f"{head}.{claims}.{signature[:-4]}AAAA", jwks, "https://box.local:8000") is None
         )
+
+
+def test_model_gate_auth_url_has_credential_flags_only_credential_names_in_the_query():
+    has_credential = ModelGateAuth.url_has_credential
+    assert has_credential(b"GET /v1/chat/completions?api_key=secret HTTP/1.1\r\nHost: gate\r\n\r\n")
+    assert has_credential(
+        b"GET /v1/chat/completions?x=1&access_token=secret HTTP/1.1\r\nHost: gate\r\n\r\n"
+    )
+    assert has_credential(b"GET /v1/chat/completions?API-KEY=secret HTTP/1.1\r\nHost: gate\r\n\r\n")
+    assert not has_credential(b"GET /v1/chat/completions?x=1&y=2 HTTP/1.1\r\nHost: gate\r\n\r\n")
+    assert not has_credential(b"GET /v1/chat/completions?q=api_key HTTP/1.1\r\nHost: gate\r\n\r\n")
+    assert not has_credential(b"GET /v1/chat/completions HTTP/1.1\r\nHost: gate\r\n\r\n")
+    assert not has_credential(b"GARBAGE\r\nHost: gate\r\n\r\n")
