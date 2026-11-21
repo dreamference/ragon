@@ -40,6 +40,12 @@ result() {
 started() { date +%s; }
 since() { echo $(($(date +%s) - $1)); }
 log() { echo "== $*"; }
+# shows_version LINE VERSION: whether `ragon --version`'s LINE names VERSION. A four-part release
+# (0.9.8.1) built before the launcher printed it as such shows Cargo's stamp, `ragon 0.9.8+1`.
+shows_version() {
+    [[ "$1" == *" $2" ]] && return 0
+    [[ "$2" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)$ ]] && [[ "$1" == *" ${BASH_REMATCH[1]}+${BASH_REMATCH[2]}" ]]
+}
 
 # The latest release, from the web page's redirect rather than the API: unauthenticated API calls
 # share 60 an hour with every other machine behind the same public address, and `ragon update` and
@@ -75,7 +81,7 @@ if [[ -x "$real" ]]; then
         result "ragon update (the desktop's install)" skip "GitHub's API rate limit for this network" "$(since "$t")"
     elif [[ $code -ne 0 ]]; then
         result "ragon update (the desktop's install)" fail "exit $code: $(echo "$out" | tail -3)" "$(since "$t")"
-    elif [[ -n "$latest" && "$after" != *" $latest" ]]; then
+    elif [[ -n "$latest" ]] && ! shows_version "$after" "$latest"; then
         result "ragon update (the desktop's install)" fail "$before -> $after, latest is $latest" "$(since "$t")"
     else
         result "ragon update (the desktop's install)" pass "$before -> $after" "$(since "$t")"
@@ -125,7 +131,7 @@ fi
 t=$(started)
 if [[ -n "$ragon" ]]; then
     version="$(HOME="$SCRATCH_HOME" "$ragon" --version 2>&1 | tail -1)"
-    if [[ -n "$latest" && "$version" == *" $latest" ]]; then
+    if [[ -n "$latest" ]] && shows_version "$version" "$latest"; then
         result "ragon --version" pass "$version" "$(since "$t")"
     else
         result "ragon --version" fail "'$version', latest release is ${latest:-unknown}" "$(since "$t")"

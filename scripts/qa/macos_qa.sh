@@ -56,6 +56,12 @@ tmo() { local secs="$1"; shift; perl -e 'alarm shift; exec @ARGV or die "exec: $
 started() { date +%s; }
 since() { echo $(($(date +%s) - $1)); }
 log() { echo "== $*"; }
+# shows_version LINE VERSION: whether `ragon --version`'s LINE names VERSION. A four-part release
+# (0.9.8.1) built before the launcher printed it as such shows Cargo's stamp, `ragon 0.9.8+1`.
+shows_version() {
+    [[ "$1" == *" $2" ]] && return 0
+    [[ "$2" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)$ ]] && [[ "$1" == *" ${BASH_REMATCH[1]}+${BASH_REMATCH[2]}" ]]
+}
 
 rate_limited() {
     grep -qi 'rate limit' <<< "$1" && return 0
@@ -97,7 +103,7 @@ if [[ -z "$previous" || ! -s "$WORK/install.sh" ]]; then
 else
     install_into "$OLD_HOME" --version "$previous" --no-app
     version="$(HOME="$OLD_HOME" "$OLD_HOME/.local/bin/ragon" --version 2>&1 | tail -1)"
-    if [[ $code -eq 0 && "$version" == *" $previous" ]]; then
+    if [[ $code -eq 0 ]] && shows_version "$version" "$previous"; then
         old_ragon="$OLD_HOME/.local/bin/ragon"
         result "install.sh of the previous release" pass "$version" "$(since "$t")"
     elif rate_limited "$out"; then
@@ -118,7 +124,7 @@ if [[ -n "$old_ragon" ]]; then
         result "ragon update from the previous release" skip "GitHub's API rate limit for this network" "$(since "$t")"
     elif [[ $code -ne 0 ]]; then
         result "ragon update from the previous release" fail "exit $code: $(echo "$out" | tail -3)" "$(since "$t")"
-    elif [[ -n "$latest" && "$after" != *" $latest" ]]; then
+    elif [[ -n "$latest" ]] && ! shows_version "$after" "$latest"; then
         result "ragon update from the previous release" fail "$previous -> '$after', latest is $latest" "$(since "$t")"
     else
         result "ragon update from the previous release" pass "$previous -> $after" "$(since "$t")"
@@ -141,7 +147,7 @@ if [[ -s "$WORK/install.sh" ]]; then
         RAGON_APP_DIR="$APPS" install_into "$NEW_HOME" --version "$latest"
     fi
     version="$(HOME="$NEW_HOME" "$NEW_HOME/.local/bin/ragon" --version 2>&1 | tail -1)"
-    if [[ $code -eq 0 && -x "$NEW_HOME/.local/bin/ragon" && -n "$latest" && "$version" == *" $latest" ]]; then
+    if [[ $code -eq 0 && -x "$NEW_HOME/.local/bin/ragon" && -n "$latest" ]] && shows_version "$version" "$latest"; then
         ragon="$NEW_HOME/.local/bin/ragon"
         result "install.sh of the latest release, ragon --version" pass "$version" "$(since "$t")"
     elif rate_limited "$out"; then

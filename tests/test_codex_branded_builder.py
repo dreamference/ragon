@@ -325,7 +325,9 @@ def test_the_patches_stay_small():
     # 25,000 of them the regenerated app-server schema; the binary .zst exports stay out); 114,975 after.
     # Raised to 116,500 for 0043 (Ragon Digest inside Ragon, 1,071 bytes: one call on each command
     # output into the leaf crate ragon-rs/digest, off unless the launcher switches it on); 116,046 after.
-    assert sum(Path(p).stat().st_size for p in CodexBrandedBuilder.patches()) < 116_500
+    # Raised to 116,700 for the release's own number in the version lines (601 bytes in 0001 and 0034:
+    # a four-part release such as 0.9.8.1 is stamped 0.9.8+1 for Cargo); 116,647 after.
+    assert sum(Path(p).stat().st_size for p in CodexBrandedBuilder.patches()) < 116_700
 
 
 def test_airgapped_treats_every_profile_without_a_sandbox_like_full_access():
@@ -491,6 +493,24 @@ def test_the_export_reports_ragons_version_not_the_upstream_tag(tmp_path, monkey
     from dreamference import __version__
 
     assert CodexBrandedBuilder.ragon_version() == __version__
+
+
+def test_the_version_lines_show_the_release_not_cargos_stamp():
+    # Cargo's `0.9.8+1` is no number a user, the updater or a QA check knows: `--version` goes
+    # through the launcher's help rewrite, and each line that prints a version on its own reads
+    # the release's number.
+    text = {Path(p).name: Path(p).read_text() for p in CodexBrandedBuilder.patches()}
+    branding = text["0001-brand-ragon-name.patch"]
+    assert "+            version: ragon_launcher::shown_version(version)," in branding
+    assert "ragon_launcher::shown_version(CODEX_CLI_VERSION)" in branding
+    assert (
+        '+        eprintln!("Ragon v{}\\n--------", option_env!("RAGON_VERSION").unwrap_or(VERSION));'
+        in branding
+    )
+    doctor = text["0034-doctor-windows.patch"]
+    assert 'ragon_launcher::shown_version(env!("CARGO_PKG_VERSION"))' in doctor
+    help_rs = Path(builder_module.RAGON_CRATE_DIR, "src", "help.rs").read_text()
+    assert "command.get_version().map(crate::update::shown_version)" in help_rs
 
 
 def test_the_build_key_changes_with_the_version(monkeypatch):
