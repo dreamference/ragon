@@ -520,6 +520,23 @@ class CodexBrandedBuilder:
 
         return os.environ.get("RAGON_VERSION") or __version__
 
+    @staticmethod
+    def cargo_version(version: str) -> str:
+        """The version Cargo is given for a Ragon release version.
+
+        Cargo takes semantic versions only. A patch release of a release (`0.9.8.1`) becomes
+        `0.9.8+1`: build metadata keeps the fourth number visible in `ragon --version`, and Cargo
+        does not order by it. Every other version is returned unchanged.
+
+        Args:
+            version (str): The release version, such as `0.9.8` or `0.9.8.1`.
+
+        Returns:
+            str: The version for `[workspace.package]`.
+        """
+        match = re.fullmatch(r"(\d+\.\d+\.\d+)\.(\d+)", version)
+        return f"{match.group(1)}+{match.group(2)}" if match else version
+
     @classmethod
     def stamp_version(cls, manifest: str, version: str) -> bool:
         """Set the exported workspace's version.
@@ -532,9 +549,13 @@ class CodexBrandedBuilder:
             manifest (str): The exported `codex-rs/Cargo.toml`.
             version (str): The version to stamp.
 
+        A patch release's fourth number (`0.9.8.1`) is not a version Cargo accepts, so it is
+        stamped as build metadata (`0.9.8+1`, see `cargo_version`).
+
         Returns:
             bool: True if the manifest's `[workspace.package]` version was set.
         """
+        version = cls.cargo_version(version)
         if not re.fullmatch(r"\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?", version):
             _say(f"❌ {version!r} is not a version Cargo accepts (for example 0.9.0).")
             return False
