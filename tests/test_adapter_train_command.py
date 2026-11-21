@@ -142,3 +142,10 @@ def test_the_estimate_follows_the_plan() -> None:
     full = AdapterTrainRun.estimate(300)
     assert full["tokens"] == 6_000_000 and 6 < full["gpu_hours"] < 11
     assert AdapterTrainRun.estimate(300, budget_hours=1)["gpu_hours"] == pytest.approx(1)
+
+
+def test_adapter_train_run_state_ignores_a_state_file_that_is_not_an_object(repo: Path) -> None:
+    run = AdapterTrainRun("mine")
+    run.directory.mkdir(parents=True)
+    (run.directory / "state.json").write_text("[1, 2]", encoding="utf-8")
+    assert run.state() == {"done": [], "consented": [], "left_node": []}
