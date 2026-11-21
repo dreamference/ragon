@@ -359,6 +359,40 @@ def test_a_window_closing_mid_attempt_stops_and_the_next_run_redoes_the_attempt(
     assert [record["attempt"] for record in lines(setup["out"] / "train.jsonl")] == [1]
 
 
+def test_adapter_train_generate_attempt_grading_window_closed_returns_none(setup, monkeypatch):
+    """When the grading test run's window closes, attempt returns None (window-closed)."""
+    from unittest import mock
+
+    from dreamference.night_shift.night_shift_task_run import NightShiftTaskRun
+
+    fix = setup["tasks"]["fix"]
+    generate = stage(setup, [fix], attempts=1)
+    spec = AdapterTrainGenerate.task_spec(fix)
+    grading = {
+        "fail_to_pass": ["tests/test_add.py"],
+        "pass_to_pass": ["tests/test_other.py"],
+        "tests": ["tests/test_add.py", "tests/test_other.py"],
+        "test_command": f"{sys.executable} {{test}}",
+    }
+
+    def fake_run(self):
+        self.outcome = {"attempt": 1, "status": "candidate", "result": {}}
+        return "candidate"
+
+    def fake_run_tests(self, test_command):
+        return {"command": test_command, "timed_out": "window"}
+
+    with (
+        mock.patch.object(NightShiftTaskRun, "run", fake_run),
+        mock.patch.object(NightShiftTaskRun, "_run_tests", fake_run_tests),
+    ):
+        record = generate.attempt(spec, grading, 1)
+
+    assert record is None
+    # The worktree was cleaned up in the finally block.
+    assert not (generate.gen_dir / "worktrees" / f"{spec['id']}-a1").exists()
+
+
 def test_the_agent_is_not_shown_the_hidden_tests(setup, monkeypatch):
     monkeypatch.setenv("FAKE_PLAN", "good")
     stage(setup, [setup["tasks"]["fix"]], attempts=1).run()
