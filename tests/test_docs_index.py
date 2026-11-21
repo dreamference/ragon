@@ -195,6 +195,16 @@ def test_a_failed_ocr_download_leaves_the_index_installed(pinned):
     assert DocsIndexSetup.missing_ocr("aarch64") == [], "a later setup completes OCR"
 
 
+def test_docs_index_setup_install_ocr_fetches_only_the_names_in_todo(pinned):
+    tmp_path, _, _ = pinned
+    assert DocsIndexSetup.install_ocr("aarch64", {"liblept.so.5"}) is True
+    assert (tmp_path / "lib" / "ragon-docs" / "liblept.so.5").is_file()
+    assert not (tmp_path / "models" / "ocr" / "det.onnx").exists()
+    assert DocsIndexSetup.install_ocr("aarch64", {"det.onnx"}) is True
+    assert (tmp_path / "models" / "ocr" / "det.onnx").read_bytes() == b"det"
+    assert not (tmp_path / "models" / "ocr" / "tessdata" / "osd.traineddata").exists()
+
+
 def test_a_file_that_does_not_match_its_pin_is_refused(pinned):
     tmp_path, files, _ = pinned
     files["https://x/ort.tgz"] = _tarball({"ort/lib/libonnxruntime.so.1.30.0": b"tampered"})
