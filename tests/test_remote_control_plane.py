@@ -13,6 +13,7 @@ import subprocess
 import pytest
 
 from dreamference.remote import RemoteControlPlane, RemoteSettings
+from dreamference.remote.remote_certificate_authority import RemoteCertificateAuthority
 
 BOX = "remote.example.org"
 
@@ -36,7 +37,7 @@ def _connection(monkeypatch, status=200, raw=b"{}", fail=None, seen=None):
     class Fake:
         def __init__(self, port, server_name, context, timeout):
             if seen is not None:
-                seen.update(port=port, server_name=server_name, timeout=timeout)
+                seen.update(port=port, server_name=server_name, timeout=timeout, context=context)
             self.closed = False
 
         def request(self, method, path, body=None, headers=None):
@@ -120,6 +121,30 @@ def test_a_request_without_a_token_sends_no_authorization(monkeypatch):
     _connection(monkeypatch, 200, b"", seen=seen)
     assert RemoteControlPlane._request(BOX, "GET", "/api/instance") == (200, {})
     assert "Authorization" not in seen["headers"] and seen["body"] is None
+
+
+def test_a_request_checks_the_node_ca_against_the_boxs_certificate(monkeypatch):
+    ca = RemoteCertificateAuthority.ca_certificate()
+    ca.parent.mkdir(parents=True, exist_ok=True)
+    ca.write_text("the node's certificate authority")
+    seen = {}
+
+    class Context:
+        def __init__(self):
+            self.cafile = None
+
+        def load_verify_locations(self, cafile=None, capath=None, cadata=None):
+            self.cafile = cafile
+
+    monkeypatch.setattr(
+        "dreamference.remote.remote_control_plane.ssl.create_default_context",
+        lambda: Context(),
+    )
+    _connection(monkeypatch, 200, b"{}", seen=seen)
+    status, body = RemoteControlPlane._request(BOX, "GET", "/api/instance")
+    assert (status, body) == (200, {})
+    assert seen["context"].cafile == str(ca), "the node's CA backs the certificate check"
+    assert seen["closed"]
 
 
 @pytest.mark.parametrize(
