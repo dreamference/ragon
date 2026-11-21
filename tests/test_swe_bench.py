@@ -6414,3 +6414,42 @@ def test_a_strategy_hint_out_of_range_is_refused_and_the_flag_is_parsed(bench, m
     assert seen["strategy_hint"] == 3
     assert SweBenchCommand.dispatch(parser.parse_args(["swe-bench", "run", "--name", "y"])) == 0
     assert seen["strategy_hint"] == 0
+
+
+def test_swe_bench_report_review_summary_counts_ran_skipped_and_log_tokens():
+    """The review summary: none without the turn; else ran, skipped, changes, timeouts and tokens."""
+
+    class _Store:
+        def log_stats(self, instance_id, offset):
+            assert (instance_id, offset) == ("b", 7)
+            return {"input_tokens": 5, "cached_input_tokens": 2, "output_tokens": 1}
+
+    assert SweBenchReport.review_summary(_Store(), {}, {}, ["a"]) is None
+    states = {
+        "a": {
+            "review": {
+                "tokens": {"input_tokens": 10, "output_tokens": 3},
+                "changed": True,
+                "added": 4,
+                "removed": 1,
+                "seconds": 9,
+                "resumed": True,
+            }
+        },
+        "b": {"review": {"log_offset": 7, "exec": "timeout"}},
+        "c": {"review": {"skipped": "no-diff"}},
+        "d": {},
+    }
+    summary = SweBenchReport.review_summary(_Store(), {"review_turn": True}, states, list(states))
+    assert summary == {
+        "instances": 4,
+        "ran": 2,
+        "skipped": {"no-diff": 1},
+        "fresh": 1,
+        "changed": ["a"],
+        "added": 4,
+        "removed": 1,
+        "timeouts": ["b"],
+        "seconds": [9, 0],
+        "tokens": {"input_tokens": 15, "cached_input_tokens": 2, "output_tokens": 4},
+    }
