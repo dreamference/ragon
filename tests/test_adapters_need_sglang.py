@@ -110,6 +110,12 @@ def test_adapter_install_warns_when_the_engine_is_ragon(ragon_default, older_ima
     assert "serves no adapters yet" in capsys.readouterr().out
 
 
+def test_adapter_command_warn_if_ragon_with_no_served_base_says_nothing(capsys):
+    """No base means the next `server start` resolves no model, so there is nothing to warn about."""
+    AdapterCommand._warn_if_ragon(None, DreamferenceConfig())
+    assert capsys.readouterr().out == ""
+
+
 def test_adapter_install_does_not_warn_on_the_shipped_default(capsys):
     AdapterCommand._warn_if_ragon({"key": MODEL}, DreamferenceConfig())
     assert capsys.readouterr().out == ""
