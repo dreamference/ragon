@@ -330,6 +330,18 @@ def test_maven_and_gradle_are_recorded_by_their_homes(tmp_path, monkeypatch):
     assert not os.path.lexists(tmp_path / "indexers" / "maven")
 
 
+def test_code_index_setup_record_toolchains_replaces_a_stale_staging_link(tmp_path, monkeypatch):
+    # A staging link left by an interrupted run is removed, so the new link still lands.
+    indexers = tmp_path / "indexers"
+    indexers.mkdir()
+    monkeypatch.setattr(code_setup, "INDEXERS_DIR", str(indexers))
+    old, new = tmp_path / "old-go", tmp_path / "new-go"
+    Path(indexers / "go.new").symlink_to(old)
+    CodeIndexSetup.record_toolchains({"go": str(new)})
+    assert str(Path(indexers / "go").readlink()) == str(new)
+    assert not os.path.lexists(indexers / "go.new")
+
+
 def test_indexers_without_their_toolchain_are_skipped_not_failed(tmp_path, monkeypatch):
     monkeypatch.setattr(code_setup, "INSTALL_DIR", str(tmp_path / "install"))
     monkeypatch.setattr(code_setup, "INDEXERS_DIR", str(tmp_path / "indexers"))
