@@ -33,9 +33,12 @@ def installer_name(version: str, arch: str) -> str:
 
 
 def numeric(version: str) -> str:
-    """What windows.yml hands makensis as NUMERIC_VERSION: `($env:RAGON_VERSION -split '[-+]')[0]`."""
-    assert "$numeric = ($env:RAGON_VERSION -split '[-+]')[0]" in WINDOWS_YML.read_text()
-    return re.split(r"[-+]", version)[0]
+    """What windows.yml hands makensis as NUMERIC_VERSION: the numbers before a `-` or `+`, padded to four."""
+    text = WINDOWS_YML.read_text()
+    assert "$numeric = ($env:RAGON_VERSION -split '[-+]')[0]" in text
+    assert """if (($numeric -split '\\.').Count -lt 4) { $numeric = "$numeric.0" }""" in text
+    numbers = re.split(r"[-+]", version)[0]
+    return numbers if numbers.count(".") >= 3 else f"{numbers}.0"
 
 
 @pytest.mark.parametrize("version", ["0.9.0", "0.9.0-rc.1", "2.0.0+build.5"])
@@ -66,14 +69,22 @@ def test_the_installers_are_the_desktop_artifacts_the_release_collects():
 
 
 @pytest.mark.parametrize(
-    "version, expected", [("0.9.0", "0.9.0"), ("0.9.0-rc.1", "0.9.0"), ("0.9.1+ci", "0.9.1")]
+    "version, expected",
+    [
+        ("0.9.0", "0.9.0.0"),
+        ("0.9.0-rc.1", "0.9.0.0"),
+        ("0.9.1+ci", "0.9.1.0"),
+        ("0.9.8.1", "0.9.8.1"),
+    ],
 )
 def test_a_pre_release_version_still_gives_windows_a_four_number_file_version(version, expected):
     assert numeric(version) == expected
     nsi = INSTALLER_NSI.read_text()
-    # VIProductVersion takes X.X.X.X only: "0.9.0-rc.1.0" stopped makensis.
-    assert 'VIProductVersion "${NUMERIC_VERSION}.0"' in nsi
-    assert re.fullmatch(r"\d+\.\d+\.\d+\.0", f"{expected}.0")
+    # VIProductVersion takes X.X.X.X only: "0.9.0-rc.1.0" stopped makensis, and so would the five
+    # numbers "0.9.8.1.0" of a patch release of a release.
+    assert 'VIProductVersion "${NUMERIC_VERSION}"' in nsi
+    assert '!define NUMERIC_VERSION "${VERSION}.0"' in nsi
+    assert re.fullmatch(r"\d+\.\d+\.\d+\.\d+", expected)
     # The full version is still what the Apps list shows and CI checks.
     assert 'WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${VERSION}"' in nsi
     assert '"/DVERSION=$env:RAGON_VERSION" "/DNUMERIC_VERSION=$numeric"' in WINDOWS_YML.read_text()
@@ -210,7 +221,7 @@ def test_ci_checks_the_start_menu_entry_carries_the_apps_own_id():
     not os.environ.get("RAGON_TEST_MAKENSIS"),
     reason="no makensis named in RAGON_TEST_MAKENSIS",
 )
-@pytest.mark.parametrize("version", ["0.9.0", "0.9.0-rc.1"])
+@pytest.mark.parametrize("version", ["0.9.0", "0.9.0-rc.1", "0.9.8.1"])
 def test_makensis_builds_the_installer(tmp_path, version):
     app = tmp_path / "out" / "Ragon-win32-x64"
     (app / "resources").mkdir(parents=True)

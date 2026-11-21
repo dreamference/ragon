@@ -478,6 +478,12 @@ def test_the_export_reports_ragons_version_not_the_upstream_tag(tmp_path, monkey
     text = manifest.read_text()
     assert '[workspace.package]\nversion = "0.9.1"\n' in text and 'foo = { version = "1" }' in text
     assert not CodexBrandedBuilder.stamp_version(str(manifest), "not a version")
+    # A patch release of a release (0.9.8.1) is no version Cargo takes: its fourth number becomes
+    # build metadata.
+    assert CodexBrandedBuilder.stamp_version(str(manifest), "0.9.8.1")
+    assert '[workspace.package]\nversion = "0.9.8+1"\n' in manifest.read_text()
+    assert CodexBrandedBuilder.cargo_version("0.9.8") == "0.9.8"
+    assert CodexBrandedBuilder.cargo_version("0.9.9-rc.1") == "0.9.9-rc.1"
 
     monkeypatch.setenv("RAGON_VERSION", "2.0.0-rc.1")
     assert CodexBrandedBuilder.ragon_version() == "2.0.0-rc.1"
