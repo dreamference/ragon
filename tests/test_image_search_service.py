@@ -844,6 +844,18 @@ def test_an_undecodable_rank_thumbnail_is_passed_through_unchanged():
     assert ImageSearchService._rank_thumb(b"junk") == b"junk"
 
 
+def test_image_search_service_shrink_reencodes_a_decodable_image_as_a_small_jpeg(monkeypatch):
+    from dreamference.chat import image_search_service
+
+    big = _blocky_jpeg(7, size=2048)
+    shrank = ImageSearchService._shrink(big, 85)
+    assert len(shrank) < len(big)
+    assert sniff_image_type(shrank) == "image/jpeg"
+
+    monkeypatch.setattr(image_search_service, "Image", None)
+    assert ImageSearchService._shrink(b"junk", 85) == b"junk"
+
+
 def test_an_undecodable_thumbnail_is_kept_by_the_duplicate_collapse():
     thumbs = [({"n": 1}, b"junk"), ({"n": 2}, b"junk")]
     assert len(ImageSearchService._collapse(thumbs)) == 2
