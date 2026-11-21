@@ -390,3 +390,17 @@ def test_a_template_dropped_while_its_task_is_being_queued_stays_dropped(tmp_pat
     assert any("queued for tonight" in line for line in said)
     assert NightShiftRecurring.templates(night) == []
     assert not list(NightShiftRecurring.folder(night).glob("*.tmp"))
+
+
+def test_night_shift_recurring_describe_names_every_cadence_in_words() -> None:
+    assert NightShiftRecurring.describe({"cadence": "weekly", "weekday": "fri"}) == "every fri"
+    assert NightShiftRecurring.describe({"cadence": "days", "days": ["mon", "wed", "fri"]}) == (
+        "on mon,wed,fri"
+    )
+    assert NightShiftRecurring.describe({"cadence": "every", "every": 1}) == "every night"
+    assert NightShiftRecurring.describe({"cadence": "every", "every": 3}) == "every 3 nights"
+    assert (
+        NightShiftRecurring.describe({"cadence": "monthly", "day": 15}) == "on day 15 of each month"
+    )
+    assert NightShiftRecurring.describe({"cadence": "daily"}) == "every night"
+    assert NightShiftRecurring.describe({}) == "every night"
