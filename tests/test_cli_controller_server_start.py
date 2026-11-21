@@ -1,6 +1,7 @@
 """`server start` outcomes in the CLI controller: ready, canary results, fatal, stopped, Ctrl-C."""
 
 import contextlib
+import itertools
 from unittest.mock import MagicMock
 
 import requests
@@ -64,6 +65,42 @@ def _start(monkeypatch, monitor, *, start_server=None, warm=1.0, post=None, extr
 
 def _resp(status, text=None):
     return MagicMock(status_code=status, json=lambda: {"choices": [{"text": text}]})
+
+
+def test_dreamference_cli_controller_after_server_ready_reports_a_ready_diffusion_sidecar(
+    monkeypatch, capsys
+):
+    """The ready path reports a diffusion sidecar that answers /health as 'ok'."""
+    import time as time_mod
+
+    from dreamference.hardware import ModelMatrixRegistry
+    from dreamference.vllm_server import DiffusionServerManager
+
+    sidecar = MagicMock()
+    sidecar.check_health.return_value = True
+    sidecar.get_load_state.return_value = "ok"
+    sidecar.host = "http://localhost:8001"
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda *a, **k: MagicMock(status_code=200, json=lambda: {"status": "ok"}),
+    )
+    monkeypatch.setattr(ModelMatrixRegistry, "diffusion_enabled", classmethod(lambda cls: True))
+    monkeypatch.setattr(
+        DiffusionServerManager,
+        "start_server",
+        lambda self, **k: True,
+    )
+    ticks = itertools.count(1.0, 1.0)
+    monkeypatch.setattr(time_mod, "time", lambda: next(ticks))
+    slept = []
+    monkeypatch.setattr(time_mod, "sleep", lambda s: slept.append(s))
+
+    _start(monkeypatch, _Monitor(ready=True))
+
+    out = capsys.readouterr().out
+    assert "Diffusion model ready at http://localhost:8001/v1" in out
+    assert not slept
 
 
 def test_ready_server_runs_a_passing_canary(monkeypatch, capsys):
