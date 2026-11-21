@@ -212,6 +212,13 @@ jobs:
             for ($i = 0; $i -lt 120 -and (Test-Path $Dir); $i++) { Start-Sleep -Seconds 1 }
             return -not (Test-Path $Dir)
           }
+          # Whether `ragon --version`'s line names the release. A four-part release (0.9.8.1) built before
+          # the launcher printed it as such shows Cargo's stamp, `ragon 0.9.8+1`.
+          function Test-Version([string]$Line, [string]$Want) {
+            if ($Line -match (' ' + [regex]::Escape($Want) + '$')) { return $true }
+            if ($Want -match '^(\d+\.\d+\.\d+)\.(\d+)$') { return $Line -match (' ' + [regex]::Escape("$($Matches[1])+$($Matches[2])") + '$') }
+            return $false
+          }
           # What an earlier failed run may have left on this persistent account.
           if (Test-Path $ragon) { & $ragon uninstall --yes; $null = Wait-Gone $bin }
           Remove-App
@@ -229,7 +236,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Version $env:PREVIOUS failed (exit $LASTEXITCODE)" }
             $version = (& $ragon --version | Select-Object -Last 1)
             Write-Host "installed: $version"
-            if ($version -notmatch [regex]::Escape($env:PREVIOUS) + '$') { throw "install.ps1 installed '$version', not $env:PREVIOUS" }
+            if (-not (Test-Version $version $env:PREVIOUS)) { throw "install.ps1 installed '$version', not $env:PREVIOUS" }
             $appVersion = (Get-ItemProperty $appKey -ErrorAction SilentlyContinue).DisplayVersion
             if ($appVersion -ne $env:PREVIOUS) { $failures += "the desktop app installed is '$appVersion', not $env:PREVIOUS" }
             if (-not ([Environment]::GetEnvironmentVariable("Path", "User") -split ";" -contains $bin)) { $failures += "install.ps1 did not put $bin on the user's PATH" }
@@ -241,7 +248,7 @@ jobs:
             if ($updateExit -ne 0) { throw "ragon update failed (exit $updateExit)" }
             $version = (& $ragon --version | Select-Object -Last 1)
             Write-Host "after the update: $version"
-            if ($version -notmatch [regex]::Escape($env:LATEST) + '$') { $failures += "ragon update left '$version', not $env:LATEST" }
+            if (-not (Test-Version $version $env:LATEST)) { $failures += "ragon update left '$version', not $env:LATEST" }
             $appVersion = (Get-ItemProperty $appKey -ErrorAction SilentlyContinue).DisplayVersion
             # `ragon update` updates the desktop app: the installed binary does the update.
             if ([version]$env:PREVIOUS -ge [version]"0.9.0") {
