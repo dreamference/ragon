@@ -1,8 +1,10 @@
 """A secondary forwards to its pinned primary and caches the live check (AUTH §7, §10)."""
 
+import hashlib
+
 import pytest
 
-from dreamference.accounts.accounts_secondary import UNREACHABLE, AccountsSecondary
+from dreamference.accounts.accounts_secondary import CACHE_LIMIT, UNREACHABLE, AccountsSecondary
 
 
 class Primary:
@@ -126,3 +128,15 @@ def test_userinfo_from_live_check(secondary):
 def test_userinfo_unreachable_is_503(secondary, primary):
     primary.down = True
     assert secondary.handle("GET", "/oauth/userinfo", BEARER, b"")[0] == 503
+
+
+def test_accounts_secondary_live_check_evicts_oldest_bearer_when_cache_is_full(secondary, primary):
+    secondary.cache.clear()
+    for index in range(CACHE_LIMIT):
+        secondary.live_check({"authorization": f"Bearer old-{index}"})
+    assert len(secondary.cache) == CACHE_LIMIT
+    status, _h, _body = secondary.live_check(BEARER)
+    assert status == 200
+    assert len(secondary.cache) == CACHE_LIMIT
+    assert hashlib.sha256(b"old-0").hexdigest() not in secondary.cache
+    assert hashlib.sha256(b"tok-1").hexdigest() in secondary.cache
