@@ -89,6 +89,9 @@ pub mod sync;
 
 pub mod uninstall;
 pub mod update;
+
+/// For the Codex patches that print a version (`update::shown_version`).
+pub use update::shown_version;
 pub mod usage;
 pub mod userns;
 pub mod vision;

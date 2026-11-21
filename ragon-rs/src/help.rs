@@ -48,6 +48,13 @@ pub fn rebrand_command(mut command: Command) -> Command {
     if let Some(name) = command.get_display_name().map(rebrand_text) {
         command = command.display_name(name);
     }
+    // Cargo's `0.9.8+1` stamp is shown as the release, `0.9.8.1`, wherever clap prints a version.
+    if let Some(version) = command.get_version().map(crate::update::shown_version) {
+        command = command.version(version);
+    }
+    if let Some(version) = command.get_long_version().map(crate::update::shown_version) {
+        command = command.long_version(version);
+    }
     command
         .mut_args(|mut arg| {
             if let Some(text) = arg.get_help().map(|s| rebrand_text(&s.to_string())) {
@@ -222,6 +229,25 @@ mod tests {
         assert_eq!(command.get_display_name(), Some("Ragon"));
         assert_eq!(command.get_after_help().map(ToString::to_string), Some("More on Ragon".into()));
         assert_eq!(command.get_before_help().map(ToString::to_string), Some("About Ragon".into()));
+    }
+
+    #[test]
+    fn the_version_is_shown_as_the_release_through_the_whole_command_tree() {
+        let command = rebrand_command(
+            Command::new("codex")
+                .version("0.9.8+1")
+                .subcommand(Command::new("exec").version("0.9.8+1").long_version("0.9.8+1"))
+                .subcommand(Command::new("plain")),
+        );
+        let shown = crate::update::shown_version("0.9.8+1");
+        assert!(!shown.contains('+'));
+        assert_eq!(command.get_version(), Some(shown));
+        let exec = command.find_subcommand("exec").unwrap();
+        assert_eq!(exec.get_version(), Some(shown));
+        assert_eq!(exec.get_long_version(), Some(shown));
+        assert!(command.find_subcommand("plain").unwrap().get_version().is_none());
+        let rendered = command.clone().render_version();
+        assert_eq!(rendered.trim_end(), format!("codex {shown}"));
     }
 
     #[test]

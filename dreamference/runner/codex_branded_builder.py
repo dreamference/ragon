@@ -525,8 +525,9 @@ class CodexBrandedBuilder:
         """The version Cargo is given for a Ragon release version.
 
         Cargo takes semantic versions only. A patch release of a release (`0.9.8.1`) becomes
-        `0.9.8+1`: build metadata keeps the fourth number visible in `ragon --version`, and Cargo
-        does not order by it. Every other version is returned unchanged.
+        `0.9.8+1`: Cargo does not order by build metadata, and the launcher shows the release's own
+        number, `0.9.8.1`, wherever a version is printed (`update::shown_version`). Every other
+        version is returned unchanged.
 
         Args:
             version (str): The release version, such as `0.9.8` or `0.9.8.1`.

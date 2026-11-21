@@ -46,7 +46,7 @@ diff --git a/codex-rs/exec/src/event_processor_with_human_output.rs b/codex-rs/e
 @@ -218,3 +218,3 @@ impl EventProcessor for EventProcessorWithHumanOutput {
          const VERSION: &str = env!("CARGO_PKG_VERSION");
 -        eprintln!("OpenAI Codex v{VERSION}\n--------");
-+        eprintln!("Ragon v{VERSION}\n--------");
++        eprintln!("Ragon v{}\n--------", option_env!("RAGON_VERSION").unwrap_or(VERSION));
          for (key, value) in config_summary_entries(config, session_configured_event) {
 @@ -420,3 +420,3 @@
                  "{}\n{}",
@@ -64,6 +64,11 @@ diff --git a/codex-rs/tui/src/chatwidget.rs b/codex-rs/tui/src/chatwidget.rs
 diff --git a/codex-rs/tui/src/history_cell/session.rs b/codex-rs/tui/src/history_cell/session.rs
 --- a/codex-rs/tui/src/history_cell/session.rs
 +++ b/codex-rs/tui/src/history_cell/session.rs
+@@ -345,3 +345,3 @@
+         Self {
+-            version,
++            version: ragon_launcher::shown_version(version),
+             model,
 @@ -406,3 +406,3 @@ impl HistoryCell for SessionHeaderHistoryCell {
                  ">_ ".fg(accent_color()),
 -                "OpenAI Codex".bold(),
@@ -100,11 +105,14 @@ diff --git a/codex-rs/tui/src/onboarding/welcome.rs b/codex-rs/tui/src/onboardin
 diff --git a/codex-rs/tui/src/status/card.rs b/codex-rs/tui/src/status/card.rs
 --- a/codex-rs/tui/src/status/card.rs
 +++ b/codex-rs/tui/src/status/card.rs
-@@ -738,3 +738,3 @@ impl StatusHistoryCell {
+@@ -738,5 +738,5 @@ impl StatusHistoryCell {
              Span::from(format!("{}>_ ", FieldFormatter::INDENT)).dim(),
 -            Span::from("OpenAI Codex").bold(),
 +            Span::from("Ragon").bold(),
              Span::from(" ").dim(),
+-            Span::from(format!("(v{CODEX_CLI_VERSION})")).dim(),
++            Span::from(format!("(v{})", ragon_launcher::shown_version(CODEX_CLI_VERSION))).dim(),
+         ]));
 @@ -753,3 +753,3 @@
                  (None, Some(plan)) => plan.clone(),
 -                (None, None) => "ChatGPT".to_string(),

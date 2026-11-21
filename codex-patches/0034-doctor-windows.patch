@@ -10,6 +10,11 @@ diff --git a/codex-rs/cli/src/doctor/security.rs b/codex-rs/cli/src/doctor/secur
 diff --git a/codex-rs/cli/src/doctor/runtime.rs b/codex-rs/cli/src/doctor/runtime.rs
 --- a/codex-rs/cli/src/doctor/runtime.rs
 +++ b/codex-rs/cli/src/doctor/runtime.rs
+@@ -30,3 +30,3 @@
+     let mut details = vec![
+-        format!("version: {}", env!("CARGO_PKG_VERSION")),
++        format!("version: {}", ragon_launcher::shown_version(env!("CARGO_PKG_VERSION"))),
+         format!("platform: {platform}"),
 @@ -93,2 +93,5 @@
      };
 +    if cfg!(windows) && super::RAGON_DOCTOR_OFFLINE && status != CheckStatus::Ok {
