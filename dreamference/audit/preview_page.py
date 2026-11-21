@@ -1,13 +1,15 @@
-"""The page the desktop app's audit session opens in a preview tab
+"""The page the desktop app's audit session opens in a preview tab.
+
 (specs/DREAMFERENCE_RAGON_DESKTOP_PARITY.md §5, Phase 3 item 4).
 
 This module provides the PreviewPage class: a loopback HTTP server, for the length of one
 `ragon-admin audit egress --app` session, serving one page that reaches for the internet every
-way a page can (a picture, a script, a stylesheet, a `fetch`, DNS prefetch and preconnect hints (in the page and added by script),
-a link followed by script, and a WebRTC peer connection with a STUN server and a TURN server
-over TCP). The app opens it in a preview tab (`RAGON_APP_AUDIT_PREVIEW`);
-the preview's rules must turn every one of those away before a connection or a DNS query, which
-the trace then shows. The page's own port is the one loopback port it adds to the allowlist.
+way a page can (a picture, a script, a stylesheet, a `fetch`, DNS prefetch and preconnect
+hints (in the page and added by script), a link followed by script, and a WebRTC peer
+connection with a STUN server and a TURN server over TCP). The app opens it in a preview tab
+(`RAGON_APP_AUDIT_PREVIEW`); the preview's rules must turn every one of those away before a
+connection or a DNS query, which the trace then shows. The page's own port is the one
+loopback port it adds to the allowlist.
 """
 
 import threading

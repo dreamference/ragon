@@ -14,8 +14,6 @@
   },
   "dreamference/audit/preview_page.py": {
    "D107": 1,
-   "D205": 1,
-   "E501": 1,
    "PLR2004": 1
   },
   "dreamference/audit/strace_parser.py": {
@@ -192,5 +190,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 222
+ "total": 220
 }
