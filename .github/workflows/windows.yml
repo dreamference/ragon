@@ -561,8 +561,10 @@ jobs:
           $source = (Resolve-Path "desktop\electron\out\Ragon-win32-${{ matrix.arch }}").Path
           New-Item -ItemType Directory -Force -Path dist-desktop | Out-Null
           $out = Join-Path (Resolve-Path dist-desktop).Path "Ragon-Setup-$env:RAGON_VERSION-${{ matrix.arch }}.exe"
-          # A release candidate (0.9.1-rc.1) names the installer in full; Windows' file version is 0.9.1.
+          # A release candidate (0.9.1-rc.1) names the installer in full; Windows' file version takes four
+          # numbers: 0.9.1.0, and a patch release of a release (0.9.8.1) keeps its own four.
           $numeric = ($env:RAGON_VERSION -split '[-+]')[0]
+          if (($numeric -split '\.').Count -lt 4) { $numeric = "$numeric.0" }
           & $makensis /V2 "/DVERSION=$env:RAGON_VERSION" "/DNUMERIC_VERSION=$numeric" "/DARCH=${{ matrix.arch }}" "/DSOURCE=$source" "/DOUTFILE=$out" desktop\electron\windows\installer.nsi
           if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
           Get-Item $out | Format-List Name, Length

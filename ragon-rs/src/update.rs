@@ -92,6 +92,7 @@ pub enum Decision {
 
 /// Compares versions as semver where both parse, and installs in every other case: a source
 /// build has no version, and a tag that is not semver is still the release the user asked for.
+/// A patch release of a release (`0.9.8.1`) sorts after its release and before the next one.
 pub fn decide(current: Option<&str>, latest: &str) -> Decision {
     let Some(current) = current else {
         return Decision::Install;
@@ -99,15 +100,31 @@ pub fn decide(current: Option<&str>, latest: &str) -> Decision {
     if current == latest {
         return Decision::UpToDate;
     }
-    match (semver::Version::parse(current), semver::Version::parse(latest)) {
+    match (release_order(current), release_order(latest)) {
         // The numbering was reset to 0.x when the project moved to its own release repository,
         // so a 1.x or later build against a 0.x release comes from the old numbering, not from
         // the future: the release is authoritative and installs (a rollback works the same way).
-        (Ok(current), Ok(latest)) if latest.major == 0 && current.major >= 1 => Decision::Install,
-        (Ok(current), Ok(latest)) if current > latest => Decision::NewerThanRelease,
-        (Ok(current), Ok(latest)) if current == latest => Decision::UpToDate,
+        (Some((current, _)), Some((latest, _))) if latest.major == 0 && current.major >= 1 => {
+            Decision::Install
+        }
+        (Some(current), Some(latest)) if current > latest => Decision::NewerThanRelease,
+        (Some(current), Some(latest)) if current == latest => Decision::UpToDate,
         _ => Decision::Install,
     }
+}
+
+/// A version in the order releases come in: a semantic version, or a release's own patch release
+/// written with a fourth number (`0.9.8.1`, which semver does not read), as that release plus
+/// the fourth number. `None` for anything else.
+fn release_order(version: &str) -> Option<(semver::Version, u64)> {
+    if let Ok(version) = semver::Version::parse(version) {
+        return Some((version, 0));
+    }
+    let (release, fourth) = version.rsplit_once('.')?;
+    let release = semver::Version::parse(release)
+        .ok()
+        .filter(|v| v.pre.is_empty() && v.build.is_empty())?;
+    Some((release, fourth.parse().ok()?))
 }
 
 /// The Rust target triple the release assets are named after: this machine's architecture on
@@ -1041,6 +1058,21 @@ mod tests {
         // Once releases reach 1.x, a build ahead of the latest is still newer.
         assert_eq!(decide(Some("1.1.0"), "1.0.0"), Decision::NewerThanRelease);
         assert_eq!(decide(Some("0.9.0"), "1.0.0"), Decision::Install);
+    }
+
+    #[test]
+    fn a_patch_release_of_a_release_sorts_between_it_and_the_next() {
+        // 0.9.8 < 0.9.8.1 < 0.9.9, in both directions.
+        assert_eq!(decide(Some("0.9.8"), "0.9.8.1"), Decision::Install);
+        assert_eq!(decide(Some("0.9.8.1"), "0.9.8"), Decision::NewerThanRelease);
+        assert_eq!(decide(Some("0.9.8.1"), "0.9.9"), Decision::Install);
+        assert_eq!(decide(Some("0.9.9"), "0.9.8.1"), Decision::NewerThanRelease);
+        assert_eq!(decide(Some("0.9.8.1"), "0.9.8.1"), Decision::UpToDate);
+        assert_eq!(decide(Some("0.9.8.1"), "0.9.8.2"), Decision::Install);
+        assert_eq!(decide(Some("0.9.8.2"), "0.9.8.1"), Decision::NewerThanRelease);
+        assert_eq!(decide(Some("0.9.8.1"), "0.9.9-rc.1"), Decision::Install);
+        // Not a version: the release the user asked for installs, as before.
+        assert_eq!(decide(Some("0.9.8.x"), "0.9.8"), Decision::Install);
     }
 
     #[test]
