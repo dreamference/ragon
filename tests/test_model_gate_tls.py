@@ -405,3 +405,35 @@ def test_accounts_are_off_by_default_and_the_variable_and_the_toml_turn_them_on(
     monkeypatch.setenv("DREAMFERENCE_ACCOUNTS_ENABLED", "1")
     config.write_text("")
     assert NodeSettings.accounts_enabled() is True
+
+
+def test_model_gate_service_count_plain_prunes_days_older_than_the_kept_window(
+    tmp_path, monkeypatch
+):
+    """`count_plain` keeps only the newest seven UTC days of plain-HTTP counts."""
+    import datetime as _dt
+
+    from dreamference.vllm_server import model_gate_service as mgs
+
+    service = ModelGateService(
+        ("127.0.0.1", 0),
+        ("127.0.0.1", 9),
+        str(tmp_path),
+    )
+    old_days = [f"2026-01-{i:02d}" for i in range(1, 11)]
+    service.plain_counts = dict.fromkeys(old_days, 3)
+    service.plain_peers.add("10.0.0.1")
+    # A UTC time that formats to 2026-02-01.
+    fake_now = _dt.datetime(2026, 2, 1, 12, 0, 0, tzinfo=_dt.UTC)
+    monkeypatch.setattr(
+        mgs.time,
+        "gmtime",
+        lambda *args: fake_now.timetuple(),
+    )
+    service.count_plain("10.0.0.2")
+    kept = set(service.plain_counts)
+    assert "2026-02-01" in kept
+    assert service.plain_counts["2026-02-01"] == 1
+    assert len(kept) == mgs.PLAIN_DAYS_KEPT
+    assert min(kept) == old_days[len(old_days) - mgs.PLAIN_DAYS_KEPT + 1]
+    assert service.plain_peers == {"10.0.0.2"}
