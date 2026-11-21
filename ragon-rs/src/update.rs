@@ -46,6 +46,29 @@ pub const RELEASE_REPO: &str = "dreamference/ragon";
 /// builds; a local `ragon-admin codex build` does not, and such a binary counts as a source build.
 pub const RAGON_VERSION: Option<&str> = option_env!("RAGON_VERSION");
 
+/// The version a user is shown for a crate whose `CARGO_PKG_VERSION` is `cargo`: the release this
+/// binary was built as. Cargo takes semantic versions only, so a patch release of a release
+/// (`0.9.8.1`) is stamped `0.9.8+1`; `--version`, the session header, the status card and
+/// `exec`'s banner print `0.9.8.1`, the number the release, the updater and the QA checks use.
+/// Every crate of the workspace carries the same version, so the first answer is kept (and a
+/// source build's is allocated once).
+pub fn shown_version(cargo: &str) -> &'static str {
+    static SHOWN: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    SHOWN.get_or_init(|| match RAGON_VERSION {
+        Some(release) => release,
+        None => Box::leak(release_form(cargo).unwrap_or_else(|| cargo.to_owned()).into_boxed_str()),
+    })
+}
+
+/// The release form of Cargo's stamp for a patch release (`0.9.8+1` -> `0.9.8.1`); `None` for
+/// any other version, which is shown as it is.
+fn release_form(cargo: &str) -> Option<String> {
+    let (release, fourth) = cargo.split_once('+')?;
+    let release = semver::Version::parse(release).ok().filter(|v| v.pre.is_empty())?;
+    let fourth: u64 = fourth.parse().ok()?;
+    Some(format!("{release}.{fourth}"))
+}
+
 /// Code Mode's host process, which Codex looks for next to its own executable under this name.
 pub const CODE_MODE_HOST: &str = "codex-code-mode-host";
 
@@ -819,6 +842,31 @@ pub fn sweep_old_in(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_patch_release_is_shown_in_its_release_form() {
+        assert_eq!(release_form("0.9.8+1").as_deref(), Some("0.9.8.1"));
+        assert_eq!(release_form("0.9.8+12").as_deref(), Some("0.9.8.12"));
+        assert_eq!(release_form("0.9.8"), None);
+        assert_eq!(release_form("0.9.8+abc"), None);
+        assert_eq!(release_form("0.9.8-rc.1+1"), None);
+        // The shown form still sorts between its release and the next one.
+        let shown = release_form("0.9.8+1").unwrap();
+        assert_eq!(decide(Some("0.9.8"), &shown), Decision::Install);
+        assert_eq!(decide(Some(&shown), "0.9.9"), Decision::Install);
+        assert_eq!(decide(Some(&shown), "0.9.8"), Decision::NewerThanRelease);
+        assert_eq!(decide(Some(&shown), "0.9.8.1"), Decision::UpToDate);
+    }
+
+    #[test]
+    fn the_shown_version_is_the_release_this_binary_was_built_as() {
+        let shown = shown_version("0.9.8+1");
+        match RAGON_VERSION {
+            Some(release) => assert_eq!(shown, release),
+            None => assert_eq!(shown, "0.9.8.1"),
+        }
+        assert!(!shown.contains('+'));
+    }
     use crate::release_signature::testing::{key_line, sign};
     use std::ffi::OsString;
     use ed25519_dalek::SigningKey;
