@@ -13,7 +13,7 @@ use axum::routing::post;
 use ragon_chat::bindings::Bindings;
 use ragon_chat::bindings::Refused;
 use ragon_chat::bindings::accounts_mode;
-use ragon_chat::bindings::drop_old_pairings;
+use ragon_chat::bindings::{REPAIRED_MARKER, drop_old_pairings};
 use ragon_chat::bindings::hint_due;
 use ragon_chat::bindings::instruction;
 use ragon_chat::bindings::pair;
@@ -89,6 +89,41 @@ async fn the_upgrade_drops_every_old_pairing_once() {
     let discord: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("discord.json")).unwrap()).unwrap();
     assert!(discord["users"].as_object().is_none_or(serde_json::Map::is_empty));
     assert!(!drop_old_pairings(&dir), "the marker makes the drop a one-time step");
+}
+
+#[tokio::test]
+async fn the_drop_backs_up_what_it_removes_and_clears_the_repair_marker() {
+    let (_home, dir, _seen) = setup("backup").await;
+    let telegram = json!({ "token": "t", "users": [1, 2] }).to_string();
+    let discord = json!({ "token": "d", "owner": "9", "users": { "3": "c" } }).to_string();
+    let bindings = json!({ "bindings": { "telegram:5": { "username": "u", "key": "k", "chat": "5" } } }).to_string();
+    std::fs::write(dir.join("telegram.json"), &telegram).unwrap();
+    std::fs::write(dir.join("discord.json"), &discord).unwrap();
+    std::fs::write(dir.join("bindings.json"), &bindings).unwrap();
+    std::fs::write(dir.join(REPAIRED_MARKER), "0.9.9").unwrap();
+    assert!(drop_old_pairings(&dir));
+    let backups = |prefix: &str| -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(prefix))
+            .collect()
+    };
+    for (name, original) in [("telegram.json.bak-", &telegram), ("discord.json.bak-", &discord), ("bindings.json.bak-", &bindings)] {
+        let found = backups(name);
+        assert_eq!(found.len(), 1, "one dated backup of {name}");
+        let date = found[0].file_name().unwrap().to_string_lossy().trim_start_matches(name).to_string();
+        assert_eq!(date.len(), 10, "a YYYY-MM-DD date: {date}");
+        assert_eq!(&std::fs::read_to_string(&found[0]).unwrap(), original);
+    }
+    assert!(!dir.join("bindings.json").exists());
+    assert!(!dir.join(REPAIRED_MARKER).exists(), "the informational marker goes after the real drop");
+    // A second run changes nothing: no new backup, the emptied lists are not backed up over.
+    let before = backups("").len();
+    assert!(!drop_old_pairings(&dir));
+    assert_eq!(backups("").len(), before);
+    let kept = backups("telegram.json.bak-");
+    assert_eq!(std::fs::read_to_string(&kept[0]).unwrap(), telegram);
 }
 
 #[tokio::test]

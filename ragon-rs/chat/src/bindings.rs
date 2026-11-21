@@ -142,6 +142,7 @@ pub fn drop_old_pairings(dir: &Path) -> bool {
     if marker.exists() {
         return false;
     }
+    backup_before_drop(dir);
     for (file, field) in [("telegram.json", "users"), ("discord.json", "users")] {
         let file = dir.join(file);
         let Some(mut value) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
@@ -157,7 +158,40 @@ pub fn drop_old_pairings(dir: &Path) -> bool {
         let _ = std::fs::remove_dir_all(dir.join(sub));
     }
     let _ = std::fs::write(&marker, ACCOUNTS_MARKER);
+    // The 0.9.8 repair's marker was informational only; the real drop has run, so it goes.
+    let _ = std::fs::remove_file(dir.join(REPAIRED_MARKER));
     true
+}
+
+/// Today's UTC date as `YYYY-MM-DD`.
+fn utc_date() -> String {
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() / 86_400) as i64;
+    // Civil-from-days (Howard Hinnant).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Copies the files the drop changes to `<name>.bak-<date>` beside them, private like the originals
+/// (they hold bot tokens). A file that is absent is skipped; an existing backup is not overwritten.
+fn backup_before_drop(dir: &Path) {
+    let date = utc_date();
+    for name in ["telegram.json", "discord.json", "bindings.json"] {
+        let Ok(text) = std::fs::read_to_string(dir.join(name)) else { continue };
+        let target = dir.join(format!("{name}.bak-{date}"));
+        if !target.exists() {
+            let _ = write_private(&target, &text);
+        }
+    }
 }
 
 /// What the one-time drop writes to `bindings.v2` when it runs on a node with accounts.
