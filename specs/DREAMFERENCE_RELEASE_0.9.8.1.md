@@ -1,6 +1,6 @@
 # Ragon 0.9.8.1 "Illuyanka" — release notes
 
-Version 0.9.8.1, a patch release of 0.9.8 with one fix: the chat bridge's pairings (`scratch/reports/fix-098-pairings-dropped.md`). The description between the two rules is the GitHub release text; `scripts/release_notes.py` prints it. A patch release keeps its release's codename. There is no new engine image: the 0.9.7 image stays pinned (`ragon-serve@sha256:f4391e2e`, ragon-engine 46ab4259). Everything in `specs/DREAMFERENCE_RELEASE_0.9.8.md` still applies, except where this file corrects it.
+Version 0.9.8.1, a patch release of 0.9.8 with one fix: the chat bridge's pairings (commits 679ffd7..4b121ed). The description between the two rules is the GitHub release text; `scripts/release_notes.py` prints it. A patch release keeps its release's codename. There is no new engine image: the 0.9.7 image stays pinned (`ragon-serve@sha256:f4391e2e`, ragon-engine 46ab4259). Everything in `specs/DREAMFERENCE_RELEASE_0.9.8.md` still applies, except where this file corrects it.
 
 ---
 
