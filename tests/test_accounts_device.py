@@ -201,3 +201,18 @@ def test_authorization_code_grant_refuses_unknown_codes(oauth):
     }
     assert post_form(oauth, "/oauth/token", form)[2]["error"] == "invalid_grant"
     assert "authorization_code" in oauth.discovery()["grant_types_supported"]
+
+
+def test_accounts_device_redeem_refuses_mismatched_client_or_redirect_uri(oauth, alice, forgejo):
+    client, _ = forgejo
+    redirect = client.redirect_uris[0]
+    code = oauth.device.issue_forgejo_code(alice["user_id"], client.client_id, redirect)
+    # A foreign client_id spends the code and is refused.
+    error, row = oauth.device.redeem(code, "other", redirect, "", "")
+    assert row is None
+    assert error == "The client or the redirect URI does not match the code."
+    # The wrong redirect URI is refused the same way.
+    code = oauth.device.issue_forgejo_code(alice["user_id"], client.client_id, redirect)
+    error, row = oauth.device.redeem(code, client.client_id, "https://x/", "", "")
+    assert row is None
+    assert error == "The client or the redirect URI does not match the code."
