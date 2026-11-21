@@ -5,7 +5,8 @@
 ; Built by windows.yml:
 ;   makensis /DVERSION=0.9.0 /DARCH=arm64 /DSOURCE=<packaged app folder> /DOUTFILE=<installer.exe> installer.nsi
 ; VERSION may carry a pre-release part (0.9.0-rc.1); Windows' file version takes four numbers only,
-; so it is made from NUMERIC_VERSION (0.9.0), which defaults to VERSION.
+; so it is made from NUMERIC_VERSION (0.9.0.0, or 0.9.8.1 for a patch release of a release), which
+; defaults to VERSION with a fourth number 0.
 
 !include "MUI2.nsh"
 
@@ -19,7 +20,7 @@
   !error "SOURCE (the packaged app's folder) is required"
 !endif
 !ifndef NUMERIC_VERSION
-  !define NUMERIC_VERSION "${VERSION}"
+  !define NUMERIC_VERSION "${VERSION}.0"
 !endif
 !ifndef OUTFILE
   !define OUTFILE "Ragon-Setup-${VERSION}-${ARCH}.exe"
@@ -38,7 +39,7 @@ ManifestDPIAware true
 InstallDir "$LOCALAPPDATA\Programs\Ragon\App"
 InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
 SetCompressor /SOLID lzma
-VIProductVersion "${NUMERIC_VERSION}.0"
+VIProductVersion "${NUMERIC_VERSION}"
 VIAddVersionKey "ProductName" "${PRODUCT}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "FileVersion" "${NUMERIC_VERSION}"
