@@ -163,6 +163,12 @@ def test_the_reader_asks_in_the_c_locale_and_drops_a_failure(monkeypatch):
     assert WifiPowerSave.radio_power_save("wlP9s9") is None
 
 
+def test_wifi_power_save_radio_power_save_unanswered_output_says_nothing(monkeypatch):
+    # iw answers with a row that is neither `: on` nor `: off`: the radio cannot say.
+    monkeypatch.setattr(WifiPowerSave, "_read", classmethod(lambda cls, argv: "Power save:\n"))
+    assert WifiPowerSave.radio_power_save("wlP9s9") is None
+
+
 # -- host check, host setup, node enable, node prepare ----------------------------------------------
 
 
