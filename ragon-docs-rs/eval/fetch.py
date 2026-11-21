@@ -1,5 +1,7 @@
-"""Rebuild the ragon-docs evaluation corpus from manifest.json: download every fetched document, check its
-SHA-256, then write the generated documents (generate.py) and the hostile PDFs (make_hostile.py).
+"""Rebuild the ragon-docs evaluation corpus from manifest.json.
+
+Download every fetched document, check its SHA-256, then write the generated documents (generate.py)
+and the hostile PDFs (make_hostile.py).
 
     python fetch.py            # into ./corpus, ./reference and ./hostile next to this file
 
