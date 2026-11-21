@@ -24,6 +24,8 @@ def test_the_primary_gate_is_named_only_when_it_is_not_the_nodes_own():
     assert AuthTrace.primary_gate({"issuer": NODE}, NODE) is None
     assert AuthTrace.primary_gate({"issuer": None}, NODE) is None
     assert AuthTrace.primary_gate({}, NODE) is None
+    # An issuer that names no host cannot be admitted either.
+    assert AuthTrace.primary_gate({"issuer": "https://"}, NODE) is None
 
 
 def test_the_primary_is_admitted_only_when_its_certificate_chains_to_the_pinned_ca():
