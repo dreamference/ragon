@@ -1606,3 +1606,13 @@ def test_a_search_backend_is_allowed_and_named_only_when_it_is_turned_on(tmp_pat
     assert "search backend" in EgressAudit.allowed_ports("http://localhost:8000")[SEARXNG_PORT]
     (config / "config.toml").write_text("[search\nbroken")
     assert EgressAudit.search_backends() == ["searxng"]
+
+
+def test_egress_audit_search_backends_treats_a_non_list_setting_as_absent(tmp_path, monkeypatch):
+    # `[search] backends` is not a list: the guard resets it to none, not an error.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    config = tmp_path / ".config" / "dreamference"
+    config.mkdir(parents=True)
+    (config / "config.toml").write_text('[search]\nbackends = "SearXNG"\n')
+    assert EgressAudit.search_backends() == ["searxng"]
