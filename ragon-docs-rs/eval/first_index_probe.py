@@ -1,7 +1,10 @@
-"""The extraction half of a first index over real folders, sandboxed exactly as the bench (bwrap, no
-network, 1 GB cap, 30 s): filter by extension, sniff, dedupe by SHA-256, extract every PDF with the
-ordered PDFium pass and read the text formats. Prints aggregates only (no file name or text leaves this
-script). first_index_probe.py <folder> […] -> results/first-index-<label>.json"""
+"""The extraction half of a first index over real folders.
+
+Sandboxed exactly as the bench (bwrap, no network, 1 GB cap, 30 s): filter by extension, sniff,
+dedupe by SHA-256, extract every PDF with the ordered PDFium pass and read the text formats.
+Prints aggregates only (no file name or text leaves this script).
+first_index_probe.py <folder> […] -> results/first-index-<label>.json"""
+
 import hashlib
 import json
 import os
@@ -37,7 +40,11 @@ for root in roots:
                 st = os.lstat(p)
             except OSError:
                 continue
-            if os.path.splitext(f)[1].lower() not in SUPPORTED or not os.path.isfile(p) or os.path.islink(p):
+            if (
+                os.path.splitext(f)[1].lower() not in SUPPORTED
+                or not os.path.isfile(p)
+                or os.path.islink(p)
+            ):
                 skipped_bytes += st.st_size
                 continue
             if st.st_size > 50 << 20:  # max_file_mb default (§5.1)
@@ -78,11 +85,22 @@ t_extract = time.perf_counter() - t1
 # Chunks: the corpus averaged this many characters per 512-token chunk.
 corpus = json.load(open(f"{D}/chunks/pdfium-ordered-512.json"))["chunks"]
 cpc = sum(len(c["text"]) for c in corpus) / len(corpus)
-out = {"label": label, "files_seen": files, "indexable_unique": len(cands), "duplicates": dup,
-       "extension_lies": bad, "skipped_unopened_gib": round(skipped_bytes / 2**30, 2),
-       "filter_dedupe_seconds": round(t_filter, 2), "extract_seconds": round(t_extract, 1),
-       "pdf_files": len(pdf_rss), "pdf_pages": pages, "failed": failed, "text_mchars": round(chars / 1e6, 2),
-       "est_chunks_512": round(chars / cpc), "pdf_peak_rss_mb_median": round(statistics.median(pdf_rss)) if pdf_rss else None,
-       "pdf_peak_rss_mb_max": round(max(pdf_rss)) if pdf_rss else None}
+out = {
+    "label": label,
+    "files_seen": files,
+    "indexable_unique": len(cands),
+    "duplicates": dup,
+    "extension_lies": bad,
+    "skipped_unopened_gib": round(skipped_bytes / 2**30, 2),
+    "filter_dedupe_seconds": round(t_filter, 2),
+    "extract_seconds": round(t_extract, 1),
+    "pdf_files": len(pdf_rss),
+    "pdf_pages": pages,
+    "failed": failed,
+    "text_mchars": round(chars / 1e6, 2),
+    "est_chunks_512": round(chars / cpc),
+    "pdf_peak_rss_mb_median": round(statistics.median(pdf_rss)) if pdf_rss else None,
+    "pdf_peak_rss_mb_max": round(max(pdf_rss)) if pdf_rss else None,
+}
 json.dump(out, open(f"{D}/results/first-index-{label}.json", "w"), indent=1)
 print(json.dumps(out, indent=1))
