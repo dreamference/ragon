@@ -298,9 +298,10 @@ def writer_payload(
 
 
 def parse_tests(answer: str) -> List[str]:
-    """
-    The tests in a test writer's answer: its fenced Python blocks, at most three, each cut to
-    `MAX_TEST_CHARS`. Blocks marked as another language are not tests.
+    """The tests in a test writer's answer.
+
+    Its fenced Python blocks, at most three, each cut to `MAX_TEST_CHARS`. Blocks
+    marked as another language are not tests.
     """
     tests: List[str] = []
     language: Optional[str] = None
@@ -332,10 +333,11 @@ def retry_feedback(tests: List[Dict[str, Any]]) -> str:
 
 
 def setup_preamble(row: Dict[str, Any]) -> str:
-    """
-    The grader's environment set-up for a task: the row's `eval_script` up to the line that resets
-    the hidden tests' files (`git checkout <base_commit> <files>`) or applies the test patch,
-    whichever comes first, without the lines that only print (`git status`, `git show`, `git
+    """The grader's environment set-up for a task.
+
+    The row's `eval_script` up to the line that resets the hidden tests' files
+    (`git checkout <base_commit> <files>`) or applies the test patch, whichever
+    comes first, without the lines that only print (`git status`, `git show`, `git
     diff`). The hidden tests are after that line and never reach a container.
 
     Returns:
@@ -369,9 +371,10 @@ def _file(path: str, text: str) -> str:
 
 
 def container_script(preamble: str, tests: List[str], patch: Optional[str]) -> str:
-    """
-    What one container runs, fed to `bash -s`: the candidate applied by the harness's chain (none
-    for the unpatched repository), the grader's set-up, then each test with its own timeout. The
+    """What one container runs, fed to `bash -s`.
+
+    The candidate applied by the harness's chain (none for the unpatched
+    repository), the grader's set-up, then each test with its own timeout. The
     results come back on standard output between `@@CHOOSER` marks.
     """
     lines = [
@@ -485,9 +488,10 @@ class Containers:
     def run(
         self, preamble: str, tests: List[str], patch: Optional[str], deadline: Deadline
     ) -> Dict[str, Any]:
-        """
-        One fresh container from the task's image: apply `patch` (None: the unpatched repository),
-        set up as the grader does, run the tests, remove the container.
+        """One fresh container from the task's image.
+
+        Apply `patch` (None: the unpatched repository), set up as the grader
+        does, run the tests, remove the container.
 
         Raises:
             TaskTimeout: When the task's time ran out (the container is removed all the same).
@@ -1100,10 +1104,11 @@ def image_of(instance_id: str, runs: List[Dict[str, Any]], runs_dir: Path) -> Op
 
 
 def load_rows(dataset: Path, ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
-    """
-    The tasks' dataset rows as the chooser may hold them: the fields that give the answer away
-    (`FORBIDDEN_FIELDS`) are removed at once, and the eval script, which carries the hidden test
-    patch, is replaced by the set-up before it (`setup`).
+    """The tasks' dataset rows as the chooser may hold them.
+
+    The fields that give the answer away (`FORBIDDEN_FIELDS`) are removed at
+    once, and the eval script, which carries the hidden test patch, is replaced
+    by the set-up before it (`setup`).
     """
     wanted, rows = set(ids), {}
     try:
