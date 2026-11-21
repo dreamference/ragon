@@ -445,3 +445,12 @@ def test_a_maven_image_runs_one_existing_test_of_the_graded_module_at_build():
     assert out.index("failIfNoSpecifiedTests") < out.index("chmod -R a+rwX")
     plain, _ = SweBenchImageBuilder.arm64_dockerfile(DOCKERFILE_JAVA, "make test\n")
     assert "failIfNoSpecifiedTests" not in plain
+
+
+def test_swe_bench_harness_per_file_reset_leaves_a_bare_or_flagged_reset_line_alone():
+    """A reset line with no files or one that opens with a flag is kept as it is."""
+    empty = "git checkout abc123 \n"
+    flagged = "git checkout abc123 -- tests/unit/list.tcl\n"
+    assert SweBenchHarness.per_file_reset(empty, "abc123") == empty
+    assert SweBenchHarness.per_file_reset(flagged, "abc123") == flagged
+    assert SweBenchHarness.per_file_reset("#!/bin/bash\nmake\n", "abc123") == "#!/bin/bash\nmake\n"
