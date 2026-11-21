@@ -319,6 +319,25 @@ QWEN38_SGLANG_RECIPE: Final[dict[str, Any]] = {
     ],
 }
 
+
+_TORCH_COMPILE_FLAG: Final = "--enable-torch-compile"
+_TORCH_COMPILE_MAX_BS_FLAG: Final = "--torch-compile-max-bs"
+
+
+def _without_torch_compile(args: list[str]) -> list[str]:
+    """SGLang flags with torch.compile off: drops `--enable-torch-compile` and `--torch-compile-max-bs N`."""
+    out: list[str] = []
+    skip_value = False
+    for arg in args:
+        if skip_value:
+            skip_value = False
+        elif arg == _TORCH_COMPILE_MAX_BS_FLAG:
+            skip_value = True
+        elif arg != _TORCH_COMPILE_FLAG:
+            out.append(arg)
+    return out
+
+
 # LoRA adapters on the production model (specs/DREAMFERENCE_RAGON_ADAPTERS.md §8.2), as the
 # probe measured them on the pinned image with DFlash2 (docs/dev, branch
 # research/lora-serving-probe): adapters on the FP8 layers, the 16 full-attention q/k/v/o and the
@@ -630,10 +649,15 @@ class ModelMatrixRegistry:
                 "production recipe at concurrency 1 (RTX PRO 6000, vLLM 0.27.1).\n\n"
                 "Served by the production recipe unchanged (QWEN38_SGLANG_RECIPE: the same image, "
                 "flags, chat-template patches and DFlash2 drafter at 12 tokens), so a comparison "
-                "differs in the target's weights alone. Two departures, both for that reason: "
-                "the checkpoint's own revision, and `--kv-cache-dtype bfloat16`, because SGLang "
-                "turns a compressed-tensors kv_cache_scheme into an FP8 KV pool under `auto`, "
-                "while production's pool is BF16. The drafter fits: it carries no embeddings or "
+                "differs in the target's weights alone, with two departures that the checkpoint "
+                "forces. Its KV pool is FP8: the checkpoint ships static FP8 k/v scales, which "
+                "SGLang v0.5.21 applies in attention whatever the pool dtype but divides out on "
+                "store only into an FP8 pool, so a BF16 pool (`--kv-cache-dtype bfloat16`) "
+                "garbled every answer and every tool call (eng-minima-start-fix, 11-20). And "
+                "torch.compile is off: with it, the decode graph capture at batch sizes 4 and "
+                "below failed in 7 of 9 starts (11-19 and 11-20) on a cuModuleUnload during capture "
+                "(cudaErrorStreamCaptureInvalidated); without it, every start captured. "
+                "The drafter fits: it carries no embeddings or "
                 "lm_head of its own, and reads hidden states of width 5,120 at layers 5, 19, 33, "
                 "47 and 61 of 64, which this checkpoint has; its acceptance is measured, not "
                 "assumed, because it was trained against other hidden states.\n\n"
@@ -649,7 +673,7 @@ class ModelMatrixRegistry:
             launch_overrides={
                 **QWEN38_SGLANG_RECIPE,
                 "revision": "16e768e7d0461b0b86e565ecedd08a24eca53e9a",
-                "extra_args": [*QWEN38_SGLANG_RECIPE["extra_args"], "--kv-cache-dtype", "bfloat16"],
+                "extra_args": _without_torch_compile(QWEN38_SGLANG_RECIPE["extra_args"]),
             },
             supports_vision=False,
         ),

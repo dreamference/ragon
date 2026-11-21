@@ -233,7 +233,18 @@ def test_the_minima_candidate_differs_from_production_in_the_checkpoint_alone():
     assert production == {**QWEN38_SGLANG_RECIPE, "lora": QWEN38_LORA_RECIPE}
     assert "lora" not in candidate
     assert candidate["revision"] == "16e768e7d0461b0b86e565ecedd08a24eca53e9a"
-    assert candidate["extra_args"] == production["extra_args"] + ["--kv-cache-dtype", "bfloat16"]
+    # Production's flags less torch.compile, and no KV dtype of its own: the checkpoint's static
+    # FP8 k/v scales are right only in the FP8 pool SGLang picks for it under `auto`.
+    compile_flags = ("--enable-torch-compile", "--torch-compile-max-bs")
+    assert all(flag in production["extra_args"] for flag in compile_flags)
+    assert not any(flag in candidate["extra_args"] for flag in compile_flags)
+    i = production["extra_args"].index("--torch-compile-max-bs")
+    assert candidate["extra_args"] == [
+        a
+        for a in production["extra_args"][:i] + production["extra_args"][i + 2 :]
+        if a != "--enable-torch-compile"
+    ]
+    assert "--kv-cache-dtype" not in candidate["extra_args"]
     rest = {k: v for k, v in candidate.items() if k not in ("revision", "extra_args")}
     assert rest == {
         k: v for k, v in production.items() if k not in ("revision", "extra_args", "lora")
