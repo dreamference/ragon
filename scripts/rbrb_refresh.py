@@ -4,9 +4,9 @@ python scripts/rbrb_refresh.py            # export the running week, ingest it p
 python scripts/rbrb_refresh.py --commit   # the same, then commit the four files as the docs team bot
 
 Does nothing when `rbrb-gate` is not on PATH. Only the aggregate week numbers of the export are read (the ledger
-stays private). It never pushes itself. The as_team.py flush runs this script first, inside a throwaway worktree on a branch
-rbrb-refresh-<stamp> from a fresh origin/main (never in the checkout), and the flush pushes the resulting commit to
-origin main with a fast-forward-only push; a refused push is retried by the next flush.
+stays private). It never pushes itself. The as_team.py flush runs this script first, inside a throwaway worktree on
+a branch rbrb-refresh-<stamp> from a fresh origin/main (never in the checkout), and the flush pushes the resulting
+commit to origin main with a fast-forward-only push; a refused push is retried by the next flush.
 """
 
 import argparse
@@ -37,7 +37,10 @@ def _git(*args: str) -> str:
 
 
 def refresh(commit: bool, today: datetime.date | None = None) -> int:
-    """Export the running week, ingest it provisionally, regenerate and stage; optionally commit. Returns an exit code."""
+    """Export the running week, ingest it provisionally, regenerate and stage; optionally commit.
+
+    Returns an exit code.
+    """
     gate = shutil.which("rbrb-gate")
     if gate is None:
         print("rbrb-gate is not on PATH: nothing to refresh")
