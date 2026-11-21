@@ -169,3 +169,26 @@ def test_a_missing_prediction_and_a_torn_line_leave_the_report_consistent(result
     # The grading of the instance without a prediction still counts: it is a recorded verdict.
     assert summary["graded"] == 6
     assert "INCOMPLETE          1 not run yet, 1 run but not graded yet" in text
+
+
+def test_swe_bench_run_store_states_reads_instance_states_by_id_and_skips_unreadable_files(
+    results_dir,
+):
+    directory = results_dir / "r3"
+    write_run(directory)
+    store = SweBenchRunStore("r3")
+    states = store.states()
+    assert list(states) == sorted(INSTANCES)
+    for instance_id in INSTANCES:
+        assert states[instance_id]["status"] == RUN[instance_id][0]
+    # An unreadable state file is skipped: the id is absent, the others stay.
+    unreadable = directory / "instances" / f"{INSTANCES[0]}.json"
+    unreadable.write_text("not json")
+    states = store.states()
+    assert INSTANCES[0] not in states
+    assert set(states) == set(INSTANCES) - {INSTANCES[0]}
+    # A run without an instances directory has no states at all.
+    bare = SweBenchRunStore("r4")
+    (results_dir / "r4").mkdir(parents=True)
+    (results_dir / "r4" / "manifest.json").write_text(json.dumps({"name": "r4"}))
+    assert bare.states() == {}
