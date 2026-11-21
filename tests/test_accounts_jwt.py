@@ -87,6 +87,20 @@ def test_verify_refuses_a_tampered_expired_foreign_or_malformed_token(tmp_path):
         assert jwt.verify(junk, now=1001) is None, junk
 
 
+def test_accounts_jwt_verify_refuses_a_validly_signed_token_with_another_algorithm(tmp_path):
+    jwt = signer(tmp_path)
+    claims = jwt.claims(USER, "c", 1, "m", now=1000)
+    header = {"alg": "HS256", "typ": "JWT", "kid": jwt.kid}
+    signing_input = ".".join(
+        AccountsJwt.b64url(json.dumps(part, separators=(",", ":")).encode())
+        for part in (header, claims)
+    )
+    signature = jwt.key.sign(signing_input.encode(), padding.PKCS1v15(), hashes.SHA256())
+    token = f"{signing_input}.{AccountsJwt.b64url(signature)}"
+    assert jwt.verify(token, now=1001) is None
+    assert jwt.verify(jwt.sign(claims), now=1001) == claims
+
+
 def test_the_jwks_verifies_a_token(tmp_path):
     jwt = signer(tmp_path)
     token = jwt.sign(jwt.claims(USER, "c", 1, "m"))
