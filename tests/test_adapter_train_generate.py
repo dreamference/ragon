@@ -393,6 +393,26 @@ def test_adapter_train_generate_attempt_grading_window_closed_returns_none(setup
     assert not (generate.gen_dir / "worktrees" / f"{spec['id']}-a1").exists()
 
 
+def test_adapter_train_generate_prepare_clone_failure_raises_runtime_error(setup):
+    """When the bare clone fails, prepare_clone raises with the git output."""
+    from unittest import mock
+
+    from dreamference.runner.safe_git import SafeGit
+
+    generate = stage(setup, [setup["tasks"]["fix"]])
+    clone_failed = mock.patch.object(
+        SafeGit,
+        "run",
+        classmethod(
+            lambda cls, *a, **kw: subprocess.CompletedProcess(a, 128, "", "fatal: not a repo")
+        ),
+    )
+    with clone_failed, pytest.raises(RuntimeError, match=r"cloning .* failed"):
+        generate.prepare_clone()
+    # The partial clone is not left behind.
+    assert not (generate.gen_dir / "repo.partial").exists()
+
+
 def test_the_agent_is_not_shown_the_hidden_tests(setup, monkeypatch):
     monkeypatch.setenv("FAKE_PLAN", "good")
     stage(setup, [setup["tasks"]["fix"]], attempts=1).run()
