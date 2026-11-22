@@ -112,7 +112,6 @@
   },
   "dreamference/swe_bench/swe_bench_evaluator.py": {
    "C901": 2,
-   "D205": 2,
    "PLR0912": 1,
    "PLR0915": 1,
    "PLR2004": 2
@@ -189,5 +188,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 219
+ "total": 217
 }

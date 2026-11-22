@@ -39,8 +39,10 @@ class SweBenchEvaluator:
 
     @classmethod
     def validation_dir(cls) -> Path:
-        """Returns:
-        Path: Where the harness runs for validation.
+        """Return the validation directory.
+
+        Returns:
+            Path: Where the harness runs for validation.
         """
         return swe_bench_settings.CACHE_DIR / "validation"
 
@@ -509,7 +511,9 @@ class SweBenchEvaluator:
 
     @classmethod
     def results(cls, store: SweBenchRunStore, variant: str | None = None) -> tuple:
-        """Args:
+        """Return the latest grading for a series.
+
+        Args:
             store: The run.
             variant: The grading series; None for the plain one.
 
