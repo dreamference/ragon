@@ -4,8 +4,10 @@ import base64
 import json
 import stat
 
-from cryptography.hazmat.primitives import hashes
+import pytest
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric.ec import SECP384R1, generate_private_key
 
 from dreamference.accounts.accounts_jwt import (
     ACCESS_LIFETIME_S,
@@ -111,3 +113,17 @@ def test_the_jwks_verifies_a_token(tmp_path):
     ).public_key()
     head, payload, signature = token.split(".")
     public.verify(b64(signature), f"{head}.{payload}".encode(), padding.PKCS1v15(), hashes.SHA256())
+
+
+def test_accounts_jwt_load_or_create_rejects_a_non_rsa_key(tmp_path):
+    key_path = tmp_path / "state" / "signing-key.pem"
+    key_path.parent.mkdir(parents=True)
+    key_path.write_bytes(
+        generate_private_key(SECP384R1()).private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    with pytest.raises(ValueError, match="not an RSA key"):
+        AccountsJwt(key_path, ISSUER)
