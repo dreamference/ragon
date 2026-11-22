@@ -1,9 +1,11 @@
-"""Embed a chunk set and the questions with one CPU model:
+"""Embed a chunk set and the questions with one CPU model.
+
   embed.py <model> <chunks.json> <questions.jsonl> <out-prefix> [<probe-chunks>]
 Writes <out>.docs.npy, <out>.queries.npy and <out>.json (timings, peak RSS). With <probe-chunks>, embeds
 only that many chunks (a fixed sample spread over the set and its languages) and the questions, and
 writes <out>.json alone: the throughput probe. CPU only: onnxruntime's CPU provider is the only one
 installed, and CUDA is hidden besides."""
+
 import json
 import os
 import resource
@@ -35,7 +37,9 @@ t_load = time.perf_counter()
 # through the hub cache's symlinks (bge-m3). BATCH: smaller batches for the models that pass 4 GB at 16.
 BATCH = int(os.environ.get("BATCH", "16"))
 extra = {"specific_model_path": os.environ["MODEL_DIR"]} if os.environ.get("MODEL_DIR") else {}
-emb = TextEmbedding(model, threads=THREADS, cache_dir=f"{D}/models", providers=["CPUExecutionProvider"], **extra)
+emb = TextEmbedding(
+    model, threads=THREADS, cache_dir=f"{D}/models", providers=["CPUExecutionProvider"], **extra
+)
 t_load = time.perf_counter() - t_load
 rss_loaded = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 texts = [dp + evallib.embed_text(c, c["title"]) for c in chunks]
@@ -55,12 +59,26 @@ for q in questions:
 if not probe:
     np.save(f"{out}.docs.npy", docs)
     np.save(f"{out}.queries.npy", np.stack(qv).astype(np.float32))
-info = {"model": model, "licence": licence, "threads": THREADS, "chunks": len(chunks), "probe": bool(probe),
-        "chunk_tokens": data["target"], "batch": BATCH, "load_seconds": t_load, "embed_seconds": t_docs,
-        "chunks_per_second": len(chunks) / t_docs, "embed_cpu_seconds": cpu_docs,
-        "chunks_per_cpu_second": len(chunks) / cpu_docs, "cpu_share_of_4_cores": cpu_docs / t_docs / THREADS,
-        "query_ms_p50": float(np.percentile(lat, 50)), "query_ms_p95": float(np.percentile(lat, 95)),
-        "rss_after_load_mb": rss_loaded, "maxrss_mb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
-        "dim": int(docs.shape[1]), "loadavg_at_end": open("/proc/loadavg").read().split()[:3]}
+info = {
+    "model": model,
+    "licence": licence,
+    "threads": THREADS,
+    "chunks": len(chunks),
+    "probe": bool(probe),
+    "chunk_tokens": data["target"],
+    "batch": BATCH,
+    "load_seconds": t_load,
+    "embed_seconds": t_docs,
+    "chunks_per_second": len(chunks) / t_docs,
+    "embed_cpu_seconds": cpu_docs,
+    "chunks_per_cpu_second": len(chunks) / cpu_docs,
+    "cpu_share_of_4_cores": cpu_docs / t_docs / THREADS,
+    "query_ms_p50": float(np.percentile(lat, 50)),
+    "query_ms_p95": float(np.percentile(lat, 95)),
+    "rss_after_load_mb": rss_loaded,
+    "maxrss_mb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
+    "dim": int(docs.shape[1]),
+    "loadavg_at_end": open("/proc/loadavg").read().split()[:3],
+}
 json.dump(info, open(f"{out}.json", "w"), indent=1)
 print(json.dumps(info))
