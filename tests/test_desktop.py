@@ -376,6 +376,26 @@ def test_the_bundled_binaries_come_from_the_installed_build(tmp_path):
         assert DesktopRunner.copy_bundled_binaries() is False
 
 
+def test_desktop_runner_copy_bundled_binaries_rides_along_with_a_rg_on_path(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("ragon", "codex-code-mode-host"):
+        (bin_dir / name).write_bytes(b"#!/bin/sh\n")
+    resources = tmp_path / "resources"
+    rg = tmp_path / "rg"
+    rg.write_bytes(b"#!/bin/sh\n")
+    with (
+        patch(
+            "dreamference.runner.codex_branded_builder.CodexBrandedBuilder.executable_path",
+            return_value=str(bin_dir / "ragon"),
+        ),
+        patch("dreamference.chat.desktop_runner.RESOURCES_DIR", resources),
+        patch("shutil.which", side_effect=lambda name: str(rg) if name == "rg" else None),
+    ):
+        assert DesktopRunner.copy_bundled_binaries() is True
+    assert sorted(p.name for p in resources.iterdir()) == ["codex-code-mode-host", "ragon", "rg"]
+
+
 def test_a_rustup_installed_this_run_is_put_on_path():
     # The Codex build shares this helper: rustup writes to ~/.cargo/bin without touching the PATH
     # of the shell that ran it.
