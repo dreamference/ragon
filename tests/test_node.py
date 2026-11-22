@@ -2833,6 +2833,52 @@ def test_a_paired_node_serving_the_same_model_is_a_lane_and_every_other_is_named
     )
 
 
+def test_node_lanes_replica_not_used_when_its_server_does_not_answer(monkeypatch):
+    from dreamference.node import NodeLanes, NodePairing
+
+    paired_record()  # spark-2, .106
+    monkeypatch.setattr(
+        NodeBrowser,
+        "browse",
+        classmethod(
+            lambda cls, timeout=6: [
+                {
+                    "name": "spark-2",
+                    "node": "2222-bbbb",
+                    "address": "192.168.50.106",
+                    "port": "8000",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        NodePairing,
+        "run",
+        classmethod(
+            lambda cls, record, request, capture=True, input_text=None: subprocess.CompletedProcess(
+                [], 0, json.dumps({"model_port": 8123}) + "\n", ""
+            )
+        ),
+    )
+
+    class Host:
+        @classmethod
+        def served_model(cls, host, timeout=3.0):
+            return None  # the replica's server is down
+
+        @classmethod
+        def metrics(cls, host, timeout=3.0):
+            return {"kv_pool": 100000.0}
+
+    lanes, notes = NodeLanes.lanes(
+        "http://127.0.0.1:8000", ("m", 1), "paired", Host, lambda pool: (1, 50000)
+    )
+    assert len(lanes) == 1 and lanes[0]["name"] == "this machine"
+    assert notes == [
+        "spark-2: its model server at http://192.168.50.106:8123 is not answering, so it was not used."
+    ]
+
+
 def test_night_shift_and_swe_bench_use_every_paired_node_by_default():
     from dreamference.night_shift.night_shift_settings import NightShiftSettings
     from dreamference.node import NodeLanes
