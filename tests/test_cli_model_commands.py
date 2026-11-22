@@ -101,3 +101,12 @@ def test_model_download_refuses_a_model_that_is_not_offered(config_path, downloa
     assert _run(config_path, "model", "download", "--model", DEFAULT_DIFFUSION_MODEL_ALIAS) == 1
     assert "is not a model Ragon offers" in capsys.readouterr().out
     assert downloads == []
+
+
+def test_dreamference_cli_controller_handle_model_download_without_a_model_says_how(
+    config_path, downloads, capsys
+):
+    config_path.write_text('model = ""\n')
+    assert _run(config_path, "model", "download") == 0
+    assert "No model specified" in capsys.readouterr().out
+    assert downloads == []
