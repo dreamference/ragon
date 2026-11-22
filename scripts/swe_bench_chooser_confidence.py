@@ -189,11 +189,7 @@ class ScoringServer:
     """SGLang's native endpoints: `/tokenize`, and `/generate` returning the input's log-probabilities."""
 
     def __init__(self, base: str, timeout: float = 300.0) -> None:
-        """
-        Args:
-            base: The server's URL (``http://<node>.local:8000``).
-            timeout: Seconds to wait for one answer.
-        """
+        """Args: base: The server's URL (``http://<node>.local:8000``); timeout: Seconds to wait for one answer."""
         self.inner = fanout_module().Server(base, timeout)
         self.model = ""
 
@@ -296,8 +292,10 @@ def length_bias(
     choices: Dict[str, Dict[str, Dict[str, Any]]],
 ) -> Dict[str, Any]:
     """
-    Do short patches win? Per selector, the share of judged tasks where it chose the shortest patch,
-    and over every judged candidate the rank correlation of tokens with each confidence figure.
+    Do short patches win?
+
+    Per selector, the share of judged tasks where it chose the shortest patch, and over every
+    judged candidate the rank correlation of tokens with each confidence figure.
     """
     shortest_share: Dict[str, float] = {}
     for selector, chosen in choices.items():
