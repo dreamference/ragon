@@ -216,3 +216,18 @@ def test_accounts_device_redeem_refuses_mismatched_client_or_redirect_uri(oauth,
     error, row = oauth.device.redeem(code, client.client_id, "https://x/", "", "")
     assert row is None
     assert error == "The client or the redirect URI does not match the code."
+
+
+def test_accounts_device_start_retries_when_the_user_code_collides(oauth, clock, monkeypatch):
+    # A live row takes one of the alphabet's codes; start must draw again, not reuse it.
+    taken = AccountsDevice.normalize("BCDF-GHJK")
+    entry = oauth.device.start("c", "standard")
+    entry.user_code = taken
+    drawn = iter([taken, "MNPQRST2"])
+    monkeypatch.setattr(AccountsDevice, "new_user_code", classmethod(lambda cls: next(drawn)))
+    new = oauth.device.start("c", "standard")
+    assert new.user_code == "MNPQRST2"
+    assert new.device_id != entry.device_id
+    assert new.expires_at == clock.now + CODE_LIFETIME_S
+    assert new.challenge == AccountsDevice.s256(new.verifier)
+    assert oauth.device.entries[new.device_id] is new
