@@ -140,3 +140,11 @@ def test_accounts_secondary_live_check_evicts_oldest_bearer_when_cache_is_full(s
     assert len(secondary.cache) == CACHE_LIMIT
     assert hashlib.sha256(b"old-0").hexdigest() not in secondary.cache
     assert hashlib.sha256(b"tok-1").hexdigest() in secondary.cache
+
+
+def test_accounts_secondary_handle_refuses_a_secret_in_the_query(secondary, primary):
+    status, headers, body = secondary.handle("GET", "/oauth/userinfo?access_token=x", {}, b"")
+    assert status == 401
+    assert body["error"]["code"] == "invalid_api_key"
+    assert "WWW-Authenticate" in headers
+    assert primary.calls == []
