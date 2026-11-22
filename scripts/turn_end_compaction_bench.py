@@ -266,8 +266,9 @@ def last_response_item(records: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def turn_end_compaction_showing(records: list[dict[str, Any]], shown_ms: int | None) -> bool:
-    """Whether the compaction on screen is a turn-end one: the newest response item is an assistant
-    message written before "Compacting context" appeared.
+    """Whether the compaction on screen is a turn-end one: the newest response item is an assistant message.
+
+    It is written before "Compacting context" appeared.
 
     A mid-turn compaction also ends in an assistant message, its summary, written as the compaction
     finishes; the marker can still be on screen then. Once the probe took that summary for a
@@ -686,8 +687,9 @@ def audit_verdicts(rollout: Path) -> list[dict[str, Any]]:
 
 
 def drops_of(codex_home: Path | None) -> dict[str, int]:
-    """What drop-first compaction did in a session: the log `ragon_masking::dropping` keeps in its
-    CODEX_HOME (`masking/dropped/log.jsonl`, one line per attempt, taken or declined).
+    """What drop-first compaction did in a session: the log `ragon_masking::dropping` keeps in its CODEX_HOME.
+
+    It is `masking/dropped/log.jsonl`, one line per attempt, taken or declined.
 
     A drop that is taken replaces a summary (no `compacted` record); a declined one lets the summary
     run as before.
@@ -1202,9 +1204,11 @@ def session_env(
     docs: bool,
     summary_words: int = SUMMARY_WORDS,
 ) -> dict[str, str]:
-    """The environment of one session: throwaway homes, the target server, masking off, the arm's
-    switches (turn-end for "on" and "drop", drop-old-outputs for "drop"), and the summary cap in
-    every arm (0 leaves Codex's own prompt)."""
+    """The environment of one session: throwaway homes, the target server, masking off, the arm's switches.
+
+    Turn-end is on for "on" and "drop", drop-old-outputs for "drop", and the summary cap is in every arm
+    (0 leaves Codex's own prompt)."""
+
     env = dict(os.environ)
     for key in [
         key
@@ -1235,8 +1239,10 @@ def session_env(
 
 
 def session_args(arm: str, limit: int, percent: int | None, sandbox: str) -> list[str]:
-    """`ragon`'s arguments: no approvals, the sandbox, the pinned limit and the arm's turn-end percentage
-    (passed to Codex directly; the launcher leaves a percentage on the command line alone)."""
+    """`ragon`'s arguments: no approvals, the sandbox, the pinned limit and the arm's turn-end percentage.
+
+    It is passed to Codex directly; the launcher leaves a percentage on the command line alone."""
+
     return [
         "-a",
         "never",
@@ -1761,8 +1767,9 @@ def compaction_tools_checks(requests: list[dict[str, Any]]) -> dict[str, Any]:
 def dry_run(
     out: Path, ragon: Path, compaction_delay: float = 8.0, probe_key: str = "enter"
 ) -> dict[str, Any]:
-    """Every arm against `FakeModelServer`, with a throwaway HOME: proves the driver and the binary's
-    switches, not the model.
+    """Every arm against `FakeModelServer`, with a throwaway HOME: it proves the driver and the binary's switches.
+
+    Not the model.
 
     Args:
         out: Where the sessions go (avoid `/tmp`: Codex refuses its helper links under a temporary
@@ -2343,7 +2350,9 @@ LOOPBACK_NAMES: Final[tuple] = ("localhost", "127.", "0.0.0.0", "[::1]", "::1")
 
 
 def require_host(host: str | None) -> str:
-    """The target server, named. The bench never falls back to a default, and refuses this machine's
+    """The target server, named.
+
+    The bench never falls back to a default, and refuses this machine's
     own server (a loopback name): once it is held by the benchmark nights.
 
     Args:
