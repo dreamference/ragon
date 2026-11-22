@@ -1,5 +1,7 @@
 """Score retrieval: evaluate.py <chunks.json> [<embedding-prefix> ...] -> one JSON line per method on stdout.
+
 Methods: bm25 (SQLite FTS5), dense:<model> (exact cosine), hybrid:<model> (RRF k=60 of the two top-100s)."""
+
 import json
 import os
 import sys
@@ -21,7 +23,9 @@ tag = os.path.splitext(os.path.basename(chunks_path))[0]
 by_doc = {}
 for c in chunks:
     by_doc.setdefault(c["doc"], []).append(c["text"])
-reachable = sum(any(evallib.is_hit(t, q["snippet"]) for t in by_doc.get(q["doc"], [])) for q in questions)
+reachable = sum(
+    any(evallib.is_hit(t, q["snippet"]) for t in by_doc.get(q["doc"], [])) for q in questions
+)
 CEILING = round(reachable / len(questions), 3)
 
 
@@ -56,9 +60,13 @@ for p in prefixes:
         t = time.perf_counter()
         d_ranked.append(dense.search(v))
         d_lat.append((time.perf_counter() - t) * 1000)
-    extra = {"embed_chunks_per_second": round(info["chunks_per_second"], 1),
-             "embed_seconds": round(info["embed_seconds"], 1), "query_embed_ms_p50": round(info["query_ms_p50"], 1),
-             "query_embed_ms_p95": round(info["query_ms_p95"], 1), "model_rss_mb": round(info["maxrss_mb"])}
+    extra = {
+        "embed_chunks_per_second": round(info["chunks_per_second"], 1),
+        "embed_seconds": round(info["embed_seconds"], 1),
+        "query_embed_ms_p50": round(info["query_ms_p50"], 1),
+        "query_embed_ms_p95": round(info["query_ms_p95"], 1),
+        "model_rss_mb": round(info["maxrss_mb"]),
+    }
     emit(f"dense:{name}", d_ranked, d_lat, extra)
     h_ranked = [evallib.rrf(b, d) for b, d in zip(bm_ranked, d_ranked)]
     emit(f"hybrid:{name}", h_ranked, None, extra)
