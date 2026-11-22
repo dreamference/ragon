@@ -162,9 +162,7 @@ def regression_record(
     directory: Path, run: str, number: int, model: str, instance_id: str, result: Dict[str, Any]
 ) -> Tuple[bool, Optional[int]]:
     """
-    What the regression filter may know about one graded patch: whether it applied and how many
-    PASS_TO_PASS tests it broke. Taken from the grading record when it has the count, otherwise
-    from the harness's `report.json` in the grading's directory. FAIL_TO_PASS is not read.
+    What the regression filter may know about one graded patch: whether it applied and how many.
 
     Returns:
         Tuple[bool, Optional[int]]: (applied, PASS_TO_PASS failures or None when unknown).
@@ -337,7 +335,8 @@ class Client:
     """The model server's OpenAI-compatible API, over plain HTTP."""
 
     def __init__(self, server: str, timeout: float = 900.0) -> None:
-        """
+        """The OpenAI-compatible API client for one model server.
+
         Args:
             server: The server's base URL (`http://<node>.local:8000`), with or without `/v1`.
             timeout: Seconds to wait for one answer.
