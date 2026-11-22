@@ -29,7 +29,6 @@
    "C901": 1
   },
   "dreamference/cli/code_index_setup.py": {
-   "E501": 2,
    "PLR0911": 1,
    "PLR1702": 2,
    "PLR2004": 3,
@@ -188,5 +187,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 217
+ "total": 215
 }

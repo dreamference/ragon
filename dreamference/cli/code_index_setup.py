@@ -370,7 +370,8 @@ class CodeIndexSetup:
         npm = shutil.which("npm")
         if node is None or npm is None:
             print(
-                "⚠️ Node.js is not installed: Python, TypeScript and JavaScript will be indexed by the universal layer only"
+                "⚠️ Node.js is not installed: Python, TypeScript and JavaScript will be indexed "
+                "by the universal layer only"
             )
             return False
         Path(INDEXERS_DIR).mkdir(exist_ok=True, parents=True)
@@ -409,7 +410,8 @@ class CodeIndexSetup:
             if needs is not None and needs not in toolchains:
                 # Not a failure: the language stays on the universal layer, and status says why.
                 print(
-                    f"⚠️ {tool.name}: no {TOOLCHAIN_NAMES[needs]} found; not installed (that language stays on the universal layer)"
+                    f"⚠️ {tool.name}: no {TOOLCHAIN_NAMES[needs]} found; not installed "
+                    "(that language stays on the universal layer)"
                 )
                 continue
             ok = cls.install_tool(tool) and ok
