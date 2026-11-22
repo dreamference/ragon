@@ -1,7 +1,8 @@
-"""What does skipping unsupported files without opening them save? Runs each discovery strategy over
-Documents (the corpus) + Downloads (make_downloads.py) in its own memory-capped scope, with the folders'
-pages evicted from the page cache first (posix_fadvise DONTNEED, no root needed), and reports wall time,
-CPU time, bytes read and peak RSS. filter_bench.py -> results/filter.json
+"""What does skipping unsupported files without opening them save?
+
+Runs each discovery strategy over Documents (the corpus) + Downloads (make_downloads.py) in its own
+memory-capped scope, with the folders' pages evicted from the page cache first (posix_fadvise DONTNEED,
+no root needed), and reports wall time, CPU time, bytes read and peak RSS. filter_bench.py -> results/filter.json
 
 Strategies:
   ext        walk + lstat + extension allow-list; opens nothing
@@ -9,6 +10,7 @@ Strategies:
   dedupe     ext+sniff, then SHA-256 of each surviving candidate (duplicates are indexed once)
   hash-all   SHA-256 of every file, streamed (an indexer that hashes before it filters)
   slurp-all  read every file whole into memory (an indexer that loads, then decides)"""
+
 import hashlib
 import json
 import os
@@ -19,7 +21,21 @@ import time
 
 D = os.path.dirname(os.path.abspath(__file__))
 ROOTS = [f"{D}/corpus", f"{D}/downloads"]
-SUPPORTED = {".pdf", ".md", ".txt", ".rst", ".org", ".tex", ".html", ".htm", ".docx", ".odt", ".eml", ".mbox", ".csv"}
+SUPPORTED = {
+    ".pdf",
+    ".md",
+    ".txt",
+    ".rst",
+    ".org",
+    ".tex",
+    ".html",
+    ".htm",
+    ".docx",
+    ".odt",
+    ".eml",
+    ".mbox",
+    ".csv",
+}
 
 
 def walk():
@@ -77,9 +93,15 @@ def run(strategy):
             seen.add(d)
     io = dict(line.split(": ") for line in open("/proc/self/io").read().splitlines())
     ru = resource.getrusage(resource.RUSAGE_SELF)
-    return {"files": files, "candidates": cand, "kept": kept, "duplicates": dups,
-            "read_mb": round(int(io["rchar"]) / 2**20, 1), "cpu_s": round(ru.ru_utime + ru.ru_stime, 2),
-            "peak_rss_mb": round(ru.ru_maxrss / 1024, 1)}
+    return {
+        "files": files,
+        "candidates": cand,
+        "kept": kept,
+        "duplicates": dups,
+        "read_mb": round(int(io["rchar"]) / 2**20, 1),
+        "cpu_s": round(ru.ru_utime + ru.ru_stime, 2),
+        "peak_rss_mb": round(ru.ru_maxrss / 1024, 1),
+    }
 
 
 def evict():
@@ -101,14 +123,42 @@ if __name__ == "__main__":
     for strategy in ("ext", "ext+sniff", "dedupe", "hash-all", "slurp-all"):
         evict()
         t = time.perf_counter()
-        r = subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "-p", "MemoryMax=1G", "-p",
-                            "MemorySwapMax=0", "--", "nice", "-n", "10", "ionice", "-c", "3", sys.executable,
-                            __file__, "--one", strategy], capture_output=True, text=True)
+        r = subprocess.run(
+            [
+                "systemd-run",
+                "--user",
+                "--scope",
+                "--quiet",
+                "-p",
+                "MemoryMax=1G",
+                "-p",
+                "MemorySwapMax=0",
+                "--",
+                "nice",
+                "-n",
+                "10",
+                "ionice",
+                "-c",
+                "3",
+                sys.executable,
+                __file__,
+                "--one",
+                strategy,
+            ],
+            capture_output=True,
+            text=True,
+        )
         wall = round(time.perf_counter() - t, 2)
         if r.returncode == 0:
             results[strategy] = json.loads(r.stdout.strip().splitlines()[-1])
         else:
-            results[strategy] = {"failed": f"exit {r.returncode} after {wall} s"
-                                 + (" (OOM-killed at the 1 GB cap; check the user journal)" if r.returncode in (-9, -15) else "")}
+            results[strategy] = {
+                "failed": f"exit {r.returncode} after {wall} s"
+                + (
+                    " (OOM-killed at the 1 GB cap; check the user journal)"
+                    if r.returncode in (-9, -15)
+                    else ""
+                )
+            }
         print(strategy, results[strategy], flush=True)
     json.dump(results, open(f"{D}/results/filter.json", "w"), indent=1)
