@@ -1058,3 +1058,22 @@ def test_night_shift_best_of_n_no_candidate_keeps_the_last_message_of_an_interru
     assert run._no_candidate(outcomes) == "interrupted"
     assert finished["result"]["last_message"] == "first words"
     assert "window closed" in finished["result"]["note"]
+
+
+def test_night_shift_task_run_result_reports_a_timed_out_test_in_whole_minutes(bon, monkeypatch):
+    record = queue(bon["night"], bon["repo"], test=TEST)
+    run = NightShiftTaskRun(
+        bon["night"],
+        record,
+        NightShiftSettings({"best_of": 2, "test_timeout": "10m"}),
+        bon["ragon"],
+        time.time() + 60,
+        attempt=1,
+    )
+    monkeypatch.setattr(run, "_timing", lambda: {"attempts": 0, "nudges": 0, "wall_s": 0})
+    timed_out = {"timed_out": "test_timeout", "exit_code": None, "tail": "half of the run"}
+    result = run._result(TEST, "task", timed_out)
+    assert result["test_command"] == TEST
+    assert result["test_result"] == "timed out after 10 min"
+    assert result["test_tail"] == "half of the run"
+    assert result["test_sandbox"] == ""
