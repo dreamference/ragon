@@ -1461,6 +1461,16 @@ def test_a_failed_execve_that_strace_split_is_not_a_program_that_ran():
     assert EgressAudit.judge(trace, ALLOWED, replied=True).status == TRACE_FAILED
 
 
+def test_strace_parser_read_execve_without_string_literals_counts_nothing():
+    # strace -s 0 (or a truncated read) prints execve without its argv strings; the parser
+    # reads nothing, so the process is not counted as having run.
+    trace = EgressTrace()
+    StraceParser._read_execve("execve(0x7ffe0000, 0x7ffe0008, 0x0 /* 1 var */) = 0", trace)
+    assert trace.processes == {} and trace.networked_git == []
+    parsed = StraceParser.parse("5 execve(0x7ffe0000, 0x7ffe0008, 0x0) = 0\n")
+    assert parsed.processes == {} and parsed.networked_git == []
+
+
 TO_RESOLVER = '5 connect({fd}, {{sa_family=AF_INET, sin_port=htons(53), sin_addr=inet_addr("127.0.0.53")}}, 16) = 0\n'
 
 
