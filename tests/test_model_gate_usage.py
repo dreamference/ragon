@@ -170,3 +170,17 @@ def test_an_untagged_request_logs_no_usage(monkeypatch, tmp_path):
 
     assert sent.endswith(COMPLETED)
     assert lines == []
+
+
+def test_model_gate_service_usage_line_includes_the_authenticated_user():
+    tap = _fed(COMPLETED)
+    tap["user"] = "dev"
+
+    assert _line(tap) == {
+        "job": "ct-route-to-ragon",
+        "path": "/v1/responses",
+        "user": "dev",
+        "generated": 345,
+        "prompt": 1200,
+        "cached": 800,
+    }
