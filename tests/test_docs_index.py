@@ -295,6 +295,23 @@ def test_a_tesseract_package_is_refused_without_dpkg_deb_or_its_file(monkeypatch
         DocsIndexSetup.deb_member(b"!<arch>", "./usr/lib/liblept.so.5")
 
 
+def test_docs_index_setup_deb_member_returns_the_package_file(monkeypatch):
+    class Done:
+        def __init__(self, returncode, stdout=b"", stderr=b""):
+            self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+    plain = io.BytesIO()
+    with tarfile.open(fileobj=plain, mode="w:") as archive:
+        info = tarfile.TarInfo("./usr/lib/liblept.so.5")
+        info.size = len(b"leptonica")
+        archive.addfile(info, io.BytesIO(b"leptonica"))
+    monkeypatch.setattr(docs_index_setup.shutil, "which", lambda name: "/usr/bin/dpkg-deb")
+    monkeypatch.setattr(
+        docs_index_setup.subprocess, "run", lambda *a, **k: Done(0, stdout=plain.getvalue())
+    )
+    assert DocsIndexSetup.deb_member(b"!<arch>", "./usr/lib/liblept.so.5") == b"leptonica"
+
+
 def test_the_real_pins_cover_both_linux_machines_and_the_measured_model():
     assert set(docs_index_setup.LIBRARIES) == {"aarch64", "x86_64"}
     for entries in docs_index_setup.LIBRARIES.values():
