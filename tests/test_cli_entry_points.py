@@ -238,3 +238,34 @@ def test_main_model_inspect_guesses_moe_from_the_name_when_hugging_face_has_no_c
     # left the architecture "Unknown" for a Mixtral.
     out, _ = _inspect_main_model(monkeypatch, capsys, "org/Mixtral-8x7B-Instruct")
     assert "Yes (heuristic) (MoE)" in out
+
+
+def test_dreamference_cli_controller_inspect_sample_payload_keeps_every_system_prompt():
+    # A truthy "system" entry becomes the leading system message; "No Thinking" in the prompt
+    # zeroes the temperature; the sample's own kwargs override the payload's defaults.
+    payload = DreamferenceCLIController._inspect_sample_payload(
+        {"prompt": "No Thinking", "system": "be brief", "kwargs": {"max_tokens": 5}},
+        "org/m",
+    )
+    assert payload == {
+        "model": "org/m",
+        "messages": [
+            {"role": "system", "content": "be brief"},
+            {"role": "user", "content": "No Thinking"},
+        ],
+        "max_tokens": 5,
+        "temperature": 0,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+
+    # Without a system prompt only the user message is sent, and the defaults stand.
+    payload = DreamferenceCLIController._inspect_sample_payload({"prompt": "hello"}, "org/m")
+    assert payload == {
+        "model": "org/m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 8192,
+        "temperature": 0.1,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
