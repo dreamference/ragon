@@ -53,6 +53,22 @@ def test_read_stream_records_ttft_and_decode_rate(monkeypatch):
     assert stream["decode_tps"] == 5.0
 
 
+def test_read_stream_stops_at_done_marker(monkeypatch):
+    times = iter([10.0, 12.0])
+    monkeypatch.setattr(ctl.time, "time", lambda: next(times))
+    r = _resp(
+        {"usage": {"completion_tokens": 3}},
+        b"data: [DONE]",
+        {"usage": {"completion_tokens": 41}},
+    )
+    stream = {"supports": False, "ttft": 0.0, "decode_tps": 0.0}
+    C._inspect_read_stream(r, 9.0, stream)
+    assert stream["supports"] is True
+    assert stream["ttft"] == 1.0
+    # The chunk after the DONE marker is never read: 3 tokens, not 41.
+    assert stream["decode_tps"] == 1.0
+
+
 def test_read_sample_row_builds_cells(monkeypatch):
     from dreamference.cli.model_deep_inspector import ModelDeepInspector
 
