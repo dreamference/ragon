@@ -861,6 +861,14 @@ def test_an_undecodable_thumbnail_is_kept_by_the_duplicate_collapse():
     assert len(ImageSearchService._collapse(thumbs)) == 2
 
 
+def test_image_search_service_collapse_returns_thumbs_unchanged_without_pillow(monkeypatch):
+    from dreamference.chat import image_search_service
+
+    monkeypatch.setattr(image_search_service, "Image", None)
+    thumbs = [({"n": 1}, b"junk"), ({"n": 2}, b"junk")]
+    assert ImageSearchService._collapse(thumbs) is thumbs
+
+
 def test_a_full_download_refusal_drops_the_winner_instead_of_failing(tmp_path):
     cand = _candidate(1)
     table = {cand["thumb_url"]: _jpeg("red")}  # the full image is not in the table
