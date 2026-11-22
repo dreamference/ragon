@@ -280,3 +280,17 @@ def test_holdout_runner_calls_the_generate_stage_and_grades(
 
     assert FakeGenerate.out_dir == tmp_path / "eval" / "base"
     assert result["resolved"] and result["attempted"]
+
+
+def test_adapter_train_eval_grade_holdout_stops_when_detection_fails() -> None:
+    class FailedDetect:
+        attempts = 2
+        tasks: ClassVar = [("task-1", "holdout")]
+
+        def prepare_clone(self) -> None: ...
+
+        def detect_all(self) -> bool:
+            return False
+
+    result = AdapterTrainEval.grade_holdout(FailedDetect())
+    assert result == {"resolved": [], "attempted": [], "stopped": True}
