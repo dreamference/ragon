@@ -67,3 +67,16 @@ def test_app_ini_links_oauth_accounts_automatically_and_registers_new_ones():
     source = Path(inspect.getsourcefile(ForgeAppIni)).read_text(encoding="utf-8")
     assert '"oauth2_client"' in source
     assert '"ACCOUNT_LINKING": "auto"' in source
+
+
+def test_forge_oauth_client_source_id_is_none_when_the_listing_fails(monkeypatch):
+    monkeypatch.setattr(
+        module.ForgeContainer,
+        "forgejo",
+        staticmethod(
+            lambda arguments, timeout=300: subprocess.CompletedProcess(
+                list(arguments), 1, stdout="", stderr=""
+            )
+        ),
+    )
+    assert ForgeOauthClient.source_id() is None
