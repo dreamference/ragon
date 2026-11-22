@@ -58,6 +58,15 @@ def _left_behind(night, run) -> list[str]:
     ]
 
 
+def test_night_shift_queue_update_raises_for_a_task_that_has_no_record(night, monkeypatch):
+    # Under the task's lock, an update whose record cannot be read raises, leaving the queue as it was.
+    record = queue(night["night"], night["repo"])
+    night["night"].joinpath("tasks", f"{record['id']}.json").unlink()
+    with pytest.raises(FileNotFoundError):
+        NightShiftQueue.update(night["night"], record["id"], lambda current: current["status"])
+    assert NightShiftQueue.read(night["night"], record["id"]) is None
+
+
 @pytest.mark.parametrize(
     ("check", "execs"),
     [
