@@ -60,3 +60,9 @@ def test_streaming_reads_the_pipe_on_its_own_thread_until_the_end():
     streamer.log_thread.join(timeout=5)
     assert not streamer.log_thread.is_alive() and streamer.log_thread.daemon is True
     assert streamer.pop_logs() == ["INFO one", "INFO two"] and pipe.closed is True
+
+
+def test_enqueue_output_with_no_pipe_returns_immediately_without_crashing():
+    streamer = VLLMLogStreamer()
+    streamer._enqueue_output(None)
+    assert streamer.pop_logs() == []
