@@ -521,7 +521,14 @@ class FakeDocker:
                 / "rollout-2020-10-02T00-00-00-fake.jsonl"
             )
             rollout.parent.mkdir(parents=True, exist_ok=True)
-            patch_text = "*** Begin Patch\n*** Update File: widget.py\n@@\n-    return 1\n+    return 2  # FIX\n*** End Patch"
+            patch_text = (
+                "*** Begin Patch\n"
+                "*** Update File: widget.py\n"
+                "@@\n"
+                "-    return 1\n"
+                "+    return 2  # FIX\n"
+                "*** End Patch"
+            )
             call = (
                 {
                     "type": "function_call",
@@ -2838,7 +2845,8 @@ def test_strip_names_is_a_command_line_switch(monkeypatch):
 
 # The eval script's trace around the test patch in django 16877 of `im100-default`, verbatim: the
 # agent had created the file the test patch adds.
-REJECTED_16877 = """+ git checkout 98f6ada0e2058d67d91fb6c16482411ec2ca0967 tests/template_tests/filter_tests/test_escapeseq.py
+REJECTED_16877 = """+ git checkout 98f6ada0e2058d67d91fb6c16482411ec2ca0967 \
+    tests/template_tests/filter_tests/test_escapeseq.py
 error: pathspec 'tests/template_tests/filter_tests/test_escapeseq.py' did not match any file(s) known to git
 + git apply -v -
 Checking patch tests/template_tests/filter_tests/test_escapeseq.py...
@@ -2851,7 +2859,8 @@ error: pathspec 'tests/template_tests/filter_tests/test_escapeseq.py' did not ma
 """
 
 # And django 13837's: the reset aborted, so the agent's edit stayed and the hunk did not match.
-REJECTED_13837 = """+ git checkout 415f50298f97fb17f841a9df38d995ccf347dfcc tests/utils_tests/test_autoreload.py tests/utils_tests/test_module/__main__.py
+REJECTED_13837 = """+ git checkout 415f50298f97fb17f841a9df38d995ccf347dfcc \
+    tests/utils_tests/test_autoreload.py tests/utils_tests/test_module/__main__.py
 error: pathspec 'tests/utils_tests/test_module/__main__.py' did not match any file(s) known to git
 + git apply -v -
 Checking patch tests/utils_tests/test_autoreload.py...
