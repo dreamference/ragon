@@ -133,9 +133,14 @@ This directory holds the specification, split into focused documents. This page 
 
 The reconciliation found these places where the **code** was wrong or unsafe. Most were fixed, and the individual specs now describe the fixed behaviour, each with a one-line note of what it replaced.
 
+The reconciliation found these places where the **code** was wrong or unsafe. Most were fixed, and the individual specs now describe the fixed behaviour, each with a one-line note of what it replaced.
+
 ### Reconciled
 
 The specs were ranked by the commits on the paths each one cites since its own last change, and CLI, RAGON_CODEX, LOCAL_INDEX, EGRESS NODE and the three desktop specs were brought up to date (commands, flags, defaults, pins, versions and built/not-built markers checked against the code). These are the places where the **code** (or a developer note) was found wrong; all six were fixed in `99658763` (the AGENTS.md list since moved to `docs/dev/cli.md`); the table is kept as the record:
+
+| Where | Defect | Spec |
+|---|---|---|
 
 **Given a dated banner instead of a rewrite** (the prose the code contradicts stays as the design record, with a pointer to the current source):
 

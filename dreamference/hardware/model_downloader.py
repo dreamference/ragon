@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 from typing import Final
 
-from dreamference.config.container_log_options import ContainerLogOptions
 from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
 
 REPO_SEPARATOR: Final[str] = "/"
@@ -315,6 +314,9 @@ class ModelDownloader:
                         if weights_gb
                         else host_ceiling_gb,
                     )
+
+                    # Imported here: dreamference.config imports this package at load.
+                    from dreamference.config.container_log_options import ContainerLogOptions
 
                     cmd = [
                         "docker",

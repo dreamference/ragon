@@ -91,6 +91,7 @@
 /dreamference/vllm_server/                      @dreamference/models
 /dreamference/hardware/                         @dreamference/models
 /tests/test_adapter_train_tasks.py              @dreamference/models
+/tests/test_package_import_order.py              @dreamference/models
 /tests/test_adapter_train_command.py            @dreamference/models
 /dreamference/cli/adapter_command.py            @dreamference/models
 /dreamference/hardware/adapter_train_generate.py @dreamference/models
