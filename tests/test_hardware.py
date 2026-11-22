@@ -40,6 +40,31 @@ def test_check_model_compatibility():
     assert "unknown" in msg_unknown.lower()
 
 
+def test_hardware_manager_check_model_compatibility_refuses_a_model_marked_incompatible(
+    monkeypatch,
+):
+    # No entry in the shipped matrix is marked incompatible (the deepseek fixture left with the
+    # earlier purge), so the refusal branch is exercised by pinning a spec the registry resolves.
+    from types import SimpleNamespace
+
+    from dreamference.hardware import (
+        HardwareManager,
+        ModelMatrixRegistry,
+    )
+
+    spec = ModelMatrixRegistry.get_spec("qwen3.8-27b-nvfp4-dflash2")
+    assert spec is not None
+    monkeypatch.setattr(spec, "compatible_gb10", False)
+    monkeypatch.setattr(
+        HardwareManager,
+        "detect_gb10_hardware",
+        classmethod(lambda cls: SimpleNamespace(total_unified_memory_gb=128.0)),
+    )
+    valid, msg = check_model_compatibility("qwen3.8-27b-nvfp4-dflash2")
+    assert valid is False
+    assert "exceeds GB10 128GB unified memory budget" in msg
+
+
 def test_check_speculative_compatibility(monkeypatch):
     # The memory budget is checked against the host, so pin it to a GB10's 128 GB: on a 16 GB CI
     # runner the real check correctly refuses the pair, and the test is about the registry entries.
