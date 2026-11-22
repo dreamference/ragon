@@ -2,6 +2,9 @@
 
 import argparse
 
+import pytest
+
+from dreamference.accounts.accounts_error import AccountsError
 from dreamference.accounts.accounts_migrate import AccountsMigrate
 from dreamference.node.node_service_file import NodeServiceFile
 from dreamference.node.node_settings import NodeSettings
@@ -69,3 +72,12 @@ def test_migrate_registers_service_accounts(monkeypatch):
     assert result["accounts"] == ["node-me", "node-a", "node-b"]
     assert result["commands"] == ["ragon-admin node primary me"] * 2
     assert NodeSettings.auth_primary()
+
+
+def test_accounts_migrate_migrate_rejects_a_node_without_id():
+    class Store:
+        def ensure_service_account(self, node):
+            raise AssertionError("no account may be registered")
+
+    with pytest.raises(AccountsError, match="no id"):
+        AccountsMigrate.migrate(Store(), "", ["a"])
