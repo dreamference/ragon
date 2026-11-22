@@ -525,6 +525,13 @@ def test_a_tensor_without_a_lora_suffix_or_an_oversized_header_is_refused(tmp_pa
         AdapterVerifier.check_tensors(weights, {"q_proj"})
 
 
+def test_adapter_verifier_check_tensors_refuses_a_truncated_file_as_not_safetensors(tmp_path):
+    weights = tmp_path / "adapter_model.safetensors"
+    weights.write_bytes(b"\x08\x00")
+    with pytest.raises(ValueError, match="not a safetensors file"):
+        AdapterVerifier.check_tensors(weights, {"q_proj"})
+
+
 def test_a_weights_file_of_another_dtype_or_no_tensors_is_refused_and_its_metadata_is_not_a_tensor(
     tmp_path,
 ):
