@@ -300,6 +300,29 @@ def test_a_forged_or_expired_jwt_is_refused_locally():
         )
 
 
+def test_model_gate_auth_verify_jwt_skips_jwks_without_a_matching_rsa_key():
+    import tempfile
+    from pathlib import Path
+
+    from dreamference.accounts import AccountsJwt
+
+    with tempfile.TemporaryDirectory() as folder:
+        signer = AccountsJwt(Path(folder) / "k.pem", "https://box.local:8000", "n", "box")
+        user = {"user_id": "u", "username": "t-alice", "role": "user"}
+        token = signer.sign(signer.claims(user, "c", 1, "m"))
+        verify = ModelGateAuth.verify_jwt
+        assert (
+            verify(
+                token,
+                {"keys": [{"kty": "oct"}, "not-a-jwk", {"kty": "RSA"}]},
+                "https://box.local:8000",
+            )
+            is None
+        )
+        assert verify(token, {"keys": []}, "https://box.local:8000") is None
+        assert verify(token, {}, "https://box.local:8000") is None
+
+
 def test_model_gate_auth_url_has_credential_flags_only_credential_names_in_the_query():
     has_credential = ModelGateAuth.url_has_credential
     assert has_credential(b"GET /v1/chat/completions?api_key=secret HTTP/1.1\r\nHost: gate\r\n\r\n")
