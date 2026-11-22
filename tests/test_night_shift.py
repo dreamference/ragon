@@ -455,6 +455,45 @@ def test_stopping_a_command_stops_the_processes_it_started(setup):
             os.kill(pid, signal.SIGKILL)
 
 
+def test_night_shift_task_run_terminate_term_then_kills_and_waits(setup, monkeypatch):
+    import signal
+
+    import dreamference.night_shift.night_shift_task_run as task_run_module
+
+    monkeypatch.setattr(task_run_module, "KILL_GRACE_S", 1)
+    record = queue(setup["night"], setup["repo"])
+    run = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], time.time() + 60
+    )
+    run.USE_SCOPE = True
+    state = {"killed": [], "systemctl": [], "exited": False}
+
+    def run_kill(args, **_kwargs):
+        state["systemctl"].append(args)
+
+    def killpg(_pid, sig):
+        state["killed"].append(sig)
+        if sig == signal.SIGKILL:
+            state["exited"] = True
+
+    class Process:
+        pid = 4242
+
+        def wait(self, timeout=None):
+            if state["exited"]:
+                return 0
+            raise subprocess.TimeoutExpired("fake", timeout)
+
+    monkeypatch.setattr(task_run_module.subprocess, "run", run_kill)
+    monkeypatch.setattr(task_run_module.os, "killpg", killpg)
+    run._terminate(Process(), "ragon-night-test")
+    assert state["killed"] == [signal.SIGTERM, signal.SIGKILL]
+    assert state["systemctl"] == [
+        ["systemctl", "--user", "kill", "--signal=SIGTERM", "ragon-night-test.scope"],
+        ["systemctl", "--user", "kill", "--signal=SIGKILL", "ragon-night-test.scope"],
+    ]
+
+
 def test_a_running_task_keeps_only_what_is_left_of_its_memory_allowance(fake_host, monkeypatch):
     class Running:
         in_model = False
