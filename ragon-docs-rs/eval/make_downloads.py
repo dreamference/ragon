@@ -1,7 +1,10 @@
-"""Build a synthetic Downloads folder (CC0): installers, archives, a disk image, videos, photos, and
+"""Build a synthetic Downloads folder (CC0).
+
+Installers, archives, a disk image, videos, photos, and
 the corpus's PDFs and office files with browser-style duplicates ("x (1).pdf"), plus two files whose
 extension lies. Large files are random bytes behind the right magic number, so nothing here is
 compressible or sparse. make_downloads.py <corpus> <out>"""
+
 import os
 import random
 import shutil
@@ -44,8 +47,11 @@ big = [  # (name, MiB, magic)
 for name, mb, magic in big:
     blob(name, mb, magic)
 for i in range(240):  # phone photos and screenshots
-    blob(f"IMG_{4000 + i}.jpg" if i % 3 else f"Screenshot {i}.png", rng.randint(1, 5),
-         b"\xff\xd8\xff\xe0" if i % 3 else b"\x89PNG\r\n\x1a\n")
+    blob(
+        f"IMG_{4000 + i}.jpg" if i % 3 else f"Screenshot {i}.png",
+        rng.randint(1, 5),
+        b"\xff\xd8\xff\xe0" if i % 3 else b"\x89PNG\r\n\x1a\n",
+    )
 for i in range(60):
     blob(f"invoice-template-{i}.xlsx", 1, b"PK\x03\x04")
 # Documents downloaded more than once, the way browsers name the copies.
@@ -57,7 +63,9 @@ for sub in ("pdf", "docx", "csv"):
             name = f if c == 0 else f"{stem} ({c}){ext}"
             shutil.copyfile(os.path.join(corpus, sub, f), os.path.join(out, name))
 # Extensions that lie: a saved web page named .pdf, and a binary named .txt.
-open(os.path.join(out, "statement.pdf"), "w").write("<!doctype html><html><body>Session expired</body></html>")
+open(os.path.join(out, "statement.pdf"), "w").write(
+    "<!doctype html><html><body>Session expired</body></html>"
+)
 blob("license-key.txt", 2, b"\x00\x01\x02")
 total = sum(os.path.getsize(os.path.join(out, f)) for f in os.listdir(out))
 print(len(os.listdir(out)), "files,", round(total / 2**30, 2), "GiB")
