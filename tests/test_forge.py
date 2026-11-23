@@ -1620,6 +1620,12 @@ def test_the_phone_account_is_not_checked_without_the_admin_token(monkeypatch):
     assert calls == []
 
 
+def test_forge_phone_ensure_reports_an_account_that_is_not_ready(monkeypatch):
+    monkeypatch.setattr(ForgeAccounts, "admin_token", classmethod(lambda cls: "t"))
+    monkeypatch.setattr(ForgePhone, "ensure_account", classmethod(lambda cls, a: False))
+    assert ForgePhone.ensure() == ["⚠️  The forge's `ragon-phone` account is not ready."]
+
+
 def test_a_repository_the_phone_cannot_be_given_or_protect_is_reported(monkeypatch):
     phone_forge(
         monkeypatch,
