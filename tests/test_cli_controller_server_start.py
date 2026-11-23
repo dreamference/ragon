@@ -167,3 +167,39 @@ def test_ctrl_c_terminates_the_process(monkeypatch, capsys):
 
     _start(monkeypatch, _Monitor(), start_server=interrupt)
     assert "Shutting down" in capsys.readouterr().out
+
+
+def test_dreamference_cli_controller_start_diffusion_sidecar_nulls_the_manager_on_failure(
+    monkeypatch, capsys
+):
+    """A failing or raising diffusion start_server leaves no manager for the health poll."""
+    import time as time_mod
+
+    from dreamference.hardware import ModelMatrixRegistry
+    from dreamference.vllm_server import DiffusionServerManager
+
+    monkeypatch.setattr(ModelMatrixRegistry, "diffusion_enabled", classmethod(lambda cls: True))
+    ticks = itertools.count(1.0, 1.0)
+    monkeypatch.setattr(time_mod, "time", lambda: next(ticks))
+    slept = []
+    monkeypatch.setattr(time_mod, "sleep", lambda s: slept.append(s))
+
+    # A False return (the docker failure the manager already reported) drops the handle,
+    # so the ready path polls nothing: no sidecar line, no sleeping.
+    monkeypatch.setattr(DiffusionServerManager, "start_server", lambda self, **k: False)
+    _start(monkeypatch, _Monitor(ready=True))
+    out = capsys.readouterr().out
+    assert "Diffusion model ready" not in out and not slept
+
+    # An exception while starting is caught, named, and the handle is dropped the same way.
+    monkeypatch.setattr(
+        DiffusionServerManager, "remove_leftover", classmethod(lambda cls, port=8001: None)
+    )
+
+    def start_sidecar_error(self, **k):
+        raise RuntimeError("no docker")
+
+    monkeypatch.setattr(DiffusionServerManager, "start_server", start_sidecar_error)
+    _start(monkeypatch, _Monitor(ready=True))
+    out = capsys.readouterr().out
+    assert "Diffusion sidecar failed to start: no docker" in out and not slept
