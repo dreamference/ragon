@@ -20,6 +20,12 @@ from typing import Final
 ROWS: Final[int] = 50
 COLS: Final[int] = 160
 
+# The session transcript marks a finished turn with an event of this type.
+TASK_COMPLETE_EVENT_TYPE: Final[str] = "task_complete"
+# The composer is ready when the banner and the input prompt are both on screen.
+COMPOSER_BANNER: Final[str] = ">_ Ragon"
+COMPOSER_PROMPT_CHAR: Final[str] = "\u203a"
+
 # The launcher may first wait for the model server, and the first prompt compiles a template.
 READY_TIMEOUT_S: Final[int] = 120
 # Feature flags that decide what the composer accepts load just after it appears.
@@ -85,7 +91,10 @@ class TuiSession:
                         except ValueError:
                             continue
                         payload = event.get("payload") if isinstance(event, dict) else None
-                        if isinstance(payload, dict) and payload.get("type") == "task_complete":
+                        if (
+                            isinstance(payload, dict)
+                            and payload.get("type") == TASK_COMPLETE_EVENT_TYPE
+                        ):
                             message = payload.get("last_agent_message")
                             if isinstance(message, str) and message.strip():
                                 return message
@@ -162,7 +171,10 @@ class TuiSession:
         stage = "start"
         replied = False
         try:
-            if wait(lambda: ">_ Ragon" in text() and "\u203a" in text(), READY_TIMEOUT_S):
+            if wait(
+                lambda: COMPOSER_BANNER in text() and COMPOSER_PROMPT_CHAR in text(),
+                READY_TIMEOUT_S,
+            ):
                 stage = "composer"
                 pump(SETTLE_AFTER_READY_S)
                 child.send(" ".join(prompt.split()))
