@@ -1145,3 +1145,26 @@ def test_every_ragon_serve_launch_passes_the_sparse_head_when_the_recipe_lists_t
     assert "--sparse-head-dir" not in RagonServeLaunchBuilder.server_args(
         "RadixArk/Qwen3.8-27B-NVFP4", older, 8000, 262144
     )
+
+
+def test_tool_call_canary_parsers_fall_back_to_the_generic_server_flags():
+    from unittest import mock
+
+    from dreamference.vllm_server.tool_call_canary import ToolCallCanary
+
+    # No registry entry at all (None, or a served id the registry does not know).
+    generic = {
+        "tool": "the server's --tool-call-parser",
+        "reasoning": "the server's --reasoning-parser",
+        "template": "",
+    }
+    assert ToolCallCanary.parsers(None) == generic
+    assert ToolCallCanary.parsers("a-served-id-the-registry-does-not-know") == generic
+    # The registry lookup can also come back empty, None or raise; each loses only the names.
+    for result, failure in ((None, None), ({}, None), (None, RuntimeError("no entry"))):
+        with mock.patch(
+            "dreamference.hardware.get_model_launch_overrides",
+            return_value=result,
+            side_effect=failure,
+        ):
+            assert ToolCallCanary.parsers("some-model-key") == generic
