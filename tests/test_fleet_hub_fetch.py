@@ -114,6 +114,43 @@ def test_the_manifest_names_large_files_by_their_blob_and_hashes_the_small_ones(
     assert fetch.manifest("models--org--none") is None
 
 
+def test_fleet_hub_fetch_manifest_returns_none_when_no_revision_resolves(hub, monkeypatch):
+    """Multiple snapshots, no pin match, no refs/main: manifest gives up."""
+    from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
+
+    monkeypatch.setattr(ModelMatrixRegistry, "pinned_revision", classmethod(lambda cls, _k: None))
+    # A second snapshot dir so len(names) > 1, making the fallback yield "".
+    (hub / FOLDER / "snapshots" / ("b" * 40)).mkdir()
+    (hub / FOLDER / "refs" / "main").unlink()
+    fetch, _ = fetcher(hub, RemoteSession())
+    assert fetch.manifest(FOLDER) is None
+
+
+def test_fleet_hub_fetch_manifest_skips_directories_inside_the_snapshot(hub):
+    """A directory inside the snapshot is listed but skipped."""
+    sub = hub / FOLDER / "snapshots" / REVISION / "nested"
+    sub.mkdir()
+    (sub / "inner.bin").write_bytes(b"data")
+    fetch, _ = fetcher(hub, RemoteSession())
+    revision, files = fetch.manifest(FOLDER)
+    assert revision == REVISION
+    # "nested" is a dir (skipped); "nested/inner.bin" is a real file (hashed).
+    assert "nested" not in files
+    assert "nested/inner.bin" in files
+    assert files["nested/inner.bin"] == hashlib.sha256(b"data").hexdigest()
+
+
+def test_fleet_hub_fetch_manifest_skips_broken_symlinks(hub):
+    """A symlink whose target does not exist is skipped, not hashed."""
+    broken = hub / FOLDER / "snapshots" / REVISION / "ghost.safetensors"
+    broken.symlink_to("../../blobs/does-not-exist")
+    fetch, _ = fetcher(hub, RemoteSession())
+    revision, files = fetch.manifest(FOLDER)
+    assert revision == REVISION
+    assert "ghost.safetensors" not in files
+    assert files == {"model.safetensors": BIG_SHA, "config.json": CONFIG_SHA}
+
+
 def test_files_the_hub_gave_unchanged_cost_nothing_from_here(hub):
     session = RemoteSession(gives={"model.safetensors": BIG_SHA, "config.json": CONFIG_SHA})
     outcome = fetcher(hub, session)[0].ensure(FOLDER)
