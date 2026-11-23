@@ -3258,3 +3258,19 @@ def test_refine_gives_the_doing_step_a_fresh_task_timeout_within_the_window(setu
     status, _, run = refined_run(setup, monkeypatch, {"refine": True}, task_id="20151001-0100-def")
     assert status == "done" and run.settings.task_timeout_s > 3600
     assert run.deadline == run.window_end
+
+
+def test_night_shift_task_run_refine_counts_an_unreadable_refined_file_as_empty(setup, monkeypatch):
+    # The study step ran, but its answer file cannot be read: the description is empty.
+    real_read_text = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self.name.endswith(".refined.txt"):
+            raise PermissionError("unreadable")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    status, record, _run = refined_run(setup, monkeypatch, {"refine": True})
+    assert status == "done"
+    refine = record["result"]["refine"]
+    assert refine["study_exit"] == "ok" and refine["refined_chars"] == 0
