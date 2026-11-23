@@ -210,6 +210,17 @@ def test_at_most_400_rollouts_of_at_most_64_mb_are_read_the_newest_kept(tmp_path
     assert NightShiftCompactionAudit.rollouts(sessions, 0, 1000) == [paths[1]]
 
 
+def test_night_shift_compaction_audit_rollouts_skips_a_file_that_cannot_be_stat_ed(
+    tmp_path, monkeypatch
+):
+    sessions = tmp_path / "sessions"
+    real = write_rollout(sessions, two_compactions(), name="rollout-real")
+    os.utime(real, (100, 100))
+    vanished = sessions / "rollout-vanished.jsonl"
+    monkeypatch.setattr(Path, "rglob", lambda self, pattern: iter([vanished, real]))
+    assert NightShiftCompactionAudit.rollouts(sessions, 0, 1000) == [real]
+
+
 def test_the_report_names_at_most_20_compactions_and_counts_the_rest(tmp_path):
     (first, _) = NightShiftCompactionAudit.audit_rollout(
         write_rollout(tmp_path / "sessions", two_compactions())
