@@ -25,6 +25,9 @@ from dreamference.hardware.model_matrix_registry import (
 DEFAULT_MODEL: Final[str] = DEFAULT_MODEL_ALIAS
 DEFAULT_LOG_LEVEL: Final[str] = "info"
 DEFAULT_DIFFUSION_MODEL: Final[str] = DEFAULT_DIFFUSION_MODEL_ALIAS
+# Config-file keys the two model fields are read from
+MODEL_FILE_KEY: Final[str] = "model"
+DIFFUSION_MODEL_FILE_KEY: Final[str] = "diffusion_model"
 DEFAULT_SPECULATIVE_TOKENS: Final[int] = 8
 DEFAULT_AGENT_RUNNER: Final[str] = "codex"
 DEFAULT_PREFIX_CACHING: Final[bool] = True
@@ -197,7 +200,7 @@ class DreamferenceConfig:
         self._model_pinned: bool = (
             model is not None
             or os.getenv("DREAMFERENCE_MODEL") is not None
-            or "model" in self.file_data
+            or MODEL_FILE_KEY in self.file_data
         )
         # Assigned to the backing field rather than through the property: resolution is not a
         # choice, and going through the setter here would mark every config as pinned.
@@ -214,7 +217,7 @@ class DreamferenceConfig:
         self._diffusion_model_pinned: bool = (
             diffusion_model is not None
             or os.getenv("DREAMFERENCE_DIFFUSION_MODEL") is not None
-            or "diffusion_model" in self.file_data
+            or DIFFUSION_MODEL_FILE_KEY in self.file_data
         )
         self._diffusion_model: str = (
             diffusion_model

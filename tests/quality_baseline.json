@@ -39,8 +39,7 @@
    "C901": 2,
    "PLR0912": 2,
    "PLR0913": 1,
-   "PLR0915": 1,
-   "PLR2004": 2
+   "PLR0915": 1
   },
   "dreamference/hardware/model_downloader.py": {
    "BLE001": 3,
@@ -180,5 +179,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 205
+ "total": 203
 }
