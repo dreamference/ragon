@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { POLICY, airgapThread, levelMatters, namedPrompt, parsePolicy, threadPlace, vetOutgoing, type PromptSource, type WorkspaceSandbox } from "./policy";
+import { POLICY, airgapThread, levelMatters, namedPrompt, parsePolicy, threadPlace, vetDesktopAccount, vetOutgoing, type PromptSource, type WorkspaceSandbox } from "./policy";
 
 const WEB = path.join(__dirname, "..", "..", "..", "ragon-rs", "web");
 
@@ -225,6 +225,48 @@ describe("the policy", () => {
     // An import loses its plugins at on; a notification is never vetted by level, whatever its name.
     expect(levelMatters({ id: 1, method: POLICY.importRequest, params: {} })).toBe(true);
     expect(levelMatters({ method: "thread/start", params: {} })).toBe(false);
+  });
+});
+
+describe("the desktop window's account messages (desktopAccount)", () => {
+  it("holds every case of vectors/account.json, and no refusal repeats what the message carried", () => {
+    const vectors = JSON.parse(fs.readFileSync(path.join(WEB, "vectors", "account.json"), "utf8")) as { cases: { name: string; message: unknown; accept: boolean }[] };
+    expect(vectors.cases.length).toBeGreaterThanOrEqual(20);
+    for (const testCase of vectors.cases) {
+      if (testCase.accept) {
+        expect(vetDesktopAccount(testCase.message), testCase.name).toEqual(testCase.message);
+        continue;
+      }
+      let refusal = "";
+      expect(() => {
+        try {
+          vetDesktopAccount(testCase.message);
+        } catch (error) {
+          refusal = (error as Error).message;
+          throw error;
+        }
+      }, testCase.name).toThrow();
+      const carried = testCase.message && typeof testCase.message === "object" && !Array.isArray(testCase.message) ? (testCase.message as Record<string, unknown>) : {};
+      for (const key of ["username", "password", "confirm"]) {
+        const value = carried[key];
+        if (typeof value === "string" && value.length > 0) expect(refusal.includes(value), `${testCase.name}: the refusal names ${key}'s value`).toBe(false);
+      }
+    }
+  });
+
+  it("names the three messages and loads no field kind it does not know", () => {
+    expect([...POLICY.desktopAccount.keys()].sort()).toEqual(["account/signIn", "account/signOut", "account/state"]);
+    expect([...(POLICY.desktopAccount.get("account/signIn")?.keys() ?? [])].sort()).toEqual(["mode", "password", "username"]);
+    const file = JSON.parse(fs.readFileSync(path.join(WEB, "policy.json"), "utf8"));
+    const withFields = (fields: unknown) => ({ ...file, desktopAccount: { messages: { "account/x": fields } } });
+    expect(() => parsePolicy({ ...file, desktopAccount: undefined })).toThrow(/desktopAccount/);
+    expect(() => parsePolicy({ ...file, desktopAccount: { messages: [] } })).toThrow(/desktopAccount/);
+    expect(() => parsePolicy(withFields(null))).toThrow(/must be an object of fields/);
+    expect(() => parsePolicy(withFields({ password: "plain" }))).toThrow(/text, secret or a list/);
+    expect(() => parsePolicy(withFields({ mode: [] }))).toThrow(/text, secret or a list/);
+    expect(() => parsePolicy(withFields({ mode: [1] }))).toThrow(/text, secret or a list/);
+    expect(() => parsePolicy(withFields({ type: "text" }))).toThrow(/cannot name `type`/);
+    expect(parsePolicy(withFields({ mode: ["a"], name: "text", key: "secret" })).desktopAccount.get("account/x")?.size).toBe(3);
   });
 });
 

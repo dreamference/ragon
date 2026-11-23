@@ -3,7 +3,9 @@
 // 0042), which saves into the active entry and reloads the server's auth, so the server is not
 // restarted and a thread that is open stays open. The request is the app's own (`AppServer.request`):
 // it is not on the policy shared with `ragon web`, since a browser has no business sending a password
-// this way. Name and password go through as typed: empty and untrimmed are the server's to judge.
+// this way. Name and password go through as typed, untrimmed (the window checks the name first, as
+// the terminal form does; policy.json's `desktopAccount` names the fields). The error's code is
+// passed on with the server's words: the window says it in the user's language.
 // No Electron here, so this tests on its own.
 
 import type { AppServer } from "./server";
@@ -15,12 +17,10 @@ export type SignInResult =
   | { ok: true; username: string; role: string; mustChangePassword: boolean }
   | { ok: false; code: number | null; message: string };
 
-/** The server's error codes (patch 0042), in words for the form. */
-export const SIGN_IN_ERRORS: Readonly<Record<number, string>> = {
-  [-32001]: "That user name and password do not match.",
-  [-32002]: "That user name is taken.",
-  [-32003]: "Ragon's primary cannot be reached.",
-};
+/** The server's error codes (signin_rpc.rs); the window puts them in the user's language. */
+export const WRONG_CREDENTIALS = -32001;
+export const NAME_TAKEN = -32002;
+export const UNREACHABLE = -32003;
 
 /** The request's parameters: the fields verbatim. */
 export function signInParams(mode: SignInMode, username: string, password: string): { mode: SignInMode; username: string; password: string } {
@@ -32,8 +32,7 @@ export function readSignIn(answer: unknown): SignInResult {
   const value = (answer ?? {}) as { result?: Record<string, unknown>; error?: { code?: unknown; message?: unknown } };
   if (value.error) {
     const code = typeof value.error.code === "number" ? value.error.code : null;
-    const known = code === null ? undefined : SIGN_IN_ERRORS[code];
-    return { ok: false, code, message: known ?? (typeof value.error.message === "string" ? value.error.message : "Signing in failed.") };
+    return { ok: false, code, message: typeof value.error.message === "string" ? value.error.message : "Signing in failed." };
   }
   const result = value.result;
   if (result && result.type === "ragon" && typeof result.username === "string") {

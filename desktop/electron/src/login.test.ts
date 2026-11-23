@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readSignIn, signIn, signInParams } from "./login";
+import { NAME_TAKEN, UNREACHABLE, WRONG_CREDENTIALS, readSignIn, signIn, signInParams } from "./login";
 import { AppServer } from "./server";
 import { nodeScript } from "./test-ragon";
 
@@ -42,10 +42,10 @@ describe("the sign-in form", () => {
     expect(signInParams("create", "", " a ")).toEqual({ mode: "create", username: "", password: " a " });
   });
 
-  it("puts the server's errors in words", () => {
-    expect(readSignIn({ error: { code: -32001, message: "x" } })).toMatchObject({ ok: false, code: -32001, message: expect.stringContaining("do not match") });
-    expect(readSignIn({ error: { code: -32002 } })).toMatchObject({ ok: false, message: expect.stringContaining("taken") });
-    expect(readSignIn({ error: { code: -32003 } })).toMatchObject({ ok: false, message: expect.stringContaining("primary") });
+  it("passes the server's code and words on for the window to put in the user's language", () => {
+    expect(readSignIn({ error: { code: WRONG_CREDENTIALS, message: "Wrong username or password." } })).toEqual({ ok: false, code: -32001, message: "Wrong username or password." });
+    expect(readSignIn({ error: { code: NAME_TAKEN } })).toEqual({ ok: false, code: -32002, message: "Signing in failed." });
+    expect(readSignIn({ error: { code: UNREACHABLE, message: "could not reach the accounts server" } })).toMatchObject({ code: -32003, message: "could not reach the accounts server" });
     expect(readSignIn({ result: { type: "ragon", username: "ann", role: "admin", mustChangePassword: false } })).toEqual({ ok: true, username: "ann", role: "admin", mustChangePassword: false });
     expect(readSignIn({ result: {} })).toMatchObject({ ok: false });
   });

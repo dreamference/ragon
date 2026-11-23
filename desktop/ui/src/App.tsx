@@ -112,6 +112,8 @@ import {
 import { PathMenu, pathOf, type PathAction, type PathMenuState } from "./PathMenu";
 import { QuestionCard } from "./QuestionCard";
 import { showsWelcome, WelcomeDialog, type WelcomeChoice } from "./WelcomeDialog";
+import { accountView, isGate, type AccountState } from "./account";
+import { AccountChip, AccountGate } from "./AccountGate";
 import { AskFiles } from "./AskFiles";
 import { toolView, type ToolView } from "./toolitems";
 import { latestFindings } from "./findings";
@@ -213,6 +215,28 @@ export function App() {
     const timer = window.setInterval(read, 30_000);
     return () => { current = false; window.clearInterval(timer); };
   }, []);
+  /**
+   * The window's own account (account.ts): read when the window opens and again on `account/updated`;
+   * the dialog shows in a full window, the chip in every window. A note (a node set up elsewhere, a
+   * node that cannot be asked) put away with Not now stays away until the state changes.
+   */
+  const [account, setAccount] = useState<AccountState | null>(null);
+  const [accountPutAway, setAccountPutAway] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const readAccount = useCallback(async () => {
+    if (!bridge.account.available()) return;
+    try {
+      setAccount(await bridge.account.state());
+      setAccountPutAway(false);
+    } catch {
+      setAccount(null);
+    }
+  }, []);
+  const readAccountRef = useRef(readAccount);
+  readAccountRef.current = readAccount;
+  useEffect(() => { void readAccount(); }, [readAccount]);
+  const accountFace = accountView(account);
+  const accountGate = account && isGate(accountFace) && !accountPutAway && !POPOUT && !PANE ? account : null;
   /** A web address clicked in an answer, waiting for the user's yes (LinkDialog.tsx). */
   const [linkAsked, setLinkAsked] = useState<{ url: string; thread: string | null; airgappedOn: boolean } | null>(null);
   /** An Ask question being continued in a project (DESKTOP §16 B33, ContinueDialog.tsx); busy while it is forked. */
@@ -577,6 +601,7 @@ export function App() {
       if (notification.method === "thread/started") loader.markLoaded(notification.params.thread.id);
       if (notification.method === "thread/queue/changed") refreshQueue(notification.params.threadId);
       if (notification.method === "project/changed") void loadProjectsRef.current();
+      if (notification.method === "account/updated") void readAccountRef.current();
       if (notification.method === "serverRequest/resolved") setApprovalRequested(false);
       // A turn that ends while its thread is not in front leaves the thread unread.
       if (notification.method === "turn/completed") {
@@ -3301,6 +3326,13 @@ export function App() {
           {view === "work" ? <button className={`icon bar-action${reviewOpen ? " active" : ""}`} title={`Review: the repository's changes (${shortcutLabel("reviewTab")})`} aria-label="Review" aria-pressed={reviewOpen} onClick={() => { if (reviewOpen && prefs.layout === "chat") updatePrefs({ layout: "split" }); else setReviewOpen(!reviewOpen); }}><Icon name="fileDiff" size={16} /></button> : null}
           {workingCount(state) > 1 ? <span className="chip optional" title="Threads and subagents working at once share the one model server">{workingCount(state)} working</span> : null}
           {monitor && monitor.state !== "unknown" && monitor.state !== "off" ? <span className={`chip monitor-${monitor.state}`} title={monitor.lines.length ? monitor.lines.join("\n") : "Node monitor: everything is ok"}>node {monitor.state}</span> : null}
+          {account && accountFace.kind === "signedIn" ? (
+            <AccountChip state={account} view={accountFace} busy={signingOut} onSignOut={() => {
+              setSigningOut(true);
+              void bridge.account.signOut().then((done) => { if (!done.ok && done.message) notice(new Error(done.message)); })
+                .catch(notice).finally(() => { setSigningOut(false); void readAccountRef.current(); });
+            }} />
+          ) : null}
           {airgap ? <span className={`chip airgap-${airgap.level}`} title={airgap.source}>airgapped {airgap.level}</span> : null}
           {usage ? (
             <span className="chip optional" title={`${usage.used.toLocaleString()} of ${usage.window.toLocaleString()} tokens`}>
@@ -3640,7 +3672,11 @@ export function App() {
             void openThread(thread).then(() => openFile(path));
           }} />
       ) : null}
-      {welcome ? <WelcomeDialog quickShortcut={keyLabel(prefs.quickEntryShortcut)} onChoose={chooseWelcome} /> : null}
+      {accountGate ? (
+        <AccountGate key={accountFace.kind} state={accountGate} view={accountFace} submit={bridge.account.signIn}
+          onSignedIn={() => void readAccountRef.current()} onRetry={() => void readAccountRef.current()} onDismiss={() => setAccountPutAway(true)} />
+      ) : null}
+      {welcome && !accountGate ? <WelcomeDialog quickShortcut={keyLabel(prefs.quickEntryShortcut)} onChoose={chooseWelcome} /> : null}
       {pathMenu ? (
         <PathMenu menu={pathMenu} canAttach={view === "work" && canCompose} canReveal={HOST === "electron"} onClose={closePathMenu}
           onAction={(action) => void pathAction(action, pathMenu.path)} />

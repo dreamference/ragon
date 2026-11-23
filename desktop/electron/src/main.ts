@@ -38,6 +38,8 @@ import { monitorChip } from "./monitor";
 import { addRepeating, addTask, dropRepeating, dropTask, listRepeating, nightStatus, readReport, readReports, readTasks, runNow, taskDetails } from "./night";
 import { applyTask, taskNote } from "./night";
 import { signIn } from "./login";
+import { accountState, signOut } from "./account";
+import { POLICY, vetDesktopAccount } from "./policy";
 import { ARCHIVE, nightUnread, searchArchive } from "./nightinbox";
 import { writeWorkAttachment } from "./attachments";
 import { listMemoryFiles, writeMemoryFile } from "./memoryfiles";
@@ -599,6 +601,8 @@ export async function main(options: MainOptions): Promise<void> {
   const pickedBundles = new Map<string, { file: string; name: string }>();
 
   async function handle(message: FromView, own: BrowserWindow): Promise<unknown> {
+    // The account messages carry a password: the shared policy names their every field (desktopAccount).
+    if (POLICY.desktopAccount.has(message.type)) vetDesktopAccount(message);
     switch (message.type) {
       case "work/start": {
         const started = server.start();
@@ -797,12 +801,15 @@ export async function main(options: MainOptions): Promise<void> {
         return monitorChip(fetch);
       case "voice/transcribe":
         return transcribe(message, fetch, prefs.read().dictationWords);
-      case "account/signIn": {
-        if ((message.mode !== "signIn" && message.mode !== "create") || typeof message.username !== "string" || typeof message.password !== "string") {
-          return { ok: false, code: null, message: "The sign-in form sent something else." };
-        }
-        return signIn(server, message.mode, message.username, message.password);
+      case "account/state": {
+        const ragon = findRagon(resourcesPath());
+        if (!ragon) throw new Error("ragon is not installed");
+        return accountState(ragon, app.getLocale());
       }
+      case "account/signIn":
+        return signIn(server, message.mode, message.username, message.password);
+      case "account/signOut":
+        return signOut(server, findRagon(resourcesPath()));
       case "work/stop":
         server.stop();
         return null;

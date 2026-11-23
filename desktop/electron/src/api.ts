@@ -31,8 +31,14 @@ export type FromView =
   | { type: "work/start" }
   | { type: "work/send"; message: unknown }
   | { type: "work/stop" }
-  /** The two-choice sign-in form (login.ts): the account/ragon/signIn answer, an error as `{ error }`. */
+  /**
+   * The window's own account (account.ts, login.ts), every field named by policy.json's
+   * `desktopAccount`: the state from `ragon login status --json`, the sign-in or first account
+   * through account/ragon/signIn, the sign-out through account/logout.
+   */
+  | { type: "account/state" }
   | { type: "account/signIn"; mode: "signIn" | "create"; username: string; password: string }
+  | { type: "account/signOut" }
   | { type: "work/target" }
   | { type: "work/airgapped"; thread: string | null }
   /** `/airgapped default <level>` from the composer: the level new threads start at. */

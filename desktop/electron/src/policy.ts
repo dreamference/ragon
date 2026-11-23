@@ -118,6 +118,28 @@ export interface Policy {
   /** The `thread/start` field naming the window's own tools (the terminal's output, the preview's console); the policy writes their definitions as `dynamicTools`. */
   windowToolsField: string;
   windowTools: ReadonlyMap<string, unknown>;
+  /** The desktop window's account messages to its main process (`desktopAccount`), each with the fields it carries and their kinds. */
+  desktopAccount: ReadonlyMap<string, ReadonlyMap<string, AccountField>>;
+}
+
+/** What one field of an account message may hold: one of the listed values, short text, or a secret. */
+export type AccountField = { kind: "oneOf"; values: ReadonlySet<string> } | { kind: "text" } | { kind: "secret" };
+
+/** The longest user name and password an account message carries (policy.json `desktopAccount`). */
+export const ACCOUNT_TEXT_MAX = 256;
+export const ACCOUNT_SECRET_MAX = 1024;
+
+function accountMessages(value: unknown): Map<string, Map<string, AccountField>> {
+  if (!isObject(value) || !isObject(value.messages)) throw new Error("policy.json: `desktopAccount` must name its messages");
+  return new Map(Object.entries(value.messages).map(([type, fields]) => {
+    if (!isObject(fields)) throw new Error(`policy.json: the account message \`${type}\` must be an object of fields`);
+    return [type, new Map(Object.entries(fields).map(([field, kind]): [string, AccountField] => {
+      if (field === "type") throw new Error(`policy.json: the account message \`${type}\` cannot name \`type\` as a field`);
+      if (kind === "text" || kind === "secret") return [field, { kind }];
+      if (Array.isArray(kind) && kind.length > 0 && kind.every((item) => typeof item === "string")) return [field, { kind: "oneOf", values: new Set(kind as string[]) }];
+      throw new Error(`policy.json: the field \`${field}\` of \`${type}\` must be text, secret or a list of values`);
+    }))];
+  }));
 }
 
 const isObject = (value: unknown): value is JsonObject => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -180,6 +202,7 @@ export function parsePolicy(value: unknown): Policy {
     ),
     windowToolsField: string(value, "windowToolsField"),
     windowTools: new Map(Object.entries(isObject(value.windowTools) ? value.windowTools : (() => { throw new Error("policy.json: `windowTools` must be an object"); })()) as [string, unknown][]),
+    desktopAccount: accountMessages(value.desktopAccount),
   };
   for (const [name, spec] of policy.windowTools) {
     if (!isObject(spec) || spec.name !== name) throw new Error(`policy.json: the window tool \`${name}\` must carry its own name`);
@@ -210,6 +233,32 @@ export function parsePolicy(value: unknown): Policy {
 
 /** The compiled-in policy. */
 export const POLICY: Policy = parsePolicy(policyFile);
+
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * Checks an account message from the desktop window (`desktopAccount`): a type the policy names,
+ * exactly its fields, each of its kind. Returns the message unchanged; a refusal names the message
+ * and the field, never what the field held, so a password cannot reach a log through an error.
+ */
+export function vetDesktopAccount(message: unknown, policy: Policy = POLICY): JsonObject {
+  if (!isObject(message) || typeof message.type !== "string") throw new Error("an account message must name its type");
+  const fields = policy.desktopAccount.get(message.type);
+  if (!fields) throw new Error("not an account message the policy names");
+  const type = message.type;
+  for (const key of Object.keys(message)) {
+    if (key !== "type" && !fields.has(key)) throw new Error(`\`${type}\` carries a field the policy does not name`);
+  }
+  for (const [key, field] of fields) {
+    const item = message[key];
+    const ok =
+      field.kind === "oneOf" ? typeof item === "string" && field.values.has(item)
+      : field.kind === "text" ? typeof item === "string" && item.length > 0 && item.length <= ACCOUNT_TEXT_MAX && !CONTROL.test(item)
+      : typeof item === "string" && item.length <= ACCOUNT_SECRET_MAX;
+    if (!ok) throw new Error(`\`${type}\`: \`${key}\` is missing or not ${field.kind === "oneOf" ? "one of its values" : field.kind === "text" ? `text of 1 to ${ACCOUNT_TEXT_MAX} characters` : `a secret of at most ${ACCOUNT_SECRET_MAX} characters`}`);
+  }
+  return message;
+}
 
 /**
  * The prompt a message names, when the policy will need its composed text: a prompt opener naming

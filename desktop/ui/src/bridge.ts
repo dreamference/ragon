@@ -3,6 +3,7 @@
 // for what the main process sends — the Codex app's shape, so this page could also run in a
 // browser against another transport. Nothing else in the UI touches Electron.
 
+import type { AccountState, FormMode, SignInAnswer } from "./account";
 import { chatRepos, checkoutThreadForCwd, getActiveChatRepoCwd, isChatRepoCwd } from "./repos";
 import type { Transport } from "./rpc";
 import type { TerminalSession } from "./terminal";
@@ -695,6 +696,19 @@ export interface MemoryFile {
   modified: number;
   cut: boolean;
 }
+/**
+ * The window's own account (account.ts, AccountGate.tsx): its state from `ragon login status
+ * --json`, a sign-in or a first account through the agent's server, a sign-out. The app only: a
+ * browser on `ragon web` signs in at the gate's own page. The password goes in the one message the
+ * policy names (ragon-rs/web/policy.json `desktopAccount`) and nowhere else.
+ */
+export const account = {
+  available: () => host() === "electron",
+  state: () => send<AccountState>({ type: "account/state" }),
+  signIn: (mode: FormMode, username: string, password: string) => send<SignInAnswer>({ type: "account/signIn", mode, username, password }),
+  signOut: () => send<{ ok: boolean; message: string | null }>({ type: "account/signOut" }),
+};
+
 export const memoryFiles = {
   available: () => host() === "electron",
   list: () => send<MemoryFile[]>({ type: "memories/files" }),

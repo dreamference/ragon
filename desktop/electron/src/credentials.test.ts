@@ -1,5 +1,6 @@
-// No credential reaches a renderer, and the app handles none: Ask and Work both run in the app
-// window on its own app-server, which needs no sign-in. Checked in the sources that go into the
+// No credential reaches a renderer, and the app keeps none: Ask and Work both run in the app
+// window on its own app-server over stdio (the account dialog's password goes straight into that
+// server's request, docs/dev/desktop.md "Accounts"). Checked in the sources that go into the
 // preload and the app window's page, and in the
 // built bundles when they exist (`npm run package` or `make` first; the release workflow runs
 // this file again after `make`).
