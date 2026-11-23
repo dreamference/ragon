@@ -315,7 +315,8 @@ EML_EXTRA = [
         "jonas",
         "Lost pallet claim",
         45,
-        "Jonas,\n\nWe accept liability for the missing pallet on shipment FF-88412 and will refund 2,350 EUR.\n\nIngrid",
+        "Jonas,\n\nWe accept liability for the missing pallet on shipment FF-88412 and will refund 2,350 EUR.\n\n"
+        "Ingrid",
     ),
     (
         "jonas",
