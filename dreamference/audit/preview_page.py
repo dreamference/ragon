@@ -16,6 +16,9 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Final
 
+# The path the page's own script asks for; its arrival marks the page as loaded.
+SEEN_PATH: Final[str] = "/seen"
+
 # Sites the page reaches for. Reserved example names, so even a leak would ask nobody real.
 PAGE: Final[str] = """<!doctype html>
 <html><head><title>Ragon audit page</title>
@@ -54,6 +57,7 @@ class PreviewPage:
     """A loopback server for the audit's preview page, recording what was asked of it."""
 
     def __init__(self) -> None:
+        """Starts recording; the page is served on start()."""
         self.paths: list[str] = []
         page = PAGE.encode()
         paths = self.paths
@@ -89,7 +93,7 @@ class PreviewPage:
         Returns:
             bool: True once the page's own request came back.
         """
-        return "/seen" in self.paths
+        return SEEN_PATH in self.paths
 
     def start(self) -> "PreviewPage":
         """Serves the page until stop()."""
