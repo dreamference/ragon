@@ -206,7 +206,7 @@ describe("the faces as drawn", () => {
   it("the empty-password question and the notes", () => {
     expect(gate(state({ setup: true }), { mode: "create", askEmpty: true })).toContain(`<p id="account-ask">${TABLES.en.EmptyPasswordAsk}</p>`);
     const remote = gate(state({ setup: true, local: false }, "pt"));
-    expect(remote).toContain(say(TABLES.pt, "FirstAccountOnNode", "main-box"));
+    expect(remote).toContain(say(TABLES.pt, "FirstAccountElsewhere", "main-box").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
     expect(remote).toContain(TABLES.pt.NotNowAction);
     expect(remote).not.toContain("<input");
     const away = gate(state({ reachable: false, accounts: false, error: "The certificate of main-box has changed." }));

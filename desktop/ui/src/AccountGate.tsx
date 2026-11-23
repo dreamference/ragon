@@ -118,7 +118,7 @@ export function AccountGate(props: {
   };
 
   if (view.kind === "remoteSetup" || view.kind === "unreachable") {
-    const body = view.kind === "remoteSetup" ? say(text, "FirstAccountOnNode", node) : `${say(text, "AccountsUnreachable")} ${view.error}`;
+    const body = view.kind === "remoteSetup" ? say(text, "FirstAccountElsewhere", node) : `${say(text, "AccountsUnreachable")} ${view.error}`;
     return (
       <div className="dialog-backdrop" onKeyDown={keys}>
         <section className="dialog account-gate" role="dialog" aria-modal="true" aria-labelledby="account-title" aria-describedby="account-body">

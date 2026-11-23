@@ -72,7 +72,7 @@ export const ENGLISH: Record<string, string> = {
   FieldConfirmPassword: "Confirm password",
   FieldPassword: "Password",
   FieldUsername: "Username",
-  FirstAccountOnNode: "{0} has no accounts yet. Its first account is made on {0} itself: run ragon in a terminal there.",
+  FirstAccountElsewhere: "{0} has no accounts yet. Its first account is made on {0} itself: run ragon in a terminal there, or ragon-admin node user add <name>. Running without sign-in until then.",
   NameTaken: "That username is taken.",
   NotNowAction: "Not now",
   PasswordMismatch: "The passwords do not match.",
