@@ -1283,6 +1283,54 @@ def test_the_container_is_capped_isolated_and_runs_as_the_user(bench):
     ].calls
 
 
+def test_swe_bench_instance_run_start_container_keeps_only_the_tail_of_dockers_stderr(
+    bench, monkeypatch
+):
+    """A failed `docker run` stops the instance and the note carries the error's last 300 chars."""
+    run_name, instance = "sc1", "acme__widget-1"
+    docker = bench["docker"]
+    original_run = docker.run
+
+    def run_fail_on_start(args, timeout=None, input_text=None):
+        result = original_run(args, timeout=timeout, input_text=input_text)
+        if args and args[0] == "run":
+            result = subprocess.CompletedProcess(
+                args, 125, "", "o" * 500 + "dockerd: no such device\n"
+            )
+        return result
+
+    monkeypatch.setattr(docker, "run", run_fail_on_start)
+    store = SweBenchRunStore(run_name)
+    store.write_manifest(
+        {"name": run_name, "model_name_or_path": "model", "created": 0, "images": {}}
+    )
+    deadline = time.time() + 600
+    run = SweBenchInstanceRun(
+        store,
+        row(instance),
+        f"{REPOSITORY}:acme-widget-1",
+        "model",
+        bench["settings"],
+        Path("/opt/runtime"),
+        "http://172.30.0.1:8000",
+        deadline,
+    )
+    assert run._start_container() == (
+        "docker run failed: " + ("o" * 500 + "dockerd: no such device\n").strip()[-300:]
+    )
+    assert (store.directory / "scratch" / instance / "codex-home").is_dir()
+    assert (store.directory / "scratch" / instance / "home").is_dir()
+    assert store.log_path(instance).parent.is_dir()
+    # The agent's container was requested with the usual caps before the start failed.
+    created = next(call for call in docker.calls if call[0] == "run")
+    assert created[created.index("--memory") + 1] == "8G"
+    assert created[created.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
+    env = dict(a.split("=", 1) for i, a in enumerate(created) if created[i - 1] == "-e")
+    assert env["BASE_COMMIT"] == "BASE"
+    assert env["DREAMFERENCE_VLLM_HOST"] == "http://172.30.0.1:8000"
+    assert created[-3:] == [f"{REPOSITORY}:acme-widget-1", "sleep", "infinity"]
+
+
 def test_refs_that_reach_the_fix_are_removed_before_the_agent_starts(bench):
     run(bench, instances=["acme__widget-1"])
     box = next(iter(bench["docker"].removed.values()))
