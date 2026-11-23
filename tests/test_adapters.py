@@ -722,6 +722,22 @@ def test_a_cached_base_digest_is_kept_per_revision(tmp_path):
     assert AdapterBaseDigest.of(BASE_REPO, "a" * 40, first) == digest
 
 
+def test_adapter_base_digest_write_cache_writes_atomically_and_ignores_a_write_error(monkeypatch):
+    path = AdapterBaseDigest.cache_path()
+    staging = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    calls = []
+
+    def fail_replace(source, target):
+        calls.append((source, target))
+        raise OSError("read-only")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    AdapterBaseDigest._write_cache({BASE_REPO: "sha256:" + "c" * 64})
+    assert calls == [(staging, path)]
+    assert json.loads(staging.read_text(encoding="utf-8")) == {BASE_REPO: "sha256:" + "c" * 64}
+    # A replace that fails is swallowed: the cache is only recomputed next time, the digest is kept.
+
+
 def test_an_adapter_id_names_its_base_entry():
     assert ModelMatrixRegistry.key_for_served_id(f"{BASE_REPO}+rust") == DEFAULT_MODEL_ALIAS
 
