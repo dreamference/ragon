@@ -32,6 +32,8 @@ impl Drop for Scratch {
 }
 
 /// The accounts service: `at1` and `at2` are valid access tokens of `ann`, a refresh gives `at2`.
+const FIRST_ELSEWHERE: &str = "box has no accounts yet. Its first account is made on box itself.";
+
 async fn accounts() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -60,7 +62,10 @@ async fn accounts() -> String {
                 let body = text.split("\r\n\r\n").nth(1).unwrap_or_default();
                 let bearer_ok = text.contains("Authorization: Bearer at1") || text.contains("Authorization: Bearer at2");
                 let (status, answer) = if first.starts_with("POST /oauth/token") {
-                    if body.contains("grant_type=password") && body.contains("password=pw") {
+                    if body.contains("create=true") {
+                        // What a node with no account yet answers a caller that is not on it (AUTH §8.6).
+                        (403, json!({ "error": "first_account_on_node", "error_description": FIRST_ELSEWHERE }))
+                    } else if body.contains("grant_type=password") && body.contains("password=pw") {
                         (200, json!({ "access_token": "at1", "refresh_token": "rt1" }))
                     } else if body.contains("grant_type=refresh_token") && body.contains("refresh_token=rt1") {
                         (200, json!({ "access_token": "at2", "refresh_token": "rt2" }))
@@ -123,6 +128,16 @@ async fn the_login_pages_open_without_a_credential() {
     let response = server::router(server.clone()).oneshot(req("GET", "/codex/device").body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(response.headers()[header::LOCATION], "/device");
+}
+
+#[tokio::test]
+async fn a_create_the_node_refuses_comes_back_as_its_plain_sentence() {
+    let (server, _dir) = server_for("first").await;
+    let (status, body) = call(&server, post_json("/api/auth/login", None, json!({ "username": "ann", "password": "pw", "create": true }))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["error_description"], FIRST_ELSEWHERE);
+    let (_, script) = call(&server, req("GET", "/signin.js").body(Body::empty()).unwrap()).await;
+    assert!(script.contains("say(r.body.error_description"), "the page shows the node's sentence as it is");
 }
 
 #[tokio::test]
