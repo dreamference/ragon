@@ -149,3 +149,29 @@ def test_adapter_train_run_state_ignores_a_state_file_that_is_not_an_object(repo
     run.directory.mkdir(parents=True)
     (run.directory / "state.json").write_text("[1, 2]", encoding="utf-8")
     assert run.state() == {"done": [], "consented": [], "left_node": []}
+
+
+def test_adapter_command_train_refuses_an_existing_run_without_resume(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    AdapterTrainRun("mine").mark_done("data")
+    with (
+        patch("dreamference.node.node_identity.NodeIdentity.read", return_value=object()),
+        patch("dreamference.cli.adapter_command.AdapterVerifier.served_base", return_value=None),
+    ):
+        assert AdapterCommand.run(parse("mine", "--repo", str(repo)), CONFIG) == 1  # type: ignore[arg-type]
+    assert "add --resume" in capsys.readouterr().out
+
+
+def test_adapter_command_train_says_when_every_stage_is_done(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = AdapterTrainRun("mine")
+    for stage in ("data", "generate", "train", "eval", "install"):
+        run.mark_done(stage)
+    with (
+        patch("dreamference.node.node_identity.NodeIdentity.read", return_value=object()),
+        patch("dreamference.cli.adapter_command.AdapterVerifier.served_base", return_value=None),
+    ):
+        assert AdapterCommand.run(parse("mine", "--repo", str(repo), "--resume"), CONFIG) == 0  # type: ignore[arg-type]
+    assert "Every stage" in capsys.readouterr().out
