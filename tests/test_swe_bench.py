@@ -4766,6 +4766,22 @@ def test_issue_gate_parsing_edge_cases_and_in_process_main(tmp_path, monkeypatch
     assert SweBenchIssueGate.main([]) == 0
 
 
+def test_swe_bench_issue_gate_quoted_mask_marks_quote_content_and_double_quote_escapes():
+    mask = SweBenchIssueGate.quoted_mask
+    # Unquoted text is False; each quote character and what lies inside it is True.
+    assert mask("echo 'a>b' c.py") == [False] * 6 + [True] * 4 + [False] * 5
+    # A backslash inside double quotes escapes the next character: both are inside the mask.
+    assert mask('echo "a\\"b"') == [False] * 6 + [True] * 5
+    # A backslash inside single quotes does not escape anything.
+    assert mask("sed 's/\\\\/x/' f") == [False] * 5 + [True] * 8 + [False] * 2
+    # An unclosed quote (or a backslash at the end of the line) masks to the end.
+    assert mask('echo "a\\') == [False] * 6 + [True] * 2
+    assert mask("echo 'unclosed quote") == [False] * 6 + [True] * 14
+    # A quoted redirect is not a redirect; an unquoted one is.
+    assert mask('grep "a > b" x.py > widget.py') == [False] * 6 + [True] * 6 + [False] * 17
+    assert mask("grep 'x > y' w.py > widget.py") == [False] * 6 + [True] * 6 + [False] * 17
+
+
 def test_hooks_are_off_unless_asked_and_the_report_says_so(bench):
     assert run(bench, instances=["acme__widget-1"]) == 0
     store = SweBenchRunStore("r1")
