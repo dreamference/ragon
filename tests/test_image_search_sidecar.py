@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import urllib.error
 
 import pytest
 
@@ -801,8 +802,6 @@ def test_a_search_goes_to_loopback_with_the_secret(monkeypatch, store):
 
 
 def test_a_refused_search_keeps_its_status(monkeypatch, store):
-    import urllib.error
-
     store.mkdir()
     (store / "secret").write_text("s3cret")
 
@@ -815,6 +814,36 @@ def test_a_refused_search_keeps_its_status(monkeypatch, store):
         401,
         {"error": "bad token"},
     )
+
+
+@pytest.mark.parametrize(
+    "exception_factory, expected_status, expected_answer",
+    [
+        (
+            lambda url: urllib.error.HTTPError(url, 502, "Bad Gateway", {}, io.BytesIO(b"<html>")),
+            502,
+            {"error": "HTTP 502"},
+        ),
+        (
+            lambda url: OSError("connection refused"),
+            0,
+            {"error": "the image search service did not answer (connection refused)"},
+        ),
+    ],
+)
+def test_image_search_mcp_live_search_falls_back_when_the_body_is_not_json_or_the_socket_refuses(
+    monkeypatch, store, exception_factory, expected_status, expected_answer
+):
+    store.mkdir()
+    (store / "secret").write_text("s3cret")
+
+    def failing(request, timeout):
+        raise exception_factory(request.full_url)
+
+    monkeypatch.setattr(image_search_mcp.urllib.request, "urlopen", failing)
+    status, answer = ImageSearchMcp.live_search({"queries": ["x"], "count": 1})
+    assert status == expected_status
+    assert expected_answer["error"] in answer["error"]
 
 
 def _tool(answer=None):
