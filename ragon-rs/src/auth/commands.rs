@@ -387,8 +387,7 @@ impl Primary {
     /// and whether this caller is on the node itself. `None` when the gate has no such page.
     pub async fn setup(&self) -> Option<(bool, bool)> {
         let text = get_text(&self.client, &format!("{}/ragon/v1/setup", self.gate)).await?;
-        let doc: Value = serde_json::from_str(&text).ok()?;
-        Some((doc.get("setup")?.as_bool()?, doc.get("local").and_then(Value::as_bool).unwrap_or(false)))
+        super::parse_setup(&text).map(|setup| (setup.open, setup.local))
     }
 
     /// The username and role in the id token of this primary's stored entry.

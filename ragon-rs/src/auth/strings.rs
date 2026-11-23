@@ -265,12 +265,6 @@ table! {
         "La primera cuenta es la administradora de {0}. Elija un nombre de usuario y una contraseña.",
         "Das erste Konto ist der Admin von {0}. Wählen Sie einen Benutzernamen und ein Passwort.",
         "Le premier compte est l'administrateur de {0}. Choisissez un nom d'utilisateur et un mot de passe."],
-    FirstAccountOnNode => [
-        "{0} has no accounts yet. Its first account is made on {0} itself: run ragon in a terminal there.",
-        "{0} ainda não tem contas. A primeira conta é criada no próprio {0}: execute ragon num terminal lá.",
-        "{0} aún no tiene cuentas. La primera cuenta se crea en el propio {0}: ejecute ragon en una terminal allí.",
-        "{0} hat noch keine Konten. Das erste Konto wird auf {0} selbst angelegt: starten Sie dort ragon in einem Terminal.",
-        "{0} n'a encore aucun compte. Le premier compte se crée sur {0} même : lancez ragon dans un terminal là-bas."],
     EmptyPasswordAsk => [
         "Continue without a password?", "Continuar sem senha?", "¿Continuar sin contraseña?",
         "Ohne Passwort fortfahren?", "Continuer sans mot de passe ?"],

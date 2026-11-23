@@ -67,7 +67,7 @@ fn every_language_has_its_code_and_the_desktop_texts_are_translated() {
     for lang in Lang::ALL {
         assert_eq!(Lang::from_locale(lang.code()), Some(lang));
     }
-    for key in [Key::CreateFirstTitle, Key::CreateFirstHint, Key::FirstAccountOnNode, Key::EmptyPasswordAsk, Key::AccountsUnreachable] {
+    for key in [Key::CreateFirstTitle, Key::CreateFirstHint, Key::FirstAccountElsewhere, Key::EmptyPasswordAsk, Key::AccountsUnreachable] {
         for lang in [Lang::Pt, Lang::Es, Lang::De, Lang::Fr] {
             assert_ne!(text(lang, key), text(Lang::En, key), "{key:?} is not translated into {lang:?}");
         }
