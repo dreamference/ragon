@@ -76,6 +76,17 @@ def test_vllm_metrics_take_the_kv_pool_from_blocks_times_block_size():
     assert NightShiftHost.parse_metrics(text) == {"running": 2.0, "served": 0.0, "kv_pool": 16000.0}
 
 
+def test_night_shift_host_parse_metrics_skips_a_metric_line_that_has_no_value():
+    # A metric name with labels but no value fails the line regex, so it is skipped and
+    # its value never counts toward the KV pool.
+    text = (
+        'vllm:num_requests_running{m="q"} 1\n'
+        'vllm:num_requests_waiting{m="q"} 1\n'
+        'vllm:cache_config_info{block_size="16",num_gpu_blocks="1000"}\n'
+    )
+    assert NightShiftHost.parse_metrics(text) == {"running": 2.0, "served": 0.0, "kv_pool": 0.0}
+
+
 def test_the_host_is_unsafe_when_the_model_servers_own_checks_exit(monkeypatch):
     from dreamference.vllm_server import VLLMServerManager
 
