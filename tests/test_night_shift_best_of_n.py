@@ -1060,6 +1060,35 @@ def test_night_shift_best_of_n_no_candidate_keeps_the_last_message_of_an_interru
     assert "window closed" in finished["result"]["note"]
 
 
+def test_night_shift_best_of_n_run_catches_a_runner_bug_and_records_a_failed_task(bon, monkeypatch):
+    record = queue(bon["night"], bon["repo"], test=TEST)
+    run = NightShiftBestOfN.task_run(
+        bon["night"],
+        record,
+        NightShiftSettings({"best_of": 2}),
+        bon["ragon"],
+        time.time() + 60,
+        model_host="http://x",
+    )
+    discarded = []
+    monkeypatch.setattr(run, "_run", lambda outcomes: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(run, "_discard", lambda outcomes: discarded.append(outcomes))
+    monkeypatch.setattr(run, "_timing", lambda outcomes: {"attempts": 1, "wall_s": 0, "nudges": 0})
+    assert run.run() == "failed"
+    assert discarded == [[]]
+    after = NightShiftQueue.read(bon["night"], record["id"])
+    assert after["status"] == "failed"
+    assert after["attempts"] == 1
+    assert after["history"][-1]["note"] == "night run error: boom"
+    assert after["result"] == {
+        "attempts": 1,
+        "wall_s": 0,
+        "nudges": 0,
+        "last_message": "night run error: boom",
+    }
+    assert not bon["calls"].exists()
+
+
 def test_night_shift_best_of_n_attempts_for_falls_back_to_the_settings_when_the_task_s_best_of_is_not_an_int():
     task = {"id": "t", "repo": ".", "base": "b", "task": "x", "best_of": "three"}
     assert NightShiftBestOfN.attempts_for(task, NightShiftSettings({})) == 3
