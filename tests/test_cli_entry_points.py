@@ -284,3 +284,23 @@ def test_dreamference_cli_controller_inspect_resolve_model_falls_back_to_config_
     assert model == "cfg/m"
     assert max_len == "Unknown"
     session.get.assert_called_once()
+
+
+def test_dreamference_cli_controller_inspect_probe_roles_skips_a_role_whose_probe_raises():
+    # A probe that raises (connection trouble) or is refused must leave that role out of
+    # the list, not abort the remaining probes.
+    from unittest.mock import MagicMock
+
+    def post(url, json, headers, timeout):
+        role = json["messages"][-1]["role"]
+        if role == "tool":
+            raise OSError("connection reset")
+        resp = MagicMock()
+        resp.status_code = 400 if json["messages"][0]["role"] == "system" else 200
+        return resp
+
+    session = MagicMock()
+    session.post.side_effect = post
+    roles = DreamferenceCLIController._inspect_probe_roles(session, "http://h/v1", "org/m", {})
+    assert roles == "user, assistant"
+    assert session.post.call_count == 4
