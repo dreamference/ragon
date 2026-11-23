@@ -1,6 +1,6 @@
 //! Replays outputs through the digest, for scoring it against a replay set outside the repository.
 //!
-//! `replay <out_dir> [--last-good] [--min-lines N] [--model http://HOST:PORT --model-name NAME]`
+//! `replay <out_dir> [--last-good] [--min-lines N] [--rules STEPS] [--model http://HOST:PORT --model-name NAME]`
 //! reads one case per line on stdin, tab-separated: the case id, the raw output's path, the exit
 //! code (`-` while running), the command and, optionally, the path of the same command's last
 //! successful output. Each case gets a fresh home; what the model would be given is written to
@@ -16,10 +16,39 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use ragon_digest::model::{Reply, Selector};
+use ragon_digest::select::Rules;
 use ragon_digest::{Digester, Options};
 
 /// The model server's generated tokens, summed over the run.
 static GENERATED: AtomicU64 = AtomicU64::new(0);
+
+/// `--rules today`, `--rules default` or a comma list of steps on top of today's digest:
+/// `shorter,head=N,facts,before=N,order,fill,producer,bytes=N,cut=N`.
+fn parse_rules(names: &str) -> Rules {
+    let mut rules = match names {
+        "default" => return Rules::default(),
+        _ => Rules::TODAY,
+    };
+    for name in names.split(',').filter(|name| !name.is_empty() && *name != "today") {
+        let (key, number) = match name.split_once('=') {
+            Some((key, number)) => (key, number.parse::<usize>().expect("--rules key=N")),
+            None => (name, 0),
+        };
+        match key {
+            "shorter" => rules.shorter_only = true,
+            "facts" => rules.facts = true,
+            "head" => rules.head = number,
+            "before" => rules.context_before = number,
+            "order" => rules.order = true,
+            "fill" => rules.fill = true,
+            "producer" => rules.producer = true,
+            "bytes" => rules.min_bytes = number,
+            "cut" => rules.max_line_chars = number,
+            other => panic!("unknown rule step {other}"),
+        }
+    }
+    rules
+}
 
 fn value<'a>(args: &'a [String], name: &str) -> Option<&'a String> {
     args.iter().position(|arg| arg == name).and_then(|at| args.get(at + 1))
@@ -125,6 +154,7 @@ fn main() {
         name: value(&args, "--model-name").cloned().unwrap_or_default(),
     });
     let model = server.is_some();
+    let rules = value(&args, "--rules").map_or_else(Rules::default, |names| parse_rules(names));
     std::fs::create_dir_all(&out_dir).expect("out_dir");
     for line in std::io::stdin().lock().lines() {
         let line = line.expect("stdin");
@@ -132,7 +162,7 @@ fn main() {
         let [id, raw, exit, command, rest @ ..] = fields.as_slice() else { continue };
         let home = std::env::temp_dir().join(format!("ragon-digest-replay-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
-        let mut digester = Digester::with_options(&home, Options { last_good, min_lines, model });
+        let mut digester = Digester::with_options(&home, Options { last_good, min_lines, model }).with_rules(rules);
         if let Some(server) = &server {
             digester = digester.with_selector(Box::new(Server { address: server.address.clone(), name: server.name.clone() }));
         }

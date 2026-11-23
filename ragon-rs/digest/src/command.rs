@@ -88,6 +88,20 @@ pub fn reads(command: &str) -> bool {
     })
 }
 
+/// Whether the command that produces some pipeline's output reads files, lists them or searches
+/// code. Unlike [`reads`], a filter after `|` does not count: `pytest -q 2>&1 | tail -n 50` is a
+/// test run (answer 29).
+pub fn produces_reading(command: &str) -> bool {
+    let command = command.replace("2>&1", " ").replace("|&", "|").replace(">&", ">").replace("&>", ">").replace("||", ";");
+    command.split(['\n', ';', '&']).filter_map(|pipeline| pipeline.split('|').next()).map(str::trim).any(|segment| {
+        let words = program_words(segment);
+        let Some(first) = words.first() else { return false };
+        let name = program_name(first);
+        READERS.contains(&name.as_str())
+            || (name == "git" && subcommand(&words).is_some_and(|sub| GIT_READERS.contains(&sub)))
+    })
+}
+
 /// The command's kind: its first real program, with the subcommand for tools that have them, and
 /// the module for `python -m`.
 pub fn kind(command: &str) -> String {
@@ -138,6 +152,28 @@ mod tests {
         }
         for command in ["cargo build --release", "pytest -q", "npm run build", "git commit -m x", "make -j8"] {
             assert!(!reads(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn a_filter_after_a_pipe_does_not_make_a_read() {
+        for command in [
+            "cat src/lib.rs",
+            "cd repo && sed -n '1,80p' x.py | head",
+            "rg -n 'a|b' src",
+            "cd repo && git -C . diff HEAD~1",
+            "pytest -q; grep -rn x .",
+            "FOO=1 timeout 60 grep -r x . 2>&1 | head",
+        ] {
+            assert!(produces_reading(command), "{command}");
+        }
+        for command in [
+            "cargo test 2>&1 | tail -n 50",
+            "cd /testbed && python -m pytest tests/a.py -x 2>&1 | grep -A 50 FAILED",
+            "make -j8 |& tail",
+            "npm run build || cat log.txt | true",
+        ] {
+            assert_eq!(produces_reading(command), command.contains("cat "), "{command}");
         }
     }
 

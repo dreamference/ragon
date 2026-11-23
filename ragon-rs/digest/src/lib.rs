@@ -113,6 +113,8 @@ pub struct Digester {
     state: Mutex<State>,
     /// The model call of this digester; the process's ([`model::set_selector`]) when unset.
     selector: Option<Box<dyn model::Selector>>,
+    /// The rule steps in force ([`select::Rules`]).
+    rules: select::Rules,
 }
 
 /// Where stage A left one output.
@@ -120,7 +122,7 @@ enum Staged {
     /// Handed back as it is, or as a note.
     Done(Vec<u8>),
     /// To be digested.
-    Lines { lines: Vec<String>, known: Vec<bool>, path: PathBuf },
+    Lines { lines: Vec<String>, known: Vec<bool>, path: PathBuf, bytes: Vec<u8> },
 }
 
 impl Digester {
@@ -131,7 +133,25 @@ impl Digester {
 
     /// A digester with every setting.
     pub fn with_options(codex_home: &Path, options: Options) -> Self {
-        Self { dir: codex_home.join("digest"), options, state: Mutex::new(State::default()), selector: None }
+        Self {
+            dir: codex_home.join("digest"),
+            options,
+            state: Mutex::new(State::default()),
+            selector: None,
+            rules: select::Rules::default(),
+        }
+    }
+
+    /// This digester under other rule steps (the check set's replay compares them).
+    pub fn with_rules(mut self, rules: select::Rules) -> Self {
+        self.rules = rules;
+        self
+    }
+
+    /// `digest`, or the output it stands for when [`select::Rules::shorter_only`] is on and the
+    /// digest is not shorter.
+    fn shorter(&self, digest: String, output: Vec<u8>) -> Vec<u8> {
+        if self.rules.shorter_only && digest.len() >= output.len() { output } else { digest.into_bytes() }
     }
 
     /// This digester with its own model call (the tests' stand-in).
@@ -176,18 +196,21 @@ impl Digester {
     pub fn process(&self, command: &str, output: Vec<u8>, exit_code: Option<i32>) -> Vec<u8> {
         match self.stage(command, output, exit_code) {
             Staged::Done(bytes) => bytes,
-            Staged::Lines { lines, known, path } => select::digest_with(&lines, exit_code, &path, &known).into_bytes(),
+            Staged::Lines { lines, known, path, bytes } => {
+                let plan = select::plan_with(&lines, &known, self.rules);
+                self.shorter(plan.render(&lines, exit_code, &path, &plan.extra, None), bytes)
+            }
         }
     }
 
     /// [`Digester::process`], then the model step when [`Options::model`] is on and a model call is
     /// set; any failure of that step leaves stage A's digest.
     pub async fn process_async(&self, command: &str, output: Vec<u8>, exit_code: Option<i32>) -> Vec<u8> {
-        let (lines, known, path) = match self.stage(command, output, exit_code) {
+        let (lines, known, path, bytes) = match self.stage(command, output, exit_code) {
             Staged::Done(bytes) => return bytes,
-            Staged::Lines { lines, known, path } => (lines, known, path),
+            Staged::Lines { lines, known, path, bytes } => (lines, known, path, bytes),
         };
-        let plan = select::plan(&lines, &known);
+        let plan = select::plan_with(&lines, &known, self.rules);
         if self.options.model
             && let Some(selector) = self.selector()
         {
@@ -198,10 +221,10 @@ impl Digester {
             };
             self.journal(&[event]);
             if let Some(text) = text {
-                return text.into_bytes();
+                return self.shorter(text, bytes);
             }
         }
-        plan.render(&lines, exit_code, &path, &plan.extra, None).into_bytes()
+        self.shorter(plan.render(&lines, exit_code, &path, &plan.extra, None), bytes)
     }
 
     /// Stage A up to the selection: the checks that hand an output back, the raw file, the last
@@ -215,7 +238,7 @@ impl Digester {
             self.note_raw_read(command);
             return Staged::Done(output);
         }
-        if command::reads(command) {
+        if if self.rules.producer { command::produces_reading(command) } else { command::reads(command) } {
             return Staged::Done(output);
         }
         let kind = command::kind(command);
@@ -225,7 +248,9 @@ impl Digester {
         let binary = output.len() >= BINARY_MIN_BYTES && text::is_binary(&output);
         // A successful run is sampled whatever its length, so a short good run counts too.
         let good = self.options.last_good && !binary && exit_code == Some(0);
-        if !binary && (text::line_count(&output) < self.options.min_lines || structured(&output)) {
+        let long = text::line_count(&output) >= self.options.min_lines
+            || (self.rules.min_bytes > 0 && output.len() >= self.rules.min_bytes);
+        if !binary && (!long || structured(&output)) {
             if good {
                 let _ = good::record(&self.good_dir(), command, &text::lines(&output));
             }
@@ -247,7 +272,7 @@ impl Digester {
         if good {
             let _ = good::record(&self.good_dir(), command, &lines);
         }
-        Staged::Lines { lines, known, path }
+        Staged::Lines { lines, known, path, bytes: output }
     }
 
     /// Writes the raw output, named by its content so the same output is one file.

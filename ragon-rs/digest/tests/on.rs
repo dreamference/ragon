@@ -38,7 +38,7 @@ fn a_long_output_becomes_a_digest_and_its_raw_file_keeps_every_line() {
     let output = build_log(1000);
     let digest = String::from_utf8(digester.process("cargo build", output.clone(), Some(101))).unwrap();
     assert!(digest.lines().count() <= MAX_LINES, "{digest}");
-    assert!(digest.starts_with("[digest] 1002 lines, exit code 101."), "{digest}");
+    assert!(digest.starts_with("[digest] 1002 lines, exit code 101; 1 error line, the first at line 501."), "{digest}");
     assert!(digest.contains(" 501: error[E0308]: mismatched types\n 502:   --> src/x.rs:4:5\n"), "{digest}");
     assert!(digest.contains("\"Compiling …\" ×1000"), "{digest}");
     let path = raw_path(&digest);
@@ -56,9 +56,12 @@ fn short_reading_and_structured_outputs_pass_through() {
     let short = build_log(150);
     assert_eq!(digester.process("cargo build", short.clone(), Some(0)), short);
     let long = build_log(1000);
-    for command in ["cat build.log", "rg -n Compiling", "cargo build 2>&1 | tail -n 400", "git log -p"] {
+    for command in ["cat build.log", "rg -n Compiling", "git log -p"] {
         assert_eq!(digester.process(command, long.clone(), Some(0)), long, "{command}");
     }
+    // A build piped to a filter is still a build (answer 29).
+    let piped = Digester::new(&home.join("piped"), ragon_digest::MIN_LINES);
+    assert!(piped.process("cargo build 2>&1 | tail -n 400", long.clone(), Some(0)).starts_with(b"[digest]"));
     let json: Vec<u8> = format!("[\n{}{{}}\n]\n", "{\"a\": 1},\n".repeat(500)).into_bytes();
     assert_eq!(digester.process("curl -s localhost/api", json.clone(), Some(0)), json);
     let diff: Vec<u8> = format!("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,500 +1,500 @@\n{}", "-a\n+b\n".repeat(300)).into_bytes();

@@ -21,6 +21,73 @@ const WARNINGS_SHOWN: usize = 3;
 /// A shape repeated at least this often is named in the repeat summary (answer 44).
 const REPEAT_MIN: usize = 10;
 
+/// The first error lines that get [`Rules::context_before`] lines above them.
+const FIRST_ERRORS: usize = 5;
+
+/// Failing test names the header names before "+N more".
+const NAMES_SHOWN: usize = 8;
+
+/// The rule steps measured on the digest check set (digest-checkset-1, 2026-11-23), each of which
+/// can be switched on alone. [`Rules::TODAY`] is the digest as it was before them; the default is
+/// the set that beat plain head and tail truncation there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rules {
+    /// Hand the output back when the digest is not shorter than it, in bytes.
+    pub shorter_only: bool,
+    /// The first lines, always shown like the last ones (the command's banner, a usage line, the
+    /// first result).
+    pub head: usize,
+    /// The header names the error line count and the failing tests.
+    pub facts: bool,
+    /// Lines shown above each of the first error lines (a traceback's last frame, a compiler's
+    /// command line).
+    pub context_before: usize,
+    /// The first error and its context go first, right under the header; the last lines stay last.
+    pub order: bool,
+    /// Room left after the errors goes to the first lines, then to the lines before the tail.
+    pub fill: bool,
+    /// Only the command that produces a pipeline's output decides whether it is a read: a test
+    /// run piped to `tail` or `grep` is still digested (answer 29).
+    pub producer: bool,
+    /// An output of at least this many bytes is digested whatever its line count (0: off).
+    pub min_bytes: usize,
+    /// A shown line longer than this many characters is cut, its length named (0: off).
+    pub max_line_chars: usize,
+}
+
+impl Rules {
+    /// The digest as it was before the rule steps.
+    pub const TODAY: Rules = Rules {
+        shorter_only: false,
+        head: 0,
+        facts: false,
+        context_before: 0,
+        order: false,
+        fill: false,
+        producer: false,
+        min_bytes: 0,
+        max_line_chars: 0,
+    };
+}
+
+impl Default for Rules {
+    /// The steps that beat plain truncation on the check set: 87% of the marked lines kept against
+    /// 75% for the first and last 30 lines, 77% for [`Rules::TODAY`].
+    fn default() -> Self {
+        Rules {
+            shorter_only: true,
+            head: 3,
+            facts: true,
+            context_before: 2,
+            order: true,
+            fill: true,
+            producer: true,
+            min_bytes: 8000,
+            max_line_chars: 400,
+        }
+    }
+}
+
 /// What a line is to the selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
@@ -163,6 +230,73 @@ pub fn digest_with(lines: &[String], exit_code: Option<i32>, path: &Path, known:
     plan.render(lines, exit_code, path, &plan.extra, None)
 }
 
+/// The names of the tests `lines` report failing (pytest, unittest and Django, Rust, Go), in the
+/// order they first appear.
+pub fn failing_tests(lines: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for line in lines {
+        let trimmed = line.trim();
+        let name = if let Some(rest) = trimmed.strip_prefix("FAILED ").or_else(|| trimmed.strip_prefix("ERROR ")) {
+            // pytest's short summary: `FAILED path::test_x[param] - AssertionError: ...`.
+            rest.split_whitespace().next().filter(|id| id.contains("::")).map(|id| id.rsplit("::").next().unwrap_or(id))
+        } else if let Some(id) = trimmed
+            .strip_suffix(" FAILED")
+            .or_else(|| trimmed.strip_suffix(" ERROR"))
+            .or_else(|| trimmed.split_once(" FAILED ").map(|(id, _)| id))
+        {
+            // pytest -v (`path::test_x FAILED [ 50%]`) and Rust (`test a::b ... FAILED`).
+            match id.strip_prefix("test ").and_then(|rest| rest.strip_suffix(" ...")) {
+                Some(rust) => Some(rust),
+                None => Some(id).filter(|id| id.contains("::") && !id.contains(' ')).map(|id| id.rsplit("::").next().unwrap_or(id)),
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("FAIL: ").or_else(|| trimmed.strip_prefix("ERROR: ")) {
+            // unittest and Django: `FAIL: test_x (module.Class.test_x)`.
+            rest.split_whitespace().next().filter(|_| rest.contains(" ("))
+        } else if let Some(rest) = trimmed.strip_prefix("--- FAIL: ") {
+            rest.split_whitespace().next()
+        } else {
+            None
+        };
+        if let Some(name) = name
+            && !name.is_empty()
+            && !names.iter().any(|known| known == name)
+        {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// The header's facts: the error line count, where the first one is, the failing tests.
+fn facts(lines: &[String], classes: &[Class]) -> String {
+    let errors: Vec<usize> = (0..lines.len()).filter(|index| classes[*index] == Class::Error).collect();
+    let mut facts = match errors.first() {
+        None => "no error lines".to_string(),
+        Some(first) => format!("{} error {}, the first at line {}", errors.len(), plural(errors.len(), "line"), first + 1),
+    };
+    let names = failing_tests(lines);
+    if !names.is_empty() {
+        let shown: Vec<&str> = names.iter().take(NAMES_SHOWN).map(String::as_str).collect();
+        facts.push_str(&format!("; {} failing {}: {}", names.len(), plural(names.len(), "test"), shown.join(", ")));
+        if names.len() > shown.len() {
+            facts.push_str(&format!(" (+{} more)", names.len() - shown.len()));
+        }
+    }
+    facts
+}
+
+fn plural(count: usize, word: &str) -> String {
+    if count == 1 { word.to_string() } else { format!("{word}s") }
+}
+
+/// `line`, cut to `max` characters with its length named (0: as it is).
+fn cut(line: &str, max: usize) -> String {
+    match line.char_indices().nth(max) {
+        Some((at, _)) if max > 0 => format!("{} … [line cut, {} characters]", &line[..at], line.chars().count()),
+        _ => line.to_string(),
+    }
+}
+
 /// What stage A chose for one output, before it is written out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Plan {
@@ -176,6 +310,13 @@ pub struct Plan {
     pub extra: Vec<usize>,
     /// The first of the last lines, which are always shown.
     pub tail_start: usize,
+    /// The header's facts ([`Rules::facts`]).
+    pub facts: Option<String>,
+    /// The lines shown first, right under the header ([`Rules::order`]): the first error and the
+    /// lines around it.
+    pub top: Vec<usize>,
+    /// [`Rules::max_line_chars`].
+    pub max_line_chars: usize,
 }
 
 impl Plan {
@@ -201,8 +342,9 @@ impl Plan {
             self.mandatory.iter().chain(picked).copied().filter(|index| *index < tail_start).collect();
         selected.sort_unstable();
         selected.dedup();
+        let top: Vec<usize> = self.top.iter().copied().filter(|index| selected.binary_search(index).is_ok()).collect();
         let width = total.to_string().len();
-        let numbered = |index: usize| format!("{:>width$}: {}", index + 1, lines[index]);
+        let numbered = |index: usize| format!("{:>width$}: {}", index + 1, cut(&lines[index], self.max_line_chars));
         let (from, to) = match selected.first() {
             Some(first) => (first + 1, (first + 40).min(total)),
             None => (tail_start + 1, total),
@@ -212,9 +354,13 @@ impl Plan {
         } else {
             "lines found by an error search"
         };
+        let shown = if top.is_empty() { shown.to_string() } else { format!("the first error with its lines around it, then {shown}") };
+        let status = match &self.facts {
+            Some(facts) => format!("{}; {facts}", status(exit_code)),
+            None => status(exit_code),
+        };
         let mut out = vec![format!(
-            "[digest] {total} lines, {}. Shown: {shown}, then the last {} lines, each with its line number; the full output is in {} (read lines with: {}).",
-            status(exit_code),
+            "[digest] {total} lines, {status}. Shown: {shown}, then the last {} lines, each with its line number; the full output is in {} (read lines with: {}).",
             total - tail_start,
             path.display(),
             read_hint(path, from.max(1), to.max(1)),
@@ -222,9 +368,10 @@ impl Plan {
         if let Some(retelling) = retelling {
             out.push(format!("[digest] Retelling by the local model, not verified: {retelling}"));
         }
+        out.extend(top.iter().copied().map(numbered));
         out.extend(self.summary.iter().cloned());
         out.extend(self.notes.iter().cloned());
-        out.extend(selected.into_iter().map(numbered));
+        out.extend(selected.into_iter().filter(|index| !top.contains(index)).map(numbered));
         out.extend((tail_start..total).map(numbered));
         debug_assert!(out.len() <= MAX_LINES);
         let mut text = out.join("\n");
@@ -235,6 +382,11 @@ impl Plan {
 
 /// Stage A's choice for `lines`, leaving out what the last good run printed too (`known`).
 pub fn plan(lines: &[String], known: &[bool]) -> Plan {
+    plan_with(lines, known, Rules::TODAY)
+}
+
+/// [`plan`] under `rules`.
+pub fn plan_with(lines: &[String], known: &[bool], rules: Rules) -> Plan {
     let known = |index: usize| known.get(index).copied().unwrap_or(false);
     let total = lines.len();
     let tail_start = total.saturating_sub(TAIL_LINES);
@@ -276,6 +428,11 @@ pub fn plan(lines: &[String], known: &[bool]) -> Plan {
     }
 
     let mut budget = MAX_LINES - 1 - summary.len() - (total - tail_start);
+    // The first lines are held back before the errors are counted; error lines among them are
+    // counted with the errors.
+    let head: Vec<usize> =
+        (0..rules.head.min(tail_start)).filter(|index| classes[*index] != Class::Error && !known(*index)).collect();
+    budget = budget.saturating_sub(head.len());
     let mut chosen: HashSet<usize> = HashSet::new();
     let mut notes: Vec<String> = Vec::new();
 
@@ -328,6 +485,20 @@ pub fn plan(lines: &[String], known: &[bool]) -> Plan {
     budget = budget.saturating_sub(chosen.len());
     let mut mandatory: Vec<usize> = chosen.iter().copied().collect();
     mandatory.sort_unstable();
+    chosen.extend(head);
+
+    // The lines above the first errors, nearest first, while there is room.
+    for depth in 1..=rules.context_before {
+        for anchor in mandatory.iter().take(FIRST_ERRORS) {
+            if budget == 0 {
+                break;
+            }
+            let Some(index) = anchor.checked_sub(depth) else { continue };
+            if !lines[index].trim().is_empty() && !known(index) && chosen.insert(index) {
+                budget -= 1;
+            }
+        }
+    }
 
     // The lines after each error, nearest first, while there is room.
     let anchors: Vec<usize> = {
@@ -363,9 +534,38 @@ pub fn plan(lines: &[String], known: &[bool]) -> Plan {
         }
     }
 
+    // The first lines, then the lines before the tail, while there is room.
+    if rules.fill {
+        let free: Vec<usize> = (0..tail_start).filter(|index| !chosen.contains(index) && !known(*index)).collect();
+        let take = budget.min(free.len());
+        let head = take.div_ceil(2);
+        chosen.extend(free[..head].iter().copied());
+        chosen.extend(free[free.len() - (take - head)..].iter().copied());
+    }
+
+    // The first error and the lines around it, shown first.
+    let top: Vec<usize> = match mandatory.first() {
+        Some(first) if rules.order => {
+            let mut top = vec![*first];
+            let mut up = *first;
+            while let Some(above) = up.checked_sub(1).filter(|above| chosen.contains(above) && *first - above <= rules.context_before) {
+                top.insert(0, above);
+                up = above;
+            }
+            let mut down = *first + 1;
+            while down < tail_start && chosen.contains(&down) && down - first <= CONTEXT_AFTER {
+                top.push(down);
+                down += 1;
+            }
+            top
+        }
+        _ => Vec::new(),
+    };
+
     let mut extra: Vec<usize> = chosen.into_iter().filter(|index| mandatory.binary_search(index).is_err()).collect();
     extra.sort_unstable();
-    Plan { summary, notes, mandatory, extra, tail_start }
+    let facts = rules.facts.then(|| facts(lines, &classes));
+    Plan { summary, notes, mandatory, extra, tail_start, facts, top, max_line_chars: rules.max_line_chars }
 }
 
 #[cfg(test)]
