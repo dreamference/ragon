@@ -1331,6 +1331,48 @@ def test_swe_bench_instance_run_start_container_keeps_only_the_tail_of_dockers_s
     assert created[-3:] == [f"{REPOSITORY}:acme-widget-1", "sleep", "infinity"]
 
 
+def test_swe_bench_instance_run_stop_turn_kills_the_client_that_outlives_the_stop(
+    bench, monkeypatch
+):
+    """A client still running after `docker stop` and its grace period is killed."""
+    run_name, instance = "st1", "acme__widget-1"
+    stops = []
+
+    def fake_run(args, **kwargs):
+        stops.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(bench["docker"], "run", fake_run)
+    store = SweBenchRunStore(run_name)
+    store.write_manifest(
+        {"name": run_name, "model_name_or_path": "model", "created": 0, "images": {}}
+    )
+    run = SweBenchInstanceRun(
+        store,
+        row(instance),
+        f"{REPOSITORY}:acme-widget-1",
+        "model",
+        bench["settings"],
+        Path("/opt/runtime"),
+        "http://[addr][addr]",
+        time.time() + 600,
+    )
+
+    class Stuck:
+        killed = False
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("ragon", timeout)
+
+        def kill(self):
+            self.killed = True
+
+    process = Stuck()
+    run._stop_turn(process)
+    assert stops and stops[0][0] == "stop"
+    assert process.killed
+
+
 def test_refs_that_reach_the_fix_are_removed_before_the_agent_starts(bench):
     run(bench, instances=["acme__widget-1"])
     box = next(iter(bench["docker"].removed.values()))
