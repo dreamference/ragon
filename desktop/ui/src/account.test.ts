@@ -12,7 +12,7 @@ import {
   accountView, checkForm, dismissible, ENGLISH, isGate, refusalText, say, validUsername,
   type AccountState, type AccountView, type SignInAnswer,
 } from "./account";
-import { AccountChip, AccountGate, pressSend, type FormStatus, type Submit } from "./AccountGate";
+import { AccountChip, AccountGate, pressSend, wrapFocus, type FormStatus, type Submit } from "./AccountGate";
 import gateSource from "./AccountGate.tsx?raw";
 import accountSource from "./account.ts?raw";
 import tableText from "../../../ragon-rs/tests/fixtures/account-text.json?raw";
@@ -102,6 +102,20 @@ describe("the form's checks, in the terminal's order", () => {
     // Signing in has no second field and asks nothing of an empty password.
     expect(checkForm("signIn", { username: "ann", password: "", confirm: "other" })).toEqual({ kind: "send", username: "ann" });
     expect(checkForm("signIn", { username: "", password: "pw", confirm: "" })).toMatchObject({ kind: "error", key: "BadName" });
+  });
+});
+
+describe("the keyboard in the dialog", () => {
+  it("Tab and Shift+Tab stay inside it", () => {
+    const items = ["username", "password", "send", "switch"];
+    expect(wrapFocus(items, "switch", false)).toBe("username");
+    expect(wrapFocus(items, "username", true)).toBe("switch");
+    expect(wrapFocus(items, "password", false)).toBeNull();
+    expect(wrapFocus(items, "password", true)).toBeNull();
+    // The focus is on the page behind (the window's own controls): back into the dialog.
+    expect(wrapFocus(items, "sidebar", false)).toBe("username");
+    expect(wrapFocus(items, "sidebar", true)).toBe("switch");
+    expect(wrapFocus([], "sidebar", false)).toBeNull();
   });
 });
 

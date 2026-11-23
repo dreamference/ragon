@@ -2,7 +2,7 @@
 // in, the note of a node whose first account is made elsewhere or that cannot be asked, and the
 // header chip with the account's name and Sign out. Every word is the launcher's string table in
 // the user's language. A labelled modal dialog: the first field has the focus, Enter sends, Escape
-// steps back (or puts a note away), an error is announced and sends the focus to its field, and the
+// steps back (or puts a note away), Tab stays in the dialog, an error is announced and sends the focus to its field, and the
 // password fields are emptied after every answer.
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
@@ -43,6 +43,19 @@ export async function pressSend(
   return { status: { ...status, error: refusalText(text, answer), field, askEmpty: false, busy: false }, clear: true, done: false };
 }
 
+/**
+ * Tab and Shift+Tab stay in the dialog (it is modal, and the gate cannot be put away): from the
+ * last control Tab goes to the first, from the first Shift+Tab goes to the last. Returns the one
+ * to focus, or null when the browser's own order already stays inside.
+ */
+export function wrapFocus<T>(items: readonly T[], active: unknown, back: boolean): T | null {
+  if (items.length === 0) return null;
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (back) return active === first || !items.includes(active as T) ? last : null;
+  return active === last || !items.includes(active as T) ? first : null;
+}
+
 const firstMode = (view: AccountView): FormMode => (view.kind === "createFirst" ? "create" : "signIn");
 
 export function AccountGate(props: {
@@ -71,7 +84,16 @@ export function AccountGate(props: {
   }, [status.askEmpty, status.field, status.mode, status.busy, status.error]);
 
   const close = dismissible(view) ? props.onDismiss : null;
-  const keys = (event: KeyboardEvent) => {
+  const keys = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Tab") {
+      const items = [...event.currentTarget.querySelectorAll<HTMLElement>("input:not([disabled]), button:not([disabled])")];
+      const next = wrapFocus(items, document.activeElement, event.shiftKey);
+      if (next) {
+        event.preventDefault();
+        next.focus();
+      }
+      return;
+    }
     if (event.key !== "Escape") return;
     event.preventDefault();
     if (status.askEmpty) setStatus({ ...status, askEmpty: false, field: "password" });
