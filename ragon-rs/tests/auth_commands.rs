@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use ragon_launcher::auth::commands::{self, Cmd, Io};
+use ragon_launcher::auth::strings::{self, Key, Lang};
 use ragon_launcher::auth::switcher;
 use serde_json::{Value, json};
 
@@ -35,6 +36,8 @@ fn stub(taken: &'static [&'static str]) -> Stub {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = seen.clone();
     std::thread::spawn(move || {
+        // The node needs its first account until one is made; the stub's caller is always local.
+        let mut first_open = true;
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
             let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -73,7 +76,11 @@ fn stub(taken: &'static [&'static str]) -> Stub {
                 }
                 ("POST", "/oauth/token") => (401, json!({"error": "invalid_grant"})),
                 ("POST", "/ragon/v1/users") if taken.contains(&user) => (409, json!({"error": "taken"})),
-                ("POST", "/ragon/v1/users") => (200, json!({"id_token": jwt(user, "admin"), "access_token": "at", "refresh_token": "rt"})),
+                ("POST", "/ragon/v1/users") => {
+                    first_open = false;
+                    (200, json!({"id_token": jwt(user, "admin"), "access_token": "at", "refresh_token": "rt"}))
+                }
+                ("GET", "/ragon/v1/setup") => (200, json!({"setup": first_open, "local": true, "node": "main-box"})),
                 ("GET", "/ragon/v1/users/me") if auth.ends_with("at") => (200, json!({"username": "ann", "role": "user"})),
                 ("GET", "/ragon/v1/users/me") => (200, json!({"username": "bot", "role": "user"})),
                 ("GET", "/ragon/v1/users/me/sessions") => (
@@ -114,6 +121,7 @@ fn the_forms_are_parsed_and_the_codex_ones_forwarded() {
     );
     assert!(commands::parse_login(&args(&["--password-stdin"])).is_err());
     assert_eq!(commands::parse_login(&args(&["status", "--all"])), Ok(Cmd::Status { all: true }));
+    assert_eq!(commands::parse_login(&args(&["status", "--json"])), Ok(Cmd::StatusJson));
     assert_eq!(commands::parse_sessions(&args(&["--revoke", "s1"])), Ok(Cmd::Sessions { revoke: Some("s1".into()) }));
     assert_eq!(commands::parse_logout(&args(&["--all"])), Cmd::LogoutAll);
     let Ok(Cmd::Forward(device)) = commands::parse_login(&args(&["--device-auth"])) else { panic!("device auth is forwarded") };
@@ -302,4 +310,74 @@ async fn pair_says_it_is_not_available_on_windows_and_exits_two() {
     let out = String::from_utf8(out).unwrap();
     assert_eq!(outcome.code, 2, "{out}");
     assert!(out.contains("not available on Windows"), "{out}");
+}
+
+/// `ragon login status --json` against a node that needs its first account, after it is made, and
+/// in another language: the three states of the desktop app's account window
+/// (docs/dev/desktop.md, "Accounts").
+#[tokio::test]
+async fn status_json_draws_the_desktop_account_window() {
+    let (stub, home) = (stub(&[]), tempdir("status-json"));
+    let (outcome, out) = run("login", &["status", "--json"], &stub, &home, "").await;
+    assert_eq!(outcome.code, 0, "{out}");
+    assert_eq!(out.lines().count(), 1, "one JSON line: {out}");
+    let doc: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(
+        (&doc["reachable"], &doc["accounts"], &doc["setup"], &doc["local"], &doc["signedIn"], &doc["user"], &doc["apiKey"]),
+        (&json!(true), &json!(true), &json!(true), &json!(true), &json!(false), &Value::Null, &json!(false))
+    );
+    assert_eq!((&doc["node"], &doc["primary"], &doc["error"]), (&json!("box"), &json!("main-box"), &Value::Null));
+
+    let (made, _) = run("login", &["--create", "--username", "ann", "--password-stdin"], &stub, &home, "right\n").await;
+    assert_eq!(made.code, 0);
+    let doc = commands::status_json(&stub.gate, &home, Lang::Fr).await;
+    assert_eq!((&doc["setup"], &doc["signedIn"], &doc["user"], &doc["role"]), (&json!(false), &json!(true), &json!("ann"), &json!("admin")));
+    assert_eq!((&doc["lang"], &doc["text"]["SignOutAction"]), (&json!("fr"), &json!("Se déconnecter")));
+    let text = doc["text"].as_object().unwrap();
+    assert_eq!(text.len(), Key::ALL.len(), "the whole table, every key by name");
+    assert!(!out.contains("right") && !doc.to_string().contains("right"), "no password in the document");
+}
+
+/// A gate that does not answer still gives a document and status 0; the desktop app draws "not
+/// reachable" from it instead of failing.
+#[tokio::test]
+async fn status_json_of_an_unreachable_gate_is_still_a_document() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let stub = Stub { gate: format!("http://{}", listener.local_addr().unwrap()), seen: Arc::new(Mutex::new(Vec::new())) };
+    drop(listener);
+    let home = tempdir("status-json-down");
+    let (outcome, out) = run("login", &["status", "--json"], &stub, &home, "").await;
+    assert_eq!(outcome.code, 0, "{out}");
+    let doc: Value = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!((&doc["reachable"], &doc["accounts"], &doc["setup"], &doc["signedIn"]), (&json!(false), &json!(false), &json!(false), &json!(false)));
+    assert_eq!(doc["lang"].as_str().map(str::len), Some(2));
+}
+
+/// A node without accounts (every route 404): `accounts` false, so the window shows nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn status_json_of_a_node_without_accounts_says_so() {
+    let home = tempdir("status-json-off");
+    let doc = commands::status_json(&no_accounts_gate(), &home, Lang::En).await;
+    assert_eq!((&doc["accounts"], &doc["setup"], &doc["signedIn"]), (&json!(false), &json!(false), &json!(false)));
+}
+
+/// The desktop app's tests draw the window from `tests/fixtures/account-text.json`: the string
+/// table in every language. It must be the table itself; `RAGON_WRITE_FIXTURES=1` rewrites it.
+#[test]
+fn the_desktop_text_fixture_is_the_string_table() {
+    let mut table = serde_json::Map::new();
+    for lang in Lang::ALL {
+        let text: serde_json::Map<String, Value> =
+            Key::ALL.iter().map(|key| (format!("{key:?}"), Value::String(strings::text(lang, *key).to_string()))).collect();
+        table.insert(lang.code().to_string(), Value::Object(text));
+    }
+    let want = serde_json::to_string_pretty(&Value::Object(table)).unwrap() + "\n";
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/account-text.json");
+    if std::env::var_os("RAGON_WRITE_FIXTURES").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &want).unwrap();
+    }
+    let have = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(have == want, "{} is stale: run this test with RAGON_WRITE_FIXTURES=1", path.display());
 }

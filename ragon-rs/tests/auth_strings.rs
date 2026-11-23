@@ -60,3 +60,16 @@ fn an_unknown_or_missing_language_gives_english() {
 fn placeholders_are_filled() {
     assert_eq!(fmt_in(Lang::De, Key::SignedIn, &["node", "ann"]), "Bei node als ann angemeldet");
 }
+
+#[test]
+fn every_language_has_its_code_and_the_desktop_texts_are_translated() {
+    assert_eq!(Lang::ALL.map(Lang::code), ["en", "pt", "es", "de", "fr"]);
+    for lang in Lang::ALL {
+        assert_eq!(Lang::from_locale(lang.code()), Some(lang));
+    }
+    for key in [Key::CreateFirstTitle, Key::CreateFirstHint, Key::FirstAccountOnNode, Key::EmptyPasswordAsk, Key::AccountsUnreachable] {
+        for lang in [Lang::Pt, Lang::Es, Lang::De, Lang::Fr] {
+            assert_ne!(text(lang, key), text(Lang::En, key), "{key:?} is not translated into {lang:?}");
+        }
+    }
+}

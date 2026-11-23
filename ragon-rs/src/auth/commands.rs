@@ -11,6 +11,7 @@ use anyhow::{Context, bail};
 use base64::Engine;
 use serde_json::{Value, json};
 
+use super::strings::{self, Key, Lang};
 use super::{Info, pin, switcher};
 
 /// The OAuth client id the launcher sends; the primary records and counts it.
@@ -37,6 +38,8 @@ pub enum Cmd {
         /// List every primary's entry.
         all: bool,
     },
+    /// `ragon login status --json`: what the desktop app's account window shows, as one JSON line.
+    StatusJson,
     /// `ragon sessions [--revoke <id>]`.
     Sessions {
         /// The session to revoke, if one was named.
@@ -55,6 +58,7 @@ pub enum Cmd {
 pub fn parse_login(args: &[String]) -> Result<Cmd, String> {
     let has = |flag: &str| args.iter().any(|arg| arg == flag);
     match args.first().map(String::as_str) {
+        Some("status") if has("--json") => return Ok(Cmd::StatusJson),
         Some("status") => return Ok(Cmd::Status { all: has("--all") }),
         Some("sessions") => return parse_sessions(&args[1..]),
         _ => {}
@@ -182,6 +186,60 @@ pub async fn connect(gate: &str, codex_home: &Path) -> anyhow::Result<Primary> {
         info = get_text(&client, &format!("{gate}/ragon/v1/info")).await.as_deref().and_then(super::parse_info);
     }
     Ok(Primary { gate, info, home: codex_home.to_path_buf(), client, ca_pem })
+}
+
+/// `ragon login status --json`: one JSON line the desktop app's account window is drawn from
+/// (docs/dev/desktop.md, "Accounts"), never an error: an unreachable gate fills `error`.
+///
+/// `text` is the string table in `lang`, placeholders unfilled, keyed by the [`Key`] names.
+/// `accounts` is the gate's info, `setup` and `local` its `GET /ragon/v1/setup` (`false` when the
+/// gate has none), `signedIn` whether the stored entry holds a session, `user` and `role` its own claims (read offline, as `ragon
+/// doctor` does), `apiKey` whether the bearer is a key rather than a session.
+pub async fn status_json(gate: &str, codex_home: &Path, lang: Lang) -> Value {
+    match connect(gate, codex_home).await {
+        Ok(primary) => status_doc(&primary, lang).await,
+        Err(error) => {
+            let mut doc = status_base(lang);
+            doc["node"] = Value::String(super::node_label(gate.trim_end_matches('/')));
+            doc["error"] = Value::String(format!("{error:#}"));
+            doc
+        }
+    }
+}
+
+fn status_base(lang: Lang) -> Value {
+    let text: serde_json::Map<String, Value> =
+        Key::ALL.iter().map(|key| (format!("{key:?}"), Value::String(strings::text(lang, *key).to_string()))).collect();
+    json!({
+        "lang": lang.code(), "text": text, "reachable": false, "accounts": false, "setup": false, "local": false,
+        "node": null, "primary": null, "signedIn": false, "user": null, "role": null, "apiKey": false, "error": null,
+    })
+}
+
+/// [`status_json`] for a gate already reached.
+pub async fn status_doc(primary: &Primary, lang: Lang) -> Value {
+    let mut doc = status_base(lang);
+    doc["node"] = Value::String(primary.node_name());
+    doc["primary"] = Value::String(primary.primary_name());
+    if let Some(info) = &primary.info {
+        doc["reachable"] = Value::Bool(true);
+        doc["accounts"] = Value::Bool(info.accounts);
+    }
+    if doc["accounts"] == Value::Bool(true)
+        && let Some((setup, local)) = primary.setup().await
+    {
+        doc["setup"] = Value::Bool(setup);
+        doc["local"] = Value::Bool(local);
+    }
+    let entry = primary.entry();
+    let session = entry.as_ref().and_then(|e| e.pointer("/tokens/access_token")).and_then(Value::as_str).is_some_and(|t| !t.is_empty());
+    if session && let Some((user, role)) = entry.as_ref().and_then(claims_of) {
+        doc["user"] = Value::String(user);
+        doc["role"] = Value::String(role);
+    }
+    doc["signedIn"] = Value::Bool(session);
+    doc["apiKey"] = Value::Bool(!session && primary.bearer().is_some());
+    doc
 }
 
 async fn get_text(client: &reqwest::Client, url: &str) -> Option<String> {
@@ -323,6 +381,14 @@ impl Primary {
         });
         switcher::save_entry(&self.home, &self.primary_id(), entry)?;
         Ok(Ok(()))
+    }
+
+    /// What the gate's `GET /ragon/v1/setup` says: whether the node still needs its first account
+    /// and whether this caller is on the node itself. `None` when the gate has no such page.
+    pub async fn setup(&self) -> Option<(bool, bool)> {
+        let text = get_text(&self.client, &format!("{}/ragon/v1/setup", self.gate)).await?;
+        let doc: Value = serde_json::from_str(&text).ok()?;
+        Some((doc.get("setup")?.as_bool()?, doc.get("local").and_then(Value::as_bool).unwrap_or(false)))
     }
 
     /// The username and role in the id token of this primary's stored entry.
@@ -563,6 +629,10 @@ pub async fn run_login(primary: &Primary, cmd: Cmd, io: &mut Io<'_>) -> anyhow::
                 code
             }
         }
+        Cmd::StatusJson => {
+            writeln!(io.out, "{}", status_doc(primary, Lang::detect()).await)?;
+            0
+        }
         Cmd::Sessions { revoke } => sessions(primary, revoke.as_deref(), io).await?,
         Cmd::LogoutAll => logout_all(primary, io).await?,
         Cmd::Forward(args) => return Ok(Outcome { code: 0, forward: Some(with_issuer(args, &primary.gate)) }),
@@ -646,6 +716,10 @@ pub async fn run(which: &str, args: &[String], gate: &str, codex_home: &Path, io
         for line in status_all_lines(codex_home) {
             writeln!(io.out, "{line}")?;
         }
+        return Ok(Outcome::done(0));
+    }
+    if let Cmd::StatusJson = cmd {
+        writeln!(io.out, "{}", status_json(gate, codex_home, Lang::detect()).await)?;
         return Ok(Outcome::done(0));
     }
     let primary = connect(gate, codex_home).await?;

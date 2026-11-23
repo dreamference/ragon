@@ -48,6 +48,11 @@ impl Lang {
             .unwrap_or(Lang::En)
     }
 
+    /// The language's two-letter code (`en`, `pt`, `es`, `de`, `fr`).
+    pub fn code(self) -> &'static str {
+        ["en", "pt", "es", "de", "fr"][self.index()]
+    }
+
     fn index(self) -> usize {
         self as usize
     }
@@ -251,6 +256,41 @@ table! {
     NoAccounts => [
         "This node has no accounts.", "Este nó não tem contas.", "Este nodo no tiene cuentas.",
         "Dieser Knoten hat keine Konten.", "Ce nœud n'a aucun compte."],
+    CreateFirstTitle => [
+        "Create the first account on {0}", "Criar a primeira conta em {0}", "Crear la primera cuenta en {0}",
+        "Das erste Konto auf {0} anlegen", "Créer le premier compte sur {0}"],
+    CreateFirstHint => [
+        "The first account is the admin of {0}. Choose a username and a password.",
+        "A primeira conta é a administradora de {0}. Escolha um nome de usuário e uma senha.",
+        "La primera cuenta es la administradora de {0}. Elija un nombre de usuario y una contraseña.",
+        "Das erste Konto ist der Admin von {0}. Wählen Sie einen Benutzernamen und ein Passwort.",
+        "Le premier compte est l'administrateur de {0}. Choisissez un nom d'utilisateur et un mot de passe."],
+    FirstAccountOnNode => [
+        "{0} has no accounts yet. Its first account is made on {0} itself: run ragon in a terminal there.",
+        "{0} ainda não tem contas. A primeira conta é criada no próprio {0}: execute ragon num terminal lá.",
+        "{0} aún no tiene cuentas. La primera cuenta se crea en el propio {0}: ejecute ragon en una terminal allí.",
+        "{0} hat noch keine Konten. Das erste Konto wird auf {0} selbst angelegt: starten Sie dort ragon in einem Terminal.",
+        "{0} n'a encore aucun compte. Le premier compte se crée sur {0} même : lancez ragon dans un terminal là-bas."],
+    EmptyPasswordAsk => [
+        "Continue without a password?", "Continuar sem senha?", "¿Continuar sin contraseña?",
+        "Ohne Passwort fortfahren?", "Continuer sans mot de passe ?"],
+    AccountsUnreachable => [
+        "The accounts server cannot be reached.", "Não foi possível contactar o servidor de contas.",
+        "No se puede contactar con el servidor de cuentas.", "Der Kontenserver ist nicht erreichbar.",
+        "Le serveur de comptes est injoignable."],
+    AccountLabel => ["Account", "Conta", "Cuenta", "Konto", "Compte"],
+    SignInAction => ["Sign in", "Entrar", "Iniciar sesión", "Anmelden", "Se connecter"],
+    CreateAction => ["Create account", "Criar conta", "Crear cuenta", "Konto anlegen", "Créer le compte"],
+    CreateInstead => [
+        "Create an account", "Criar uma conta", "Crear una cuenta", "Ein Konto anlegen", "Créer un compte"],
+    SignInInstead => [
+        "I already have an account", "Já tenho uma conta", "Ya tengo una cuenta", "Ich habe schon ein Konto",
+        "J'ai déjà un compte"],
+    SignOutAction => ["Sign out", "Sair", "Cerrar sesión", "Abmelden", "Se déconnecter"],
+    ContinueAction => ["Continue", "Continuar", "Continuar", "Fortfahren", "Continuer"],
+    BackAction => ["Back", "Voltar", "Atrás", "Zurück", "Retour"],
+    NotNowAction => ["Not now", "Agora não", "Ahora no", "Nicht jetzt", "Pas maintenant"],
+    RetryAction => ["Try again", "Tentar novamente", "Reintentar", "Erneut versuchen", "Réessayer"],
 }
 
 /// The text of `key` in `lang`, placeholders unfilled.
