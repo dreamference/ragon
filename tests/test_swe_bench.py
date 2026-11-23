@@ -6472,3 +6472,84 @@ def test_swe_bench_report_review_summary_counts_ran_skipped_and_log_tokens():
         "seconds": [9, 0],
         "tokens": {"input_tokens": 15, "cached_input_tokens": 2, "output_tokens": 4},
     }
+
+
+def test_swe_bench_instance_run_run_collects_the_patch_and_writes_state_and_a_prediction(
+    tmp_path, monkeypatch
+):
+    """`run()` on a healthy instance: the patch is collected, the state written, one prediction."""
+    instance_id = "acme__widget-1"
+    patch = "diff --git a/widget.py b/widget.py\n+    return 2  # FIX\n"
+    log = tmp_path / "log.jsonl"
+    log.write_text('{"type": "thread.started", "thread_id": "s-1"}\n')
+    monkeypatch.setattr(swe_bench_settings, "RESULTS_DIR", tmp_path / "results")
+    store = SweBenchRunStore("run-direct")
+    settings = SweBenchSettings({"task_timeout": "45m"})
+    run_id = SweBenchInstanceRun(
+        store,
+        row(instance_id),
+        f"{REPOSITORY}:{instance_id}",
+        "model",
+        settings,
+        tmp_path / "runtime",
+        "http://172.30.0.1:8000/v1",
+        time.time() + 600,
+    )
+    run_id.log_path = log
+
+    def fill_scratch():
+        # The agent's outputs in the scratch: written after `_start_container` cleared it,
+        # as the container writes them during the run.
+        scratch = run_id.scratch
+        (scratch / "last.txt").write_text("The widget is fixed and its tests pass.")
+        (scratch / "patch.diff").write_text(patch)
+        (scratch / "binary-files").write_text("bin/blob\n")
+
+    calls = []
+
+    def fake_run(cls, args, *a, **k):
+        calls.append(list(args))
+        if args[0] == "run":
+            fill_scratch()
+        elif args[0] == "exec":
+            script = args[-1]
+            if script == SCRUB_SCRIPT:
+                return subprocess.CompletedProcess(args, 0, "note: nothing to scrub\n", "")
+            if script == PREPARE_SCRIPT:
+                return subprocess.CompletedProcess(args, 0, "tree: equal\n", "")
+            if script == COLLECT_SCRIPT:
+                return subprocess.CompletedProcess(args, 1, "", "collect failed")
+            return subprocess.CompletedProcess(args, 1, "", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(SweBenchDocker, "run", classmethod(fake_run))
+    from dreamference.node.service_key import ServiceKey
+
+    monkeypatch.setattr(ServiceKey, "environment", classmethod(lambda cls: {}))
+
+    def fake_fix_turn(self, state, turn_prompt, task_prompt, resume):
+        # The turn would have ended with a session to resume.
+        self.session = "s-1"
+        return "ok"
+
+    monkeypatch.setattr(SweBenchInstanceRun, "_fix_turn", fake_fix_turn)
+    status = run_id.run()
+    assert status == "done"
+    verbs = [call[0] for call in calls]
+    # No timeout: no `start` to wake the container again; the final `rm` removes it.
+    assert verbs[0] == "rm" and verbs[-1] == "rm" and "start" not in verbs, verbs
+    state = store.state(instance_id)
+    assert state["status"] == "done" and state["base_tree_equal"] is True
+    # The collect script's failure is noted, but the patch is still submitted.
+    assert "note: nothing to scrub" in state["notes"]
+    assert any("collecting the patch failed" in note for note in state["notes"])
+    assert state["session"] == "s-1" and state["nudges"] == 0 and state["nudge_kinds"] == []
+    assert state["apply_patch"] == {"form": "auto", "calls": 0}
+    assert state["binary_files"] == ["bin/blob"]
+    assert store.predictions() == [
+        {
+            "instance_id": instance_id,
+            "model_name_or_path": "model",
+            "model_patch": patch,
+        }
+    ]
