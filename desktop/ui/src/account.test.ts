@@ -4,8 +4,6 @@
 // the test renderer draws them: a labelled modal dialog, the error announced at its field, no
 // password in the markup. With RAGON_ACCOUNT_SHOTS=<dir> it also writes each face as a page with
 // the window's stylesheet, for the screenshots of the report.
-import fs from "node:fs";
-import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -15,10 +13,12 @@ import {
   type AccountState, type AccountView, type SignInAnswer,
 } from "./account";
 import { AccountChip, AccountGate, pressSend, type FormStatus, type Submit } from "./AccountGate";
+import gateSource from "./AccountGate.tsx?raw";
+import accountSource from "./account.ts?raw";
+import tableText from "../../../ragon-rs/tests/fixtures/account-text.json?raw";
+import css from "./styles.css?raw";
 
-const TABLES = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "..", "..", "..", "ragon-rs", "tests", "fixtures", "account-text.json"), "utf8"),
-) as Record<string, Record<string, string>>;
+const TABLES = JSON.parse(tableText) as Record<string, Record<string, string>>;
 const LANGS = ["en", "pt", "es", "de", "fr"];
 
 const state = (over: Partial<AccountState> = {}, lang = "en"): AccountState => ({
@@ -54,8 +54,8 @@ describe("which face the window shows", () => {
 
 describe("the words", () => {
   const USED = new Set(
-    ["account.ts", "AccountGate.tsx"].flatMap((file) =>
-      [...fs.readFileSync(path.join(__dirname, file), "utf8").matchAll(/say\([^,]+, (?:create \? |first \? )?"(\w+)"(?: : "(\w+)")?/g)].flatMap((m) => [m[1], m[2]]).filter(Boolean),
+    [accountSource, gateSource].flatMap((source) =>
+      [...source.matchAll(/say\([^,]+, (?:create \? |first \? )?"(\w+)"(?: : "(\w+)")?/g)].flatMap((m) => [m[1], m[2]]).filter(Boolean),
     ),
   );
 
@@ -149,7 +149,7 @@ describe("pressing the dialog's button", () => {
 
 const noop = () => {};
 const gate = (s: AccountState, initial?: Partial<FormStatus>) =>
-  renderToStaticMarkup(createElement(AccountGate, { state: s, view: accountView(s), submit: async () => ({ ok: false, code: null, message: "" }), onSignedIn: noop, onRetry: noop, onDismiss: noop, initial }));
+  renderToStaticMarkup(createElement(AccountGate, { state: s, view: accountView(s), submit: async (): Promise<SignInAnswer> => ({ ok: false, code: null, message: "" }), onSignedIn: noop, onRetry: noop, onDismiss: noop, initial }));
 const chip = (s: AccountState) => {
   const view = accountView(s);
   if (view.kind !== "signedIn") throw new Error("not signed in");
@@ -207,10 +207,17 @@ describe("the faces as drawn", () => {
     expect(html).toContain(`aria-label="${TABLES.es.AccountLabel}"`);
   });
 
-  it.skipIf(!process.env.RAGON_ACCOUNT_SHOTS)("writes each face as a page for the screenshots", () => {
-    const dir = process.env.RAGON_ACCOUNT_SHOTS as string;
+  // The window has no Node types: the shots' writer takes Node's fs at run time, by name.
+  const shots = import.meta.env.RAGON_ACCOUNT_SHOTS as string | undefined;
+  it.skipIf(!shots)("writes each face as a page for the screenshots", async () => {
+    const dir = shots as string;
+    const fsName = "node:fs";
+    const fs = (await import(/* @vite-ignore */ fsName)) as {
+      mkdirSync(dir: string, options: { recursive: boolean }): void;
+      writeFileSync(file: string, text: string): void;
+      readdirSync(dir: string): string[];
+    };
     fs.mkdirSync(dir, { recursive: true });
-    const css = fs.readFileSync(path.join(__dirname, "styles.css"), "utf8");
     const page = (body: string) => `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body><div id="root">${body}</div></body></html>`;
     const header = (inner: string) => `<header class="topbar" style="display:flex;gap:8px;padding:10px 14px;justify-content:flex-end">${inner}</header>`;
     const faces: Record<string, string> = {
@@ -220,7 +227,7 @@ describe("the faces as drawn", () => {
       "2-sign-in-error": gate(state(), { error: TABLES.en.WrongCredentials, field: "password" }),
       "3-signed-in": header(chip(state({ signedIn: true, user: "ann", role: "admin" }))),
     };
-    for (const [name, body] of Object.entries(faces)) fs.writeFileSync(path.join(dir, `${name}.html`), page(body));
+    for (const [name, body] of Object.entries(faces)) fs.writeFileSync(`${dir}/${name}.html`, page(body));
     expect(fs.readdirSync(dir).filter((file) => file.endsWith(".html"))).toHaveLength(5);
   });
 });
