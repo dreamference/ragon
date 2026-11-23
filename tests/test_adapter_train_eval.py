@@ -125,6 +125,53 @@ def test_run_without_hosts_says_what_is_missing(
     assert "eval_hosts" in capsys.readouterr().out
 
 
+def test_adapter_train_eval_run_writes_the_report_and_returns_by_passed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = {
+        "eval_hosts": {
+            "base": "http://base",
+            "adapter": "http://adapter",
+            "adapter_speculation_off": "http://adapter-off",
+            "adapter_base_drafter": "http://adapter-bd",
+            "not_a_host_key": "http://other",
+        }
+    }
+    (tmp_path / "train-config.json").write_text(json.dumps(config), encoding="utf-8")
+
+    class FakeRun:
+        directory = tmp_path
+
+    seen: dict[str, Any] = {}
+
+    def fake_init(self: Any, out_dir: Path, hosts: dict[str, str], **kw: Any) -> None:
+        seen["out_dir"] = out_dir
+        seen["hosts"] = hosts
+
+    def fake_holdout_runner(out_dir: Path, config: dict[str, Any]) -> None:
+        seen["runner_out_dir"] = out_dir
+        seen["runner_config"] = config
+        return
+
+    monkeypatch.setattr(
+        AdapterTrainEval, "generate_holdout_runner", staticmethod(fake_holdout_runner)
+    )
+    monkeypatch.setattr(AdapterTrainEval, "__init__", fake_init)
+    monkeypatch.setattr(AdapterTrainEval, "execute", lambda self: {"passed": True})
+    monkeypatch.setattr(
+        AdapterTrainEval, "report_path", lambda self, name: tmp_path / "eval" / name
+    )
+
+    assert AdapterTrainEval.run(FakeRun()) == 0
+    assert seen["out_dir"] == tmp_path
+    assert "not_a_host_key" not in seen["hosts"]
+    assert seen["runner_out_dir"] == tmp_path
+    assert seen["runner_config"] == config
+    assert "Eval report" in capsys.readouterr().out
+
+
 def test_grade_holdout_resolves_a_task_when_any_attempt_passes() -> None:
     class FakeGenerate:
         attempts = 2
