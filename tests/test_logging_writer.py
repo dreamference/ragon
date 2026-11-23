@@ -439,3 +439,10 @@ def test_log_stream_sink_prefixes_the_priority_under_journald_and_defaults_to_st
     ]
     LogStreamSink().write("plain line")
     assert capsys.readouterr().err == "plain line\n"
+
+
+def test_log_field_error_takes_an_exception_class_and_message():
+    (field,) = LogField.error(ValueError("boom"))
+    assert field.type == "error"
+    assert field.key == "error"
+    assert field.value == {"class": "ValueError", "message": "boom"}
