@@ -337,6 +337,25 @@ def test_every_gb10_machine_is_found_by_its_gpu_and_named_by_its_firmware(tmp_pa
     assert HardwareManager.detect_gb10_hardware().os_name == "DGX OS 7.5.0 (Ubuntu 24.04.4 LTS)"
 
 
+def test_hardware_manager_gb10_on_pci_reports_a_missing_or_unreadable_bus(tmp_path, monkeypatch):
+    # The bus directory itself may not exist on a non-Linux host or in a sandbox: the check must
+    # simply say no, and a directory of devices that is not the GB10's GPU says no as well.
+    from dreamference.hardware import hardware_manager
+    from dreamference.hardware.hardware_manager import HardwareManager
+
+    monkeypatch.setattr(hardware_manager, "PCI_DEVICES_DIR", str(tmp_path / "pci"))
+    assert HardwareManager.gb10_on_pci() is False
+    pci = tmp_path / "pci"
+    pci.mkdir()
+    for entry in ("0000:00:00.0", "000f:01:00.0"):
+        (pci / entry).mkdir()
+        (pci / entry / "vendor").write_text("0x10de\n")
+        (pci / entry / "device").write_text("0x22ce\n")  # a root port, not the GB10's GPU
+    assert HardwareManager.gb10_on_pci() is False
+    (pci / "000f:01:00.0" / "device").write_text("0x2e12\n")
+    assert HardwareManager.gb10_on_pci() is True
+
+
 def test_only_a_gb10_qualifies(monkeypatch, tmp_path):
     # A discrete Blackwell card and a large server are not GB10s: the recipes target SM121's unified memory.
     from dreamference.hardware import hardware_manager
