@@ -498,6 +498,32 @@ def test_rollout_messages_mirror_the_servers_request_conversion(tmp_path):
         AdapterTrainGenerate.rollout_messages(rollout)
 
 
+def test_adapter_train_generate_chat_message_reasoning_item_yields_assistant_or_none():
+    """A reasoning item becomes an assistant message with its text, or is dropped when empty."""
+    with_summary = {
+        "type": "reasoning",
+        "summary": [
+            {"type": "summary_text", "text": "First step."},
+            {"type": "summary_text", "text": "Second step."},
+        ],
+    }
+    assert AdapterTrainGenerate.chat_message(with_summary) == {
+        "role": "assistant",
+        "reasoning_content": "First step.\nSecond step.",
+    }
+    with_content = {
+        "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": ""}],
+        "content": [{"type": "reasoning_text", "text": "Worked it out."}],
+    }
+    assert AdapterTrainGenerate.chat_message(with_content) == {
+        "role": "assistant",
+        "reasoning_content": "Worked it out.",
+    }
+    empty = {"type": "reasoning", "summary": []}
+    assert AdapterTrainGenerate.chat_message(empty) is None
+
+
 def test_snapshot_dir_returns_the_revision_when_named(tmp_path, monkeypatch):
     """The revision named by the sglang recipe selects the snapshot without listing the cache."""
     revision = "16e768e7d0461b0b86e565ecedd08a24eca53e9a"
