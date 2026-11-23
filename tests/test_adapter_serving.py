@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import ClassVar
+from typing import ClassVar, Final
 
 import pytest
 from test_model_gate import stop_gate
@@ -210,6 +210,54 @@ def test_an_adapters_check_is_remembered_until_its_files_pin_or_base_change(monk
     assert len(calls) == 4
     AdapterServing.problem(entry, base)
     assert len(calls) == 4
+
+
+MISSING_FILE_STAMP: Final[tuple[str, int, int]] = ("gone", -1, -1)
+
+
+class _Stamp:
+    """A file's remembered pin: its name, size and mtime."""
+
+    def __init__(self, relative, size, mtime_ns):
+        self.relative = relative
+        self.st_size = size
+        self.st_mtime_ns = mtime_ns
+
+
+def test_adapter_serving_problem_a_missing_file_gets_the_absent_stamp(monkeypatch):
+    AdapterServing.checked.clear()
+    entry = install()
+    seen = []
+    real_folder = AdapterInstaller.folder_of(entry)
+
+    class Missing:
+        def __init__(self, relative):
+            self.relative = relative
+
+        def stat(self):
+            if self.relative == "gone":
+                raise FileNotFoundError(self.relative)
+            stamp = (real_folder / self.relative).stat(follow_symlinks=False)
+            return _Stamp(self.relative, stamp.st_size, stamp.st_mtime_ns)
+
+    class MissingFolder:
+        def __truediv__(self, relative):
+            return Missing(str(relative))
+
+    monkeypatch.setattr(
+        AdapterInstaller, "folder_of", classmethod(lambda cls, item: MissingFolder())
+    )
+    monkeypatch.setattr(
+        "dreamference.hardware.adapter_installer.AdapterInstaller.verify",
+        classmethod(lambda cls, item, base: seen.append(item["name"]) or None),
+    )
+    base = AdapterVerifier.base_for(DEFAULT_MODEL_ALIAS)
+    problem = AdapterServing.problem({**entry, "files": {**entry["files"], "gone": "x"}}, base)
+    assert problem is None
+    assert len(seen) == 1
+    # The absent file gets its stamp without a stat, and the pin is remembered under it.
+    assert AdapterServing.problem({**entry, "files": {**entry["files"], "gone": "x"}}, base) is None
+    assert len(seen) == 1
 
 
 def test_the_engine_is_given_at_start_only_as_many_adapters_as_it_holds():
