@@ -347,7 +347,7 @@ The first start after the 0.9.9 upgrade, on a machine whose home has no `auth.js
 Ragon now has accounts. Sign in or create one on <node name>; your repositories and settings are unchanged. Phones need to pair again.
 ```
 
-Enter continues to the choices. There is no "later": the installers are non-interactive, and the first start is Codex's onboarding moment (owner 2026-11-19). A fresh install shows no note, only the choices.
+Enter continues to the choices. A node that has no account yet opens at the first account's form instead (§8.6). There is no "later": the installers are non-interactive, and the first start is Codex's onboarding moment (owner 2026-11-19). A fresh install shows no note, only the choices.
 
 ### 8.2 The two-choice screen
 
@@ -396,6 +396,20 @@ Codex's status line has no account item (`tui/src/bottom_pane/status_line_setup.
 ### 8.5 Languages
 
 The login, account and session strings ship in English, Portuguese, Spanish, German and French in 0.9.9 (owner 2026-11-19). The launcher has no string table today; the only translated strings in the repository are the website's (`website/i18n/`). **Default** (open question 8): one table in `ragon-rs` for the strings this spec adds, keyed by message id, the language taken from `LC_ALL`, `LC_MESSAGES` or `LANG` and English as the fallback; the desktop app and `ragon web` read the same table through the launcher. Codex's own strings stay in English.
+
+### 8.6 The first account
+
+A node with accounts on and no account yet (every 0.9.8.1 node on its first start after the 0.9.9 upgrade, and every fresh install) asks for its first account at the first interactive start (owner 2026-11-23, "sign-in with setup"):
+
+- **The terminal launcher on the node** opens the screen at the create form, not at the note or the choices: "<node> has no accounts yet. Create the first one: it is the admin of <node>. Phones need to pair again." Name, password and the password again, with the rules of §8.2 and of `ragon-admin node user add` (an empty password asks once). The account is created on this node, which becomes the network's primary (`ragon-admin node migrate`'s steps: primary role, advertised, its service account), the user is signed in, and the start continues with the first-admin line of §8.2.
+- **`ragon-admin node user add <name>`** on the node does the same for its first account: it makes the node the primary, or says to run `ragon-admin node migrate` when it cannot. On a pinned secondary it changes nothing about the role.
+- **A launcher on another machine** whose node has no account yet gets one plain line and runs without sign-in, as the node serves without it in 0.9.9 (§10): "<node> has no accounts yet. Its first account is made on <node> itself: run ragon in a terminal there, or ragon-admin node user add <name>. Running without sign-in until then." It never shows a form the node would refuse.
+- **`ragon web` and the desktop app** in 0.9.9-rc.1 show the node's refusal as the same plain sentence when a create is tried from them; their own first-account form is an rc.2 item.
+- **Unattended starts** (`ragon exec`, the route rows, Night Shift, SWE-bench, the egress audit, CI) never ask: only an interactive start reads the setup document, so they behave as before.
+
+How the node knows: `GET /ragon/v1/setup` (public) answers `{"setup": <no account yet>, "local": <the caller is on this machine>, "node": <name>}`. The gate strips any `X-Ragon-Local` a client sends and adds `X-Ragon-Local: 1` only for a caller on the node: a loopback peer, or one whose address is the address it reached (a launcher that reaches its own node by its LAN name). The accounts service listens on 127.0.0.1 only and refuses the first account without that mark: it answers `403` with `first_account_on_node` and the sentence above. After the first account the rules of §9 apply unchanged. The service runs as the user unit `ragon-accounts.service`, which `ragon-admin server start` installs and starts when accounts are on (`--secondary` on a pinned secondary).
+
+**Phones.** The first account binds no old pairing: all of them were dropped at the upgrade with a backup kept (§14.1). The user pairs again at once with `ragon chat pair <kind>` or `ragon signal setup`; an unpaired phone is told how once a day.
 
 ## 9. The node side: store, identity, rules, audit
 

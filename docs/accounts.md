@@ -24,6 +24,27 @@ display name. The first account created on a primary is its admin and the screen
 If the node cannot reach its primary, the screen says so and offers `r` to retry. There is no
 start without an account.
 
+### The first account on a node
+
+A node that has no account yet, which is every node on its first start after the 0.9.9 upgrade,
+asks for one the first time you run `ragon` in a terminal **on that node**. The screen opens at
+"Create an account": a name, a password and the password again (an empty password is allowed
+after one question). That account is the node's admin. The node becomes the primary of your
+network, you are signed in, and `ragon` starts as usual. The same screen says that phones need to
+pair again: the upgrade dropped every old phone pairing (a backup is kept). Pair each phone with
+`ragon chat pair telegram`, `discord` or `matrix`, or `ragon signal setup`.
+
+`ragon-admin node user add <name>` on the node makes the first account too.
+
+From any other machine, `ragon` says where the first account is made and starts without sign-in
+until it exists:
+
+```text
+box has no accounts yet. Its first account is made on box itself: run ragon in a terminal there, or ragon-admin node user add <name>. Running without sign-in until then.
+```
+
+`ragon exec`, Night Shift and other runs without a terminal never ask.
+
 ## Sign in from the command line
 
 ```bash
