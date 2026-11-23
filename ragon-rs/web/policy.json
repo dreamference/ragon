@@ -213,5 +213,20 @@
         "additionalProperties": false
       }
     }
+  },
+  "desktopAccount": {
+    "comment": "The desktop app's own account messages: its window asks its main process for the account state, to sign in or create an account, and to sign out (specs/DREAMFERENCE_AUTH.md \u00a78.3). They never reach the app-server as the window wrote them, and ragon web has no such messages. A message carries `type` and exactly the fields named here, each one: a list names the values it may take, `text` is a non-empty string of at most 256 characters with no control character, `secret` a string of at most 1024 characters (empty allowed: an account may have no password) that the main process sends only to the app-server's `account/ragon/signIn` and never logs. A refusal names the message and the field, never a value. Cases: vectors/account.json.",
+    "messages": {
+      "account/state": {},
+      "account/signIn": {
+        "mode": [
+          "signIn",
+          "create"
+        ],
+        "username": "text",
+        "password": "secret"
+      },
+      "account/signOut": {}
+    }
   }
 }

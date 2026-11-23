@@ -1,0 +1,125 @@
+{
+  "comment": "Conformance cases for policy.json's `desktopAccount` (specs/DREAMFERENCE_AUTH.md \u00a78.3): the messages the desktop window may send its main process about the account. Every implementation runs every case: an accepted message is forwarded unchanged, a refused one is answered with an error that names no value it carried (the case's password must not appear in it). ragon-rs/web/src/policy.rs and desktop/electron/src/policy.ts both run them.",
+  "cases": [
+    {
+      "name": "the account state is asked with nothing else",
+      "message": {"type": "account/state"},
+      "accept": true
+    },
+    {
+      "name": "signing out carries nothing else",
+      "message": {"type": "account/signOut"},
+      "accept": true
+    },
+    {
+      "name": "a sign-in names its mode, user name and password",
+      "message": {"type": "account/signIn", "mode": "signIn", "username": "ada", "password": "correct horse"},
+      "accept": true
+    },
+    {
+      "name": "creating an account is a sign-in in the create mode",
+      "message": {"type": "account/signIn", "mode": "create", "username": "ada", "password": "pw"},
+      "accept": true
+    },
+    {
+      "name": "an account without a password sends an empty one",
+      "message": {"type": "account/signIn", "mode": "create", "username": "ada", "password": ""},
+      "accept": true
+    },
+    {
+      "name": "a user name of 256 characters is still text",
+      "message": {"type": "account/signIn", "mode": "signIn", "username": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "password": "pw"},
+      "accept": true
+    },
+    {
+      "name": "a password of 1024 characters is still a secret",
+      "message": {"type": "account/signIn", "mode": "signIn", "username": "ada", "password": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"},
+      "accept": true
+    },
+    {
+      "name": "a message the policy does not name is refused",
+      "message": {"type": "account/password", "username": "ada", "password": "pw"},
+      "accept": false
+    },
+    {
+      "name": "a message with no type is refused",
+      "message": {"mode": "signIn", "username": "ada", "password": "pw"},
+      "accept": false
+    },
+    {
+      "name": "a message that is not an object is refused",
+      "message": ["account/state"],
+      "accept": false
+    },
+    {
+      "name": "the state asked with a field is refused",
+      "message": {"type": "account/state", "password": "pw"},
+      "accept": false
+    },
+    {
+      "name": "signing out with a field is refused",
+      "message": {"type": "account/signOut", "username": "ada"},
+      "accept": false
+    },
+    {
+      "name": "a sign-in with an extra field is refused",
+      "message": {"type": "account/signIn", "mode": "signIn", "username": "ada", "password": "pw", "remember": true},
+      "accept": false
+    },
+    {
+      "name": "a sign-in with a second password is refused: the window compares the two",
+      "message": {"type": "account/signIn", "mode": "create", "username": "ada", "password": "pw", "confirm": "pw"},
+      "accept": false
+    },
+    {
+      "name": "a sign-in without a password is refused",
+      "message": {"type": "account/signIn", "mode": "signIn", "username": "ada"},
+      "accept": false
+    },
+    {
+      "name": "a sign-in without a mode is refused",
+      "message": {"type": "account/signIn", "username": "ada", "password": "pw"},
+      "accept": false
+    },
+    {
+      "name": "a mode the policy does not list is refused",
+      "message": {"type": "account/signIn", "mode": "admin", "username": "ada", "password": "pw"},
+      "accept": false
+    },
+    {
+      "name": "an empty user name is refused",
+      "message": {"type": "account/signIn", "mode": "signIn", "username": "", "password": "pw"},
+      "accept": false
+    },
+    {
+      "name": "a user name over 256 characters is refused",
+      "message": {"type": "account/signIn", "mode": "signIn", "username": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "password": "pw"},
+      "accept": false
+    },
+    {
+      "name": "a user name with a control character is refused",
+      "message": {"type": "account/signIn", "mode": "signIn", "username": "ada\nroot", "password": "pw"},
+      "accept": false
+    },
+    {
+      "name": "a user name that is not a string is refused",
+      "message": {"type": "account/signIn", "mode": "signIn", "username": 7, "password": "pw"},
+      "accept": false
+    },
+    {
+      "name": "a password over 1024 characters is refused",
+      "message": {"type": "account/signIn", "mode": "signIn", "username": "ada", "password": "ppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"},
+      "accept": false
+    },
+    {
+      "name": "a password that is not a string is refused",
+      "message": {"type": "account/signIn", "mode": "signIn", "username": "ada", "password": {"text": "pw"}},
+      "accept": false
+    },
+    {
+      "name": "a password that is a list is refused",
+      "message": {"type": "account/signIn", "mode": "signIn", "username": "ada", "password": ["pw"]},
+      "accept": false
+    }
+  ]
+}

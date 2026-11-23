@@ -18,6 +18,16 @@
       "accept": false
     },
     {
+      "name": "the desktop sign-in request is the app's own: a window cannot send it",
+      "message": {"id": 3, "method": "account/ragon/signIn", "params": {"mode": "signIn", "username": "ada", "password": "pw"}},
+      "accept": false
+    },
+    {
+      "name": "signing out is the app's own: a window cannot send it",
+      "message": {"id": 3, "method": "account/logout"},
+      "accept": false
+    },
+    {
       "name": "remote control is refused",
       "message": {"id": 4, "method": "remoteControl/enable", "params": {}},
       "accept": false

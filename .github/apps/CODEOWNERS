@@ -213,6 +213,7 @@
 /ragon-rs/tests/auth_strings.rs                   @dreamference/security
 /ragon-rs/tests/auth_device.rs                    @dreamference/security
 /ragon-rs/web/policy.json                        @dreamference/security @dreamference/web @dreamference/desktop
+/ragon-rs/web/vectors/account.json               @dreamference/security @dreamference/web @dreamference/desktop
 /codex-patches/0013-*                           @dreamference/security @dreamference/agent
 /codex-patches/0015-*                           @dreamference/security @dreamference/agent
 /codex-patches/0016-*                           @dreamference/security @dreamference/agent

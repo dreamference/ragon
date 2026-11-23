@@ -151,6 +151,62 @@ pub struct Policy {
     /// owner's decision 5). The policy, not the UI, writes their definitions as `dynamicTools`.
     pub window_tools_field: String,
     pub window_tools: BTreeMap<String, Value>,
+    /// The desktop window's account messages to its main process (`desktopAccount`), each with
+    /// the fields it carries; `ragon web` has none, the desktop app vets them with the same cases.
+    pub desktop_account: BTreeMap<String, BTreeMap<String, AccountField>>,
+}
+
+/// What one field of an account message may hold (policy.json `desktopAccount`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccountField {
+    /// One of the listed values.
+    OneOf(BTreeSet<String>),
+    /// A non-empty string of at most [`ACCOUNT_TEXT_MAX`] characters, no control character.
+    Text,
+    /// A string of at most [`ACCOUNT_SECRET_MAX`] characters, empty allowed.
+    Secret,
+}
+
+/// The longest user name and password an account message carries, in UTF-16 units as the
+/// desktop's main process counts them.
+pub const ACCOUNT_TEXT_MAX: usize = 256;
+pub const ACCOUNT_SECRET_MAX: usize = 1024;
+
+fn account_messages(value: Option<&Value>) -> Result<BTreeMap<String, BTreeMap<String, AccountField>>, String> {
+    let messages = value
+        .and_then(|value| value.get("messages"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| "policy.json: `desktopAccount` must name its messages".to_string())?;
+    messages
+        .iter()
+        .map(|(kind, fields)| {
+            let fields = fields
+                .as_object()
+                .ok_or_else(|| format!("policy.json: the account message `{kind}` must be an object of fields"))?;
+            let fields = fields
+                .iter()
+                .map(|(field, spec)| {
+                    if field == "type" {
+                        return Err(format!("policy.json: the account message `{kind}` cannot name `type` as a field"));
+                    }
+                    let parsed = match spec {
+                        Value::String(text) if text == "text" => Some(AccountField::Text),
+                        Value::String(text) if text == "secret" => Some(AccountField::Secret),
+                        Value::Array(values) if !values.is_empty() => values
+                            .iter()
+                            .map(|value| value.as_str().map(str::to_string))
+                            .collect::<Option<BTreeSet<_>>>()
+                            .map(AccountField::OneOf),
+                        _ => None,
+                    };
+                    parsed
+                        .map(|parsed| (field.clone(), parsed))
+                        .ok_or_else(|| format!("policy.json: the field `{field}` of `{kind}` must be text, secret or a list of values"))
+                })
+                .collect::<Result<_, _>>()?;
+            Ok((kind.clone(), fields))
+        })
+        .collect()
 }
 
 fn strings(value: &Value, key: &str) -> Result<Vec<String>, String> {
@@ -242,6 +298,7 @@ impl Policy {
                 .iter()
                 .map(|(name, spec)| (name.clone(), spec.clone()))
                 .collect(),
+            desktop_account: account_messages(value.get("desktopAccount"))?,
         };
         for (name, spec) in &policy.window_tools {
             if spec.get("name").and_then(Value::as_str) != Some(name.as_str()) {
@@ -275,6 +332,44 @@ impl Policy {
     /// The compiled-in policy.
     pub fn embedded() -> Policy {
         Policy::parse(POLICY_JSON).expect("the compiled-in policy.json is valid; a test checks it")
+    }
+
+    /// Checks an account message from the desktop window (`desktopAccount`): a type the policy
+    /// names, exactly its fields, each of its kind. A refusal names the message and the field,
+    /// never what the field held, so a password cannot reach a log through an error.
+    pub fn vet_desktop_account(&self, message: &Value) -> Result<(), String> {
+        let Some(object) = message.as_object() else {
+            return Err("an account message must name its type".to_string());
+        };
+        let Some(kind) = object.get("type").and_then(Value::as_str) else {
+            return Err("an account message must name its type".to_string());
+        };
+        let Some(fields) = self.desktop_account.get(kind) else {
+            return Err("not an account message the policy names".to_string());
+        };
+        if object.keys().any(|key| key != "type" && !fields.contains_key(key)) {
+            return Err(format!("`{kind}` carries a field the policy does not name"));
+        }
+        for (key, field) in fields {
+            let item = object.get(key).and_then(Value::as_str);
+            let units = item.map(|item| item.encode_utf16().count());
+            let ok = match field {
+                AccountField::OneOf(values) => item.is_some_and(|item| values.contains(item)),
+                AccountField::Text => {
+                    item.is_some_and(|item| !item.chars().any(char::is_control)) && units.is_some_and(|n| (1..=ACCOUNT_TEXT_MAX).contains(&n))
+                }
+                AccountField::Secret => units.is_some_and(|n| n <= ACCOUNT_SECRET_MAX),
+            };
+            if !ok {
+                let wanted = match field {
+                    AccountField::OneOf(_) => "one of its values".to_string(),
+                    AccountField::Text => format!("text of 1 to {ACCOUNT_TEXT_MAX} characters"),
+                    AccountField::Secret => format!("a secret of at most {ACCOUNT_SECRET_MAX} characters"),
+                };
+                return Err(format!("`{kind}`: `{key}` is missing or not {wanted}"));
+            }
+        }
+        Ok(())
     }
 
     /// Checks a message the UI wants to send, removes or sets what only the policy decides, and
@@ -725,6 +820,48 @@ mod tests {
         for refused in ["feedback/upload", "account/login/start", "remoteControl/enable", "thread/realtime/start"] {
             assert!(!policy.allowed_requests.contains(refused), "{refused}");
         }
+    }
+
+    #[test]
+    fn every_account_vector_holds_and_no_refusal_repeats_a_value() {
+        let vectors: Value = serde_json::from_str(include_str!("../vectors/account.json")).unwrap();
+        let policy = Policy::embedded();
+        let cases = vectors["cases"].as_array().unwrap();
+        assert!(cases.len() >= 20);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let result = policy.vet_desktop_account(&case["message"]);
+            if case["accept"].as_bool().unwrap() {
+                result.unwrap_or_else(|err| panic!("{name}: refused: {err}"));
+                continue;
+            }
+            let err = result.err().unwrap_or_else(|| panic!("{name}: accepted"));
+            for key in ["username", "password", "confirm"] {
+                if let Some(value) = case["message"].get(key).and_then(Value::as_str).filter(|value| !value.is_empty()) {
+                    assert!(!err.contains(value), "{name}: the refusal names {key}'s value");
+                }
+            }
+        }
+        let names: Vec<&str> = policy.desktop_account.keys().map(String::as_str).collect();
+        assert_eq!(names, ["account/signIn", "account/signOut", "account/state"]);
+    }
+
+    #[test]
+    fn an_account_field_of_an_unknown_kind_is_refused() {
+        let mut file: Value = serde_json::from_str(POLICY_JSON).unwrap();
+        for (fields, wanted) in [
+            (serde_json::json!(null), "object of fields"),
+            (serde_json::json!({"password": "plain"}), "text, secret or a list"),
+            (serde_json::json!({"mode": []}), "text, secret or a list"),
+            (serde_json::json!({"mode": [1]}), "text, secret or a list"),
+            (serde_json::json!({"type": "text"}), "cannot name `type`"),
+        ] {
+            file["desktopAccount"] = serde_json::json!({"messages": {"account/x": fields}});
+            let err = Policy::parse(&file.to_string()).unwrap_err();
+            assert!(err.contains(wanted), "{err}");
+        }
+        file.as_object_mut().unwrap().remove("desktopAccount");
+        assert!(Policy::parse(&file.to_string()).unwrap_err().contains("desktopAccount"));
     }
 
     #[test]
