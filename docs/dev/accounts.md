@@ -4,7 +4,7 @@ The specification is `specs/DREAMFERENCE_AUTH.md`; the user guide is [accounts](
 
 ## The accounts service (Python, `dreamference/accounts/`)
 
-The primary node runs it inside the model gate; it keeps everything in one SQLite file under the node's state directory (mode `0600`).
+It runs beside the model gate, not in it: the user unit `ragon-accounts.service` (`AccountsService.ensure_running`), written, enabled and restarted by every `ragon-admin server start` once the gate answers, stopped and disabled by `server stop`, bounded at 256 MiB (one argon2id hash at a time, 64 MiB each), on 127.0.0.1:18100 only; a secondary's unit runs it with `--secondary`. The primary keeps everything in one SQLite file under the node's state directory (mode `0600`).
 
 | File | Holds |
 |---|---|
