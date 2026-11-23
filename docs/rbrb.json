@@ -59,6 +59,20 @@
       "commits": {"ragon": 158, "all": 364},
       "notes": "Complete week, generated tokens only (method_version 0): the export carries no prompt or cached token counts yet, so no price-weighted point exists.",
       "method_version": 0
+    },
+    {
+      "week": "2026-W48",
+      "from": "2026-11-23",
+      "to": "2026-11-29",
+      "ragon_generated_tokens": 426482,
+      "other_generated_tokens": 2757901,
+      "rbrb_share": 0.1339,
+      "ragon_tasks": {"attempted": 68, "landed": 38},
+      "commits": {"ragon": 38, "all": 66},
+      "notes": "Running week so far (provisional): generated tokens only, replaced by the final value when the week is closed.",
+      "method_version": 0,
+      "provisional": true,
+      "target_pct": 9.0
     }
   ],
   "quality": [
@@ -68,6 +82,16 @@
       "ragon_commits": 158,
       "other_reverted": 0,
       "other_commits": 206,
+      "rework": null,
+      "provisional": true,
+      "band": "met"
+    },
+    {
+      "week": "2026-W48",
+      "ragon_reverted": 0,
+      "ragon_commits": 38,
+      "other_reverted": 0,
+      "other_commits": 28,
       "rework": null,
       "provisional": true,
       "band": "met"
