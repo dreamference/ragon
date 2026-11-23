@@ -56,11 +56,53 @@ pub fn parse_info(text: &str) -> Option<Info> {
     let primary_id = field("primary_id").unwrap_or(node_id);
     Some(Info {
         node_id: node_id.to_string(),
-        node_name: field("node_name").unwrap_or(node_id).to_string(),
+        node_name: field("node_name").or_else(|| field("name")).unwrap_or(node_id).to_string(),
         primary_id: primary_id.to_string(),
         primary_name: field("primary_name").unwrap_or(primary_id).to_string(),
         accounts: json.get("accounts").is_some_and(|v| v.as_bool().unwrap_or(!v.is_null())),
     })
+}
+
+/// What `GET /ragon/v1/setup` says (§8.6): whether the node still has no account, and whether
+/// this caller is on the node itself and so may make the first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Setup {
+    /// The node has no account yet.
+    pub open: bool,
+    /// The caller is on the node (the gate saw a local peer).
+    pub local: bool,
+}
+
+/// Reads the setup document; `None` when it is not one (an older node has no such route).
+pub fn parse_setup(text: &str) -> Option<Setup> {
+    let json: serde_json::Value = serde_json::from_str(text).ok()?;
+    let open = json.get("setup")?.as_bool()?;
+    Some(Setup { open, local: json.get("local").and_then(serde_json::Value::as_bool).unwrap_or(false) })
+}
+
+/// What an interactive start does on a node with accounts (§8.6): `Create` opens the sign-in
+/// screen at the first account's form, `Elsewhere` says where that account is made and runs
+/// without sign-in, `SignIn` is the usual screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstRun {
+    SignIn,
+    Create,
+    Elsewhere,
+}
+
+/// The decision of [`FirstRun`]: only an interactive start asks, so unattended callers (`exec`,
+/// Night Shift, SWE-bench, CI) behave as before whatever the node says.
+pub fn first_run(interactive: bool, setup: Option<&Setup>) -> FirstRun {
+    match setup {
+        Some(setup) if interactive && setup.open => {
+            if setup.local {
+                FirstRun::Create
+            } else {
+                FirstRun::Elsewhere
+            }
+        }
+        _ => FirstRun::SignIn,
+    }
 }
 
 /// The provider's display name: the gate's host name, without scheme or port.
@@ -114,6 +156,12 @@ async fn fetch(client: &reqwest::Client, url: &str) -> Option<String> {
     response.text().await.ok()
 }
 
+/// The node's setup document, or `None` when it has none or gave no answer.
+async fn fetch_setup(gate: &str) -> Option<Setup> {
+    let client = reqwest::Client::builder().no_proxy().danger_accept_invalid_certs(wants_pin(gate)).timeout(Duration::from_secs(5)).build().ok()?;
+    fetch(&client, &format!("{gate}/ragon/v1/setup")).await.as_deref().and_then(parse_setup)
+}
+
 /// The one line printed against a gate with no accounts service (spec §7, §15).
 pub fn no_accounts_line(gate: &str) -> String {
     format!("node {} has no accounts yet (0.9.8 or older); running without sign-in", node_label(gate))
@@ -149,10 +197,12 @@ pub async fn gate_has_accounts(gate: &str) -> bool {
 }
 
 /// Does everything the launcher owes the account system at a start. See the module comment.
+/// `interactive` is a start a person sits at: only then is a node with no account yet asked about
+/// its first (§8.6).
 ///
 /// # Errors
 /// A CA that changed for a known node id (spec §6) stops the launcher.
-pub async fn start(gate: &str, codex_home: &Path) -> anyhow::Result<bool> {
+pub async fn start(gate: &str, codex_home: &Path, interactive: bool) -> anyhow::Result<bool> {
     let gate = gate.trim_end_matches('/');
     let mut ca: Option<PathBuf> = None;
     let mut known: Option<Info> = None;
@@ -186,7 +236,7 @@ pub async fn start(gate: &str, codex_home: &Path) -> anyhow::Result<bool> {
             known = Some(info);
         }
     }
-    let accounts = if wants_pin(gate) { known.as_ref().is_some_and(|info| info.accounts) } else { gate_has_accounts(gate).await };
+    let mut accounts = if wants_pin(gate) { known.as_ref().is_some_and(|info| info.accounts) } else { gate_has_accounts(gate).await };
     if !accounts {
         eprintln!("{}", no_accounts_line(gate));
     }
@@ -194,6 +244,17 @@ pub async fn start(gate: &str, codex_home: &Path) -> anyhow::Result<bool> {
     // until a grant is sent. The upgrade note needs a home used before and no entry for the primary.
     let label = node_label(gate);
     let (node_name, primary_name) = known.as_ref().map_or((label.clone(), label), |info| (info.node_name.clone(), info.primary_name.clone()));
+    let setup = if accounts && interactive { fetch_setup(gate).await } else { None };
+    let first = match first_run(interactive, setup.as_ref()) {
+        FirstRun::Create => true,
+        FirstRun::Elsewhere => {
+            // No form that would only be refused: the gate serves without sign-in until then.
+            eprintln!("{}", strings::fmt(strings::Key::FirstAccountElsewhere, &[&primary_name]));
+            accounts = false;
+            false
+        }
+        FirstRun::SignIn => false,
+    };
     screen::set_node(screen::Node {
         gate: gate.to_string(),
         node_name,
@@ -201,6 +262,7 @@ pub async fn start(gate: &str, codex_home: &Path) -> anyhow::Result<bool> {
         ca: ca.clone(),
         codex_home: codex_home.to_path_buf(),
         upgrade: screen::used_before(codex_home),
+        first,
     });
     let ragon_key = std::env::var("RAGON_API_KEY").ok();
     let openai_key = std::env::var("OPENAI_API_KEY").ok();

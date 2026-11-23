@@ -373,7 +373,7 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
         let mut io = auth::commands::Io { input: &mut input, out: &mut out, tty };
         let outcome = auth::commands::run(&user_args[index], &user_args[index + 1..], &host, &codex_home, &mut io).await?;
         let Some(forward) = outcome.forward else { std::process::exit(outcome.code) };
-        let _ = auth::start(&host, &codex_home).await?;
+        let _ = auth::start(&host, &codex_home, false).await?;
         let mut forwarded: Vec<OsString> = args.first().cloned().into_iter().collect();
         forwarded.extend(forward.into_iter().map(OsString::from));
         return Ok(forwarded);
@@ -688,7 +688,7 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
         .to_path_buf();
     // The account system's start: the node's CA pinned, the primary's entry marked active, the
     // environment Codex inherits (auth/mod.rs; specs/DREAMFERENCE_AUTH.md §15).
-    let accounts = auth::start(&host, &codex_home).await?;
+    let accounts = auth::start(&host, &codex_home, interactive).await?;
     // Where the session's edits land (worktree.rs; specs/DREAMFERENCE_RAGON_WORKTREE.md): in
     // place by default, as in Codex; in worktree mode a new interactive session moves into a fresh
     // worktree on a branch of its own before anything below reads the working folder.

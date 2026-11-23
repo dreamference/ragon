@@ -62,3 +62,48 @@ fn the_line_names_the_node_and_no_vendor() {
     let lower = line.to_lowercase();
     assert!(!lower.contains("openai") && !lower.contains("chatgpt") && !lower.contains("codex"));
 }
+
+#[test]
+fn the_setup_document_says_whether_the_first_account_is_open_and_who_may_make_it() {
+    assert_eq!(auth::parse_setup(r#"{"setup":true,"local":true,"node":"box"}"#), Some(auth::Setup { open: true, local: true }));
+    assert_eq!(auth::parse_setup(r#"{"setup":false,"node":"box"}"#), Some(auth::Setup { open: false, local: false }));
+    assert_eq!(auth::parse_setup(r#"{"error":"not_found"}"#), None);
+    assert_eq!(auth::parse_setup("<html>"), None);
+    assert_eq!(auth::parse_info(r#"{"node_id":"n1","name":"box"}"#).unwrap().node_name, "box");
+}
+
+#[test]
+fn only_an_interactive_start_on_a_node_with_no_account_is_asked_about_its_first() {
+    use auth::FirstRun;
+    let open_here = auth::Setup { open: true, local: true };
+    let open_elsewhere = auth::Setup { open: true, local: false };
+    let done = auth::Setup { open: false, local: true };
+    assert_eq!(auth::first_run(true, Some(&open_here)), FirstRun::Create);
+    assert_eq!(auth::first_run(true, Some(&open_elsewhere)), FirstRun::Elsewhere);
+    assert_eq!(auth::first_run(true, Some(&done)), FirstRun::SignIn);
+    assert_eq!(auth::first_run(true, None), FirstRun::SignIn);
+    // Unattended starts (`exec`, Night Shift, SWE-bench, CI) never see the setup.
+    for setup in [Some(&open_here), Some(&open_elsewhere), Some(&done), None] {
+        assert_eq!(auth::first_run(false, setup), FirstRun::SignIn);
+    }
+}
+
+const NO_ACCOUNT_YET_ELSEWHERE: &str = r#"{"node_id":"n1","name":"box","accounts":true,"setup":true,"local":false,"node":"box"}"#;
+
+#[tokio::test]
+async fn an_interactive_start_against_another_node_with_no_account_runs_without_sign_in() {
+    let gate = serve("200 OK", NO_ACCOUNT_YET_ELSEWHERE);
+    let dir = std::env::temp_dir().join(format!("ragon-first-remote-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(!auth::start(&gate, &dir, true).await.unwrap(), "no form that the node would refuse");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn an_unattended_start_against_a_node_with_no_account_is_unchanged() {
+    let gate = serve("200 OK", NO_ACCOUNT_YET_ELSEWHERE);
+    let dir = std::env::temp_dir().join(format!("ragon-first-unattended-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(auth::start(&gate, &dir, false).await.unwrap(), "as before the setup existed: the node is in account mode");
+    let _ = std::fs::remove_dir_all(&dir);
+}

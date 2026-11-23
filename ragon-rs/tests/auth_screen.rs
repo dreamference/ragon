@@ -328,3 +328,28 @@ fn a_home_used_before_accounts_gets_the_note() {
     assert!(screen::used_before(&home));
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+#[test]
+fn a_node_with_no_account_opens_at_the_first_accounts_form_and_says_phones_pair_again() {
+    let mut first = node("prime", true);
+    first.first = true;
+    let mut screen = Screen::new(&first);
+    assert!(matches!(&screen.view, View::Form(form) if form.kind == Kind::Create && form.focus == 0));
+    assert!(screen.typing(), "the name field takes text at once");
+    let shown = text(&screen);
+    assert!(shown.contains("prime has no accounts yet. Create the first one: it is the admin of prime."), "{shown}");
+    assert!(shown.contains("Phones need to pair again."), "{shown}");
+    let grant = Grant { username: "t-alice".to_string(), create: true, ..Grant::default() };
+    screen.view = View::Working(screen::Form { kind: Kind::Create, fields: vec![String::new(); 3], focus: 0 });
+    screen.apply(&grant, Outcome::Signed { admin: true });
+    let shown = text(&screen);
+    assert!(shown.contains("You are the first user of prime and its admin."), "{shown}");
+    assert!(shown.contains("Phones need to pair again."), "{shown}");
+    assert_eq!(press(&mut screen, KeyCode::Enter), Step::Done);
+}
+
+#[test]
+fn a_node_that_has_accounts_opens_as_before() {
+    assert_eq!(Screen::new(&node("prime", false)).view, View::Pick);
+    assert_eq!(Screen::new(&node("prime", true)).view, View::Note);
+}

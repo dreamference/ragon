@@ -59,6 +59,9 @@ pub struct Node {
     pub codex_home: PathBuf,
     /// The home was used before accounts existed: the upgrade note is shown (§8.1).
     pub upgrade: bool,
+    /// The node has no account yet and the launcher runs on it: the screen opens at the create
+    /// form for its first account (§8.6).
+    pub first: bool,
 }
 
 /// What a grant asks of the primary.
@@ -185,6 +188,8 @@ pub struct Screen {
     pub error: Option<String>,
     /// The node was in use before accounts existed.
     pub upgrade: bool,
+    /// The node has no account yet: the create form is for its first (§8.6).
+    pub first: bool,
 }
 
 /// `[A-Za-z0-9._-]{1,32}`, the store's rule.
@@ -317,15 +322,23 @@ impl Form {
 }
 
 impl Screen {
-    /// A screen for the node, starting at the note on an upgrade and at the picker otherwise.
+    /// A screen for the node: at the create form for a node's first account, at the note on an
+    /// upgrade, at the picker otherwise.
     pub fn new(node: &Node) -> Self {
         Self {
             node_name: node.node_name.clone(),
             primary_name: node.primary_name.clone(),
-            view: if node.upgrade { View::Note } else { View::Pick },
-            highlight: 0,
+            view: if node.first {
+                View::Form(Form::new(Kind::Create))
+            } else if node.upgrade {
+                View::Note
+            } else {
+                View::Pick
+            },
+            highlight: if node.first { 1 } else { 0 },
             error: None,
             upgrade: node.upgrade,
+            first: node.first,
         }
     }
 
@@ -558,6 +571,10 @@ impl Screen {
                 lines.push(press("to continue"));
             }
             View::Form(form) | View::AskEmpty(form) | View::Working(form) | View::Offline(form) => {
+                if self.first && matches!(form.kind, Kind::Create) {
+                    lines.push(format!("  {} {}", strings::fmt(Key::FirstAccount, &[&self.primary_name]), strings::t(Key::PhonesPairAgain)).into());
+                    lines.push("".into());
+                }
                 lines.push(match &form.kind {
                     Kind::SignIn => title.into(),
                     Kind::Create => format!("  Create an account on {}", self.primary_name).into(),
@@ -596,7 +613,7 @@ impl Screen {
                         "  You are the first user of {} and its admin. Others can create accounts at the login screen; /users manages them.",
                         self.primary_name
                     );
-                    if self.upgrade {
+                    if self.upgrade || self.first {
                         text.push(' ');
                         text.push_str(strings::t(Key::PhonesPairAgain));
                     }

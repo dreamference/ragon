@@ -236,6 +236,18 @@ table! {
         "Nueva clave de API (se muestra una vez): {0}", "Neuer API-Schlüssel (wird einmal angezeigt): {0}",
         "Nouvelle clé d'API (affichée une seule fois) : {0}"],
     Done => ["Done.", "Pronto.", "Hecho.", "Fertig.", "Terminé."],
+    FirstAccount => [
+        "{0} has no accounts yet. Create the first one: it is the admin of {0}.",
+        "{0} ainda não tem contas. Crie a primeira: ela é a administradora de {0}.",
+        "{0} aún no tiene cuentas. Cree la primera: será la administradora de {0}.",
+        "{0} hat noch keine Konten. Erstellen Sie das erste: es ist der Admin von {0}.",
+        "{0} n'a pas encore de compte. Créez le premier : il est l'administrateur de {0}."],
+    FirstAccountElsewhere => [
+        "{0} has no accounts yet. Its first account is made on {0} itself: run ragon in a terminal there, or ragon-admin node user add <name>. Running without sign-in until then.",
+        "{0} ainda não tem contas. A primeira conta é criada no próprio {0}: execute ragon em um terminal lá, ou ragon-admin node user add <nome>. Até lá, sem login.",
+        "{0} aún no tiene cuentas. La primera cuenta se crea en el propio {0}: ejecute ragon en una terminal allí, o ragon-admin node user add <nombre>. Hasta entonces, sin inicio de sesión.",
+        "{0} hat noch keine Konten. Das erste Konto wird auf {0} selbst erstellt: Starten Sie dort ragon in einem Terminal oder ragon-admin node user add <Name>. Bis dahin ohne Anmeldung.",
+        "{0} n'a pas encore de compte. Le premier compte se crée sur {0} même : lancez ragon dans un terminal là-bas, ou ragon-admin node user add <nom>. D'ici là, sans connexion."],
     NoAccounts => [
         "This node has no accounts.", "Este nó não tem contas.", "Este nodo no tiene cuentas.",
         "Dieser Knoten hat keine Konten.", "Ce nœud n'a aucun compte."],

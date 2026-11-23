@@ -112,7 +112,7 @@ fn set_active_writes_the_file_under_a_lock_and_leaves_no_lock() {
 #[tokio::test]
 async fn a_plain_http_node_is_served_as_before() {
     let dir = tempdir("start");
-    auth::start("http://127.0.0.1:9", &dir).await.unwrap();
+    auth::start("http://127.0.0.1:9", &dir, false).await.unwrap();
     assert!(!dir.join("auth.json").exists());
     assert!(!dir.join("nodes").exists());
 }
