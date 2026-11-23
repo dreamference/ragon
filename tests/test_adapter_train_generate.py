@@ -727,3 +727,36 @@ def test_adapter_train_generate_render_rejects_a_conversation_without_an_assista
     """Without an assistant turn there is nothing to mask."""
     with pytest.raises(ValueError, match="no assistant turn"):
         AdapterTrainGenerate.render([{"role": "user", "content": "A"}], TEMPLATE, _ByteTokenizer())
+
+
+def test_adapter_train_generate_run_units_raises_when_the_tests_are_refused(setup):
+    """When a unit's test run is refused, the attempt's cleanup records the run as failed."""
+    from unittest import mock
+
+    fix = setup["tasks"]["fix"]
+    generate = stage(setup, [fix])
+    generate.prepare_clone()
+    spec = AdapterTrainGenerate.task_spec(fix)
+    grading = {
+        "fail_to_pass": ["tests/test_add.py"],
+        "pass_to_pass": ["tests/test_other.py"],
+        "tests": ["tests/test_add.py", "tests/test_other.py"],
+        "test_command": f"{sys.executable} {{test}}",
+    }
+
+    def fake_run(self):
+        self.outcome = {"attempt": 1, "status": "candidate", "result": {}}
+        return "candidate"
+
+    def fake_run_tests(self, test_command):
+        return {"command": test_command, "refused": True}
+
+    with (
+        mock.patch.object(NightShiftTaskRun, "run", fake_run),
+        mock.patch.object(NightShiftTaskRun, "_run_tests", fake_run_tests),
+        pytest.raises(RuntimeError, match="test_sandbox"),
+    ):
+        generate.attempt(spec, grading, 1)
+
+    # The worktree was cleaned up in the finally block.
+    assert not (generate.gen_dir / "worktrees" / f"{spec['id']}-a1").exists()
