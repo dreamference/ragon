@@ -13,9 +13,9 @@ from typing import Any, Final
 LOOPBACK: Final[str] = "127.0.0.1"
 EVERY_INTERFACE: Final[str] = "0.0.0.0"
 AUTH_PRIMARY: Final[str] = "primary"
-# Whether the node advertises the accounts service (`[accounts] enabled`). Off in 0.9.8, so the
-# launcher never asks for a sign-in; 0.9.9 turns this default on.
-DEFAULT_ACCOUNTS_ENABLED: Final[bool] = False
+# Whether the node advertises the accounts service (`[accounts] enabled`). On from 0.9.9, so the
+# launcher asks for a sign-in; 0.9.8 shipped it off.
+DEFAULT_ACCOUNTS_ENABLED: Final[bool] = True
 ACCOUNTS_ENABLED_VARIABLE: Final[str] = "DREAMFERENCE_ACCOUNTS_ENABLED"
 
 
@@ -115,7 +115,8 @@ class NodeSettings:
         """Whether the node advertises accounts (`DREAMFERENCE_ACCOUNTS_ENABLED`, `[accounts] enabled`).
 
         The variable wins (an empty one counts as unset), then the user-level `config.toml`, then
-        DEFAULT_ACCOUNTS_ENABLED (false in 0.9.8; the launcher asks for a sign-in only when the
+        DEFAULT_ACCOUNTS_ENABLED: true from 0.9.9; `[accounts] enabled = false` or
+        DREAMFERENCE_ACCOUNTS_ENABLED=0 turns it off (the launcher asks for a sign-in only when the
         node advertises accounts).
         """
         value = os.environ.get(ACCOUNTS_ENABLED_VARIABLE, "").strip()
