@@ -1669,3 +1669,11 @@ def test_the_sglang_recipe_samples_with_pytorch_not_flashinfer(monkeypatch):
     monkeypatch.setattr(mgr, "is_docker_available", lambda: True)
     cmd = mgr.build_launch_command(model="qwen3.8-27b-nvfp4-dflash2", engine="sglang")
     assert cmd[cmd.index("--sampling-backend") + 1] == "pytorch"
+
+
+def test_model_downloader_get_hf_home_falls_back_to_the_home_cache(monkeypatch):
+    from dreamference.hardware.model_downloader import ModelDownloader
+
+    # With HF_HOME and XDG_CACHE_HOME unset (the conftest home fixture clears both), the home
+    # is ~/.cache/huggingface under the HOME this test was given, resolved per call.
+    assert ModelDownloader.get_hf_home() == Path.home() / ".cache" / "huggingface"
