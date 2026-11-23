@@ -1139,6 +1139,20 @@ def test_a_caller_from_the_nodes_own_address_is_on_the_node():
     assert not ModelGateService.on_this_machine(SocketAt(""), "")
 
 
+def test_a_browser_that_ragon_web_relays_is_on_the_node_only_when_it_is():
+    def head(*extra):
+        return b"\r\n".join([b"POST /oauth/token HTTP/1.1", b"Host: box", *extra, b"", b""])
+
+    assert ModelGateService.relayed_local(head())
+    assert ModelGateService.relayed_local(head(b"X-Ragon-Peer: 127.0.0.1"))
+    assert ModelGateService.relayed_local(head(b"x-ragon-peer:::1"))
+    for named in (b"X-Ragon-Peer: 192.168.1.30", b"x-ragon-peer: unknown", b"X-RAGON-PEER :"):
+        assert not ModelGateService.relayed_local(head(named)), named
+    assert not ModelGateService.relayed_local(
+        head(b"X-Ragon-Peer: 127.0.0.1", b"X-Ragon-Peer: 192.168.1.30")
+    )
+
+
 def test_through_the_gate_the_setup_route_sees_a_caller_on_the_node(accounts_live):
     url = f"http://127.0.0.1:{accounts_live['port']}/ragon/v1/setup"
     with urllib.request.urlopen(url, timeout=10) as response:

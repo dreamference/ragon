@@ -126,6 +126,9 @@ ACCOUNT_PATHS: Final[tuple[str, ...]] = (
 # Added for a loopback peer only, any copy a client sends dropped: the accounts service makes the
 # node's first account only for a caller on the node itself (specs/DREAMFERENCE_AUTH.md §8.6).
 LOCAL_HEADER: Final[bytes] = b"x-ragon-local"
+# The browser's address, which `ragon web` adds when it passes an account request on from the node:
+# such a request is on the node only when that browser is (ragon-rs/web/src/account.rs).
+RELAY_HEADER: Final[bytes] = b"x-ragon-peer"
 ACCOUNT_PREFIXES: Final[tuple[str, ...]] = (
     "/ragon/v1/users",
     "/ragon/v1/bindings",
@@ -1211,7 +1214,13 @@ class ModelGateService:
             await self.forward_account(
                 reader,
                 writer,
-                (method, self.mark_local(head, self.on_this_machine(writer, peer_address))),
+                (
+                    method,
+                    self.mark_local(
+                        head,
+                        self.on_this_machine(writer, peer_address) and self.relayed_local(head),
+                    ),
+                ),
                 framing,
             )
             return True
@@ -1289,6 +1298,20 @@ class ModelGateService:
         own = writer.get_extra_info("sockname")
         own_address = str(own[0]) if own else ""
         return cls.is_loopback(peer) or (bool(peer) and peer == own_address)
+
+    @classmethod
+    def relayed_local(cls, head: bytes) -> bool:
+        """False when a relay on the node names a browser that is not on it (`X-Ragon-Peer`).
+
+        `ragon web` passes a phone's account requests on from loopback; without this the phone would
+        count as a caller on the node. A request with no such header is a direct caller.
+        """
+        named = [
+            value.strip().decode("latin-1")
+            for name, _, value in (line.partition(b":") for line in head.split(b"\r\n")[1:])
+            if name.strip().lower() == RELAY_HEADER
+        ]
+        return all(cls.is_loopback(address) for address in named)
 
     @classmethod
     def mark_local(cls, head: bytes, local: bool) -> bytes:
