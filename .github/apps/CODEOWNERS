@@ -166,6 +166,9 @@
 /scripts/turn_end_compaction_*                  @dreamference/benchmarks
 /scripts/fanout_scan*                           @dreamference/benchmarks
 /docs/dev/swe-bench/                            @dreamference/benchmarks
+/dreamference/terminal_bench/                   @dreamference/benchmarks
+/tests/test_terminal_bench.py                   @dreamference/benchmarks
+/docs/dev/terminal-bench.md                     @dreamference/benchmarks
 
 # Nodes & Remote Access
 /dreamference/node/                             @dreamference/nodes
