@@ -672,3 +672,58 @@ def test_adapter_train_generate_arguments_of_parses_the_json_and_passes_the_dict
     assert AdapterTrainGenerate.arguments_of(ARGUMENTS_DICT) is not None
     assert AdapterTrainGenerate.arguments_of(ARGUMENTS_DICT) == ARGUMENTS_DICT
     assert AdapterTrainGenerate.arguments_of(ARGUMENTS_NONE) == {}
+
+
+class _ByteTokenizer:
+    """One token per byte, in memory: the same shape as `byte_tokenizer`, no file round-trip."""
+
+    def encode(self, text, add_special_tokens=False):
+        return type("Ids", (), {"ids": [ord(c) for c in text]})()
+
+
+RENDER_MESSAGES: Final[list[dict[str, object]]] = [
+    {"role": "user", "content": "Do it."},
+    {"role": "assistant", "content": "Fixed."},
+    {"role": "user", "content": "Again."},
+    {"role": "assistant", "content": "Again, fixed."},
+]
+
+
+def test_adapter_train_generate_render_masks_each_assistant_turns_tokens(tmp_path):
+    """Render tokenizes the growing conversation, masking every assistant stretch's tokens."""
+    template = tmp_path / "chat_template.jinja"
+    template.write_text(TEMPLATE)
+    result = AdapterTrainGenerate.render(RENDER_MESSAGES, template.read_text(), _ByteTokenizer())
+    full = AdapterTrainGenerate.render_text(RENDER_MESSAGES, TEMPLATE, False, {})
+    assert result["text"] == full
+    assert result["tokens"] == len(full)
+    assert len(result["input_ids"]) == len(result["assistant_mask"]) == len(full)
+    mask = result["assistant_mask"]
+    for message in RENDER_MESSAGES:
+        if message["role"] != "assistant":
+            continue
+        start = full.find(message["content"])
+        assert mask[start : start + len(message["content"])] == [1] * len(message["content"])
+    # The leading prompt, between-turn text and the trailing turn end are the model's, not user's.
+    assert mask[0] == 0
+    assert any(flag == 0 for flag in mask)
+
+
+def test_adapter_train_generate_render_rejects_a_template_that_is_not_a_growing_prefix():
+    """A template whose prompt changes as the conversation grows cannot be a growing prefix."""
+    template = "{% if add_generation_prompt %}P{% else %}F{% endif %}{% for m in messages %}{{ m.content }}{% endfor %}"
+    with pytest.raises(ValueError, match="growing prefix"):
+        AdapterTrainGenerate.render(
+            [
+                {"role": "user", "content": "A"},
+                {"role": "assistant", "content": "B"},
+            ],
+            template,
+            _ByteTokenizer(),
+        )
+
+
+def test_adapter_train_generate_render_rejects_a_conversation_without_an_assistant_turn():
+    """Without an assistant turn there is nothing to mask."""
+    with pytest.raises(ValueError, match="no assistant turn"):
+        AdapterTrainGenerate.render([{"role": "user", "content": "A"}], TEMPLATE, _ByteTokenizer())
