@@ -1060,6 +1060,12 @@ def test_night_shift_best_of_n_no_candidate_keeps_the_last_message_of_an_interru
     assert "window closed" in finished["result"]["note"]
 
 
+def test_night_shift_best_of_n_attempts_for_falls_back_to_the_settings_when_the_task_s_best_of_is_not_an_int():
+    task = {"id": "t", "repo": ".", "base": "b", "task": "x", "best_of": "three"}
+    assert NightShiftBestOfN.attempts_for(task, NightShiftSettings({})) == 3
+    assert NightShiftBestOfN.attempts_for(task, NightShiftSettings({"best_of": 2})) == 2
+
+
 def test_night_shift_task_run_result_reports_a_timed_out_test_in_whole_minutes(bon, monkeypatch):
     record = queue(bon["night"], bon["repo"], test=TEST)
     run = NightShiftTaskRun(
