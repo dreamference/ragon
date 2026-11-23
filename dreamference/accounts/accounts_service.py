@@ -10,6 +10,8 @@ the status, never a body or a header.
 import argparse
 import contextlib
 import json
+import shutil
+import subprocess
 import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -28,6 +30,10 @@ MAX_BODY: Final[int] = 64 * 1024
 REQUEST_TIMEOUT_S: Final[float] = 10.0
 METHOD_HEAD: Final[str] = "HEAD"
 CHUNKED: Final[str] = "chunked"
+# The user unit `server start` keeps running (specs/DREAMFERENCE_AUTH.md §9): nothing else starts
+# the service, and a gate whose info says `accounts` must have it behind its sign-in routes.
+UNIT: Final[str] = "ragon-accounts.service"
+SYSTEMCTL_TIMEOUT_S: Final[float] = 30.0
 
 
 class AccountsService:
@@ -55,7 +61,93 @@ class AccountsService:
             NodeIdentity.read() or "",
             store.primary_name,
         )
-        return AccountsOauth(store, signer, log=cls.log)
+        return AccountsOauth(store, signer, log=cls.log, on_first=lambda: cls.first_account(store))
+
+    @classmethod
+    def first_account(cls, store: AccountsStore) -> None:
+        """After the node's first account, this node becomes the primary.
+
+        As `node migrate` makes it: `auth=primary` advertised and its service account registered,
+        so phones and the other nodes find it (specs/DREAMFERENCE_AUTH.md §8.6).
+        """
+        from dreamference.accounts.accounts_migrate import AccountsMigrate
+
+        AccountsMigrate.migrate(store, NodeIdentity.read() or "", [])
+        cls.log("first account made: this node is the primary")
+
+    # ----- the user unit -----------------------------------------------------------------
+
+    @classmethod
+    def unit_dir(cls) -> Path:
+        """The user's systemd units, `~/.config/systemd/user`."""
+        return Path("~/.config/systemd/user").expanduser()
+
+    @classmethod
+    def unit_text(cls) -> str:
+        """The unit: this interpreter runs the service; a secondary's forwards to its primary."""
+        from dreamference.config.unit_log_directives import UnitLogDirectives
+        from dreamference.node.node_settings import NodeSettings
+
+        command = f"{sys.executable} -m dreamference.accounts.accounts_service"
+        if NodeSettings.pinned_primary():
+            command += " --secondary"
+        return (
+            "[Unit]\n"
+            "Description=Ragon accounts service (sign-in behind the model gate)\n"
+            "After=network-online.target\n\n"
+            "[Service]\n" + UnitLogDirectives.block("gate") + f"ExecStart={command}\n"
+            "Restart=on-failure\n"
+            "RestartSec=10\n"
+            "MemoryMax=256M\n\n"
+            "[Install]\n"
+            "WantedBy=default.target\n"
+        )
+
+    @classmethod
+    def systemctl(cls, *args: str) -> int:
+        """Runs `systemctl --user`; its exit status, 1 when it could not run."""
+        try:
+            done = subprocess.run(
+                ["systemctl", "--user", *args],
+                capture_output=True,
+                text=True,
+                timeout=SYSTEMCTL_TIMEOUT_S,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return 1
+        return done.returncode
+
+    @classmethod
+    def ensure_running(cls) -> bool:
+        """Writes the unit, enables and starts it; restarts it when the unit changed.
+
+        Called by `server start` on a node with accounts on. A machine without systemd (a Mac node)
+        gets a line naming the command that runs the service by hand.
+
+        Returns:
+            bool: True when systemd accepted the start.
+        """
+        if shutil.which("systemctl") is None:
+            print(  # noqa: T201 - console output of server start
+                "⚠️  No systemd here: run `python -m dreamference.accounts.accounts_service` "
+                "for sign-in to work."
+            )
+            return False
+        folder = cls.unit_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        unit = folder / UNIT
+        text = cls.unit_text()
+        changed = not unit.is_file() or unit.read_text() != text
+        if changed:
+            unit.write_text(text)
+            cls.systemctl("daemon-reload")
+        started = cls.systemctl("enable", "--now", UNIT) == 0
+        if changed and started:
+            started = cls.systemctl("try-restart", UNIT) == 0
+        if not started:
+            print(f"⚠️  The accounts service did not start: systemctl --user status {UNIT}")  # noqa: T201
+        return started
 
     @classmethod
     def build_secondary(

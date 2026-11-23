@@ -1093,7 +1093,152 @@ def test_only_the_auth_routes_go_to_the_accounts_service():
         "/ragon/v1/bindings/redeem",
         "/ragon/v1/nodes",
         "/ragon/v1/usage/unauthenticated",
+        "/ragon/v1/setup",
     ):
         assert ModelGateService.is_account_route(path), path
     for path in ("/v1/responses", "/v1/models", "/ragon/v1/usersX", "/oauth", "/ragon-gate"):
         assert not ModelGateService.is_account_route(path), path
+
+
+# -- the first account is made on the node itself (specs/DREAMFERENCE_AUTH.md §8.6) ------------
+
+
+def test_the_gate_marks_a_loopback_caller_and_drops_a_forged_mark():
+    head = (
+        b"POST /ragon/v1/users HTTP/1.1\r\nHost: box\r\nX-Ragon-Local: 1\r\n"
+        b"x-ragon-local:yes\r\nContent-Length: 2\r\n\r\n"
+    )
+    remote = ModelGateService.mark_local(head, False)
+    assert b"ragon-local" not in remote.lower()
+    assert remote.endswith(b"Content-Length: 2\r\n\r\n")
+    local = ModelGateService.mark_local(head, True)
+    assert local.lower().count(b"x-ragon-local") == 1
+    assert local.endswith(b"X-Ragon-Local: 1\r\n\r\n")
+    assert local.startswith(b"POST /ragon/v1/users HTTP/1.1\r\nHost: box\r\n")
+    for peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "127.0.0.2"):
+        assert ModelGateService.is_loopback(peer), peer
+    for peer in ("192.168.1.20", "10.0.0.3", "fe80::1%eth0", "", "not-an-address"):
+        assert not ModelGateService.is_loopback(peer), peer
+
+
+class SocketAt:
+    """A writer whose socket reached `own`."""
+
+    def __init__(self, own):
+        self.own = own
+
+    def get_extra_info(self, name):
+        return (self.own, 8443) if name == "sockname" and self.own else None
+
+
+def test_a_caller_from_the_nodes_own_address_is_on_the_node():
+    assert ModelGateService.on_this_machine(SocketAt("192.168.1.20"), "192.168.1.20")
+    assert ModelGateService.on_this_machine(SocketAt("192.168.1.20"), "127.0.0.1")
+    assert not ModelGateService.on_this_machine(SocketAt("192.168.1.20"), "192.168.1.21")
+    assert not ModelGateService.on_this_machine(SocketAt(None), "192.168.1.21")
+    assert not ModelGateService.on_this_machine(SocketAt(""), "")
+
+
+def test_through_the_gate_the_setup_route_sees_a_caller_on_the_node(accounts_live):
+    url = f"http://127.0.0.1:{accounts_live['port']}/ragon/v1/setup"
+    with urllib.request.urlopen(url, timeout=10) as response:
+        assert json.loads(response.read()) == {"setup": True, "local": True, "node": "box"}
+
+
+def accounts_unit(monkeypatch, tmp_path, codes=None):
+    """`AccountsService` with its unit folder in tmp_path and systemctl recorded."""
+    from dreamference.accounts import accounts_service
+    from dreamference.accounts.accounts_service import AccountsService
+
+    calls = []
+    codes = codes or {}
+    monkeypatch.setattr(AccountsService, "unit_dir", classmethod(lambda cls: tmp_path / "units"))
+    monkeypatch.setattr(
+        AccountsService,
+        "systemctl",
+        classmethod(lambda cls, *args: calls.append(args) or codes.get(args[0], 0)),
+    )
+    monkeypatch.setattr(accounts_service.shutil, "which", lambda name: f"/usr/bin/{name}")
+    return AccountsService, calls
+
+
+def test_server_start_installs_and_starts_the_accounts_unit_once(monkeypatch, tmp_path):
+    service, calls = accounts_unit(monkeypatch, tmp_path)
+    assert service.ensure_running()
+    unit = tmp_path / "units" / "ragon-accounts.service"
+    text = unit.read_text()
+    assert f"ExecStart={sys.executable} -m dreamference.accounts.accounts_service\n" in text
+    assert "--secondary" not in text
+    assert calls == [
+        ("daemon-reload",),
+        ("enable", "--now", "ragon-accounts.service"),
+        ("try-restart", "ragon-accounts.service"),
+    ]
+    calls.clear()
+    assert service.ensure_running()  # Unchanged: started if stopped, never restarted.
+    assert calls == [("enable", "--now", "ragon-accounts.service")]
+
+
+def test_a_secondary_runs_the_accounts_unit_as_a_secondary(monkeypatch, tmp_path):
+    from dreamference.node.node_settings import NodeSettings
+
+    monkeypatch.setattr(NodeSettings, "pinned_primary", classmethod(lambda cls: "node-p"))
+    service, _ = accounts_unit(monkeypatch, tmp_path)
+    assert service.ensure_running()
+    text = (tmp_path / "units" / "ragon-accounts.service").read_text()
+    assert "-m dreamference.accounts.accounts_service --secondary\n" in text
+
+
+def test_an_accounts_unit_systemd_refuses_is_named_not_fatal(monkeypatch, tmp_path, capsys):
+    service, _ = accounts_unit(monkeypatch, tmp_path, codes={"enable": 1})
+    assert not service.ensure_running()
+    assert "systemctl --user status ragon-accounts.service" in capsys.readouterr().out
+
+
+def test_without_systemd_the_accounts_service_command_is_named(monkeypatch, tmp_path, capsys):
+    from dreamference.accounts import accounts_service
+
+    service, calls = accounts_unit(monkeypatch, tmp_path)
+    monkeypatch.setattr(accounts_service.shutil, "which", lambda name: None)
+    assert not service.ensure_running()
+    assert calls == []
+    assert "python -m dreamference.accounts.accounts_service" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("enabled", "units"), [("1", 1), ("0", 0)])
+def test_a_started_gate_keeps_the_accounts_service_running_when_accounts_are_on(
+    monkeypatch, tmp_path, enabled, units
+):
+    from dreamference.accounts.accounts_service import AccountsService
+
+    monkeypatch.setenv("DREAMFERENCE_ACCOUNTS_ENABLED", enabled)
+    monkeypatch.setattr(
+        subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "", "")
+    )
+    monkeypatch.setattr(
+        ModelGate, "probe", classmethod(lambda cls, host, timeout=2.0: {"gate": "ragon"})
+    )
+    started = []
+    monkeypatch.setattr(
+        AccountsService, "ensure_running", classmethod(lambda cls: started.append(1) or True)
+    )
+    assert ModelGate.start(8000, "image")
+    assert len(started) == units
+
+
+def test_a_gate_that_never_answers_starts_no_accounts_service(monkeypatch):
+    from dreamference.accounts.accounts_service import AccountsService
+
+    monkeypatch.setenv("DREAMFERENCE_ACCOUNTS_ENABLED", "1")
+    monkeypatch.setattr(
+        subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "", "")
+    )
+    monkeypatch.setattr(model_gate, "START_WAIT_S", 0.05)
+    monkeypatch.setattr(ModelGate, "sleep", staticmethod(lambda seconds: time.sleep(0.01)))
+    monkeypatch.setattr(ModelGate, "probe", classmethod(lambda cls, host, timeout=2.0: None))
+    started = []
+    monkeypatch.setattr(
+        AccountsService, "ensure_running", classmethod(lambda cls: started.append(1) or True)
+    )
+    assert not ModelGate.start(8000, "image")
+    assert started == []

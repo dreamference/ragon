@@ -169,6 +169,14 @@ class AccountsStore:
             "SELECT COUNT(*) FROM users WHERE role = ? AND removed IS NULL", (ROLE_ADMIN,)
         ).fetchone()[0]
 
+    def first_account_open(self) -> bool:
+        """Whether the next account made here would be the node's first admin (no admin yet).
+
+        Service accounts do not count: a node `node migrate` prepared still has its first account
+        to make (specs/DREAMFERENCE_AUTH.md §8.6).
+        """
+        return self._admins() == 0
+
     def _public(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
             "user_id": row["user_id"],

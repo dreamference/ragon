@@ -33,6 +33,7 @@ FORWARDED_EXACT: Final[tuple[str, ...]] = (
     "/.well-known/openid-configuration",
     "/ragon/v1/users",
     "/ragon/v1/nodes",
+    "/ragon/v1/setup",
 )
 FORWARDED_PREFIXES: Final[tuple[str, ...]] = (
     "/oauth",

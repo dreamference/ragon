@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from dreamference.accounts.accounts_service import AccountsService
 from dreamference.chat.matrix_homeserver import MatrixHomeserver
 from dreamference.config.unit_log_directives import UnitLogDirectives
 from dreamference.forge.forge_service import ForgeService
@@ -34,6 +35,7 @@ def _python_units() -> dict[str, str]:
     units: dict[str, str] = {}
     units["night"] = NightShiftScheduler.render_units("01:00-07:00", "/usr/bin/ragon-admin")[1]
     units["monitor"] = NodeMonitorService.unit_text()
+    units["accounts"] = AccountsService.unit_text()
     units["tunnel"] = RemoteTunnel.render_unit("remote.example.org")
     units["relay"] = RemoteBox.relay_unit("remote.example.org")
     units["matrix-tls"] = MatrixHomeserver.tls_unit("100.64.0.1", "/c.pem", "/k.pem")
@@ -120,6 +122,7 @@ def test_no_other_rust_or_python_file_writes_a_service_unit():
             "node/node_monitor_service",
             "forge/forge_service",
             "chat/matrix_homeserver",
+            "accounts/accounts_service",
         )
     }
     assert found <= known | python_known, found - known - python_known

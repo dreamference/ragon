@@ -34,6 +34,11 @@ USERS_PATH: Final[str] = "/ragon/v1/users"
 BINDINGS_PATH: Final[str] = "/ragon/v1/bindings"
 NODES_PATH: Final[str] = "/ragon/v1/nodes"
 USAGE_PATH: Final[str] = "/ragon/v1/usage"
+SETUP_PATH: Final[str] = "/ragon/v1/setup"
+# Set by the gate, and only for a peer on the node's own loopback (it drops any copy a client
+# sends): the first account is made on the node itself (specs/DREAMFERENCE_AUTH.md §8.6).
+LOCAL_HEADER: Final[str] = "x-ragon-local"
+LOCAL_MARK: Final[str] = "1"
 MAX_DAYS: Final[int] = 366
 NODE_ID: Final[re.Pattern[str]] = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 SESSION_PATH: Final[re.Pattern[str]] = re.compile(r"^/ragon/v1/users/me/sessions/(\d+)$")
@@ -71,6 +76,7 @@ class AccountsOauth:
         signer: AccountsJwt,
         log: Callable[[str], None] | None = None,
         device: AccountsDevice | None = None,
+        on_first: Callable[[], None] | None = None,
     ) -> None:
         """Binds the handler to its store and signer.
 
@@ -79,10 +85,12 @@ class AccountsOauth:
             signer: The primary's token signer (it knows the node id and the primary's name).
             log: Receives operational lines (never a secret); defaults to nowhere.
             device: The table of device and authorization codes; one is made when absent.
+            on_first: Runs once the node's first account exists (it makes the node the primary).
         """
         self.store = store
         self.signer = signer
         self.log = log or (lambda _line: None)
+        self.on_first = on_first or (lambda: None)
         issuer = signer.issuer.rstrip("/")
         web = urllib.parse.urlsplit(issuer)
         self.device = device or AccountsDevice(issuer, f"{web.scheme}://{web.hostname}:3100/device")
@@ -102,6 +110,7 @@ class AccountsOauth:
             "/api/accounts/deviceauth/token": ((POST,), self.codex_poll),
             "/oauth/device/code": ((POST,), self.standard_code),
             USERS_PATH: ((POST,), self.create),
+            SETUP_PATH: ((GET,), lambda headers, _b: (200, {}, self.setup(headers))),
             NODES_PATH: ((POST,), self.register_node),
             BINDINGS_PATH: ((GET, POST), self.bindings_root),
             BINDINGS_PATH + "/redeem": ((POST,), self.redeem_binding),
@@ -271,6 +280,10 @@ class AccountsOauth:
         if fields is None:
             return self.oauth_error(400, "invalid_request", "The body is not JSON or a form.")
         grant = fields.get("grant_type")
+        if grant == GRANT_PASSWORD and self.is_true(fields.get("create")):
+            refused = self.first_account_refused(headers)
+            if refused is not None:
+                return self.oauth_error(403, "first_account_on_node", refused)
         handlers = {
             GRANT_PASSWORD: self.password_grant,
             GRANT_REFRESH: self.refresh_grant,
@@ -301,10 +314,13 @@ class AccountsOauth:
         username, password, client_id = values
         machine = str(fields.get("machine") or "")
         if self.is_true(fields.get("create")):
+            first = self.store.first_account_open()
             try:
                 self.store.create_user(username, password)
             except AccountsError as error:
                 return self.oauth_error(400, "invalid_request", str(error))
+            if first:
+                self.first_made()
         user = self.store.verify_password(username, password, client="ragon")
         if user is None:
             return self.oauth_error(400, "invalid_grant", SIGNIN_FAILED)
@@ -481,13 +497,56 @@ class AccountsOauth:
                 400, "invalid_request", "username and password are required (JSON)."
             )
         username, password = values
+        refused = self.first_account_refused(headers)
+        if refused is not None:
+            return self.api_error(403, "first_account_on_node", refused)
+        first = self.store.first_account_open()
         try:
             user = self.store.create_user(username, password)
         except AccountsError as error:
             return self.api_error(400, "invalid_request", str(error))
+        if first:
+            self.first_made()
         client_id = str(fields.get("client_id") or "ragon")
         machine = str(fields.get("machine") or "")
         return 200, {}, self.new_session(user, client_id, machine)
+
+    # ----- the first account (§8.6) ------------------------------------------------------------
+
+    @classmethod
+    def is_local(cls, headers: dict[str, str]) -> bool:
+        """Whether the gate marked the request as coming from the node's own loopback."""
+        return headers.get(LOCAL_HEADER, "").strip() == LOCAL_MARK
+
+    def setup(self, headers: dict[str, str]) -> dict[str, Any]:
+        """`GET /ragon/v1/setup`: whether the node still needs its first account.
+
+        `local` says whether this caller may make it (it is on the node itself).
+        """
+        return {
+            "setup": self.store.first_account_open(),
+            "local": self.is_local(headers),
+            "node": self.store.primary_name,
+        }
+
+    def first_account_refused(self, headers: dict[str, str]) -> str | None:
+        """The plain refusal when the first account is asked for from another machine, else None."""
+        if not self.store.first_account_open() or self.is_local(headers):
+            return None
+        node = self.store.primary_name
+        return (
+            f"{node} has no accounts yet. Its first account is made on {node} itself: "
+            f"run ragon in a terminal there, or ragon-admin node user add <name>."
+        )
+
+    def first_made(self) -> None:
+        """Runs `on_first` after the node's first account; a failure is logged, never raised."""
+        try:
+            self.on_first()
+        except Exception as error:  # noqa: BLE001 - the account exists; the rest is logged
+            self.log(
+                f"first account: could not make this node the primary ({type(error).__name__})"
+            )
 
     def me(self, method: str, route: str, headers: dict[str, str], body: bytes) -> Answer:
         """The signed-in user's own routes."""

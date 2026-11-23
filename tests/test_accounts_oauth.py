@@ -430,7 +430,7 @@ def test_no_secret_reaches_an_answer_or_a_log_line(tmp_path, capsys):
 
     def request(method, path, fields=None, token=None, form=False):
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-        headers = {}
+        headers = {"X-Ragon-Local": "1"}  # as the gate marks a caller on the node (§8.6)
         body = None
         if fields is not None:
             body = urllib.parse.urlencode(fields) if form else json.dumps(fields)
@@ -555,3 +555,187 @@ def test_the_service_listens_on_loopback_with_its_key_beside_the_store(tmp_path)
         assert httpd.server_address[0] == "127.0.0.1"
     finally:
         httpd.server_close()
+
+
+# ----- the first account (AUTH §8.6) --------------------------------------------------------
+
+LOCAL = {"x-ragon-local": "1"}
+
+
+def post_json_from(oauth, path, fields, extra):
+    headers = {"content-type": "application/json", **extra}
+    return oauth.handle("POST", path, headers, json.dumps(fields).encode())
+
+
+def test_the_setup_route_says_whether_the_first_account_is_still_to_make(oauth, store):
+    status, _, body = oauth.handle("GET", "/ragon/v1/setup", {}, b"")
+    assert (status, body) == (200, {"setup": True, "local": False, "node": "box"})
+    assert oauth.handle("GET", "/ragon/v1/setup", LOCAL, b"")[2]["local"] is True
+    store.ensure_service_account("node-1")  # `node migrate` alone leaves the first account to make
+    assert oauth.handle("GET", "/ragon/v1/setup", {}, b"")[2]["setup"] is True
+    store.create_user("t-alice", ALICE_PW)
+    assert oauth.handle("GET", "/ragon/v1/setup", {}, b"")[2]["setup"] is False
+
+
+def test_the_first_account_is_refused_from_another_machine_with_a_plain_message(oauth, store):
+    status, _, body = post_json(
+        oauth, "/ragon/v1/users", {"username": "t-mallory", "password": "m-pw"}
+    )
+    assert status == 403
+    message = body["error"]["message"]
+    assert body["error"]["code"] == "first_account_on_node"
+    assert "box has no accounts yet" in message and "run ragon in a terminal there" in message
+    status, _, body = post_form(
+        oauth,
+        "/oauth/token",
+        {
+            "grant_type": "password",
+            "username": "t-mallory",
+            "password": "m-pw",
+            "client_id": CODEX_CLIENT,
+            "create": "1",
+        },
+    )
+    assert (status, body["error"]) == (403, "first_account_on_node")
+    assert "m-pw" not in json.dumps(body)
+    assert store.list_users() == []
+    # a forged marker in the query or the body does nothing: only the gate's header counts
+    assert (
+        post_json(
+            oauth, "/ragon/v1/users", {"username": "t-m", "password": "", "x-ragon-local": "1"}
+        )[0]
+        == 403
+    )
+
+
+def test_the_first_account_made_on_the_node_makes_it_the_primary_once(store, tmp_path, lines):
+    firsts = []
+    signer = AccountsJwt(
+        tmp_path / "state" / "signing-key.pem", AccountsService.issuer("box"), "node-1", "box"
+    )
+    oauth = AccountsOauth(store, signer, log=lines.append, on_first=lambda: firsts.append(1))
+    status, _, body = post_json_from(
+        oauth, "/ragon/v1/users", {"username": "t-alice", "password": ALICE_PW}, LOCAL
+    )
+    assert status == 200 and body["access_token"]
+    assert store.list_users()[0]["role"] == "admin"
+    assert firsts == [1]
+    # later accounts come from anywhere (the login screen of any machine) and run nothing more
+    status, _, _ = post_form(
+        oauth,
+        "/oauth/token",
+        {
+            "grant_type": "password",
+            "username": "t-bob",
+            "password": BOB_PW,
+            "client_id": CODEX_CLIENT,
+            "create": "1",
+        },
+    )
+    assert status == 200
+    assert firsts == [1]
+    assert oauth.handle("GET", "/ragon/v1/setup", {}, b"")[2]["setup"] is False
+
+
+def test_the_create_grant_from_the_node_makes_the_first_account(store, tmp_path, lines):
+    firsts = []
+    signer = AccountsJwt(
+        tmp_path / "state" / "signing-key.pem", AccountsService.issuer("box"), "node-1", "box"
+    )
+    oauth = AccountsOauth(store, signer, log=lines.append, on_first=lambda: firsts.append(1))
+    fields = {
+        "grant_type": "password",
+        "username": "t-alice",
+        "password": "",
+        "client_id": CODEX_CLIENT,
+        "create": "true",
+    }
+    status, _, body = oauth.handle(
+        "POST",
+        "/oauth/token",
+        {"content-type": "application/json", **LOCAL},
+        json.dumps(fields).encode(),
+    )
+    assert status == 200 and body["refresh_token"]
+    assert firsts == [1]
+
+
+def test_a_failing_primary_step_keeps_the_account_and_logs_no_secret(store, tmp_path, lines):
+    def broken():
+        raise RuntimeError("no advertisement")
+
+    signer = AccountsJwt(
+        tmp_path / "state" / "signing-key.pem", AccountsService.issuer("box"), "node-1", "box"
+    )
+    oauth = AccountsOauth(store, signer, log=lines.append, on_first=broken)
+    status, _, _ = post_json_from(
+        oauth, "/ragon/v1/users", {"username": "t-alice", "password": ALICE_PW}, LOCAL
+    )
+    assert status == 200
+    assert [user["username"] for user in store.list_users()] == ["t-alice"]
+    assert any("could not make this node the primary" in line for line in lines)
+    assert not any(ALICE_PW in line for line in lines)
+
+
+def test_the_service_makes_the_node_the_primary_at_its_first_account(
+    store, tmp_path, monkeypatch, lines
+):
+    from dreamference.accounts import accounts_service
+    from dreamference.accounts.accounts_migrate import AccountsMigrate
+
+    calls = []
+    monkeypatch.setattr(accounts_service.NodeIdentity, "read", classmethod(lambda cls: "node-1"))
+    monkeypatch.setattr(
+        AccountsMigrate,
+        "migrate",
+        classmethod(lambda cls, s, own, others: calls.append((s, own, others))),
+    )
+    oauth = AccountsService.build(store, tmp_path / "state" / "signing-key.pem")
+    assert (
+        post_json_from(
+            oauth, "/ragon/v1/users", {"username": "t-alice", "password": ALICE_PW}, LOCAL
+        )[0]
+        == 200
+    )
+    assert calls == [(store, "node-1", [])]
+
+
+def test_the_first_account_through_the_service_registers_the_node_as_primary(
+    store, tmp_path, monkeypatch
+):
+    from dreamference.accounts import accounts_service
+    from dreamference.node.node_settings import NodeSettings
+
+    monkeypatch.setattr(
+        accounts_service.NodeIdentity, "read", classmethod(lambda cls: "0123abcd-node")
+    )
+    assert not NodeSettings.auth_primary()
+    oauth = AccountsService.build(store, tmp_path / "state" / "signing-key.pem")
+    assert (
+        post_json_from(oauth, "/ragon/v1/users", {"username": "t-alice", "password": ""}, LOCAL)[0]
+        == 200
+    )
+    assert NodeSettings.auth_primary()
+    services = [user["username"] for user in store.list_users() if user["service"]]
+    assert services == ["ragon-node-0123abcd"]
+
+
+def test_right_after_the_first_account_its_user_can_pair_a_phone(store, tmp_path, monkeypatch):
+    """AUTH §14.1: old pairings are dropped at the upgrade, so pairing again works at once."""
+    from dreamference.accounts import accounts_service
+
+    monkeypatch.setattr(
+        accounts_service.NodeIdentity, "read", classmethod(lambda cls: "0123abcd-node")
+    )
+    oauth = AccountsService.build(store, tmp_path / "state" / "signing-key.pem")
+    made = post_json_from(oauth, "/ragon/v1/users", {"username": "t-alice", "password": ""}, LOCAL)
+    assert made[0] == 200
+    signed_in = made[2]["access_token"]
+    assert call(oauth, "GET", "/ragon/v1/bindings", signed_in)[2] == {"bindings": []}
+    status, _, code = post_json(oauth, "/ragon/v1/bindings", {"chat_kind": "telegram"}, signed_in)
+    assert status == 200 and len(code["code"]) == 6
+    bridge = store.mint_key("ragon-node-0123abcd", "bridge")
+    fields = {"code": code["code"], "chat_kind": "telegram", "chat_identity": "42"}
+    assert post_json(oauth, "/ragon/v1/bindings/redeem", fields, bridge)[0] == 200
+    bound = call(oauth, "GET", "/ragon/v1/bindings", signed_in)[2]["bindings"]
+    assert [binding["chat_kind"] for binding in bound] == ["telegram"]

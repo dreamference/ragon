@@ -126,8 +126,29 @@ class AccountsAdmin:
         password = getpass.getpass("Password (may be empty): ")
         if password != getpass.getpass("Again: "):
             raise AccountsError("The two passwords differ.")
+        first = store.first_account_open()
         user = store.create_user(args.name, password)
         cls._say(f"✅ Created {user['username']} ({user['role']})")
+        if first:
+            cls._first_account(store)
+
+    @classmethod
+    def _first_account(cls, store: AccountsStore) -> None:
+        """The node's first account makes it the primary, as at the sign-in screen (§8.6)."""
+        from dreamference.accounts.accounts_migrate import AccountsMigrate
+        from dreamference.node.node_identity import NodeIdentity
+        from dreamference.node.node_settings import NodeSettings
+
+        if NodeSettings.pinned_primary():
+            return
+        try:
+            AccountsMigrate.migrate(store, NodeIdentity.read() or "", [])
+        except (AccountsError, OSError) as error:
+            cls._say(
+                f"⚠️  This node is not the primary yet ({error}): run ragon-admin node migrate."
+            )
+            return
+        cls._say("✅ This node is now the primary: phones and other nodes sign in here.")
 
     @classmethod
     def _do_reset(cls, args: argparse.Namespace, store: AccountsStore) -> None:

@@ -121,7 +121,11 @@ ACCOUNT_PATHS: Final[tuple[str, ...]] = (
     "/oauth/userinfo",
     "/.well-known/jwks.json",
     "/.well-known/openid-configuration",
+    "/ragon/v1/setup",
 )
+# Added for a loopback peer only, any copy a client sends dropped: the accounts service makes the
+# node's first account only for a caller on the node itself (specs/DREAMFERENCE_AUTH.md §8.6).
+LOCAL_HEADER: Final[bytes] = b"x-ragon-local"
 ACCOUNT_PREFIXES: Final[tuple[str, ...]] = (
     "/ragon/v1/users",
     "/ragon/v1/bindings",
@@ -1204,7 +1208,12 @@ class ModelGateService:
         state, framing, expects_continue = decision
         method, path, peer_address, head = request
         if self.is_account_route(path):
-            await self.forward_account(reader, writer, (method, head), framing)
+            await self.forward_account(
+                reader,
+                writer,
+                (method, self.mark_local(head, self.on_this_machine(writer, peer_address))),
+                framing,
+            )
             return True
         if method == METHOD_OPTIONS:
             await self.respond_preflight(writer, head)
@@ -1269,6 +1278,30 @@ class ModelGateService:
         return route in ACCOUNT_PATHS or any(
             route == prefix or route.startswith(prefix + "/") for prefix in ACCOUNT_PREFIXES
         )
+
+    @classmethod
+    def on_this_machine(cls, writer: asyncio.StreamWriter, peer: str) -> bool:
+        """True for a caller on the node: a loopback peer, or one from the address it reached.
+
+        A launcher on the node may reach the gate by the node's own LAN address; TCP lets no other
+        machine send from that address.
+        """
+        own = writer.get_extra_info("sockname")
+        own_address = str(own[0]) if own else ""
+        return cls.is_loopback(peer) or (bool(peer) and peer == own_address)
+
+    @classmethod
+    def mark_local(cls, head: bytes, local: bool) -> bytes:
+        """Drops any `X-Ragon-Local` the client sent and adds the gate's own for a loopback peer."""
+        lines = head.split(b"\r\n")
+        kept = [lines[0]] + [
+            line
+            for line in lines[1:]
+            if line and line.partition(b":")[0].strip().lower() != LOCAL_HEADER
+        ]
+        if local:
+            kept.append(b"X-Ragon-Local: 1")
+        return b"\r\n".join([*kept, b"", b""])
 
     async def forward_account(
         self,

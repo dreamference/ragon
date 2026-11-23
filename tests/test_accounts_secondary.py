@@ -75,6 +75,16 @@ def test_unknown_route_is_not_forwarded(secondary, primary):
     assert primary.calls == []
 
 
+def test_the_setup_question_goes_to_the_primary_without_the_local_mark(secondary, primary):
+    """AUTH §8.6: a caller of a secondary is never on the primary, so the mark stays behind."""
+    status, _headers, body = secondary.handle(
+        "GET", "/ragon/v1/setup", {"x-ragon-local": "1", "accept": "application/json"}, b""
+    )
+    assert status == 200 and body == {"ok": "ragon/v1/setup"}
+    assert primary.calls[-1][1] == "/ragon/v1/setup"
+    assert "x-ragon-local" not in primary.calls[-1][2]
+
+
 def test_only_listed_headers_travel(secondary, primary):
     secondary.handle("POST", "/oauth/token", {"authorization": "Bearer a", "cookie": "c=1"}, b"")
     assert "cookie" not in primary.calls[-1][2]

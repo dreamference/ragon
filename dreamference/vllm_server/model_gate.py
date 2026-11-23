@@ -200,6 +200,7 @@ class ModelGate:
         deadline = time.time() + START_WAIT_S
         while time.time() < deadline:
             if cls.probe(f"http://127.0.0.1:{port}", timeout=1.0) is not None:
+                cls.start_accounts()
                 return True
             cls.sleep(0.25)
         logs = subprocess.run(
@@ -215,6 +216,18 @@ class ModelGate:
         )
         cls.remove(port)
         return False
+
+    @classmethod
+    def start_accounts(cls) -> bool:
+        """Keeps the accounts service running behind a gate whose info says `accounts` (§9).
+
+        Returns:
+            bool: True when it runs; False with accounts off or when systemd refused.
+        """
+        from dreamference.accounts.accounts_service import AccountsService
+        from dreamference.node.node_settings import NodeSettings
+
+        return NodeSettings.accounts_enabled() and AccountsService.ensure_running()
 
     @classmethod
     def stage_tls(cls) -> bool:
