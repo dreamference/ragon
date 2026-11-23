@@ -481,6 +481,45 @@ def test_ensure_nextest_handles_stamp_unsupported_target_network_error_and_valid
     assert CodexTestRunner.ensure_nextest() == str(tools)
 
 
+def test_codex_test_runner_ensure_nextest_refuses_a_member_without_file_content(
+    tmp_path, monkeypatch
+):
+    """A tar member that yields no extractable stream leaves no binary and no stamp."""
+    import hashlib
+    import io
+    import tarfile
+    from pathlib import Path
+
+    tools = tmp_path / "tools"
+    monkeypatch.setattr(runner_module, "TOOLS_DIR", str(tools))
+    target = "aarch64-unknown-linux-gnu"
+
+    # A directory member matches getmember but has no file content to extract.
+    tar_bytes = io.BytesIO()
+    with tarfile.open(fileobj=tar_bytes, mode="w:gz") as tar:
+        info = tarfile.TarInfo("cargo-nextest")
+        info.type = tarfile.DIRTYPE
+        info.mode = 0o755
+        tar.addfile(info)
+    raw_archive = tar_bytes.getvalue()
+    digest = hashlib.sha256(raw_archive).hexdigest()
+
+    monkeypatch.setattr(
+        runner_module.CodexBrandedBuilder,
+        "host_target",
+        classmethod(lambda cls: target),
+    )
+    monkeypatch.setitem(runner_module.NEXTEST_SHA256, target, digest)
+    monkeypatch.setattr(
+        runner_module.CodexBrandedBuilder,
+        "download",
+        staticmethod(lambda url, dest: Path(dest).write_bytes(raw_archive)),
+    )
+    assert CodexTestRunner.ensure_nextest() is None
+    assert not (tools / "cargo-nextest").exists()
+    assert not (tools / "cargo-nextest.version").exists()
+
+
 def test_apply_test_overlay_refuses_broken_patch(tmp_path, monkeypatch):
     export = tmp_path / "export"
     (export / "codex-rs").mkdir(parents=True)
