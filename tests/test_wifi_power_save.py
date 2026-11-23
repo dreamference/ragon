@@ -263,6 +263,47 @@ def test_node_prepare_turns_it_off_too(network, only_wifi_to_fix, monkeypatch, c
     assert "Refused" not in capsys.readouterr().out
 
 
+def test_host_safety_setup_ignore_hangup_is_restored_after_the_setup_run(
+    network, only_wifi_to_fix, monkeypatch
+):
+    # `setup` ignores SIGHUP for the whole command loop and restores the previous handler
+    # afterwards; when the handler cannot be installed it is skipped and the restore is a no-op.
+    import signal
+
+    calls: list[tuple[int, object]] = []
+    previous = signal.default_int_handler
+
+    def fake_signal(signum, handler):
+        calls.append((signum, handler))
+        return previous
+
+    monkeypatch.setattr(host_safety_setup.signal, "signal", fake_signal)
+    monkeypatch.setattr(host_safety_setup.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(host_safety_setup.shutil, "which", lambda name: "/usr/bin/" + name)
+
+    def fake_run(command, **kwargs):
+        if command[1] == "nmcli":
+            network["setting"] = "disable"
+        elif command[1] == "iw":
+            network["radio"] = "off"
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(host_safety_setup.subprocess, "run", fake_run)
+    assert HostSafetySetup.setup() is True
+    assert calls == [
+        (signal.SIGHUP, signal.SIG_IGN),
+        (signal.SIGHUP, previous),
+    ]
+
+    # A platform without SIGHUP (or not on the main thread) skips both directions.
+    def broken_signal(signum, handler):
+        raise ValueError("not the main thread")
+
+    monkeypatch.setattr(host_safety_setup.signal, "signal", broken_signal)
+    assert HostSafetySetup._ignore_hangup() is None
+    HostSafetySetup._restore_hangup(None)
+
+
 @pytest.mark.parametrize(
     "command",
     [
