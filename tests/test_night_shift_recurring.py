@@ -302,6 +302,21 @@ def test_a_days_template_runs_on_its_weekdays_only() -> None:
     )
 
 
+def test_night_shift_recurring_due_monthly_checks_only_whole_days_in_range() -> None:
+    # A day that is not a whole number, or out of 1..31, is never due.
+    for bad in [None, 0, 32, "3", 3.0, True, False]:
+        assert not NightShiftRecurring.due(
+            {"cadence": "monthly", "day": bad, "last_queued": None}, date(1999, 3, 15)
+        )
+    # Its day, and no other, within a 31-day month.
+    assert NightShiftRecurring.due(
+        {"cadence": "monthly", "day": 15, "last_queued": None}, date(1999, 3, 15)
+    )
+    assert not NightShiftRecurring.due(
+        {"cadence": "monthly", "day": 15, "last_queued": None}, date(1999, 3, 14)
+    )
+
+
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
