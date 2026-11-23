@@ -269,3 +269,18 @@ def test_dreamference_cli_controller_inspect_sample_payload_keeps_every_system_p
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+
+
+def test_dreamference_cli_controller_inspect_resolve_model_falls_back_to_config_when_the_server_is_down():
+    # The server is unreachable: the exception path must keep the configured model and
+    # report the context as "Unknown", not crash the inspect.
+    from unittest.mock import MagicMock
+
+    import requests
+
+    session = MagicMock()
+    session.get.side_effect = requests.exceptions.RequestException("down")
+    model, max_len = DreamferenceCLIController._inspect_resolve_model(session, "http://h", "cfg/m")
+    assert model == "cfg/m"
+    assert max_len == "Unknown"
+    session.get.assert_called_once()
