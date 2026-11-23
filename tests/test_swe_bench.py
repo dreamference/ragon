@@ -2370,16 +2370,26 @@ def test_the_dataset_file_for_the_harness_names_this_machines_images(tmp_path):
     assert entry["image"] == "repo:acme-widget-1" and entry["problem_statement"]
 
 
-def test_selection_is_sorted_limited_and_rejects_unknown_ids(bench, tmp_path):
+def test_selection_keeps_subset_order_limits_and_rejects_unknown_ids(bench, tmp_path):
     assert SweBenchRunner.select("verified", None, 2, None) == ["acme__widget-1", "acme__widget-2"]
     subset = tmp_path / "ids.txt"
     subset.write_text("beta__gadget-7\n# a comment\nacme__widget-2\n")
     assert SweBenchRunner.select("verified", None, None, str(subset)) == [
-        "acme__widget-2",
         "beta__gadget-7",
+        "acme__widget-2",
     ]
     with pytest.raises(ValueError, match="nope"):
         SweBenchRunner.select("verified", ["nope"], None, None)
+
+
+def test_selection_dedups_and_keeps_first_occurrence_order(bench, tmp_path):
+    subset = tmp_path / "ids.txt"
+    subset.write_text("beta__gadget-7\nacme__widget-2\nbeta__gadget-7\nacme__widget-1\n")
+    assert SweBenchRunner.select("verified", None, None, str(subset)) == [
+        "beta__gadget-7",
+        "acme__widget-2",
+        "acme__widget-1",
+    ]
 
 
 def test_settings_defaults_and_dataset_names():

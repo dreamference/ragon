@@ -68,8 +68,12 @@ def test_the_split_depends_on_the_set_of_ids_alone():
     ids = verified_list()
     repos = {i: repo_of(i) for i in ids}
     once = SweBenchShards.split(ids, repos, 3)
-    assert SweBenchShards.split(list(reversed(ids)) + ids[:5], repos, 3) == once
+    flipped = SweBenchShards.split(list(reversed(ids)) + ids[:5], repos, 3)
+    assert [sorted(shard) for shard in flipped] == [sorted(shard) for shard in once]
+    backwards = list(reversed(ids))
+    assert flipped == [sorted(shard, key=backwards.index) for shard in once]
     assert [SweBenchShards.pick(ids, repos, n, 3) for n in (1, 2, 3)] == once
+    assert once == [sorted(shard, key=ids.index) for shard in once]
     assert SweBenchShards.digest(list(reversed(ids))) == SweBenchShards.digest(ids)
 
 

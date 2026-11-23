@@ -219,7 +219,7 @@ class SweBenchRunner:
             unknown = sorted(set(wanted) - set(known))
             if unknown:
                 raise ValueError(f"not in {dataset}: {', '.join(unknown[:5])}")
-            selected = sorted(set(wanted))
+            selected = list(dict.fromkeys(wanted))
         return selected[:limit] if limit else selected
 
     # -- the manifest --------------------------------------------------------------------------

@@ -79,9 +79,9 @@ class SweBenchShards:
                 which other lists hold it); None, the split `run --shard` makes.
 
         Returns:
-            List[List[str]]: The shards, each sorted.
+            List[List[str]]: The shards, each in the order of `instance_ids` (first occurrence wins).
         """
-        ids = sorted(set(instance_ids))
+        ids = list(dict.fromkeys(instance_ids))
 
         def repo(instance_id: str) -> str:
             return repos.get(instance_id, instance_id)
@@ -134,7 +134,8 @@ class SweBenchShards:
                 (best, where),
             ):
                 held[key] += 1
-        return [sorted(shard) for shard in shards]
+        place = {i: n for n, i in enumerate(ids)}
+        return [sorted(shard, key=place.__getitem__) for shard in shards]
 
     @classmethod
     def pick(
@@ -149,7 +150,7 @@ class SweBenchShards:
             count: Of how many.
 
         Returns:
-            list[str]: That shard's tasks, sorted (`run --shard`'s split, with no further stratum).
+            list[str]: That shard's tasks, in the list's order (`run --shard`'s split, with no further stratum).
         """
         return cls.split(instance_ids, repos, count)[index - 1]
 
