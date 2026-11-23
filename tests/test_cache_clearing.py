@@ -135,3 +135,14 @@ def test_the_removal_advice_for_a_path_with_a_space_names_that_path_alone(
     assert ModelDownloader._remove_cache_dir(cache) is False
     advice = capsys.readouterr().out.split("Remove them with: ", 1)[1].strip()
     assert shlex.split(advice) == ["sudo", "rm", "-rf", str(cache)]
+
+
+def test_model_downloader_remove_cache_dir_reports_a_missing_directory_as_cleared(
+    tmp_path, monkeypatch, capsys
+):
+    # A directory that is already gone is success, not an error: nothing to say but that it
+    # was not found, and no subprocess, no socket, no clock, nothing else to run.
+    cache = tmp_path / "no-such-cache"
+    assert ModelDownloader._remove_cache_dir(cache) is True
+    out = capsys.readouterr().out
+    assert "Cache directory not found" in out
