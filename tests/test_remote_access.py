@@ -1042,6 +1042,29 @@ def test_setup_again_keeps_the_secret_and_does_not_rejoin(seams, monkeypatch):
     assert RemoteSettings.read_private("admin-token") == "nbp_new"
 
 
+def test_remote_access_setup_inputs_refuses_an_ssh_destination_that_is_an_address(
+    seams, monkeypatch, capsys
+):
+    monkeypatch.setattr(RemoteAccess, "_node_id", classmethod(lambda cls: NODE_ID))
+    result = RemoteAccess._setup_inputs(BOX, "relay-1.example.org", None)
+    assert result == (
+        {
+            "dns_name": BOX,
+            "scope": "example.org",
+            "ssh_to": "relay-1.example.org",
+            "node_id": NODE_ID,
+            "existing": None,
+            "overlay_name": f"ragon-{NODE_ID}.netbird.selfhosted",
+        },
+        0,
+    )
+    result = RemoteAccess._setup_inputs(BOX, "10.1.2.3", None)
+    assert result == (None, 2)
+    assert "is an address" in capsys.readouterr().out
+    result = RemoteAccess._setup_inputs(BOX, BOX, None)
+    assert result[0] is not None and result[0]["ssh_to"] is None
+
+
 @pytest.mark.parametrize(
     "name",
     ["", "relay", "http://relay.example.org", "relay.example.org:443", "user@relay.example.org",
