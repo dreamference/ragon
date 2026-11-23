@@ -227,6 +227,24 @@ def test_a_change_is_committed_on_its_branch_and_the_checkout_is_untouched(setup
     assert record["session"]
 
 
+def test_night_shift_task_run_commit_interrupted_keeps_the_worktree_for_the_next_night(
+    setup, monkeypatch
+):
+    # Stopping the run mid-commit: `commit_staged` reports the interruption, the run ends
+    # `interrupted`, the worktree is kept and the branch is left at the base.
+    record = queue(setup["night"], setup["repo"], test="test -f hello.txt")
+    run = NightShiftTaskRun(
+        setup["night"], record, NightShiftSettings({}), setup["ragon"], time.time() + 60
+    )
+    run.worktree.mkdir(parents=True)
+    monkeypatch.setattr(NightShiftTaskRun, "commit_staged", lambda self: ("interrupted", ""))
+    assert run._commit("test -f hello.txt", "--test", None) == "interrupted"
+    read = NightShiftQueue.read(setup["night"], record["id"])
+    assert read["status"] == "interrupted"
+    assert read["result"]["worktree"] == str(run.worktree)
+    assert run.worktree.is_dir()  # kept, for the next night
+
+
 def test_a_task_whose_branch_is_left_from_an_earlier_night_carries_on_from_it(setup, monkeypatch):
     git(setup["repo"], "branch", "night/20151001-0100-abc")
     other = setup["repo"].parent / "earlier"
