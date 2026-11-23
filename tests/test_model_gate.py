@@ -1176,7 +1176,7 @@ def accounts_unit(monkeypatch, tmp_path, codes=None):
     return AccountsService, calls
 
 
-def test_server_start_installs_and_starts_the_accounts_unit_once(monkeypatch, tmp_path):
+def test_server_start_installs_the_accounts_unit_and_restarts_it_every_time(monkeypatch, tmp_path):
     service, calls = accounts_unit(monkeypatch, tmp_path)
     assert service.ensure_running()
     unit = tmp_path / "units" / "ragon-accounts.service"
@@ -1185,12 +1185,13 @@ def test_server_start_installs_and_starts_the_accounts_unit_once(monkeypatch, tm
     assert "--secondary" not in text
     assert calls == [
         ("daemon-reload",),
-        ("enable", "--now", "ragon-accounts.service"),
-        ("try-restart", "ragon-accounts.service"),
+        ("enable", "ragon-accounts.service"),
+        ("restart", "ragon-accounts.service"),
     ]
     calls.clear()
-    assert service.ensure_running()  # Unchanged: started if stopped, never restarted.
-    assert calls == [("enable", "--now", "ragon-accounts.service")]
+    # Unchanged unit, restarted all the same: after `ragon update` the package under it is new.
+    assert service.ensure_running()
+    assert calls == [("enable", "ragon-accounts.service"), ("restart", "ragon-accounts.service")]
 
 
 def test_a_secondary_runs_the_accounts_unit_as_a_secondary(monkeypatch, tmp_path):

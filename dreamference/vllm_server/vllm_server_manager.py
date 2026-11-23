@@ -2473,6 +2473,7 @@ class VLLMServerManager:
         # No docker means no gate; the launch's own error is the one to report.
         with contextlib.suppress(OSError):
             ModelGate.stop(port)
+        ModelGate.stop_accounts()
 
     def stop_server(self, port: int = DEFAULT_MODEL_PORT) -> None:
         """Stops the vLLM Docker container for the given port.
@@ -2493,6 +2494,7 @@ class VLLMServerManager:
         from dreamference.vllm_server.model_gate import ModelGate
 
         ModelGate.stop(port)
+        ModelGate.stop_accounts()
         _say(f"✅ Container {container_name} stopped.")
 
     def remove_server(self, port: int = DEFAULT_MODEL_PORT) -> None:
@@ -2510,6 +2512,7 @@ class VLLMServerManager:
         from dreamference.vllm_server.model_gate import ModelGate
 
         ModelGate.remove(port)
+        ModelGate.stop_accounts()
         _say(f"✅ Container {container_name} removed.")
 
     def show_request_logs(self, port: int = DEFAULT_MODEL_PORT) -> None:

@@ -120,7 +120,10 @@ class AccountsService:
 
     @classmethod
     def ensure_running(cls) -> bool:
-        """Writes the unit, enables and starts it; restarts it when the unit changed.
+        """Writes the unit, enables it and (re)starts it, as `server start` replaces the gate.
+
+        Restarted on every call: the unit names only the interpreter, so after `ragon update` its
+        text is unchanged while the package it runs is new.
 
         Called by `server start` on a node with accounts on. A machine without systemd (a Mac node)
         gets a line naming the command that runs the service by hand.
@@ -142,12 +145,23 @@ class AccountsService:
         if changed:
             unit.write_text(text)
             cls.systemctl("daemon-reload")
-        started = cls.systemctl("enable", "--now", UNIT) == 0
-        if changed and started:
-            started = cls.systemctl("try-restart", UNIT) == 0
+        started = cls.systemctl("enable", UNIT) == 0 and cls.systemctl("restart", UNIT) == 0
         if not started:
             print(f"⚠️  The accounts service did not start: systemctl --user status {UNIT}")  # noqa: T201
         return started
+
+    @classmethod
+    def stop(cls) -> bool:
+        """Stops and disables the unit, as `server stop` stops the gate it answers behind.
+
+        Disabled too: a stopped gate's container stays stopped at boot, so the service does.
+
+        Returns:
+            bool: True when there was no unit or systemd accepted the stop.
+        """
+        if shutil.which("systemctl") is None or not (cls.unit_dir() / UNIT).is_file():
+            return True
+        return cls.systemctl("disable", "--now", UNIT) == 0
 
     @classmethod
     def build_secondary(

@@ -230,6 +230,17 @@ class ModelGate:
         return NodeSettings.accounts_enabled() and AccountsService.ensure_running()
 
     @classmethod
+    def stop_accounts(cls) -> bool:
+        """Stops the accounts service with the gate (`server stop`, `remove`, a failed launch).
+
+        Returns:
+            bool: True when nothing was left running.
+        """
+        from dreamference.accounts.accounts_service import AccountsService
+
+        return AccountsService.stop()
+
+    @classmethod
     def stage_tls(cls) -> bool:
         """Creates the node's CA and server certificate if needed and stages them for the gate.
 
