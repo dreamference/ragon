@@ -424,6 +424,23 @@ def test_log_file_rotate_reopens_when_the_lock_is_held_elsewhere(tmp_path, monke
         os.close(lock_fd)
 
 
+def test_log_file_sink_rotate_aborts_when_the_file_is_smaller_or_gone(tmp_path, monkeypatch):
+    import dreamference.config.log_file_sink as sink_module
+
+    now = [EPOCH]
+    sink = sink_module.LogFileSink(tmp_path, "shrunken", max_bytes=100, clock=lambda: now[0])
+    line = "a" * 20
+    sink.write(line)  # below max_bytes: no rotation
+    assert sink.path.stat().st_size == len(line) + 1 and sink._fd is not None
+    assert sink.rotate() is False  # another process rotated first (or the file is smaller)
+    assert sink._fd is not None and sink.path.stat().st_size == len(line) + 1
+
+    now[0] += 2
+    sink.path.unlink()  # the file is gone: stat() fails under the lock
+    assert sink.rotate() is False
+    assert sink.path.exists() and sink.path.stat().st_size == 0  # _open() recreated it
+
+
 def test_log_stream_sink_prefixes_the_priority_under_journald_and_defaults_to_stderr(capsys):
     stream = io.StringIO()
     sink = LogStreamSink(stream, journald=True)
