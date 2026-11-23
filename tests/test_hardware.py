@@ -1147,3 +1147,16 @@ def test_node_sync_carries_the_assets_of_every_engine_once(monkeypatch):
         reg, "get_engine_assets", classmethod(lambda cls, key, engine=None: assets[engine])
     )
     assert NodeModelSync.repos("m") == ["o/model", "o/shared", "o/sglang-head", "o/ragon-head"]
+
+
+def test_hardware_manager_query_nvidia_smi_unknown_when_smi_fails(monkeypatch):
+    from dreamference.hardware import hardware_manager
+
+    monkeypatch.setattr(hardware_manager.shutil, "which", lambda name: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(
+        hardware_manager.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 9, "", "driver error"),
+    )
+    unknown = (hardware_manager.NOT_AVAILABLE, hardware_manager.NOT_AVAILABLE, 0.0)
+    assert hardware_manager.HardwareManager._query_nvidia_smi() == unknown
