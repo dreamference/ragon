@@ -22,6 +22,8 @@ from dreamference.terminal_bench.tb_runtime import CONTAINER_MOUNT
 AGENT_LOG_DIR: Final[str] = "/logs/agent"
 CODEX_HOME_NAME: Final[str] = "codex-home"
 CODEX_HOME: Final[str] = f"{AGENT_LOG_DIR}/{CODEX_HOME_NAME}"
+RAGON_CONFIG_NAME: Final[str] = "ragon-config.toml"
+RAGON_CONFIG_PATH: Final[str] = f"{CODEX_HOME}/{RAGON_CONFIG_NAME}"
 EVENT_LOG_NAME: Final[str] = "ragon.jsonl"
 STDERR_NAME: Final[str] = "ragon.stderr"
 LAST_MESSAGE_NAME: Final[str] = "last.txt"
@@ -97,6 +99,9 @@ def environment(
         "GIT_TERMINAL_PROMPT": "0",
         "DREAMFERENCE_DIGEST_INSIDE": "1" if digest else "0",
     }
+    if digest:
+        # ragon reads `[digest] min_lines` from this file, not from CODEX_HOME/config.toml.
+        env["DREAMFERENCE_CONFIG_PATH"] = RAGON_CONFIG_PATH
     if api_key:
         env[API_KEY_ENV] = api_key
     merged = no_proxy(existing_no_proxy, model_url)
@@ -105,7 +110,7 @@ def environment(
 
 
 def config_toml(digest_min_lines: int | None) -> str:
-    """The `config.toml` written into `CODEX_HOME` before the run: the digest threshold, if any."""
+    """The ragon config file written before the run (`RAGON_CONFIG_PATH`): the digest threshold, if any."""
     if not digest_min_lines:
         return ""
     return f"[digest]\nmin_lines = {int(digest_min_lines)}\n"

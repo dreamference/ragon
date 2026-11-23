@@ -25,6 +25,7 @@ TOKEN_KEYS: Final[tuple[str, ...]] = ("input_tokens", "cached_input_tokens", "ou
 # What the model was given: the tool outputs of the session's rollouts under `CODEX_HOME`.
 ROLLOUT_GLOB: Final[str] = "rollout-*.jsonl"
 SEEN_OUTPUT_TYPES: Final[tuple[str, ...]] = ("function_call_output", "custom_tool_call_output")
+TOKEN_COUNT: Final[str] = "token_count"
 DIGEST_HEADER: Final[re.Pattern[str]] = re.compile(r"^\[digest\] \d+ lines", re.MULTILINE)
 
 
@@ -91,7 +92,19 @@ def from_log(path: Path) -> dict[str, Any]:
 
 def seen_empty() -> dict[str, Any]:
     """The counts of rollouts with no tool output."""
-    return {"seen_outputs": 0, "seen_lines": 0, "seen_bytes": 0, "digests": 0}
+    stats: dict[str, Any] = {"seen_outputs": 0, "seen_lines": 0, "seen_bytes": 0, "digests": 0}
+    stats.update({f"rollout_{key}": 0 for key in TOKEN_KEYS})
+    return stats
+
+
+def merge_rollout_tokens(stats: dict[str, Any]) -> None:
+    """Raises each token count to the rollouts' own total.
+
+    A trial killed at its time limit never finishes its turn, so the event log has no
+    `turn.completed` and counts 0; the rollout's last `token_count` event has the usage so far.
+    """
+    for key in TOKEN_KEYS:
+        stats[key] = max(int(stats[key]), int(stats.get(f"rollout_{key}", 0)))
 
 
 def from_rollouts(codex_home: Path) -> dict[str, Any]:
@@ -108,12 +121,17 @@ def from_rollouts(codex_home: Path) -> dict[str, Any]:
     """
     stats = seen_empty()
     for path in sorted(codex_home.rglob(ROLLOUT_GLOB)) if codex_home.is_dir() else []:
+        last_usage: dict[str, Any] = {}
         for line in path.read_bytes().decode(errors="replace").splitlines():
             try:
                 record = json.loads(line)
             except ValueError:
                 continue
             payload = record.get("payload") if isinstance(record, dict) else None
+            if isinstance(payload, dict) and payload.get("type") == TOKEN_COUNT:
+                info = payload.get("info")
+                total = info.get("total_token_usage") if isinstance(info, dict) else None
+                last_usage = total if isinstance(total, dict) else last_usage
             if not isinstance(payload, dict) or payload.get("type") not in SEEN_OUTPUT_TYPES:
                 continue
             output = payload.get("output")
@@ -122,4 +140,6 @@ def from_rollouts(codex_home: Path) -> dict[str, Any]:
             stats["seen_lines"] += len(text.splitlines())
             stats["seen_bytes"] += len(text.encode())
             stats["digests"] += 1 if DIGEST_HEADER.search(text) else 0
+        for key in TOKEN_KEYS:
+            stats[f"rollout_{key}"] += int(last_usage.get(key) or 0)
     return stats

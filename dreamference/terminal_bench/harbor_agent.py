@@ -83,7 +83,7 @@ class RagonAgent(BaseInstalledAgent):
         if config:
             command = (
                 f"mkdir -p {tb_agent_spec.CODEX_HOME} && printf %s {shlex.quote(config)} "
-                f"> {tb_agent_spec.CODEX_HOME}/config.toml && {command}"
+                f"> {tb_agent_spec.RAGON_CONFIG_PATH} && {command}"
             )
         await self.exec_as_agent(environment, command, env=env)
 
@@ -91,6 +91,7 @@ class RagonAgent(BaseInstalledAgent):
         """Tokens, command-output counts and what the model read into the trial's result."""
         stats = tb_stats.from_log(self.logs_dir / tb_agent_spec.EVENT_LOG_NAME)
         stats.update(tb_stats.from_rollouts(self.logs_dir / tb_agent_spec.CODEX_HOME_NAME))
+        tb_stats.merge_rollout_tokens(stats)
         context.n_input_tokens = stats["input_tokens"]
         context.n_cache_tokens = stats["cached_input_tokens"]
         context.n_output_tokens = stats["output_tokens"]

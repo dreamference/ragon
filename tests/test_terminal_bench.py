@@ -81,6 +81,36 @@ def test_the_rollouts_say_what_the_model_read_and_which_outputs_were_digests(tmp
     assert tb_stats.from_rollouts(tmp_path / "missing") == tb_stats.seen_empty()
 
 
+def test_a_trial_killed_before_its_turn_ends_still_has_its_tokens(tmp_path):
+    day = tmp_path / "sessions" / "2026" / "11" / "22"
+    day.mkdir(parents=True)
+
+    def count(total):
+        return {
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": {"total_token_usage": total}},
+        }
+
+    records = [
+        count({"input_tokens": 5, "output_tokens": 1}),
+        count({"input_tokens": 90, "cached_input_tokens": 60, "output_tokens": 7}),
+    ]
+    (day / "rollout-1.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    stats = tb_stats.empty()  # the event log of a killed trial: no turn.completed
+    stats.update(tb_stats.from_rollouts(tmp_path))
+    tb_stats.merge_rollout_tokens(stats)
+    assert (stats["input_tokens"], stats["cached_input_tokens"], stats["output_tokens"]) == (
+        90,
+        60,
+        7,
+    )
+    done = tb_stats.empty()
+    done["input_tokens"] = 100
+    done.update(tb_stats.from_rollouts(tmp_path))
+    tb_stats.merge_rollout_tokens(done)
+    assert done["input_tokens"] == 100  # the log's own count is kept when it is larger
+
+
 # ---- tb_agent_spec ------------------------------------------------------------------------------
 
 
@@ -98,6 +128,8 @@ def test_no_key_means_no_key_variable_and_digest_on_is_passed():
     env = tb_agent_spec.environment("http://gate.lan:8000", None, digest=True)
     assert "RAGON_API_KEY" not in env
     assert env["DREAMFERENCE_DIGEST_INSIDE"] == "1"
+    assert env["DREAMFERENCE_CONFIG_PATH"] == tb_agent_spec.RAGON_CONFIG_PATH
+    assert "DREAMFERENCE_CONFIG_PATH" not in tb_agent_spec.environment("http://g:8000", None)
 
 
 def test_the_key_comes_from_the_environment_first_then_the_file(tmp_path, monkeypatch):
@@ -262,6 +294,7 @@ def test_the_run_passes_the_key_in_the_environment_and_counts_the_log(
     assert env["RAGON_API_KEY"] == "sk-ragon-test"
     assert "sk-ragon-test" not in line
     assert "min_lines = 60" in line and "do the task" in line
+    assert f"> {tb_agent_spec.RAGON_CONFIG_PATH} &&" in line  # the file ragon reads
     (tmp_path / tb_agent_spec.EVENT_LOG_NAME).write_text(
         command("1\n2\n") + "\n" + event("turn.completed", usage={"input_tokens": 9}) + "\n"
     )
