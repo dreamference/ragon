@@ -342,6 +342,42 @@ def test_code_index_setup_record_toolchains_replaces_a_stale_staging_link(tmp_pa
     assert not os.path.lexists(indexers / "go.new")
 
 
+def _fake_result(stdout, stderr, returncode):
+    return subprocess.CompletedProcess(["fake"], returncode, stdout=stdout, stderr=stderr)
+
+
+def test_code_index_setup_version_of_joins_stdout_and_stderr(monkeypatch):
+    monkeypatch.setattr(
+        code_setup.subprocess,
+        "run",
+        lambda command, **kwargs: _fake_result("go1.23\n", "warn", 0),
+    )
+    assert CodeIndexSetup._version_of(["go", "version"]) == "go1.23\nwarn"
+
+
+def test_code_index_setup_version_of_treats_a_failed_command_as_missing(monkeypatch):
+    monkeypatch.setattr(
+        code_setup.subprocess,
+        "run",
+        lambda command, **kwargs: _fake_result("out", "err", 1),
+    )
+    assert CodeIndexSetup._version_of(["go", "version"]) is None
+
+
+def test_code_index_setup_version_of_reports_unrunnable_commands_as_missing(monkeypatch):
+    def explode(command, **kwargs):
+        raise FileNotFoundError(command)
+
+    monkeypatch.setattr(code_setup.subprocess, "run", explode)
+    assert CodeIndexSetup._version_of(["go", "version"]) is None
+    monkeypatch.setattr(
+        code_setup.subprocess,
+        "run",
+        lambda command, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(command, 60)),
+    )
+    assert CodeIndexSetup._version_of(["go", "version"]) is None
+
+
 def test_indexers_without_their_toolchain_are_skipped_not_failed(tmp_path, monkeypatch):
     monkeypatch.setattr(code_setup, "INSTALL_DIR", str(tmp_path / "install"))
     monkeypatch.setattr(code_setup, "INDEXERS_DIR", str(tmp_path / "indexers"))
