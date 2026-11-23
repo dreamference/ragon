@@ -144,6 +144,32 @@ STRUCTURAL = ("interface", "name", "host", "address", "port")
 
 
 @pytest.mark.parametrize("seed", SEEDS)
+def test_node_browser_scoped_passes_unparseable_and_scoped_addresses_through(seed):
+    rng = XorShift64(seed)
+    for _ in range(CASES):
+        garbage = rng.text(12)
+        interface = rng.pick(("", "eth0", "enP7s7", "lo"))
+        link_local = rng.pick(
+            (
+                "fe80::beef",
+                "ff02::1",
+                "2001:db8::5",
+                "10.0.0.5",
+                "[::1]",
+                "fe80::/64",
+                "",
+            )
+        )
+        # What `ip_address` refuses comes back exactly as it was printed.
+        assert NodeBrowser.scoped(garbage, interface) == garbage
+        # A parseable address: the scope is added only to a bare link-local IPv6 one.
+        if link_local == "fe80::beef" and interface:
+            assert NodeBrowser.scoped(link_local, interface) == f"{link_local}%{interface}"
+        else:
+            assert NodeBrowser.scoped(link_local, interface) == link_local
+
+
+@pytest.mark.parametrize("seed", SEEDS)
 def test_a_nodes_own_records_cannot_replace_what_the_browse_line_says(seed):
     rng = XorShift64(seed)
     plain = tuple(piece for piece in FLAT if piece not in ('"', ";", "\\"))
