@@ -83,8 +83,7 @@
    "T201": 20
   },
   "dreamference/node/node_service_file.py": {
-   "ANN401": 2,
-   "PLR2004": 2
+   "ANN401": 2
   },
   "dreamference/runner/codex_branded_builder.py": {
    "C901": 2,
@@ -181,5 +180,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 207
+ "total": 205
 }

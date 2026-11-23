@@ -28,6 +28,10 @@ KEEP: Final[object] = object()
 # The `auth` record's value on the authentication primary (specs/DREAMFERENCE_AUTH.md §7).
 AUTH_PRIMARY: Final[str] = "primary"
 
+# The TXT record keys `update()` checks in the installed file.
+NODE_RECORD: Final[str] = "node"
+MAIN_RECORD: Final[str] = "main"
+
 
 class NodeServiceFile:
     """Renders, reads and rewrites `ragon-node.service`."""
@@ -231,7 +235,7 @@ class NodeServiceFile:
             file was rewritten or already said so, False when it could not be written.
         """
         current = cls.read()
-        if current is None or "node" not in current:
+        if current is None or NODE_RECORD not in current:
             return None
         if forge is KEEP:
             try:
@@ -250,7 +254,7 @@ class NodeServiceFile:
             search_port=(int(current["search"]) if current.get("search", "").isdigit() else None)
             if search_port is KEEP
             else search_port,
-            main=("main" in current) if main is None else main,
+            main=(MAIN_RECORD in current) if main is None else main,
             remote=(current.get("remote") or None)
             if remote is KEEP
             else (str(remote) if remote else None),
