@@ -97,6 +97,21 @@ def test_the_neighbour_serves_only_plugs_it_already_knows(monkeypatch, capsys):
     assert all("nope" not in url for url in plug.urls)
 
 
+def test_node_power_cycle_serve_reports_a_failed_plug_but_keeps_trying(monkeypatch, capsys):
+    plug = FakePlug(2)
+    monkeypatch.setattr(NodeShellyPlug, "_get", classmethod(lambda cls, url: plug(url)))
+    NodePowerSettings.set_plug("p1", "p1.local")
+    assert NodePowerCycle.serve(["p1", "status"]) == 0
+    assert json.loads(capsys.readouterr().out)["on"] is True
+
+    def broken(cls, url):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(NodeShellyPlug, "_get", classmethod(broken))
+    assert NodePowerCycle.serve(["p1", "off"]) == 1
+    assert "the plug failed: no route to host" in capsys.readouterr().err
+
+
 def _paired(monkeypatch, answers):
     """Nodes `house-1` (the target) and `house-2` (the neighbour); `answers` decides `info`."""
     records = {
