@@ -121,6 +121,40 @@ def test_a_night_run_holds_every_task_to_its_share(setup, fake_host, monkeypatch
     assert "Up to 2 task(s) at once" in report and "compacts at 70608 tokens" in report
 
 
+def test_night_shift_runner_budget_note_names_its_source():
+    # The note is the report's line on the split: who set the limit decides what it names.
+    settings = NightShiftSettings({"compact_at": 40000, "max_parallel": 2})
+    assert (
+        NightShiftRunner.budget_note(2, 40000, 156907.0, settings)
+        == "Up to 2 task(s) at once (max_parallel 2, KV pool 156907 tokens); "
+        "each task's session compacts at 40000 tokens (compact_at)."
+    )
+    # With no compact_at, the limit is the split of the pool: the share and the ways.
+    assert (
+        NightShiftRunner.budget_note(2, 35000, 156907.0, NightShiftSettings({"max_parallel": 3}))
+        == f"Up to 2 task(s) at once (max_parallel 3, KV pool 156907 tokens); "
+        f"each task's session compacts at 35000 tokens "
+        f"({int(NIGHT_POOL_SHARE * 100)}% of the pool, split 2 way(s))."
+    )
+    # An unknown pool runs one task at a time; the limit is named when one is held.
+    assert (
+        NightShiftRunner.budget_note(1, 70000, 0.0, settings)
+        == "Up to 1 task(s) at once (max_parallel 2; the KV pool is unknown, "
+        "so one at a time, compacting at 70000 tokens)."
+    )
+    assert (
+        NightShiftRunner.budget_note(1, None, 0.0, settings)
+        == "Up to 1 task(s) at once (max_parallel 2; the KV pool is unknown, so one at a time)."
+    )
+    # compact_at = 0 passes no limit: the tasks together are not held to the pool.
+    assert (
+        NightShiftRunner.budget_note(1, None, 156907.0, NightShiftSettings({"compact_at": 0}))
+        == "Up to 1 task(s) at once (max_parallel 3, KV pool 156907 tokens). "
+        "compact_at = 0: no per-task limit is passed, so "
+        "the tasks together are not held to the pool."
+    )
+
+
 def test_compact_at_zero_passes_no_limit_and_says_so(setup, fake_host, monkeypatch):  # noqa: F811 - the imported fixture
     monkeypatch.setenv("FAKE_RAGON_MODE", "change")
     monkeypatch.setattr(FakeHost, "samples", [{"running": 0.0, "served": 1.0, "kv_pool": 156907.0}])
