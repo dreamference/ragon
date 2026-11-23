@@ -13,6 +13,7 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from typing import Final
 
 import pytest
 
@@ -21,6 +22,12 @@ from dreamference.night_shift.night_shift_settings import NightShiftSettings
 from dreamference.night_shift.night_shift_task_run import NightShiftTaskRun
 
 MODEL_HOST = "http://127.0.0.1:18999"
+
+# The arguments of a call, as a dict, for the `arguments_of` cases: the JSON string, the dict
+# already parsed, and a value that is neither (`arguments_of` returns `{}` for it, as ragon-serve).
+ARGUMENTS_JSON: Final[str] = json.dumps({"cmd": "ls"})
+ARGUMENTS_DICT: Final[dict] = {"cmd": "ls"}
+ARGUMENTS_NONE: Final[None] = None
 
 # A stand-in for `ragon exec`. Each call takes the next behaviour of $FAKE_PLAN (`good` fixes the
 # bug, `bad` writes a wrong fix, `none` changes nothing), writes a rollout under
@@ -656,3 +663,12 @@ def test_served_assets_with_named_template_and_tokenizer_skips_the_patches(tmp_p
         "chat_template_sha256": sha256(b"named template").hexdigest(),
         "tokenizer_sha256": sha256(b"{}").hexdigest(),
     }
+
+
+def test_adapter_train_generate_arguments_of_parses_the_json_and_passes_the_dict_through():
+    """A call's arguments: the JSON string is parsed, a dict passes through, a value that is neither becomes `{}`."""
+    parsed = AdapterTrainGenerate.arguments_of(ARGUMENTS_JSON)
+    assert parsed == {"cmd": "ls"}
+    assert AdapterTrainGenerate.arguments_of(ARGUMENTS_DICT) is not None
+    assert AdapterTrainGenerate.arguments_of(ARGUMENTS_DICT) == ARGUMENTS_DICT
+    assert AdapterTrainGenerate.arguments_of(ARGUMENTS_NONE) == {}
