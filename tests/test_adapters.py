@@ -1259,3 +1259,66 @@ def test_list_marks_an_adapter_for_another_base_as_a_mismatch(monkeypatch, capsy
     out = capsys.readouterr().out
     assert "no model of the matrix" in out
     assert out.count("base mismatch") == 2 and "third-party" in out
+
+
+def test_adapter_command_list_reports_no_adapters_when_the_store_is_empty(monkeypatch, capsys):
+    import argparse
+
+    monkeypatch.setattr(AdapterStore, "entries", classmethod(lambda cls: {}))
+    monkeypatch.setattr(
+        AdapterCatalog, "available", classmethod(lambda cls: pytest.fail("not asked"))
+    )
+    assert AdapterCommand._list(argparse.Namespace(available=False, json=False), None) == 0
+    out = capsys.readouterr().out
+    assert "no model of the matrix" in out
+    assert "No adapters installed." in out
+    assert "Catalogued" not in out
+
+
+def test_adapter_command_list_shows_the_catalogue_flagged_against_the_store(monkeypatch, capsys):
+    import argparse
+
+    monkeypatch.setattr(AdapterStore, "entries", classmethod(lambda cls: {"go": {"name": "go"}}))
+    monkeypatch.setattr(
+        AdapterCatalog,
+        "available",
+        classmethod(
+            lambda cls: [
+                {
+                    "name": "go",
+                    "version": "1.0.0",
+                    "display_name": "Go",
+                    "base_alias": DEFAULT_MODEL_ALIAS,
+                },
+                {
+                    "name": "rust",
+                    "version": "2.0.0",
+                    "display_name": "Rust",
+                    "base_alias": DEFAULT_MODEL_ALIAS,
+                },
+            ]
+        ),
+    )
+    base = {"key": DEFAULT_MODEL_ALIAS, "source": "node", "repo": BASE_REPO, "revision": "r1"}
+    assert AdapterCommand._list(argparse.Namespace(available=True, json=False), base) == 0
+    out = capsys.readouterr().out
+    assert f"Served base: {DEFAULT_MODEL_ALIAS} (node)" in out
+    assert "Catalogued in this release:" in out
+    installed = [line for line in out.splitlines() if line.startswith("  go ") and "for" in line]
+    not_installed = [
+        line for line in out.splitlines() if line.startswith("  rust ") and "for" in line
+    ]
+    assert len(installed) == 1 and "installed" in installed[0]
+    assert len(not_installed) == 1 and "not installed" in not_installed[0]
+    assert "No adapters installed." not in out
+
+
+def test_adapter_command_list_says_no_adapters_are_catalogued_yet(monkeypatch, capsys):
+    import argparse
+
+    monkeypatch.setattr(AdapterStore, "entries", classmethod(lambda cls: {}))
+    monkeypatch.setattr(AdapterCatalog, "available", classmethod(lambda cls: []))
+    assert AdapterCommand._list(argparse.Namespace(available=True, json=False), None) == 0
+    out = capsys.readouterr().out
+    assert "No adapters installed." in out
+    assert "This release catalogues no adapters yet." in out
