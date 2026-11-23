@@ -7,12 +7,16 @@
 //! origin only. The proxy changes nothing: method, path, query, body, `Authorization` and
 //! `Content-Type` go to the accounts service, and its status, body and content type come back, so
 //! every rule (who may call what, the last-admin guard) stays the service's. Plain HTTP to the
-//! primary's gate only, as the forge proxy.
+//! primary's gate only, as the forge proxy. The one header it adds is `X-Ragon-Peer`, the browser's
+//! address: this server reaches the gate from loopback, and the gate must not take a phone's request
+//! for one made on the node (the first account is made on the node only, AUTH §8.6).
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::extract::Request;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -30,6 +34,8 @@ pub const DEFAULT_ACCOUNTS_URL: &str = "http://127.0.0.1:8000";
 const MAX_REQUEST: usize = 64 * 1024;
 /// The largest answer passed back: a usage listing over many days.
 const MAX_ANSWER: usize = 4 * 1024 * 1024;
+/// Names the browser's address for the gate (`model_gate_service.py`, `RELAY_HEADER`).
+pub const RELAY_HEADER: &str = "x-ragon-peer";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -75,6 +81,9 @@ pub async fn proxy(State(server): State<Arc<Server>>, request: Request) -> Respo
             outgoing = outgoing.header(name, value);
         }
     }
+    // No address known (a router driven without a listener): a browser that is not on the node.
+    let peer = parts.extensions.get::<ConnectInfo<SocketAddr>>().map_or_else(|| "unknown".to_string(), |info| info.0.ip().to_string());
+    outgoing = outgoing.header(RELAY_HEADER, peer);
     let Ok(outgoing) = outgoing.header(header::CONTENT_LENGTH, bytes.len()).body(Body::from(bytes)) else {
         return failure(StatusCode::BAD_REQUEST, "The request could not be passed on.");
     };

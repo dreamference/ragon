@@ -153,6 +153,36 @@ async fn the_proxy_passes_the_request_on_unchanged_and_returns_the_answer() {
 }
 
 #[tokio::test]
+async fn the_proxy_names_the_browser_for_the_gate_and_never_passes_a_mark_the_browser_sent() {
+    let scratch = scratch("peer");
+    let (url, seen) = stand_in().await;
+    let server = Arc::new(Server::new(config(&scratch.0, Some(url))).unwrap());
+    let cookie = cookie(&server).await;
+    let phone: std::net::SocketAddr = "192.168.1.30:50000".parse().unwrap();
+    for (peer, named) in [(Some(phone), "x-ragon-peer: 192.168.1.30"), (None, "x-ragon-peer: unknown")] {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/oauth/token")
+            .header(header::HOST, HOST)
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::COOKIE, &cookie)
+            .header("x-ragon-local", "1")
+            .header("x-ragon-peer", "127.0.0.1")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        if let Some(address) = peer {
+            request.extensions_mut().insert(axum::extract::ConnectInfo(address));
+        }
+        assert_eq!(call(&server, request).await.0, StatusCode::CREATED);
+        let sent = seen.lock().unwrap().pop().unwrap().to_ascii_lowercase();
+        assert!(sent.contains(named), "{sent}");
+        assert_eq!(sent.matches("x-ragon-peer").count(), 1, "{sent}");
+        assert!(!sent.contains("x-ragon-local"), "{sent}");
+    }
+}
+
+#[tokio::test]
 async fn the_proxy_refuses_without_the_sign_in_and_reports_an_unreachable_service() {
     let scratch = scratch("down");
     // Nothing listens on the discard port.
