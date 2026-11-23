@@ -1,6 +1,7 @@
 """ModelDownloader refusals and fallbacks the other downloader tests do not reach."""
 
 import types
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +22,37 @@ def test_a_cache_folder_with_no_snapshot_has_no_snapshot_dir(tmp_path, monkeypat
     monkeypatch.setattr(ModelDownloader, "get_hf_cache_dir", classmethod(lambda cls: tmp_path))
     (tmp_path / "models--some-org--some-model" / "snapshots").mkdir(parents=True)
     assert ModelDownloader.get_model_snapshot_dir(KEY) is None
+
+
+def test_model_downloader_get_model_snapshot_dir_returns_the_newest_complete_snapshot(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ModelMatrixRegistry, "resolve_hf_repo", classmethod(lambda cls, key: KEY))
+    monkeypatch.setattr(ModelMatrixRegistry, "pinned_revision", classmethod(lambda cls, key: None))
+    monkeypatch.setattr(ModelDownloader, "get_hf_cache_dir", classmethod(lambda cls: tmp_path))
+    snapshots = tmp_path / "models--some-org--some-model" / "snapshots"
+    older = snapshots / "111111"
+    newer = snapshots / "222222"
+    older.mkdir(parents=True)
+    newer.mkdir()
+    (older / "incomplete").mkdir()  # not a whole checkpoint, no index names shards
+    (newer / "weight.safetensors").write_bytes(b"w")
+    (newer / "weights.index.json").write_text(
+        '{"weight_map": {"weight.safetensors": "weight.safetensors"}}', encoding="utf-8"
+    )
+    mtimes = {older: 1100, newer: 2200}
+
+    real_stat = Path.stat
+
+    monkeypatch.setattr(
+        Path,
+        "stat",
+        lambda self, **kw: types.SimpleNamespace(
+            st_mtime=mtimes.get(self, real_stat(self, **kw).st_mtime),
+            st_mode=real_stat(self, **kw).st_mode,
+        ),
+    )
+    assert ModelDownloader.get_model_snapshot_dir(KEY) == newer
 
 
 def test_an_empty_model_key_is_never_taken_for_downloaded():
