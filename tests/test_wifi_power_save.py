@@ -108,6 +108,16 @@ def test_off_in_the_radio_but_default_for_the_connection_needs_the_persistent_fi
     ]
 
 
+def test_wifi_power_save_interfaces_skips_a_device_without_a_connection_name(network):
+    # nmcli knows a connected Wi-Fi device but cannot name its connection: the device is skipped,
+    # nothing is reported, and no further reading of it is asked.
+    network["connection"] = "   "
+    assert WifiPowerSave.interfaces() == []
+    assert WifiPowerSave.problems() == []
+    assert not any("802-11-wireless.powersave" in argv for argv in network["asked"])
+    assert not any(argv[0] == "iw" for argv in network["asked"])
+
+
 def test_without_iw_the_setting_alone_decides(network):
     network["iw"] = False
     step = WifiPowerSave.step()
