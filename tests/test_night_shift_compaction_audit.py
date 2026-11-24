@@ -174,6 +174,17 @@ def test_paths_are_named_whole_by_their_last_parts_or_a_distinctive_basename():
     assert not names("mysolveset.pyc", "sympy/solvers/solveset.py")
 
 
+def test_night_shift_compaction_audit_command_returns_a_string_when_the_arguments_do_not_parse():
+    assert NightShiftCompactionAudit._command({"arguments": "{not json"}) == ""
+    assert NightShiftCompactionAudit._command({"arguments": None}) == ""
+    assert NightShiftCompactionAudit._command({"arguments": 42}) == ""
+
+
+def test_night_shift_compaction_audit_command_returns_empty_when_the_arguments_are_not_a_dict():
+    assert NightShiftCompactionAudit._command({"arguments": "[1, 2]"}) == ""
+    assert NightShiftCompactionAudit._command({"arguments": "42"}) == ""
+
+
 def test_runs_cover_the_time_since_the_previous_run(tmp_path):
     sessions, night = tmp_path / "sessions", tmp_path / "night"
     path = write_rollout(sessions, two_compactions())
