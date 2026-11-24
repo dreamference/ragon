@@ -1160,3 +1160,60 @@ def test_hardware_manager_query_nvidia_smi_unknown_when_smi_fails(monkeypatch):
     )
     unknown = (hardware_manager.NOT_AVAILABLE, hardware_manager.NOT_AVAILABLE, 0.0)
     assert hardware_manager.HardwareManager._query_nvidia_smi() == unknown
+
+
+def test_hardware_manager_check_speculative_compatibility_reports_a_main_model_error(
+    monkeypatch,
+):
+    from dreamference.hardware import HardwareManager
+
+    monkeypatch.setattr(
+        HardwareManager,
+        "check_model_compatibility",
+        classmethod(lambda cls, key: (False, "too big")),
+    )
+    valid, msg = HardwareManager.check_speculative_compatibility("main", "draft")
+    assert valid is False
+    assert msg == "Main model error: too big"
+
+
+def test_hardware_manager_check_speculative_compatibility_reports_a_draft_model_error(
+    monkeypatch,
+):
+    from dreamference.hardware import HardwareManager
+
+    monkeypatch.setattr(
+        HardwareManager,
+        "check_model_compatibility",
+        classmethod(lambda cls, key: (key == "main", "too big")),
+    )
+    valid, msg = HardwareManager.check_speculative_compatibility("main", "draft")
+    assert valid is False
+    assert msg == "Draft model error: too big"
+
+
+def test_hardware_manager_check_speculative_compatibility_refuses_a_combined_overrun(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from dreamference.hardware import HardwareManager, ModelMatrixRegistry
+
+    monkeypatch.setattr(
+        HardwareManager,
+        "check_model_compatibility",
+        classmethod(lambda cls, key: (True, "ok")),
+    )
+    monkeypatch.setattr(
+        ModelMatrixRegistry,
+        "get_spec",
+        classmethod(lambda cls, key: SimpleNamespace(name=key, min_memory_gb=60.0)),
+    )
+    monkeypatch.setattr(
+        HardwareManager,
+        "detect_gb10_hardware",
+        classmethod(lambda cls: SimpleNamespace(total_unified_memory_gb=100.0)),
+    )
+    valid, msg = HardwareManager.check_speculative_compatibility("main", "draft")
+    assert valid is False
+    assert "Combined memory requirement (120.0 GB) exceeds the 95.0 GB budget" in msg
