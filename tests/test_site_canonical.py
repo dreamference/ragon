@@ -35,6 +35,8 @@ CODES = [lang["code"] for lang in LANGUAGES]
 @pytest.fixture(scope="module")
 def built_docs(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Build the MkDocs site (strict, as the workflow does) into a temporary folder."""
+    if importlib.util.find_spec("mkdocs") is None:
+        pytest.skip("mkdocs is not installed here; the docs workflow builds the site")
     out = tmp_path_factory.mktemp("docs") / "site"
     result = subprocess.run(
         [sys.executable, "-m", "mkdocs", "build", "--strict", "--site-dir", str(out)],
