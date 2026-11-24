@@ -1,6 +1,7 @@
 """Tests for the primary/secondary choice and the migration (AUTH §7)."""
 
 import argparse
+from pathlib import Path
 
 import pytest
 
@@ -31,7 +32,8 @@ def test_render_and_update_carry_auth_primary(tmp_path):
 
 
 CA = b"-----BEGIN CERTIFICATE-----\nprimary\n-----END CERTIFICATE-----\n"
-PRIMARY = {"node": "abc", "name": "alpha", "host": "alpha.local.", "address": "192.0.2.7"}
+PRIMARY_ID = "6f1d2c3b-4a59-4e68-9f70-8a1b2c3d4e5f"
+PRIMARY = {"node": PRIMARY_ID, "name": "alpha", "host": "alpha.local.", "address": "192.0.2.7"}
 
 
 def _browse(*entries):
@@ -52,15 +54,15 @@ def _fetch(pem=CA):
 def test_primary_self_and_pin():
     assert AccountsMigrate.run_primary(_args(primary_self=True)) == 0
     assert NodeSettings.auth_primary() and NodeSettings.pinned_primary() is None
-    assert AccountsMigrate.run_primary(_args(primary_id="abc"), _browse(), _fetch()) == 0
-    assert not NodeSettings.auth_primary() and NodeSettings.pinned_primary() == "abc"
+    assert AccountsMigrate.run_primary(_args(primary_id=PRIMARY_ID), _browse(), _fetch()) == 0
+    assert not NodeSettings.auth_primary() and NodeSettings.pinned_primary() == PRIMARY_ID
     assert AccountsMigrate.run_primary(_args(primary_id="x", primary_self=True)) == 2
     assert NodeSettings.load()["advertise"] is False  # the switches are untouched
 
 
 def test_choose_secondary_lists_advertised_primaries():
     browse = lambda: [  # noqa: E731
-        {"node": "p1", "name": "alpha", "auth": "primary", "address": "192.0.2.7"},
+        {"node": PRIMARY_ID, "name": "alpha", "auth": "primary", "address": "192.0.2.7"},
         {"node": "s1", "name": "beta"},
     ]
     answers = iter(["secondary", "1"])
@@ -69,8 +71,8 @@ def test_choose_secondary_lists_advertised_primaries():
         browse, ask=lambda _p: next(answers), say=said.append, fetch_ca=_fetch()
     )
     assert result == "secondary"
-    assert NodeSettings.pinned_primary() == "p1"
-    assert AccountsSecondary.ca_path("p1").read_bytes() == CA
+    assert NodeSettings.pinned_primary() == PRIMARY_ID
+    assert AccountsSecondary.ca_path(PRIMARY_ID).read_bytes() == CA
     assert len(said) == 1 and "alpha" in said[0]
     assert AccountsMigrate.choose(browse, ask=lambda _p: "x") is None  # already chosen
 
@@ -109,14 +111,14 @@ def test_accounts_migrate_migrate_rejects_a_node_without_id():
 # ----- `node primary <name>` on a running node (the w48s test pair, 11-24) ----------------------
 
 
-@pytest.mark.parametrize("wanted", ["abc", "alpha", "ALPHA", "alpha.local", "alpha.local."])
+@pytest.mark.parametrize("wanted", [PRIMARY_ID, "alpha", "ALPHA", "alpha.local", "alpha.local."])
 def test_pinning_by_name_stores_the_node_id_and_its_ca(wanted):
     """The pair pinned `seventh-puffin`, a name: the forwarder looked for a node with that id."""
     fetch = _fetch()
     assert AccountsMigrate.run_primary(_args(primary_id=wanted), _browse(), fetch) == 0
-    assert NodeSettings.pinned_primary() == "abc"
+    assert NodeSettings.pinned_primary() == PRIMARY_ID
     assert fetch.seen == [("192.0.2.7", None)]
-    assert AccountsSecondary.ca_path("abc").read_bytes() == CA
+    assert AccountsSecondary.ca_path(PRIMARY_ID).read_bytes() == CA
 
 
 def test_pinning_a_node_not_advertised_changes_nothing(capsys):
@@ -131,7 +133,7 @@ def test_pinning_fails_cleanly_when_the_primary_serves_no_ca(capsys):
 
     assert AccountsMigrate.run_primary(_args(primary_id="alpha"), _browse(), down) == 1
     assert NodeSettings.pinned_primary() is None
-    assert not AccountsSecondary.ca_path("abc").exists()
+    assert not AccountsSecondary.ca_path(PRIMARY_ID).exists()
     assert "could not be pinned" in capsys.readouterr().out
 
 
@@ -139,14 +141,22 @@ def test_a_changed_primary_certificate_is_refused(capsys):
     assert AccountsMigrate.run_primary(_args(primary_id="alpha"), _browse(), _fetch()) == 0
     other = CA.replace(b"primary", b"impostor")
     assert AccountsMigrate.run_primary(_args(primary_id="alpha"), _browse(), _fetch(other)) == 1
-    assert AccountsSecondary.ca_path("abc").read_bytes() == CA
+    assert AccountsSecondary.ca_path(PRIMARY_ID).read_bytes() == CA
     assert "has changed" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("node", ["../../.ssh", "abc", ""])
+def test_an_advertised_id_that_is_not_a_uuid_is_refused(node, capsys):
+    odd = {**PRIMARY, "node": node}
+    assert AccountsMigrate.run_primary(_args(primary_id="alpha"), _browse(odd), _fetch()) == 1
+    assert NodeSettings.pinned_primary() is None
+    assert not list(Path.home().glob("**/ca.pem"))
 
 
 def test_pinning_this_node_is_refused(monkeypatch):
     from dreamference.node.node_identity import NodeIdentity
 
-    monkeypatch.setattr(NodeIdentity, "read", classmethod(lambda cls: "abc"))
+    monkeypatch.setattr(NodeIdentity, "read", classmethod(lambda cls: PRIMARY_ID))
     assert AccountsMigrate.run_primary(_args(primary_id="alpha"), _browse(), _fetch()) == 1
     assert NodeSettings.pinned_primary() is None
 

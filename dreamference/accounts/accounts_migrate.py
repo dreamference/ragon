@@ -7,6 +7,7 @@ account for it and for every named secondary; `ragon-admin init` asks the same q
 
 import argparse
 import sys
+import uuid
 from collections.abc import Callable
 from typing import Final
 
@@ -150,12 +151,16 @@ class AccountsMigrate:
         """Makes this node a secondary of the advertised `entry`: its CA, its id, the service.
 
         Raises:
-            AccountsError: The primary's CA could not be fetched, or differs from the pinned one.
+            AccountsError: The advertised id is not a node id, or the primary's CA could not be
+                fetched, or differs from the pinned one.
         """
         from dreamference.accounts.accounts_secondary import AccountsSecondary
 
-        node_id = entry["node"]
-        name = entry.get("name") or node_id
+        name = entry.get("name") or entry.get("node") or "?"
+        try:  # the id names a directory: only a node id (a UUID, as NodeIdentity) is taken
+            node_id = str(uuid.UUID(entry.get("node", "")))
+        except ValueError as error:
+            raise AccountsError(f"{name} advertises no valid node id.") from error
         fetch = fetch_ca or AccountsSecondary.fetch_ca
         if not entry.get("address"):
             raise AccountsError(f"{name} advertises no address.")

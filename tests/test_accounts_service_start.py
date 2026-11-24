@@ -78,7 +78,7 @@ def test_the_unit_starts_after_the_gate_answers_not_before(calls, monkeypatch):
 
 def test_a_secondary_runs_the_service_as_a_forwarder(calls, monkeypatch):
     monkeypatch.setenv(ACCOUNTS_ENABLED_VARIABLE, "1")
-    NodeSettings.set_pinned_primary("primary-node-id")
+    NodeSettings.set_pinned_primary("6f1d2c3b-4a59-4e68-9f70-8a1b2c3d4e5f")
     assert ModelGate.start(8000, "image")
     assert "-m dreamference.accounts.accounts_service --secondary" in unit_file().read_text()
 
@@ -139,7 +139,7 @@ def test_a_node_never_advertises_accounts_it_does_not_start(monkeypatch, enabled
     if role == "primary":
         NodeSettings.set_self_primary()
     elif role == "secondary":
-        NodeSettings.set_pinned_primary("primary-node-id")
+        NodeSettings.set_pinned_primary("6f1d2c3b-4a59-4e68-9f70-8a1b2c3d4e5f")
     if store:
         AccountsStore(AccountsStore.default_path(), primary_name="box", audit_sink=[].append)
     started: list[bool] = []
@@ -178,7 +178,11 @@ def _pin(monkeypatch):
     from dreamference.accounts.accounts_migrate import AccountsMigrate
 
     monkeypatch.setattr(AccountsMigrate, "advertise", classmethod(lambda cls: None))
-    entry = {"node": "primary-node-id", "name": "alpha", "address": "192.0.2.7"}
+    entry = {
+        "node": "6f1d2c3b-4a59-4e68-9f70-8a1b2c3d4e5f",
+        "name": "alpha",
+        "address": "192.0.2.7",
+    }
     AccountsMigrate.pin(entry, lambda address, port: b"-----BEGIN CERTIFICATE-----\nx\n")
 
 
@@ -203,7 +207,7 @@ def test_pinning_before_any_server_start_calls_no_systemctl(calls, monkeypatch):
 
 def test_the_service_forwards_when_pinned_even_from_an_old_unit(monkeypatch):
     """A unit written without `--secondary` still runs as the forwarder on a pinned node."""
-    NodeSettings.set_pinned_primary("primary-node-id")
+    NodeSettings.set_pinned_primary("6f1d2c3b-4a59-4e68-9f70-8a1b2c3d4e5f")
     built: list[str] = []
 
     class Server:
@@ -231,6 +235,6 @@ def test_the_service_forwards_when_pinned_even_from_an_old_unit(monkeypatch):
 def test_a_pinned_node_with_a_stray_store_is_not_its_own_primary(monkeypatch):
     """Third's info said `primary: true` from the store its primary-mode start had left."""
     AccountsStore(AccountsStore.default_path(), primary_name="box", audit_sink=[].append)
-    NodeSettings.set_pinned_primary("primary-node-id")
+    NodeSettings.set_pinned_primary("6f1d2c3b-4a59-4e68-9f70-8a1b2c3d4e5f")
     info = ModelGate.node_info()
     assert info["primary_id"] is None and info["issuer"] is None
