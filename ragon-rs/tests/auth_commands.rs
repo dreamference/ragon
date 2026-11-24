@@ -378,6 +378,7 @@ fn the_desktop_text_fixture_is_the_string_table() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &want).unwrap();
     }
-    let have = std::fs::read_to_string(&path).unwrap_or_default();
+    // Line endings are the checkout's business (`core.autocrlf` on Windows); the table has no raw CR.
+    let have = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
     assert!(have == want, "{} is stale: run this test with RAGON_WRITE_FIXTURES=1", path.display());
 }

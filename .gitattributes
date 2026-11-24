@@ -9,3 +9,5 @@
 # Prompts compiled into ragon with include_str! and shared byte for byte with the Python side: a
 # Windows checkout must not turn them into CRLF.
 ragon-rs/prompts/*.md text eol=lf
+# The desktop app's tests read it raw and the launcher test compares it byte for byte with the string table.
+ragon-rs/tests/fixtures/account-text.json text eol=lf
