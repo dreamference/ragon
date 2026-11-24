@@ -21,8 +21,9 @@ sys.path.insert(0, D)
 import evallib  # noqa: E402
 from candidates import CANDIDATES, register  # noqa: E402
 
+ARGC_WITH_PROBE = 5  # argv length when the optional <probe-chunks> argument is given
 model, chunks_path, qpath, out = sys.argv[1:5]
-probe = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+probe = int(sys.argv[5]) if len(sys.argv) > ARGC_WITH_PROBE else 0
 THREADS = 4
 dp, qp, licence, _ = CANDIDATES[model]
 register(model)
