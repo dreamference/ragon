@@ -7,6 +7,9 @@ on-disk ONNX size.
 
 import os
 import sys
+from typing import Final
+
+ONNX_SUFFIX: Final[str] = ".onnx"
 
 D = os.path.dirname(os.path.abspath(__file__))
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -27,5 +30,5 @@ for m in sys.argv[1:] or list(CANDIDATES):
     size = 0
     if path:
         for dp, _, fs in os.walk(path):
-            size += sum(os.path.getsize(os.path.join(dp, f)) for f in fs if ".onnx" in f)
+            size += sum(os.path.getsize(os.path.join(dp, f)) for f in fs if ONNX_SUFFIX in f)
     print("ok", m, f"{size / 2**20:.0f} MB", flush=True)
