@@ -31,21 +31,44 @@ def test_render_and_update_carry_auth_primary(tmp_path):
     assert "auth" not in (NodeServiceFile.read() or {})
 
 
-CA = b"-----BEGIN CERTIFICATE-----\nprimary\n-----END CERTIFICATE-----\n"
 PRIMARY_ID = "6f1d2c3b-4a59-4e68-9f70-8a1b2c3d4e5f"
-PRIMARY = {"node": PRIMARY_ID, "name": "alpha", "host": "alpha.local.", "address": "192.0.2.7"}
+OTHER_ID = "11111111-2222-4333-8444-555555555555"
+PRIMARY = {
+    "node": PRIMARY_ID,
+    "name": "alpha",
+    "host": "alpha.local.",
+    "address": "192.0.2.7",
+    "auth": "primary",
+}
+PEMS: dict[str, bytes] = {}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _cas(tmp_path_factory):
+    """Two real CA certificates: the primary's and an impostor's (the fingerprint parses them)."""
+    from dreamference.vllm_server.model_gate_tls import CA_CERT, ModelGateTls
+
+    for name in ("primary", "impostor"):
+        folder = ModelGateTls.ensure(tmp_path_factory.mktemp(name), [f"{name}.example"])
+        PEMS[name] = (folder / CA_CERT).read_bytes()
+
+
+def _fingerprint(pem):
+    from dreamference.vllm_server.model_gate_tls import ModelGateTls
+
+    return ModelGateTls.fingerprint(pem)
 
 
 def _browse(*entries):
     return lambda: [dict(entry) for entry in entries or (PRIMARY,)]
 
 
-def _fetch(pem=CA):
+def _fetch(pem=None):
     seen: list[tuple] = []
 
-    def fetch(address, port):
-        seen.append((address, port))
-        return pem
+    def fetch(address, port, node_id):
+        seen.append((address, port, node_id))
+        return pem or PEMS["primary"]
 
     fetch.seen = seen  # type: ignore[attr-defined]
     return fetch
@@ -72,8 +95,8 @@ def test_choose_secondary_lists_advertised_primaries():
     )
     assert result == "secondary"
     assert NodeSettings.pinned_primary() == PRIMARY_ID
-    assert AccountsSecondary.ca_path(PRIMARY_ID).read_bytes() == CA
-    assert len(said) == 1 and "alpha" in said[0]
+    assert AccountsSecondary.ca_path(PRIMARY_ID).read_bytes() == PEMS["primary"]
+    assert "alpha" in said[0] and _fingerprint(PEMS["primary"]) in said[1]
     assert AccountsMigrate.choose(browse, ask=lambda _p: "x") is None  # already chosen
 
 
@@ -117,8 +140,8 @@ def test_pinning_by_name_stores_the_node_id_and_its_ca(wanted):
     fetch = _fetch()
     assert AccountsMigrate.run_primary(_args(primary_id=wanted), _browse(), fetch) == 0
     assert NodeSettings.pinned_primary() == PRIMARY_ID
-    assert fetch.seen == [("192.0.2.7", None)]
-    assert AccountsSecondary.ca_path(PRIMARY_ID).read_bytes() == CA
+    assert fetch.seen == [("192.0.2.7", None, PRIMARY_ID)]
+    assert AccountsSecondary.ca_path(PRIMARY_ID).read_bytes() == PEMS["primary"]
 
 
 def test_pinning_a_node_not_advertised_changes_nothing(capsys):
@@ -128,7 +151,7 @@ def test_pinning_a_node_not_advertised_changes_nothing(capsys):
 
 
 def test_pinning_fails_cleanly_when_the_primary_serves_no_ca(capsys):
-    def down(address, port):
+    def down(address, port, node_id):
         raise OSError("its gate did not answer (refused)")
 
     assert AccountsMigrate.run_primary(_args(primary_id="alpha"), _browse(), down) == 1
@@ -139,9 +162,9 @@ def test_pinning_fails_cleanly_when_the_primary_serves_no_ca(capsys):
 
 def test_a_changed_primary_certificate_is_refused(capsys):
     assert AccountsMigrate.run_primary(_args(primary_id="alpha"), _browse(), _fetch()) == 0
-    other = CA.replace(b"primary", b"impostor")
+    other = PEMS["impostor"]
     assert AccountsMigrate.run_primary(_args(primary_id="alpha"), _browse(), _fetch(other)) == 1
-    assert AccountsSecondary.ca_path(PRIMARY_ID).read_bytes() == CA
+    assert AccountsSecondary.ca_path(PRIMARY_ID).read_bytes() == PEMS["primary"]
     assert "has changed" in capsys.readouterr().out
 
 
@@ -171,3 +194,76 @@ def test_pinning_makes_the_service_and_the_gate_info_follow(monkeypatch):
     assert AccountsMigrate.run_primary(_args(primary_id="alpha"), _browse(), _fetch()) == 0
     assert AccountsMigrate.run_primary(_args(primary_self=True)) == 0
     assert followed == [True, True]
+
+
+# ----- the review's B1 and B3 (11-24): only one advertised primary is pinned ---------------------
+
+
+def _nothing_pinned():
+    assert NodeSettings.pinned_primary() is None
+    assert not list(Path.home().glob("**/ca.pem"))
+
+
+def test_a_node_that_keeps_no_accounts_is_not_pinned(capsys):
+    """B1: another secondary (or a node with no accounts) pinned as the primary 401s every key."""
+    secondary = {k: v for k, v in PRIMARY.items() if k != "auth"}
+    for entry in (secondary, {**secondary, "auth": "secondary"}):
+        fetch = _fetch()
+        assert AccountsMigrate.run_primary(_args(primary_id="alpha"), _browse(entry), fetch) == 1
+        assert fetch.seen == []
+        _nothing_pinned()
+        assert "alpha does not keep accounts (auth=primary not advertised)" in (
+            capsys.readouterr().out
+        )
+
+
+ANOTHER_ID = {"node": OTHER_ID, "host": "beta.local.", "address": "192.0.2.9"}
+ANOTHER_HOST = {"host": "beta.local.", "address": "192.0.2.9"}
+ANOTHER_PORT = {"port": "8443"}
+
+
+@pytest.mark.parametrize(
+    ("wanted", "impostor"),
+    [
+        ("alpha", ANOTHER_ID),  # the primary's name, another node id
+        ("alpha", ANOTHER_HOST),  # the primary's id from another host
+        (PRIMARY_ID, ANOTHER_HOST),
+        ("alpha", ANOTHER_PORT),  # the same host on another port
+        (PRIMARY_ID, ANOTHER_PORT),
+    ],
+)
+def test_a_name_or_id_that_several_nodes_advertise_is_refused(wanted, impostor, capsys):
+    """B3: the first match won, and the success line named no UUID the operator could check."""
+    fetch = _fetch()
+    entries = (PRIMARY, {**PRIMARY, **impostor})
+    assert AccountsMigrate.run_primary(_args(primary_id=wanted), _browse(*entries), fetch) == 1
+    assert fetch.seen == []
+    _nothing_pinned()
+    out = capsys.readouterr().out
+    assert "advertised by several nodes" in out and "Pin by UUID on a quiet network" in out
+
+
+def test_one_node_seen_at_several_addresses_is_pinned_at_its_best():
+    """One host on two interfaces is one node: mDNS keeps the host name unique."""
+    v6 = {**PRIMARY, "address": "fe80::7%eth0"}
+    fetch = _fetch()
+    assert AccountsMigrate.run_primary(_args(primary_id="alpha"), _browse(v6, PRIMARY), fetch) == 0
+    assert fetch.seen == [("192.0.2.7", None, PRIMARY_ID)]
+
+
+def test_the_pin_and_the_primary_print_the_same_ca_fingerprint(capsys):
+    """B3: the operator compares the two out of band; nothing else stops an impostor at first contact."""
+    from dreamference.vllm_server.model_gate_tls import CA_CERT, ModelGateTls
+
+    assert AccountsMigrate.run_primary(_args(primary_id="alpha"), _browse(), _fetch()) == 0
+    out = capsys.readouterr().out
+    fingerprint = _fingerprint(PEMS["primary"])
+    assert PRIMARY_ID in out and f"SHA-256 {fingerprint}" in out
+    assert AccountsMigrate.run_primary(_args()) == 0  # `node primary` on the secondary
+    assert f"primary: {PRIMARY_ID}\nCA SHA-256: {fingerprint}" in capsys.readouterr().out
+    # On the primary: its own gate's CA.
+    NodeSettings.set_self_primary()
+    assert "CA SHA-256: none yet" in AccountsMigrate.describe("me")
+    folder = ModelGateTls.ensure(ModelGateTls.directory(), ["alpha.example"])
+    own = _fingerprint((folder / CA_CERT).read_bytes())
+    assert AccountsMigrate.describe("me") == f"primary: this node (me)\nCA SHA-256: {own}"

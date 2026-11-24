@@ -97,6 +97,15 @@ class AccountsAdmin:
             return 2
         if command == CMD_LOG:
             return cls._log()
+        from dreamference.node.node_settings import NodeSettings
+
+        pinned = NodeSettings.pinned_primary()
+        if pinned:  # a secondary keeps no accounts: a user or key made here would never count
+            cls._say(
+                f"❌ This node is a secondary of {pinned}: it keeps no accounts. Run"
+                f" `ragon-admin node user {command}` on the primary."
+            )
+            return 1
         store = store or AccountsStore()
         handler = getattr(cls, f"_do_{command}")
         try:

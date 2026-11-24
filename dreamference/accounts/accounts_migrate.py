@@ -23,8 +23,8 @@ AUTH_TXT: Final[str] = "auth"
 PRIMARY_COMMAND: Final[str] = "primary"
 MIGRATE_COMMAND: Final[str] = "migrate"
 Browse = Callable[[], list[dict[str, str]]]
-# address, port -> the node's CA certificate (PEM); raises OSError.
-FetchCa = Callable[[str, str | int | None], bytes]
+# address, port, node id -> that node's CA certificate (PEM); raises OSError.
+FetchCa = Callable[[str, str | int | None, str], bytes]
 
 
 class AccountsMigrate:
@@ -104,57 +104,104 @@ class AccountsMigrate:
         browse: Browse | None = None,
         fetch_ca: FetchCa | None = None,
     ) -> int:
-        """`node primary <node id or name>`: the advertised node found, then pinned.
+        """`node primary <node id or name>`: the one advertised primary of that id or name, pinned.
+
+        Refused: this node; nothing advertised; a name or id that several advertisements carry
+        (an impostor, or a stale record: the operator pins by UUID on a quiet network); a node
+        that keeps no accounts. The success line prints the UUID and the CA's fingerprint, which
+        `node primary` on the primary prints too: first contact trusts the network once (§6).
 
         Returns:
             int: The exit code.
         """
-        entry = None if wanted == own else cls.find_node(wanted, browse or cls.default_browse())
-        if wanted == own or (entry is not None and entry["node"] == own):
+        matches = [] if wanted == own else cls.matches(wanted, browse or cls.default_browse())
+        if wanted == own or any(entry["node"] == own for entry in matches):
             cls._say("❌ That is this node: use --self.")
             return 1
-        if entry is None:
+        if not matches:
             cls._say(
                 f"❌ No node {wanted} is advertised on this network: give the primary's node id"
                 " or name while its server runs."
             )
             return 1
         try:
-            cls.pin(entry, fetch_ca)
+            entry = cls.one_node(wanted, matches)
+            fingerprint = cls.pin(entry, fetch_ca)
         except AccountsError as error:
             cls._say(f"❌ {error}")
             return 1
-        cls._say(f"✅ This node is a secondary of {entry.get('name') or entry['node']}.")
+        name = entry.get("name") or entry["node"]
+        cls._say(f"✅ This node is a secondary of {name} ({entry['node']}).")
+        cls._say(
+            f"🔐 Its CA: SHA-256 {fingerprint}. `ragon-admin node primary` on {name} must print"
+            " the same."
+        )
         return 0
 
     @classmethod
     def default_browse(cls) -> Browse:
-        """The LAN's advertisements (`NodeBrowser.browse`)."""
+        """The LAN's advertisements, one entry per resolved record (`NodeBrowser.browse`)."""
         from dreamference.node.node_browser import NodeBrowser
 
-        return NodeBrowser.browse
+        return lambda: NodeBrowser.browse(merge=False)
 
     @classmethod
-    def find_node(cls, wanted: str, browse: Browse) -> dict[str, str] | None:
-        """The advertised node with this id, name or `.local` host name, or None."""
+    def matches(cls, wanted: str, browse: Browse) -> list[dict[str, str]]:
+        """Every advertisement with this node id, name or `.local` host name."""
         lowered = wanted.lower().removesuffix(".")
+        found = []
         for entry in browse():
             names = {entry.get("name", "").lower(), entry.get("host", "").lower().rstrip(".")}
             if entry.get("node") and (
                 entry["node"].lower() == lowered or lowered in names or f"{lowered}.local" in names
             ):
-                return entry
-        return None
+                found.append(entry)
+        return found
 
     @classmethod
-    def pin(cls, entry: dict[str, str], fetch_ca: FetchCa | None = None) -> None:
+    def one_node(cls, wanted: str, matches: list[dict[str, str]]) -> dict[str, str]:
+        """The one primary the matches name, at its best address.
+
+        One node may be seen on several interfaces and addresses under its one mDNS host name
+        (which mDNS keeps unique); two node ids, two host names or two ports are two advertisers.
+
+        Raises:
+            AccountsError: Several advertisers, or a node that does not advertise `auth=primary`.
+        """
+        from dreamference.node.node_browser import NodeBrowser
+
+        sources = {
+            (entry["node"].lower(), entry.get("host", "").lower().rstrip("."), entry.get("port"))
+            for entry in matches
+        }
+        if len(sources) > 1:
+            seen = ", ".join(
+                sorted({f"{e['node']}@{e.get('address')}:{e.get('port')}" for e in matches})
+            )
+            raise AccountsError(
+                f"{wanted} is advertised by several nodes: {seen}. Pin by UUID on a quiet network."
+            )
+        entry = min(matches, key=lambda e: NodeBrowser.rank(e.get("address", "")))
+        if entry.get(AUTH_TXT) != CHOICE_PRIMARY:
+            raise AccountsError(
+                f"{entry.get('name') or entry['node']} does not keep accounts (auth=primary not"
+                " advertised): pin the primary, or run `ragon-admin node primary --self` there."
+            )
+        return entry
+
+    @classmethod
+    def pin(cls, entry: dict[str, str], fetch_ca: FetchCa | None = None) -> str:
         """Makes this node a secondary of the advertised `entry`: its CA, its id, the service.
+
+        Returns:
+            str: The pinned CA's SHA-256 fingerprint.
 
         Raises:
             AccountsError: The advertised id is not a node id, or the primary's CA could not be
-                fetched, or differs from the pinned one.
+                fetched, belongs to another node, or differs from the pinned one.
         """
         from dreamference.accounts.accounts_secondary import AccountsSecondary
+        from dreamference.vllm_server.model_gate_tls import ModelGateTls
 
         name = entry.get("name") or entry.get("node") or "?"
         try:  # the id names a directory: only a node id (a UUID, as NodeIdentity) is taken
@@ -165,8 +212,9 @@ class AccountsMigrate:
         if not entry.get("address"):
             raise AccountsError(f"{name} advertises no address.")
         try:
-            pem = fetch(entry["address"], entry.get("port"))
-        except OSError as error:
+            pem = fetch(entry["address"], entry.get("port"), node_id)
+            fingerprint = ModelGateTls.fingerprint(pem)
+        except (OSError, ValueError) as error:
             raise AccountsError(f"The CA of {name} could not be pinned: {error}.") from error
         path = AccountsSecondary.ca_path(node_id)
         if path.is_file() and path.read_bytes().strip() != pem.strip():
@@ -179,6 +227,7 @@ class AccountsMigrate:
         NodeSettings.set_pinned_primary(node_id)
         cls.advertise()
         cls.follow_role()
+        return fingerprint
 
     @classmethod
     def follow_role(cls) -> None:
@@ -197,11 +246,27 @@ class AccountsMigrate:
 
     @classmethod
     def describe(cls, own: str | None) -> str:
-        """One line: this node's place in the topology."""
+        """This node's place in the topology, with the CA fingerprint a secondary pins (§6).
+
+        The primary prints its gate's CA, a secondary the CA it pinned: the operator compares
+        the two out of band, the one check against an impostor at first contact.
+        """
+        from dreamference.accounts.accounts_secondary import AccountsSecondary
+        from dreamference.vllm_server.model_gate_tls import CA_CERT, ModelGateTls
+
         if NodeSettings.auth_primary():
-            return f"primary: this node{f' ({own})' if own else ''}"
-        pinned = NodeSettings.pinned_primary()
-        return f"primary: {pinned}" if pinned else "primary: not chosen (ragon-admin node primary)"
+            line = f"primary: this node{f' ({own})' if own else ''}"
+            ca = ModelGateTls.directory() / CA_CERT
+        else:
+            pinned = NodeSettings.pinned_primary()
+            if not pinned:
+                return "primary: not chosen (ragon-admin node primary)"
+            line = f"primary: {pinned}"
+            ca = AccountsSecondary.ca_path(pinned)
+        try:
+            return f"{line}\nCA SHA-256: {ModelGateTls.fingerprint(ca.read_bytes())}"
+        except (OSError, ValueError):
+            return f"{line}\nCA SHA-256: none yet ({ca} is missing or unreadable)"
 
     # ----- init ---------------------------------------------------------------------------
 
@@ -250,11 +315,16 @@ class AccountsMigrate:
         if not picked.isdigit() or not 1 <= int(picked) <= len(primaries):
             say("Nothing chosen; run `ragon-admin node primary <node id>` later.")
             return None
+        entry = primaries[int(picked) - 1]
         try:
-            cls.pin(primaries[int(picked) - 1], fetch_ca)
+            fingerprint = cls.pin(entry, fetch_ca)
         except AccountsError as error:
             say(f"❌ {error} Run `ragon-admin node primary <node id>` later.")
             return None
+        say(
+            f"🔐 {entry.get('name', '?')}'s CA: SHA-256 {fingerprint}. `ragon-admin node primary`"
+            " there must print the same."
+        )
         return CHOICE_SECONDARY
 
     # ----- node migrate -------------------------------------------------------------------

@@ -163,6 +163,9 @@ def test_accounts_secondary_handle_refuses_a_secret_in_the_query(secondary, prim
 # ----- the pinned CA over a real handshake (the w48s test pair, 11-24) -----------------------
 
 
+GATE_ID = "6f1d2c3b-4a59-4e68-9f70-8a1b2c3d4e5f"
+
+
 @pytest.fixture
 def node_gate(tmp_path):
     """A node's gate on an address its certificate does not name, serving its CA and `me`.
@@ -184,15 +187,23 @@ def node_gate(tmp_path):
 
     folder = ModelGateTls.ensure(tmp_path / "tls", ["node.example"])
     ca = (folder / CA_CERT).read_bytes()
+    info = {
+        "node_id": GATE_ID,
+        "primary_id": GATE_ID,
+        "ca_fingerprint_sha256": ModelGateTls.fingerprint(ca),
+    }
 
     class Gate(BaseHTTPRequestHandler):
         def log_message(self, message_format, *args):
             return
 
         def do_GET(self):
-            data = (
-                ca if self.path == "/ragon/v1/ca.pem" else json.dumps({"username": "ann"}).encode()
-            )
+            if self.path == "/ragon/v1/ca.pem":
+                data = ca
+            elif self.path == "/ragon/v1/info":
+                data = json.dumps(info).encode()
+            else:
+                data = json.dumps({"username": "ann"}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -206,13 +217,13 @@ def node_gate(tmp_path):
     context.load_cert_chain(folder / SERVER_CERT, folder / SERVER_KEY)
     server.socket = context.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield {"port": server.server_address[1], "ca": ca, "tmp": tmp_path}
+    yield {"port": server.server_address[1], "ca": ca, "tmp": tmp_path, "info": info}
     server.shutdown()
     server.server_close()
 
 
 def test_the_ca_is_fetched_and_then_verifies_the_primary_by_its_address(node_gate):
-    pem = AccountsSecondary.fetch_ca("127.0.0.2", node_gate["port"])
+    pem = AccountsSecondary.fetch_ca("127.0.0.2", node_gate["port"], GATE_ID)
     assert pem == node_gate["ca"]
     ca_file = node_gate["tmp"] / "ca.pem"
     ca_file.write_bytes(pem)
@@ -221,6 +232,48 @@ def test_the_ca_is_fetched_and_then_verifies_the_primary_by_its_address(node_gat
     )
     status, _headers, body = secondary.live_check({"authorization": "Bearer k"})
     assert (status, body["username"]) == (200, "ann")
+
+
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    [
+        ({"node_id": "11111111-2222-4333-8444-555555555555"}, "not " + GATE_ID),
+        ({"node_id": None}, "is unnamed"),
+        ({"primary_id": "11111111-2222-4333-8444-555555555555"}, "is a secondary of"),
+        ({"ca_fingerprint_sha256": "AA:BB"}, "names another CA"),
+    ],
+)
+def test_a_ca_is_pinned_only_from_the_node_it_is_pinned_for(node_gate, change, refusal):
+    """B2: a stale or shared advertisement filed another node's CA under the primary's id."""
+    node_gate["info"].update(change)
+    with pytest.raises(OSError, match=refusal):
+        AccountsSecondary.fetch_ca("127.0.0.2", node_gate["port"], GATE_ID)
+
+
+def test_a_primary_with_no_accounts_yet_is_pinned(node_gate):
+    """A --self primary reports no primary_id until its accounts.db exists (model_gate.node_info)."""
+    node_gate["info"]["primary_id"] = None
+    assert AccountsSecondary.fetch_ca("127.0.0.2", node_gate["port"], GATE_ID) == node_gate["ca"]
+
+
+def test_the_wrong_node_at_the_address_leaves_no_pin(node_gate, capsys):
+    """B2 end to end: `node primary` writes no ca.pem and no pin when the gate is another node."""
+    from dreamference.accounts.accounts_migrate import AccountsMigrate
+    from dreamference.node.node_settings import NodeSettings
+
+    node_gate["info"]["node_id"] = "11111111-2222-4333-8444-555555555555"
+    entry = {
+        "node": GATE_ID,
+        "name": "alpha",
+        "host": "alpha.local.",
+        "address": "127.0.0.2",
+        "port": str(node_gate["port"]),
+        "auth": "primary",
+    }
+    assert AccountsMigrate.pin_named("alpha", None, lambda: [entry]) == 1
+    assert "could not be pinned" in capsys.readouterr().out
+    assert NodeSettings.pinned_primary() is None
+    assert not AccountsSecondary.ca_path(GATE_ID).exists()
 
 
 def test_another_nodes_ca_does_not_verify_the_primary(node_gate):
@@ -235,3 +288,49 @@ def test_another_nodes_ca_does_not_verify_the_primary(node_gate):
 def test_gate_url_brackets_an_ipv6_address():
     assert AccountsSecondary.gate_url("fe80::1%eth0", "8443") == "https://[fe80::1%25eth0]:8443"
     assert AccountsSecondary.gate_url("192.0.2.7", None) == "https://192.0.2.7:8000"
+
+
+@pytest.mark.parametrize("pinned", [True, False])
+def test_a_revoked_key_on_a_secondary_is_refused_within_a_minute(
+    pinned, secondary, primary, clock, monkeypatch
+):
+    """The gate's cache does not stack on the secondary's: one minute at most (§7).
+
+    The secondary kept the answer at 0 s (another client asked); the gate first asks at 59 s
+    and the key is revoked at 59.5 s. Unpinned (a primary's gate in front of this service)
+    the gate would serve the stale answer until 119 s; pinned it never keeps one.
+    """
+    import asyncio
+
+    from dreamference.node.node_settings import NodeSettings
+    from dreamference.vllm_server import model_gate_auth
+    from dreamference.vllm_server.model_gate_auth import ModelGateAuth
+
+    if pinned:
+        NodeSettings.set_pinned_primary("6f1d2c3b-4a59-4e68-9f70-8a1b2c3d4e5f")
+    gate = ModelGateAuth("unused", ("127.0.0.1", 1))
+    monkeypatch.setattr(model_gate_auth.time, "monotonic", clock)
+
+    async def through_the_secondary(target, bearer=None):
+        status, _, body = secondary.handle(
+            "GET", target, {"authorization": f"Bearer {bearer}"}, b""
+        )
+        return status, body
+
+    monkeypatch.setattr(gate, "fetch", through_the_secondary)
+    key = "sk-ragon-0123456789abcdef"
+    alice = {"name": "alice", "claims": None}
+    assert secondary.live_check({"authorization": f"Bearer {key}"})[0] == 200  # kept at 0 s
+    clock.now = 59.0
+    assert asyncio.run(gate.lookup(key)) == alice
+    answer = Primary.__call__
+
+    def revoked(self, method, url, headers, body):
+        if url.endswith("/ragon/v1/users/me"):
+            return 401, {"error": {"message": "revoked"}}
+        return answer(self, method, url, headers, body)
+
+    monkeypatch.setattr(Primary, "__call__", revoked)
+    clock.now = 61.0
+    assert asyncio.run(gate.lookup(key)) == (None if pinned else alice)
+    assert bool(gate.cache) is not pinned

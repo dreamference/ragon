@@ -42,12 +42,16 @@ class NodeBrowser:
     """Browses `_ragon-node._tcp` through Avahi's own tool."""
 
     @classmethod
-    def parse(cls, output: str, service_type: str = SERVICE_TYPE) -> list[dict[str, str]]:
+    def parse(
+        cls, output: str, service_type: str = SERVICE_TYPE, merge: bool = True
+    ) -> list[dict[str, str]]:
         """Reads `avahi-browse -rtp` output.
 
         Args:
             output: The tool's parseable output.
             service_type: The service to keep (`_ragon-node._tcp` unless told otherwise).
+            merge: One entry per node at its best address; False keeps every resolved line, so
+                that two advertisers of one name or id stay visible (pinning a primary, §6).
 
         Returns:
             List[Dict[str, str]]: One entry per node seen on a real network interface, at its best
@@ -85,6 +89,8 @@ class NodeBrowser:
                 }
             )
             identity = entry.get("node", entry["name"])
+            if not merge:
+                identity = f"{len(order)}"
             if identity not in best:
                 order.append(identity)
                 best[identity] = entry
@@ -181,11 +187,12 @@ class NodeBrowser:
         return cls.parse(result.stdout, service_type)
 
     @classmethod
-    def browse(cls, timeout: int = 6) -> list[dict[str, str]]:
+    def browse(cls, timeout: int = 6, merge: bool = True) -> list[dict[str, str]]:
         """Browses the network once.
 
         Args:
             timeout: Seconds to allow the tool.
+            merge: See `parse`.
 
         Returns:
             List[Dict[str, str]]: See `parse`; empty when `avahi-browse` is missing or times out.
@@ -202,4 +209,4 @@ class NodeBrowser:
             )
         except (OSError, subprocess.SubprocessError):
             return []
-        return cls.parse(result.stdout)
+        return cls.parse(result.stdout, merge=merge)

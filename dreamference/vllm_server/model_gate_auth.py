@@ -296,14 +296,27 @@ class ModelGateAuth:
         self.jwks = (now, jwks, issuer)
         return jwks, issuer
 
+    @classmethod
+    def forwarding(cls) -> bool:
+        """True on a secondary: its accounts service already keeps each live answer 60 s (§7)."""
+        from dreamference.node.node_settings import NodeSettings
+
+        return NodeSettings.pinned_primary() is not None
+
     async def lookup(self, bearer: str) -> dict[str, Any] | None:
         """The live answer for a credential: its user, or None when invalid; cached 60 s.
+
+        On a secondary the gate keeps nothing itself: a second 60 s here on top of the
+        service's would let a revoked credential live up to two minutes (§7 says one).
 
         Raises:
             OSError: The accounts service is unreachable and the credential is not cached.
         """
         digest = hashlib.sha256(bearer.encode("latin-1", "replace")).hexdigest()
         now = time.monotonic()
+        keep = not self.forwarding()
+        if not keep:
+            self.cache.clear()
         hit = self.cache.get(digest)
         if hit is not None and now - hit[0] < CACHE_TTL_S:
             return hit[1]
@@ -312,7 +325,8 @@ class ModelGateAuth:
             jwks, issuer = await self.keys()
             claims = self.verify_jwt(bearer, jwks, issuer)
             if claims is None:
-                self.remember(digest, now, None)
+                if keep:
+                    self.remember(digest, now, None)
                 return None
         status, body = await self.fetch("/oauth/userinfo", bearer)
         user: dict[str, Any] | None = None
@@ -321,7 +335,8 @@ class ModelGateAuth:
             user = {"name": str(name or body.get("sub") or "?"), "claims": claims}
         elif status != HTTP_UNAUTHORIZED:
             raise OSError(f"accounts service answered {status}")
-        self.remember(digest, now, user)
+        if keep:
+            self.remember(digest, now, user)
         return user
 
     def remember(self, digest: str, now: float, user: dict[str, Any] | None) -> None:

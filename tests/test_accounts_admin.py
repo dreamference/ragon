@@ -3,6 +3,8 @@
 import argparse
 from unittest.mock import patch
 
+import pytest
+
 from dreamference.accounts import AccountsAdmin, AccountsStore
 
 
@@ -85,14 +87,31 @@ def test_the_first_account_from_node_user_add_makes_the_node_primary(tmp_path, c
     assert [u["username"] for u in store.list_users() if u["service"]] == ["ragon-node-0123abcd"]
 
 
-def test_node_user_add_on_a_secondary_leaves_its_role_alone(tmp_path, capsys, monkeypatch):
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("add", "root"),
+        ("key", "root"),
+        ("reset", "root"),
+        ("remove", "root"),
+        ("promote", "root"),
+        ("demote", "root"),
+        ("import", "users.json"),
+        ("list",),
+        ("usage",),
+        ("export",),
+    ],
+)
+def test_node_user_on_a_secondary_is_refused_and_opens_no_store(argv, capsys):
+    from dreamference.accounts.accounts_store import AccountsStore as Store
     from dreamference.node.node_settings import NodeSettings
 
-    monkeypatch.setattr(NodeSettings, "pinned_primary", classmethod(lambda cls: "node-p"))
-    store = _store(tmp_path, [])
-    with patch("getpass.getpass", return_value=""):
-        assert AccountsAdmin.run(_parse("add", "root"), store) == 0
-    assert "primary" not in capsys.readouterr().out
+    NodeSettings.set_pinned_primary("6f1d2c3b-4a59-4e68-9f70-8a1b2c3d4e5f")
+    with patch("getpass.getpass", side_effect=AssertionError("asked for a password")):
+        assert AccountsAdmin.run(_parse(*argv)) == 1
+    out = capsys.readouterr().out
+    assert "secondary of 6f1d2c3b-4a59-4e68-9f70-8a1b2c3d4e5f" in out and "Created" not in out
+    assert not Store.default_path().exists()
     assert not NodeSettings.auth_primary()
 
 

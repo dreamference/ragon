@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -183,7 +184,10 @@ def _pin(monkeypatch):
         "name": "alpha",
         "address": "192.0.2.7",
     }
-    AccountsMigrate.pin(entry, lambda address, port: b"-----BEGIN CERTIFICATE-----\nx\n")
+    from dreamference.vllm_server.model_gate_tls import CA_CERT, ModelGateTls
+
+    pem = (ModelGateTls.ensure(Path.home() / "alpha-tls", ["alpha.example"]) / CA_CERT).read_bytes()
+    AccountsMigrate.pin(entry, lambda address, port, node_id: pem)
 
 
 def test_pinning_after_server_start_turns_the_running_service_into_a_forwarder(calls, monkeypatch):

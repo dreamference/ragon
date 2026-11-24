@@ -796,6 +796,16 @@ def test_a_node_is_kept_once_at_ipv4_and_a_link_local_address_carries_its_interf
     assert node["address"] == "2001:db8::20"
 
 
+def test_an_unmerged_browse_keeps_every_advertiser_of_one_name():
+    """Pinning a primary must see an impostor that advertises the primary's name or id (§6)."""
+    real = '=;eth0;IPv4;alpha;_ragon-node._tcp;local;alpha.local;192.168.1.20;8000;"node=n1"'
+    fake = '=;eth0;IPv4;alpha;_ragon-node._tcp;local;other.local;192.168.1.66;8000;"node=n1"'
+    output = "\n".join([real, fake])
+    assert len(NodeBrowser.parse(output)) == 1
+    hosts = [node["host"] for node in NodeBrowser.parse(output, merge=False)]
+    assert hosts == ["alpha.local", "other.local"]
+
+
 def test_only_a_resolved_line_on_a_real_interface_is_read():
     line = '{};{};IPv4;gx10-1a2b;_ragon-node._tcp;local;gx10-1a2b.local;10.0.0.5;8000;"node=abc"'
     for kind, interface in (("+", "wlP9s9"), ("=", "lo"), ("=", "docker0"), ("=", "veth1a2b")):

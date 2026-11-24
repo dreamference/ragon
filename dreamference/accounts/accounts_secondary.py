@@ -28,6 +28,9 @@ FETCH_TIMEOUT_S: Final[float] = 5.0
 JWKS_PATH: Final[str] = "/.well-known/jwks.json"
 USERINFO_PATH: Final[str] = "/oauth/userinfo"
 CA_PATH: Final[str] = "/ragon/v1/ca.pem"
+INFO_PATH: Final[str] = "/ragon/v1/info"
+# The most of a node's `/ragon/v1/info` read at first contact.
+INFO_LIMIT: Final[int] = 64 * 1024
 UNREACHABLE: Final[str] = "authentication server unreachable"
 FORWARDED_EXACT: Final[tuple[str, ...]] = (
     "/codex/device",
@@ -107,15 +110,16 @@ class AccountsSecondary:
         return Path("~/.ragon/nodes").expanduser() / node_id / "ca.pem"
 
     @classmethod
-    def fetch_ca(cls, address: str, port: str | int | None) -> bytes:
+    def fetch_ca(cls, address: str, port: str | int | None, node_id: str) -> bytes:
         """A node's CA at first contact (§6): `/ragon/v1/ca.pem`, then the handshake must chain to it.
 
         Fetched without verification (there is nothing to verify against yet, as the launcher's
-        first contact); the gate's own certificate must then verify against the CA it served.
+        first contact); the gate's own certificate must then verify against the CA it served, and
+        the gate must say, over that CA, that it is `node_id` (`identify`).
 
         Raises:
-            OSError: The gate is unreachable, served no certificate, or its certificate does not
-                chain to the CA it served.
+            OSError: The gate is unreachable, served no certificate, its certificate does not
+                chain to the CA it served, or it is not the node `node_id`.
         """
         from dreamference.audit.auth_trace import AuthTrace
 
@@ -134,7 +138,43 @@ class AccountsSecondary:
             raise OSError("its gate served no CA certificate")
         if not AuthTrace.chains_to_ca(address, int(port or 8000), pem):
             raise OSError("its gate's certificate does not chain to the CA it served")
+        cls.identify(address, port, pem, node_id)
         return pem
+
+    @classmethod
+    def identify(cls, address: str, port: str | int | None, pem: bytes, node_id: str) -> None:
+        """The gate at `address` says, over the CA `pem`, that it is the primary `node_id` (§6).
+
+        A CA is filed under a node id: only that node's own `/ragon/v1/info`, verified against the
+        CA, binds the two, as the launcher's first contact does. A stale or shared advertisement
+        (the address now held by another node) is refused here, before anything is written.
+
+        Raises:
+            OSError: No answer over the CA, another node id, a primary other than itself, or a
+                CA fingerprint other than the one served.
+        """
+        from dreamference.vllm_server.model_gate_tls import ModelGateTls
+
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = False  # the chain counts, as for every pinned-CA call (_https)
+        try:
+            context.load_verify_locations(cadata=pem.decode("ascii"))
+            url = cls.gate_url(address, port) + INFO_PATH
+            with urllib.request.urlopen(url, timeout=FETCH_TIMEOUT_S, context=context) as reply:
+                info = json.loads(reply.read(INFO_LIMIT))
+        except (urllib.error.URLError, ssl.SSLError, TimeoutError, ValueError) as error:
+            raise OSError(f"its gate did not say which node it is ({error})") from error
+        if not isinstance(info, dict):
+            raise OSError("its gate did not say which node it is")
+        said = str(info.get("node_id") or "")
+        if said.lower() != node_id.lower():
+            raise OSError(f"the node at {address} is {said or 'unnamed'}, not {node_id}")
+        primary = info.get("primary_id")
+        if primary and str(primary).lower() != node_id.lower():
+            raise OSError(f"{node_id} is a secondary of {primary}, not a primary")
+        served = info.get("ca_fingerprint_sha256")
+        if served and served != ModelGateTls.fingerprint(pem):
+            raise OSError("its gate names another CA than the one it served")
 
     # ----- the wire -----------------------------------------------------------------------
 
