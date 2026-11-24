@@ -11,6 +11,8 @@ import urllib.request
 
 ROOT = sys.argv[1]
 UA = {"User-Agent": "ragon-eval/0.1 (dgxcoder@dreamference.ai)"}
+REDIRECT_TEXT_MARKER = b"This page is a redirect"
+REDIRECT_PROP_MARKER = b"mw:PageProp/redirect"
 USGOV = "Public domain (work of the U.S. federal government, 17 U.S.C. 105)"
 path = os.path.join(ROOT, "manifest_fetched.json")
 manifest = json.load(open(path))
@@ -85,7 +87,7 @@ for t in [
     r = page["revisions"][0]["revid"]
     url = f"https://en.wikipedia.org/api/rest_v1/page/html/{urllib.parse.quote(t)}/{r}"
     data = get(url)
-    if b"This page is a redirect" in data[:200000] or b"mw:PageProp/redirect" in data[:20000]:
+    if REDIRECT_TEXT_MARKER in data[:200000] or REDIRECT_PROP_MARKER in data[:20000]:
         print("redirect, skipped:", t)
         continue
     add(rel, url, WIKI, f"Wikipedia: {t} (revision {r})", data)
