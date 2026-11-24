@@ -1024,6 +1024,22 @@ def test_a_tasks_own_hints_win_over_the_settings_and_hints_wrap_round():
     assert 3 <= len(DEFAULT_HINTS) <= 8
 
 
+def test_strategy_hints_resolve_a_list_of_strings_and_rejects_unknown_types():
+    # A list (or tuple) of strings is the task's own hint set: stripped, blanks dropped.
+    assert StrategyHints.resolve(["Go slow.", "  Check twice. ", "   ", 3]) == (
+        "Go slow.",
+        "Check twice.",
+        "3",
+    )
+    assert StrategyHints.resolve(("one", "two")) == ("one", "two")
+    assert StrategyHints.resolve([]) == ()
+    # Nothing that is not off, on, a list or a tuple: no hints, not an error.
+    assert StrategyHints.resolve(0) == ()
+    assert StrategyHints.resolve(1) == ()
+    assert StrategyHints.resolve(2.5) == ()
+    assert StrategyHints.resolve({"hints": []}) == ()
+
+
 def test_the_report_why_line_names_the_deciding_stage_in_plain_words():
     best = {"chosen": 2, "stage": "regression filter", "reason": "r", "attempts": []}
     text = "\n".join(NightShiftReport._best_of_lines(best))
