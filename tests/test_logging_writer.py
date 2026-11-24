@@ -441,6 +441,34 @@ def test_log_file_sink_rotate_aborts_when_the_file_is_smaller_or_gone(tmp_path, 
     assert sink.path.exists() and sink.path.stat().st_size == 0  # _open() recreated it
 
 
+def test_log_file_sink_shift_deletes_only_files_older_than_the_cutoff(tmp_path, monkeypatch):
+    import dreamference.config.log_file_sink as sink_module
+
+    now = [EPOCH]
+    sink = sink_module.LogFileSink(tmp_path, "aged", max_bytes=100, clock=lambda: now[0])
+    old = tmp_path / "aged.9.log.gz"
+    old.write_bytes(b"\x1f\x8b")  # older than MAX_AGE_S: deleted by _shift
+    recent = tmp_path / "aged.8.log.gz"
+    recent.write_bytes(b"\x1f\x8b")  # newer than the cutoff: kept
+    for path in (old, recent):
+        os.utime(path, (now[0] - sink_module.MAX_AGE_S - 60, now[0] - sink_module.MAX_AGE_S - 60))
+    os.utime(recent, (now[0] - 60, now[0] - 60))
+
+    sink.path.write_text("x")
+    real_unlink = Path.unlink
+
+    def fake_unlink(self, *args, **kwargs):
+        if self == old:
+            raise OSError("gone")  # the file vanishes between stat() and unlink()
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fake_unlink)
+    sink._shift()  # the vanished file must not stop the shift
+
+    assert old.exists()  # the failed unlink was swallowed; the file remains
+    assert recent.exists()
+
+
 def test_log_stream_sink_prefixes_the_priority_under_journald_and_defaults_to_stderr(capsys):
     stream = io.StringIO()
     sink = LogStreamSink(stream, journald=True)
