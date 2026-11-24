@@ -158,3 +158,80 @@ def test_accounts_secondary_handle_refuses_a_secret_in_the_query(secondary, prim
     assert body["error"]["code"] == "invalid_api_key"
     assert "WWW-Authenticate" in headers
     assert primary.calls == []
+
+
+# ----- the pinned CA over a real handshake (the w48s test pair, 11-24) -----------------------
+
+
+@pytest.fixture
+def node_gate(tmp_path):
+    """A node's gate on an address its certificate does not name, serving its CA and `me`.
+
+    The advertisement gives an address, the node certificate names only DNS names and loopback:
+    127.0.0.2 stands for the LAN address a secondary dials.
+    """
+    import json
+    import ssl
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from dreamference.vllm_server.model_gate_tls import (
+        CA_CERT,
+        SERVER_CERT,
+        SERVER_KEY,
+        ModelGateTls,
+    )
+
+    folder = ModelGateTls.ensure(tmp_path / "tls", ["node.example"])
+    ca = (folder / CA_CERT).read_bytes()
+
+    class Gate(BaseHTTPRequestHandler):
+        def log_message(self, message_format, *args):
+            return
+
+        def do_GET(self):
+            data = (
+                ca if self.path == "/ragon/v1/ca.pem" else json.dumps({"username": "ann"}).encode()
+            )
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    try:
+        server = ThreadingHTTPServer(("127.0.0.2", 0), Gate)
+    except OSError:
+        pytest.skip("127.0.0.2 is not a loopback address here")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(folder / SERVER_CERT, folder / SERVER_KEY)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield {"port": server.server_address[1], "ca": ca, "tmp": tmp_path}
+    server.shutdown()
+    server.server_close()
+
+
+def test_the_ca_is_fetched_and_then_verifies_the_primary_by_its_address(node_gate):
+    pem = AccountsSecondary.fetch_ca("127.0.0.2", node_gate["port"])
+    assert pem == node_gate["ca"]
+    ca_file = node_gate["tmp"] / "ca.pem"
+    ca_file.write_bytes(pem)
+    secondary = AccountsSecondary(
+        AccountsSecondary.gate_url("127.0.0.2", node_gate["port"]), ca_file
+    )
+    status, _headers, body = secondary.live_check({"authorization": "Bearer k"})
+    assert (status, body["username"]) == (200, "ann")
+
+
+def test_another_nodes_ca_does_not_verify_the_primary(node_gate):
+    from dreamference.vllm_server.model_gate_tls import CA_CERT, ModelGateTls
+
+    other = ModelGateTls.ensure(node_gate["tmp"] / "other", ["other.example"]) / CA_CERT
+    secondary = AccountsSecondary(AccountsSecondary.gate_url("127.0.0.2", node_gate["port"]), other)
+    status, _headers, body = secondary.live_check({"authorization": "Bearer k"})
+    assert (status, body["error"]["message"]) == (401, UNREACHABLE)
+
+
+def test_gate_url_brackets_an_ipv6_address():
+    assert AccountsSecondary.gate_url("fe80::1%eth0", "8443") == "https://[fe80::1%25eth0]:8443"
+    assert AccountsSecondary.gate_url("192.0.2.7", None) == "https://192.0.2.7:8000"

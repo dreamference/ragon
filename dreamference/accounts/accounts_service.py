@@ -151,6 +151,27 @@ class AccountsService:
         return started
 
     @classmethod
+    def follow_role(cls) -> bool:
+        """After `node primary` changed the role: the unit rewritten, a running service restarted.
+
+        `server start` writes the unit with the role of that moment, so a node pinned after it
+        kept answering sign-ins from its own empty store (the w48s test pair, 11-24). A node
+        whose `server start` never wrote the unit is left alone (the next start writes it), and
+        a stopped service stays stopped (`try-restart`), as `server stop` left it.
+
+        Returns:
+            bool: True when systemd took the `try-restart` (a stopped service stays stopped).
+        """
+        unit = cls.unit_dir() / UNIT
+        if shutil.which("systemctl") is None or not unit.is_file():
+            return False
+        text = cls.unit_text()
+        if unit.read_text() != text:
+            unit.write_text(text)
+            cls.systemctl("daemon-reload")
+        return cls.systemctl("try-restart", UNIT) == 0
+
+    @classmethod
     def stop(cls) -> bool:
         """Stops and disables the unit, as `server stop` stops the gate it answers behind.
 
@@ -189,8 +210,13 @@ class AccountsService:
             if primary_url is None:
                 raise SystemExit(f"The primary {node_id} is not advertised on this network.")
         if ca_file is None and node_id:
-            pinned = Path("~/.ragon/nodes").expanduser() / node_id / "ca.pem"
+            pinned = AccountsSecondary.ca_path(node_id)
             ca_file = pinned if pinned.is_file() else None
+        if ca_file is None:
+            cls.log(
+                f"no CA pinned for the primary {node_id}: run `ragon-admin node primary {node_id}`"
+                " again while it is up"
+            )
         return AccountsSecondary(primary_url, ca_file)
 
     @staticmethod
@@ -280,7 +306,11 @@ class AccountsService:
         )
         parser.add_argument("--primary-url", default=None, help="the pinned primary's gate")
         args = parser.parse_args(argv)
-        if args.secondary:
+        from dreamference.node.node_settings import NodeSettings
+
+        # The pin decides, not only the flag: a unit written before `node primary` must not
+        # answer sign-ins from a local store a secondary never keeps (§7).
+        if args.secondary or (args.store is None and NodeSettings.pinned_primary()):
             oauth: AccountsOauth | AccountsSecondary = cls.build_secondary(args.primary_url)
         else:
             oauth = cls.build(AccountsStore(args.store, primary_name=args.primary_name))

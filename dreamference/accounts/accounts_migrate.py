@@ -22,6 +22,8 @@ AUTH_TXT: Final[str] = "auth"
 PRIMARY_COMMAND: Final[str] = "primary"
 MIGRATE_COMMAND: Final[str] = "migrate"
 Browse = Callable[[], list[dict[str, str]]]
+# address, port -> the node's CA certificate (PEM); raises OSError.
+FetchCa = Callable[[str, str | int | None], bytes]
 
 
 class AccountsMigrate:
@@ -64,8 +66,16 @@ class AccountsMigrate:
         NodeServiceFile.update(auth_primary=NodeSettings.auth_primary())
 
     @classmethod
-    def run_primary(cls, args: argparse.Namespace) -> int:
-        """`ragon-admin node primary [<node id>, --self]`.
+    def run_primary(
+        cls,
+        args: argparse.Namespace,
+        browse: Browse | None = None,
+        fetch_ca: FetchCa | None = None,
+    ) -> int:
+        """`ragon-admin node primary [<node id or name>, --self]`.
+
+        Pinning finds the primary in the advertisements (by node id or name), pins its CA and
+        pins its id, then makes the running accounts service follow the new role (§6, §7).
 
         Returns:
             int: The exit code.
@@ -77,18 +87,108 @@ class AccountsMigrate:
         if args.primary_self:
             NodeSettings.set_self_primary()
             cls.advertise()
+            cls.follow_role()
             cls._say(f"✅ This node is the primary{f' ({own})' if own else ''}.")
             return 0
         if args.primary_id:
-            if args.primary_id == own:
-                cls._say("❌ That is this node: use --self.")
-                return 1
-            NodeSettings.set_pinned_primary(args.primary_id)
-            cls.advertise()
-            cls._say(f"✅ This node is a secondary of {args.primary_id}.")
-            return 0
+            return cls.pin_named(args.primary_id, own, browse, fetch_ca)
         cls._say(cls.describe(own))
         return 0
+
+    @classmethod
+    def pin_named(
+        cls,
+        wanted: str,
+        own: str | None,
+        browse: Browse | None = None,
+        fetch_ca: FetchCa | None = None,
+    ) -> int:
+        """`node primary <node id or name>`: the advertised node found, then pinned.
+
+        Returns:
+            int: The exit code.
+        """
+        entry = None if wanted == own else cls.find_node(wanted, browse or cls.default_browse())
+        if wanted == own or (entry is not None and entry["node"] == own):
+            cls._say("❌ That is this node: use --self.")
+            return 1
+        if entry is None:
+            cls._say(
+                f"❌ No node {wanted} is advertised on this network: give the primary's node id"
+                " or name while its server runs."
+            )
+            return 1
+        try:
+            cls.pin(entry, fetch_ca)
+        except AccountsError as error:
+            cls._say(f"❌ {error}")
+            return 1
+        cls._say(f"✅ This node is a secondary of {entry.get('name') or entry['node']}.")
+        return 0
+
+    @classmethod
+    def default_browse(cls) -> Browse:
+        """The LAN's advertisements (`NodeBrowser.browse`)."""
+        from dreamference.node.node_browser import NodeBrowser
+
+        return NodeBrowser.browse
+
+    @classmethod
+    def find_node(cls, wanted: str, browse: Browse) -> dict[str, str] | None:
+        """The advertised node with this id, name or `.local` host name, or None."""
+        lowered = wanted.lower().removesuffix(".")
+        for entry in browse():
+            names = {entry.get("name", "").lower(), entry.get("host", "").lower().rstrip(".")}
+            if entry.get("node") and (
+                entry["node"].lower() == lowered or lowered in names or f"{lowered}.local" in names
+            ):
+                return entry
+        return None
+
+    @classmethod
+    def pin(cls, entry: dict[str, str], fetch_ca: FetchCa | None = None) -> None:
+        """Makes this node a secondary of the advertised `entry`: its CA, its id, the service.
+
+        Raises:
+            AccountsError: The primary's CA could not be fetched, or differs from the pinned one.
+        """
+        from dreamference.accounts.accounts_secondary import AccountsSecondary
+
+        node_id = entry["node"]
+        name = entry.get("name") or node_id
+        fetch = fetch_ca or AccountsSecondary.fetch_ca
+        if not entry.get("address"):
+            raise AccountsError(f"{name} advertises no address.")
+        try:
+            pem = fetch(entry["address"], entry.get("port"))
+        except OSError as error:
+            raise AccountsError(f"The CA of {name} could not be pinned: {error}.") from error
+        path = AccountsSecondary.ca_path(node_id)
+        if path.is_file() and path.read_bytes().strip() != pem.strip():
+            raise AccountsError(
+                f"The certificate of {name} has changed. If the node was set up again, remove"
+                f" {path} and run this again."
+            )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(pem)
+        NodeSettings.set_pinned_primary(node_id)
+        cls.advertise()
+        cls.follow_role()
+
+    @classmethod
+    def follow_role(cls) -> None:
+        """The accounts service and the gate's info follow a changed role at once (§7).
+
+        Without this a node pinned after `server start` kept its primary-mode service, which
+        answered every sign-in and key from its own empty store (the w48s test pair, 11-24).
+        """
+        from dreamference.accounts.accounts_service import AccountsService
+        from dreamference.vllm_server.model_gate import GATE_DIR, ModelGate
+
+        if AccountsService.follow_role():
+            cls._say("🔄 The accounts service follows the new role.")
+        if GATE_DIR.is_dir():
+            ModelGate.write_node_info()
 
     @classmethod
     def describe(cls, own: str | None) -> str:
@@ -111,6 +211,7 @@ class AccountsMigrate:
         browse: Browse,
         ask: Callable[[str], str] = input,
         say: Callable[[str], None] | None = None,
+        fetch_ca: FetchCa | None = None,
     ) -> str | None:
         """The `ragon-admin init` question: primary (keeps the accounts) or secondary.
 
@@ -118,6 +219,7 @@ class AccountsMigrate:
             browse: Lists the advertised nodes.
             ask: Reads one answer.
             say: Prints one line.
+            fetch_ca: Fetches the chosen primary's CA (tests); `AccountsSecondary.fetch_ca`.
 
         Returns:
             str | None: `primary`, `secondary`, or None when nothing was chosen.
@@ -131,6 +233,7 @@ class AccountsMigrate:
         if answer.strip().lower().startswith("p"):
             NodeSettings.set_self_primary()
             cls.advertise()
+            cls.follow_role()
             return CHOICE_PRIMARY
         primaries = cls.advertised_primaries(browse)
         for number, entry in enumerate(primaries, 1):
@@ -142,8 +245,11 @@ class AccountsMigrate:
         if not picked.isdigit() or not 1 <= int(picked) <= len(primaries):
             say("Nothing chosen; run `ragon-admin node primary <node id>` later.")
             return None
-        NodeSettings.set_pinned_primary(primaries[int(picked) - 1]["node"])
-        cls.advertise()
+        try:
+            cls.pin(primaries[int(picked) - 1], fetch_ca)
+        except AccountsError as error:
+            say(f"❌ {error} Run `ragon-admin node primary <node id>` later.")
+            return None
         return CHOICE_SECONDARY
 
     # ----- node migrate -------------------------------------------------------------------

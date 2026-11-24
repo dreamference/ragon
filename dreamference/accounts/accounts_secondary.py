@@ -27,6 +27,7 @@ CACHE_LIMIT: Final[int] = 4096
 FETCH_TIMEOUT_S: Final[float] = 5.0
 JWKS_PATH: Final[str] = "/.well-known/jwks.json"
 USERINFO_PATH: Final[str] = "/oauth/userinfo"
+CA_PATH: Final[str] = "/ragon/v1/ca.pem"
 UNREACHABLE: Final[str] = "authentication server unreachable"
 FORWARDED_EXACT: Final[tuple[str, ...]] = (
     "/codex/device",
@@ -81,6 +82,12 @@ class AccountsSecondary:
         self.cache: dict[str, tuple[float, Answer]] = {}
 
     @classmethod
+    def gate_url(cls, address: str, port: str | int | None) -> str:
+        """`https://<address>:<port>` for an advertised address; an IPv6 one in brackets."""
+        host = f"[{address.replace('%', '%25')}]" if ":" in address else address  # noqa: PLR2004
+        return f"https://{host}:{port or 8000}"
+
+    @classmethod
     def find_primary(
         cls, node_id: str, browse: Callable[[], list[dict[str, str]]] | None = None
     ) -> str | None:
@@ -91,18 +98,60 @@ class AccountsSecondary:
             browse = NodeBrowser.browse
         for entry in browse():
             if entry.get("node") == node_id and entry.get("address"):
-                host = entry["address"]
-                host = f"[{host.replace('%', '%25')}]" if ":" in host else host  # noqa: PLR2004
-                return f"https://{host}:{entry.get('port') or 8000}"
+                return cls.gate_url(entry["address"], entry.get("port"))
         return None
+
+    @classmethod
+    def ca_path(cls, node_id: str) -> Path:
+        """Where a node's pinned CA is kept, `~/.ragon/nodes/<node id>/ca.pem` (§6)."""
+        return Path("~/.ragon/nodes").expanduser() / node_id / "ca.pem"
+
+    @classmethod
+    def fetch_ca(cls, address: str, port: str | int | None) -> bytes:
+        """A node's CA at first contact (§6): `/ragon/v1/ca.pem`, then the handshake must chain to it.
+
+        Fetched without verification (there is nothing to verify against yet, as the launcher's
+        first contact); the gate's own certificate must then verify against the CA it served.
+
+        Raises:
+            OSError: The gate is unreachable, served no certificate, or its certificate does not
+                chain to the CA it served.
+        """
+        from dreamference.audit.auth_trace import AuthTrace
+
+        first_contact = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        first_contact.check_hostname = False
+        first_contact.verify_mode = ssl.CERT_NONE  # first contact: the chain is checked below
+        url = cls.gate_url(address, port) + CA_PATH
+        try:
+            with urllib.request.urlopen(
+                url, timeout=FETCH_TIMEOUT_S, context=first_contact
+            ) as reply:
+                pem = reply.read()
+        except (urllib.error.URLError, ssl.SSLError, TimeoutError) as error:
+            raise OSError(f"its gate did not answer ({error})") from error
+        if not pem.lstrip().startswith(b"-----BEGIN CERTIFICATE-----"):
+            raise OSError("its gate served no CA certificate")
+        if not AuthTrace.chains_to_ca(address, int(port or 8000), pem):
+            raise OSError("its gate's certificate does not chain to the CA it served")
+        return pem
 
     # ----- the wire -----------------------------------------------------------------------
 
     def _https(
         self, method: str, url: str, headers: dict[str, str], body: bytes
     ) -> tuple[int, Any]:
-        """One request to the primary, verified against its pinned CA."""
-        context = ssl.create_default_context(cafile=str(self.ca_file) if self.ca_file else None)
+        """One request to the primary, verified against its pinned CA.
+
+        With a pinned CA only the chain counts: the advertisement gives an address, while the
+        node's certificate names only its DNS names, and the CA is that one node's alone (§6).
+        """
+        if self.ca_file:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.load_verify_locations(cafile=str(self.ca_file))
+            context.check_hostname = False
+        else:
+            context = ssl.create_default_context()
         request = urllib.request.Request(url, data=body or None, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_S, context=context) as reply:

@@ -4,7 +4,7 @@ The specification is `specs/DREAMFERENCE_AUTH.md`; the user guide is [accounts](
 
 ## The accounts service (Python, `dreamference/accounts/`)
 
-It runs beside the model gate, not in it: the user unit `ragon-accounts.service` (`AccountsService.ensure_running`), written, enabled and restarted by every `ragon-admin server start` once the gate answers, stopped and disabled by `server stop`, bounded at 256 MiB (one argon2id hash at a time, 64 MiB each), on 127.0.0.1:18100 only; a secondary's unit runs it with `--secondary`. The primary keeps everything in one SQLite file under the node's state directory (mode `0600`).
+It runs beside the model gate, not in it: the user unit `ragon-accounts.service` (`AccountsService.ensure_running`), written, enabled and restarted by every `ragon-admin server start` once the gate answers, stopped and disabled by `server stop`, bounded at 256 MiB (one argon2id hash at a time, 64 MiB each), on 127.0.0.1:18100 only; a secondary's unit runs it with `--secondary`. `ragon-admin node primary <node id or name>` finds the primary in the advertisements, pins its CA at `~/.ragon/nodes/<id>/ca.pem` (fetched once, then only the chain counts: the certificate names DNS names, the advertisement an address), pins its id, rewrites the unit and `try-restart`s it, so a node pinned after `server start` forwards at once; a pinned node's service forwards even from an older unit. The primary keeps everything in one SQLite file under the node's state directory (mode `0600`).
 
 | File | Holds |
 |---|---|

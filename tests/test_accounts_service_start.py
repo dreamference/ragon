@@ -169,3 +169,68 @@ def test_the_started_service_answers_its_health_route_on_loopback_only(tmp_path)
         httpd.server_close()
     assert response.status == 200
     assert document["issuer"] == AccountsService.issuer("box")
+
+
+# ----- `node primary` after `server start` (the w48s test pair, 11-24) ------------------------
+
+
+def _pin(monkeypatch):
+    from dreamference.accounts.accounts_migrate import AccountsMigrate
+
+    monkeypatch.setattr(AccountsMigrate, "advertise", classmethod(lambda cls: None))
+    entry = {"node": "primary-node-id", "name": "alpha", "address": "192.0.2.7"}
+    AccountsMigrate.pin(entry, lambda address, port: b"-----BEGIN CERTIFICATE-----\nx\n")
+
+
+def test_pinning_after_server_start_turns_the_running_service_into_a_forwarder(calls, monkeypatch):
+    """The pair's cause: the unit kept its primary mode and answered from an empty store."""
+    monkeypatch.setenv(ACCOUNTS_ENABLED_VARIABLE, "1")
+    assert ModelGate.start(8000, "image")
+    assert "--secondary" not in unit_file().read_text()
+    calls.clear()
+    _pin(monkeypatch)
+    assert "-m dreamference.accounts.accounts_service --secondary" in unit_file().read_text()
+    verbs = [c[0] for c in systemctl(calls)]
+    assert verbs == ["try-restart"], verbs  # a stopped service stays stopped
+    assert ["systemctl", "--user", "daemon-reload"] in calls
+
+
+def test_pinning_before_any_server_start_calls_no_systemctl(calls, monkeypatch):
+    _pin(monkeypatch)
+    assert systemctl(calls) == []
+    assert not unit_file().exists()
+
+
+def test_the_service_forwards_when_pinned_even_from_an_old_unit(monkeypatch):
+    """A unit written without `--secondary` still runs as the forwarder on a pinned node."""
+    NodeSettings.set_pinned_primary("primary-node-id")
+    built: list[str] = []
+
+    class Server:
+        server_address = ("127.0.0.1", 18100)
+
+        def serve_forever(self):
+            return None
+
+        def server_close(self):
+            return None
+
+    monkeypatch.setattr(
+        AccountsService,
+        "build_secondary",
+        classmethod(lambda cls, url=None, ca_file=None: built.append("secondary") or object()),
+    )
+    monkeypatch.setattr(
+        AccountsService, "build", classmethod(lambda cls, store: built.append("primary"))
+    )
+    monkeypatch.setattr(AccountsService, "server", classmethod(lambda cls, oauth, port: Server()))
+    assert AccountsService.main([]) == 0
+    assert built == ["secondary"]
+
+
+def test_a_pinned_node_with_a_stray_store_is_not_its_own_primary(monkeypatch):
+    """Third's info said `primary: true` from the store its primary-mode start had left."""
+    AccountsStore(AccountsStore.default_path(), primary_name="box", audit_sink=[].append)
+    NodeSettings.set_pinned_primary("primary-node-id")
+    info = ModelGate.node_info()
+    assert info["primary_id"] is None and info["issuer"] is None

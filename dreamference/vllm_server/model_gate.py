@@ -265,8 +265,8 @@ class ModelGate:
     def node_info(cls) -> dict[str, Any]:
         """Who this node is, for the gate's `/ragon/v1/info` (specs/DREAMFERENCE_AUTH.md §5.1).
 
-        The node is its own primary when it keeps the account store; otherwise the primary is not
-        known here yet.
+        The node is its own primary when it keeps the account store and pins no other node;
+        otherwise the primary is not known here yet.
 
         Returns:
             dict[str, Any]: `node_id`, `name`, `primary_id`, `primary_name` and `issuer`.
@@ -278,7 +278,8 @@ class ModelGate:
 
         node_id = NodeIdentity.read()
         name = socket.gethostname().split(".", 1)[0]
-        primary = AccountsStore.default_path().exists()
+        # A pinned secondary is never its own primary, whatever store an earlier start left.
+        primary = NodeSettings.pinned_primary() is None and AccountsStore.default_path().exists()
         return {
             "node_id": node_id,
             "name": name,
