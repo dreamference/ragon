@@ -264,6 +264,17 @@ def test_log_line_formatter_number_writes_numbers_and_masks_non_finite_floats():
     assert number("3") == "[number]"
 
 
+def test_log_line_formatter_value_writes_a_type_placeholder_for_unknown_field_types():
+    redactor = LogRedactor()
+    assert LogLineFormatter.value(LogField("weird", "k", "v"), "info", redactor) == [
+        ("k", "[type]")
+    ]
+    line = LogLineFormatter.format(
+        EPOCH, "web", 2, "odd type", (LogField("weird", "k", "v"),), redactor
+    )
+    assert line.endswith(" k=[type]")
+
+
 def test_a_thousand_lines_of_one_message_give_ten_and_a_suppressed_line():
     writer, sink = _writer("info")
     for _ in range(1000):
