@@ -337,6 +337,7 @@ impl Primary {
             (409, _) => "That username is taken.".to_string(),
             (400 | 422, _) if path.contains("/users") => "Usernames are 1-32 letters, digits, '.', '_' or '-'.".to_string(),
             (400 | 401, _) => "Wrong username or password.".to_string(),
+            (403, _) if super::https_required(403, &text) => https_only_line(&self.primary_name(), &self.gate),
             (code, _) => format!("{} answered {code}.", self.primary_name()),
         }))
     }
@@ -738,6 +739,16 @@ pub async fn run(which: &str, args: &[String], gate: &str, codex_home: &Path, io
 pub async fn run_pair(_args: &[String], _gate: &str, _codex_home: &Path, io: &mut Io<'_>) -> anyhow::Result<Outcome> {
     writeln!(io.out, "`ragon pair` is not available on Windows yet: the messenger bridges run on Linux and macOS only.")?;
     Ok(Outcome::done(2))
+}
+
+/// What a sign-in refused over plain HTTP (403 `https_required`, AUTH §6) prints, instead of the
+/// bare status: the gate is reached at a plain address, which a discovered node no longer is.
+pub fn https_only_line(primary: &str, gate: &str) -> String {
+    format!(
+        "{primary} takes sign-in over https only, and this machine reached it over plain http ({gate}). \
+         If vllm_host or DREAMFERENCE_VLLM_HOST names that address, remove it so ragon finds the node by name; \
+         otherwise check that the node's .local name resolves here."
+    )
 }
 
 /// What `ragon pair <kind>` says against a node without accounts: the 0.9.7 way to pair.

@@ -550,13 +550,24 @@ pub async fn resolve_host(interactive: bool) -> anyhow::Result<String> {
         remember_node(&node);
     }
     version_notice(&node);
-    let host = node.model_url();
+    let host = secured(node.model_url(), &node).await?;
     match state_verdict(&node, &state, answers(&host).await) {
         Ok(Some(line)) => eprintln!("{line}"),
         Ok(None) => {}
         Err(message) => bail!("{message}"),
     }
     Ok(host)
+}
+
+/// The advertisement says where the model port is, not its scheme: a node with accounts is used at
+/// its HTTPS gate, by name, with its CA pinned (`auth::secure_gate`; specs/DREAMFERENCE_AUTH.md
+/// §5.1, §6). Anything else keeps `host`.
+async fn secured(host: String, node: &Node) -> anyhow::Result<String> {
+    let Some(home) = locator::codex_home() else { return Ok(host) };
+    Ok(match crate::auth::secure_gate(&host, &home, &node.node, label(node)).await? {
+        crate::auth::Secured::Https(gate) => gate,
+        crate::auth::Secured::AsIs => host,
+    })
 }
 
 /// Asks which of several nodes to use, or refuses with the list where no question can be asked.
@@ -675,7 +686,7 @@ pub fn session_env() -> Vec<(&'static str, String)> {
 /// the node was picked and only a remembered node is exempt there.
 fn session_settings(node: &Node, upper: Option<&str>, lower: Option<&str>) -> Vec<String> {
     let set = |key: &str, value: String| format!("shell_environment_policy.set.{key}={}", toml::Value::String(value));
-    let no_proxy = crate::proxy::merged(upper, lower, &[node.model_url()]);
+    let no_proxy = crate::proxy::merged(upper, lower, &crate::proxy::node_urls(node));
     vec![set(locator::SESSION_ENV, node.render_line()), set("NO_PROXY", no_proxy.clone()), set("no_proxy", no_proxy)]
 }
 
@@ -819,7 +830,15 @@ pub async fn run_cli(args: &[String]) -> i32 {
                 eprintln!("Could not write {}: {error}", path.display());
                 return 1;
             }
-            println!("Using node {} at {}.", label(&node), node.model_url());
+            // A node with accounts is used at its HTTPS gate, by name, with its CA pinned here.
+            let host = match secured(node.model_url(), &node).await {
+                Ok(host) => host,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return 1;
+                }
+            };
+            println!("Using node {} at {host}.", label(&node));
             if !reachable {
                 println!("Its model server does not answer right now; ragon will wait for it.");
             }
@@ -1562,6 +1581,8 @@ mod tests {
             assert_eq!(settings[index].0, key);
             let entries: Vec<&str> = settings[index].1.split(',').collect();
             assert!(entries.contains(&"corp.example") && entries.contains(&node.address.as_str()), "{entries:?}");
+            // The name its HTTPS gate is used by, too (auth::secure_gate).
+            assert!(entries.contains(&"spark-2.local"), "{entries:?}");
         }
         // Nothing picked: nothing added, before or after the program name.
         let args: Vec<std::ffi::OsString> = vec!["codex".into(), "--oss".into()];

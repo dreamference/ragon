@@ -27,7 +27,7 @@ pub fn export() {
     let mut hosts: Vec<String> = Vec::new();
     hosts.extend(crate::configured_vllm_host());
     if let Some(node) = ragon_node_locator::remembered() {
-        hosts.push(node.model_url());
+        hosts.extend(node_urls(&node));
         // Its overlay name too (remote access): requests to it must not go to a proxy either.
         if node.overlay_name_is_its_own() {
             hosts.push(node.via_overlay().model_url());
@@ -43,10 +43,35 @@ pub fn export() {
     }
 }
 
+/// The URLs `node` is reached at, which must not go to a proxy: its address, and `<name>.local`,
+/// the name its HTTPS gate is used by (`auth::https_gate_for`).
+pub fn node_urls(node: &ragon_node_locator::Node) -> Vec<String> {
+    let mut urls = vec![node.model_url()];
+    if crate::auth::is_host_label(&node.name) {
+        urls.push(format!("https://{}.local", node.name));
+    }
+    urls
+}
+
 /// A client for the model server and the loopback services: it never uses a proxy, whatever the
-/// environment says, so it also covers a node the environment does not name yet.
+/// environment says, so it also covers a node the environment does not name yet. It trusts the
+/// node's pinned CA once [`trust_node_ca`] has named it (a node with accounts serves HTTPS signed
+/// by its own CA, AUTH §6).
 pub fn direct_client(timeout: std::time::Duration) -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder().no_proxy().timeout(timeout).build()
+    let mut builder = reqwest::Client::builder().no_proxy().timeout(timeout);
+    if let Some(cert) = NODE_CA.get().and_then(|pem| reqwest::Certificate::from_pem(pem).ok()) {
+        builder = builder.add_root_certificate(cert);
+    }
+    builder.build()
+}
+
+/// The session node's CA (PEM), set once by `auth::secure_gate` when the session moves to the
+/// node's HTTPS gate.
+static NODE_CA: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+
+/// Makes every later [`direct_client`] of this process trust `pem`, the session node's pinned CA.
+pub fn trust_node_ca(pem: &[u8]) {
+    let _ = NODE_CA.set(pem.to_vec());
 }
 
 /// The `NO_PROXY` value: every entry of `upper` and `lower` in their order without repeats, then
