@@ -372,3 +372,14 @@ def test_fill_stops_when_the_repo_is_missing_or_the_queue_is_full(
 
 def test_repo_for_expands_a_configured_path() -> None:
     assert NightShiftAutofill.repo_for("~/somewhere") == Path("~/somewhere").expanduser()
+
+
+def test_night_shift_autofill_add_task_returns_the_reason_when_the_command_cannot_run(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(NightShiftAutofill, "runner", staticmethod(_raising))
+    candidate = AutofillCandidate("k", "ci", "title", "detail", "tests/test_x.py", "it passes")
+
+    reason = NightShiftAutofill.add_task(tmp_path, "ragon", candidate)
+
+    assert reason == "no such command"
