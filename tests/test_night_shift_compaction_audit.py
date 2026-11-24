@@ -330,3 +330,15 @@ def test_the_report_says_how_to_bring_a_branch_into_the_checkout():
     assert "No branch to review." in NightShiftReport.render(
         datetime(2020, 10, 3, 1, 0), [no_branch], []
     )
+
+
+def test_night_shift_compaction_audit_parse_returns_none_for_invalid_or_non_dict_lines():
+    parse = NightShiftCompactionAudit._parse
+    assert parse("{not json") is None
+    assert parse("[1, 2]") is None
+    assert parse('"just a string"') is None
+    assert parse("42") is None
+    assert parse('{"type": "session_meta", "payload": {}}') == {
+        "type": "session_meta",
+        "payload": {},
+    }
