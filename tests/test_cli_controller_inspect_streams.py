@@ -245,3 +245,21 @@ def test_deep_inspection_tolerates_a_missing_container_and_empty_profile(monkeyp
     text = _deep(monkeypatch, lambda *a, **k: _insp(bad), profile)
     assert "Running n=" not in text
     assert "No speculative counters" not in _deep(monkeypatch, lambda *a, **k: _insp("[]"), profile)
+
+
+def test_dreamference_cli_controller_inspect_read_stream_breaks_on_done_marker(monkeypatch):
+    times = iter([100.0, 102.0])
+    monkeypatch.setattr(ctl.time, "time", lambda: next(times))
+    r = _resp(
+        b"",
+        b"event: keep-alive",
+        {"usage": {"completion_tokens": 21}},
+        b"data: [DONE]",
+        {"usage": {"completion_tokens": 99}},
+    )
+    stream = {"supports": False, "ttft": 0.0, "decode_tps": 0.0}
+    C._inspect_read_stream(r, 98.0, stream)
+    assert stream["supports"] is True
+    assert stream["ttft"] == 2.0
+    # Only the 21-token chunk is counted; the post-DONE 99-token chunk is ignored.
+    assert stream["decode_tps"] == 10.0
