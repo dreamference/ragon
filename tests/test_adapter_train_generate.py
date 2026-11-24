@@ -400,6 +400,38 @@ def test_adapter_train_generate_attempt_grading_window_closed_returns_none(setup
     assert not (generate.gen_dir / "worktrees" / f"{spec['id']}-a1").exists()
 
 
+def test_adapter_train_generate_run_stops_when_detection_did_not_finish(setup, monkeypatch):
+    """When detection stopped before every task was detected, run returns `stopped`."""
+    from types import SimpleNamespace
+    from unittest import mock
+
+    import dreamference.hardware.adapter_train_generate as generate_module
+
+    fix = setup["tasks"]["fix"]
+    generate = stage(setup, [fix], until=1.0)
+    monkeypatch.setattr(time, "time", lambda: 10.0)
+
+    def fake_run(self):
+        self.outcome = {"attempt": 1, "status": "candidate", "result": {}}
+        return "candidate"
+
+    def fake_run_tests(self, test_command):
+        return {"command": test_command, "exit_code": 0}
+
+    with (
+        mock.patch.object(NightShiftTaskRun, "run", fake_run),
+        mock.patch.object(NightShiftTaskRun, "_run_tests", fake_run_tests),
+        mock.patch.object(generate_module, "time", SimpleNamespace(time=lambda: 10.0)),
+    ):
+        result = generate.run()
+
+    assert result == {"status": "stopped", "tasks": 1, "detected": 0, "gradable": 0}
+    assert calls(setup) == []
+    # The stopped summary names no reason and writes no report.
+    assert "reason" not in result
+    assert not (setup["out"] / "generate/report.json").exists()
+
+
 def test_adapter_train_generate_prepare_clone_failure_raises_runtime_error(setup):
     """When the bare clone fails, prepare_clone raises with the git output."""
     from unittest import mock
