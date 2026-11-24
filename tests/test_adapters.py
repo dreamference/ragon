@@ -265,6 +265,13 @@ def test_a_valid_manifest_parses():
     assert (manifest.name, manifest.rank, manifest.target_modules) == ("rust", 16, ("q_proj",))
 
 
+def test_adapter_manifest_parse_refuses_bytes_that_are_not_json():
+    with pytest.raises(ValueError, match=r"manifest\.json is not JSON"):
+        AdapterManifest.parse(b"not json at all")
+    with pytest.raises(ValueError, match=r"manifest\.json is not JSON"):
+        AdapterManifest.parse(b"\xff\xfe")  # invalid UTF-8
+
+
 @pytest.mark.parametrize(
     ("change", "reason"),
     [
