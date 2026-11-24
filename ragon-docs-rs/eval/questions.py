@@ -45,13 +45,15 @@ Q = [
         "pdf/nist-sp-800-88r1.pdf",
         P,
         "Why can't flash storage be wiped with a strong magnet the way hard disks are?",
-        "Degaussing, a fundamental way to sanitize magnetic media, no longer applies in most cases for flash memory-based devices",
+        "Degaussing, a fundamental way to sanitize magnetic media, no longer applies in most cases "
+        "for flash memory-based devices",
     ),
     (
         "pdf/rfc9110.pdf",
         P,
         "Which conditional request header serves the purpose of If-Match when the client has no entity tag?",
-        "This field accomplishes the same purpose as If-Match for cases where the user agent does not have an entity tag",
+        "This field accomplishes the same purpose as If-Match for cases where the user agent "
+        "does not have an entity tag",
     ),
     (
         "pdf/rfc9114.pdf",
@@ -206,13 +208,15 @@ Q = [
     (
         "pdf/arxiv-2610.05872.pdf",
         P,
-        "Which method beats both supervised fine-tuning and self-distillation on new and old tasks without sampling from the policy?",
+        "Which method beats both supervised fine-tuning and self-distillation on new and old tasks "
+        "without sampling from the policy?",
         "grafting Pareto-dominates both SFT and OPSD",
     ),
     (
         "pdf/arxiv-2610.05831.pdf",
         P,
-        "Which theorem combines the cost of cutting teacher demonstrations short with the cost of a richer policy class?",
+        "Which theorem combines the cost of cutting teacher demonstrations short with the cost "
+        "of a richer policy class?",
         "bias–complexity bound in Theorem E.11",
     ),
     # ---- Markdown: the Rust book ----
