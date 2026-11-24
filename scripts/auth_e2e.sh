@@ -8,7 +8,7 @@
 # the secondary, a revoked token refused within 60 s, unauthenticated requests refused and
 # counted, logout and logout --all. A red run holds the release.
 #
-#   scripts/auth_e2e.sh --primary sixth-puffin --secondary fifth-puffin [--dry-run]
+#   scripts/auth_e2e.sh --primary sixth-puffin --secondary fifth-puffin [--dry-run] [--any-time]
 #                       [--evidence DIR] [--now "YYYY-MM-DD HH:MM"]
 #
 # The script creates its own test user (e2e-<random>, a random password that never leaves the
@@ -25,20 +25,22 @@
 #
 # --dry-run changes nothing and touches no machine: every step is listed, not run. It is never a
 # gate pass. A real run refuses outside the GPU window 08:00-20:00 UTC, and stops with exit 3
-# (blocked) when a node is unreachable or its install lacks the accounts commands.
+# (blocked) when a node is unreachable or its install lacks the accounts commands. --any-time
+# skips the window check on purpose (a run outside the window is not the owner's gate); the
+# summary records that it was used. Steps that run `ragon whoami` get a pty (ssh -tt).
 #
 # Exit: 0 every step passed (or was planned, in a dry run); 1 a step failed; 2 usage;
 #       3 blocked (window, install or reachability).
 set -u
 
-PRIMARY=""; SECONDARY=""; DRY=0; EVIDENCE=""; NOW=""
+PRIMARY=""; SECONDARY=""; DRY=0; EVIDENCE=""; NOW=""; ANY_TIME=0
 WINDOW_START_H=8; WINDOW_END_H=20      # the GPU window of nights and days (UTC)
 REVOKE_REFUSAL_SECONDS_MAX=60          # a revoked token is refused within the gate's cache TTL
 REFUSALS_MIN=2                         # E14: the refusal count rises by this much over both nodes
 HERE=$(cd "$(dirname "$0")" && pwd)
 HELPER_SRC="$HERE/auth_e2e_node.py"
 
-usage() { echo "usage: $0 --primary HOST --secondary HOST [--dry-run] [--evidence DIR] [--now 'YYYY-MM-DD HH:MM']" >&2; exit 2; }
+usage() { echo "usage: $0 --primary HOST --secondary HOST [--dry-run] [--any-time] [--evidence DIR] [--now 'YYYY-MM-DD HH:MM']" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --primary) PRIMARY="${2:-}"; shift 2 ;;
@@ -46,6 +48,7 @@ while [ $# -gt 0 ]; do
     --evidence) EVIDENCE="${2:-}"; shift 2 ;;
     --now) NOW="${2:-}"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
+    --any-time) ANY_TIME=1; shift ;;
     *) usage ;;
   esac
 done
@@ -66,7 +69,9 @@ record() { # id status text
   case "$2" in pass) PASS=$((PASS+1));; plan) PLAN=$((PLAN+1));; *) FAIL=$((FAIL+1));; esac
   echo "[$2] $1: $3"
 }
-on() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$1" "bash -lc '$2'"; }
+# on HOST CMD: ssh. ON_TTY=1 (set for one step) gives the command a pty: `ragon whoami` refuses
+# to run without a terminal ("stdin is not a terminal").
+on() { ssh ${ON_TTY:+-tt} -o BatchMode=yes -o ConnectTimeout=10 "$1" "bash -lc '$2'"; }
 # mask: replaces anything that looks like a bearer token, an API key or a JWT.
 mask() {
   sed -E -e 's/([Bb]earer[[:space:]]+)[^[:space:]"]+/\1***/g' \
@@ -130,10 +135,16 @@ trap 'exit 130' INT TERM
 
 # --- Preflight: the window, reachability, the install.
 VERSIONS=""
+WINDOW="${WINDOW_START_H}:00-${WINDOW_END_H}:00 UTC"
 if [ "$DRY" = 0 ]; then
-  hour=$(date -u ${NOW:+-d "$NOW"} +%H); hour=$((10#$hour))
-  if [ "$hour" -lt "$WINDOW_START_H" ] || [ "$hour" -ge "$WINDOW_END_H" ]; then
-    echo "blocked: outside the GPU window ${WINDOW_START_H}:00-${WINDOW_END_H}:00 UTC" >&2; exit 3
+  if [ "$ANY_TIME" = 1 ]; then
+    WINDOW="any time (--any-time: the GPU window check is skipped)"
+    echo "window check skipped (--any-time)" >&2
+  else
+    hour=$(date -u ${NOW:+-d "$NOW"} +%H); hour=$((10#$hour))
+    if [ "$hour" -lt "$WINDOW_START_H" ] || [ "$hour" -ge "$WINDOW_END_H" ]; then
+      echo "blocked: outside the GPU window ${WINDOW_START_H}:00-${WINDOW_END_H}:00 UTC" >&2; exit 3
+    fi
   fi
   for h in "$PRIMARY" "$SECONDARY"; do
     on "$h" 'true' >/dev/null 2>&1 < /dev/null || { echo "blocked: $h unreachable over ssh" >&2; exit 3; }
@@ -162,10 +173,10 @@ fi
 step E0a "install: the build is on both nodes" "$PRIMARY" 'ragon-admin node user list'
 step E0b "migrate: the primary question answered, the old tokens migrated" "$PRIMARY" 'ragon-admin node primary --self && ragon-admin node migrate'
 step E0c "the secondary points at the primary" "$SECONDARY" "ragon-admin node primary $PRIMARY"
-step E0d "the test user is created and signs in (ragon login --password-stdin)" "$PRIMARY" \
+ON_TTY=1 step E0d "the test user is created and signs in (ragon login --password-stdin)" "$PRIMARY" \
   "{ cat $RUN/pass; cat $RUN/pass; } | ragon-admin node user add $TEST_USER && $H ca $RUN && $H signin $RUN"
 driven E1 "first-run screen through a pty: sign in, and create an account with an empty password" "$PRIMARY" "$H pty $RUN"
-step E2 "login status shows the user and the issuer" "$PRIMARY" "$SESSION ragon whoami | grep -qF $TEST_USER"
+ON_TTY=1 step E2 "login status shows the user and the issuer" "$PRIMARY" "$SESSION ragon whoami | grep -qF $TEST_USER"
 step E3 "sessions lists this device" "$PRIMARY" "$SESSION ragon sessions"
 step E5 "device auth in both shapes (user code; verification_uri_complete) completes; the tokens name the user" "$PRIMARY" "$H device $RUN"
 step E6 "an API key works with the vendor's SDK: list, respond, stream, error; then revoked" "$PRIMARY" \
@@ -193,18 +204,18 @@ else
 fi
 
 # --- The secondary.
-step E12 "a request through the secondary reaches the engine" "$SECONDARY" \
+ON_TTY=1 step E12 "a request through the secondary reaches the engine" "$SECONDARY" \
   "$H ca $RUN && $H signin $RUN && $SESSION ragon exec --skip-git-repo-check \"say ok\""
-step E13 "a revoked token is refused within ${REVOKE_REFUSAL_SECONDS_MAX} s on the secondary (WEAK: revoke and wait, the refusal is not checked)" "$SECONDARY" "ragon-admin node user key e2e --revoke e2e && sleep ${REVOKE_REFUSAL_SECONDS_MAX}"
+step E13 "a revoked token is refused within ${REVOKE_REFUSAL_SECONDS_MAX} s on the secondary (WEAK: revoke and wait, the refusal is not checked)" "$SECONDARY" "ragon-admin node user key $TEST_USER --revoke e2e-sdk && sleep ${REVOKE_REFUSAL_SECONDS_MAX}"
 
 # --- Last on the primary: logout ends this session, then logout --all ends every session.
-step E4 "logout ends this session; logout --all ends every session (the run session and a second password-grant session both get invalid_grant on refresh)" "$PRIMARY" \
+ON_TTY=1 step E4 "logout ends this session; logout --all ends every session (the run session and a second password-grant session both get invalid_grant on refresh)" "$PRIMARY" \
   "$SESSION ragon logout && $H signin $RUN && $H logout $RUN"
 
 SUMMARY="passed $PASS, failed $FAIL, planned $PLAN"
 echo "$SUMMARY"
 if [ "$DRY" = 0 ]; then
-  printf 'at: %s\nprimary: %s\nsecondary: %s\n%s%s%s\n' "$(date -u +%FT%TZ)" "$PRIMARY" "$SECONDARY" \
+  printf 'at: %s\nwindow: %s\nprimary: %s\nsecondary: %s\n%s%s%s\n' "$(date -u +%FT%TZ)" "$WINDOW" "$PRIMARY" "$SECONDARY" \
     "$VERSIONS" "$RESULTS" "$SUMMARY" | mask > "$EVIDENCE/summary.txt"
 fi
 if [ "$DRY" = 1 ]; then echo "dry run: not a gate pass"; exit 0; fi

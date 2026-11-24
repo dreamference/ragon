@@ -42,14 +42,15 @@ STEPS = [
 # A fake ssh: records the host and the command, swallows stdin (the staged files), and answers
 # like a node would, with credentials in its output so the masking can be checked.
 FAKE_SSH = """#!/usr/bin/env bash
-host=""
+host=""; tty=""
 for a in "$@"; do
   case "$a" in
+    -tt) tty=" [tty]" ;;
     -o|BatchMode=*|ConnectTimeout=*) ;;
     *) [ -z "$host" ] && host="$a" || cmd="$a" ;;
   esac
 done
-printf '%s\\t%s\\n' "$host" "$cmd" >> "$FAKE_SSH_LOG"
+printf '%s\\t%s%s\\n' "$host" "$cmd" "$tty" >> "$FAKE_SSH_LOG"
 cat > /dev/null
 case "$cmd" in
   *"--version"*) echo "ragon-admin 0.9.9-test" ;;
@@ -101,8 +102,7 @@ def _real(tmp_path: Path, fail: str = "") -> tuple[subprocess.CompletedProcess[s
         "sec",
         "--evidence",
         str(evidence),
-        "--now",
-        "2026-11-24 12:00",
+        "--any-time",
         env=env,
     )
     return done, calls.read_text(), evidence
@@ -133,6 +133,17 @@ def test_a_real_run_outside_the_gpu_window_is_blocked() -> None:
     done = _run("--primary", "a", "--secondary", "b", "--now", "2026-11-20 21:00")
     assert done.returncode == 3
     assert "GPU window" in done.stderr
+
+
+def test_any_time_skips_the_window_check_and_says_so() -> None:
+    done = _run(
+        "--primary", "no-such-host.invalid", "--secondary", "b", "--now", "2026-11-20 21:00",
+        "--any-time",
+    )
+    assert done.returncode == 3
+    assert "GPU window" not in done.stderr
+    assert "window check skipped (--any-time)" in done.stderr
+    assert "unreachable" in done.stderr
 
 
 def test_a_real_run_with_an_unreachable_node_is_blocked() -> None:
@@ -199,6 +210,7 @@ def test_a_green_fake_run_writes_masked_evidence_and_removes_the_user(tmp_path: 
         assert secret not in sdk
     summary = (evidence / "summary.txt").read_text()
     assert "ragon-admin 0.9.9-test" in summary and "passed" in summary and "at: 20" in summary
+    assert "window: any time (--any-time" in summary
     # The user is created on the primary, removed on exit, and the run folders go on both nodes.
     assert "ragon-admin node user add e2e-" in calls
     last = calls.splitlines()
@@ -206,6 +218,27 @@ def test_a_green_fake_run_writes_masked_evidence_and_removes_the_user(tmp_path: 
     assert sum("rm -rf /tmp/ragon-auth-e2e." in line for line in last) == 2
     # The password never appears in argv: only file reads of the run folder.
     assert "--password " not in calls
+
+
+def test_the_whoami_steps_run_on_a_pty(tmp_path: Path) -> None:
+    # `ragon whoami` refuses to run without a terminal; the helper's signin runs it too.
+    _, calls, _ = _real(tmp_path)
+    lines = calls.splitlines()
+    whoami = [line for line in lines if "ragon whoami" in line]
+    signin = [line for line in lines if " signin " in line]
+    assert len(whoami) == 1 and len(signin) >= 3
+    assert all(line.endswith("[tty]") for line in whoami + signin)
+    # Steps that do not need a terminal keep plain ssh.
+    assert not any(line.endswith("[tty]") for line in lines if "ragon-admin node user list" in line)
+
+
+def test_e13_revokes_a_key_of_the_test_user(tmp_path: Path) -> None:
+    _, calls, _ = _real(tmp_path)
+    lines = calls.splitlines()
+    revoke = [line for line in lines if "--revoke e2e-sdk" in line and "sleep 60" in line]
+    assert len(revoke) == 1
+    assert revoke[0].startswith("sec\t") and "node user key e2e-" in revoke[0]
+    assert "user key e2e " not in calls
 
 
 def test_a_red_fake_run_still_removes_the_test_user(tmp_path: Path) -> None:
@@ -226,8 +259,7 @@ def test_a_stale_driven_pass_does_not_carry_over(tmp_path: Path) -> None:
         "sec",
         "--evidence",
         str(evidence),
-        "--now",
-        "2026-11-24 12:00",
+        "--any-time",
         env=env,
     )
     assert "[FAIL] E1:" in done.stdout
