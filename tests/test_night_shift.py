@@ -2245,6 +2245,22 @@ def test_an_index_run_past_its_time_is_stopped_even_when_systemctl_hangs(tmp_pat
     assert NightShiftIndex.refresh(str(binary), tmp_path, 0.5).startswith("stopped after 0 min")
 
 
+def test_night_shift_index_refresh_says_not_refreshed_when_it_cannot_start(tmp_path, monkeypatch):
+    import dreamference.night_shift.night_shift_index as index_module
+
+    started = []
+
+    def popen(argv, **kwargs):
+        started.append((argv, kwargs.get("cwd"), kwargs.get("env")))
+        raise OSError("no such file or directory")
+
+    monkeypatch.setattr(index_module.subprocess, "Popen", popen)
+    outcome = NightShiftIndex.refresh("/opt/ragon-code", tmp_path, 30)
+    assert outcome == "not refreshed: no such file or directory"
+    assert len(started) == 1 and started[0][0] == ["/opt/ragon-code", "index", "--exact", "--wait"]
+    assert started[0][1] == tmp_path and started[0][2][index_module.NIGHT_RUN_ENV] == "1"
+
+
 def test_a_refused_admission_keeps_the_queue_and_says_why(setup, fake_host):
     queue(setup["night"], setup["repo"])
     FakeHost.model = None
