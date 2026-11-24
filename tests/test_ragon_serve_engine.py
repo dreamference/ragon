@@ -1124,6 +1124,49 @@ def test_the_plan_only_call_and_the_launch_ask_the_engine_for_the_same_sessions(
     assert planned_sessions == int(asked(planned[-1])["--sessions"])
 
 
+def test_vllm_server_manager_fit_ragon_sessions_cuts_to_the_largest_that_fits(monkeypatch, capsys):
+    # The loop walks down from the registry's count, asks the engine for its own plan each time and
+    # stops at the first count that fits, saying so; with no subprocess, socket or clock, every plan
+    # comes from the stub and the warning is the only output the cut may leave behind.
+    mgr = VLLMServerManager()
+    recipe = get_model_launch_overrides(DEFAULT_MODEL_ALIAS, ENGINE_RAGON)
+
+    def plan(image, model, cut):
+        assert image == QWEN38_RAGON_IMAGE and model == DEFAULT_MODEL_ALIAS
+        assert cut["sessions"] == cut["batch"]
+        return {
+            "sessions": cut["sessions"],
+            "batch": cut["batch"],
+            "max_context": 262144,
+            # 13 GB a session plus 2 GB of scratch: 3 sessions (43) fit in 50, 4 (46) would not.
+            "planned_bytes": 13_000_000_000 * cut["sessions"] + 2_000_000_000,
+        }
+
+    monkeypatch.setattr(mgr, "ragon_serve_plan", plan)
+    assert mgr.fit_ragon_sessions(QWEN38_RAGON_IMAGE, DEFAULT_MODEL_ALIAS, recipe, 50.0, 12.0) == 2
+    assert "Only 2 of 4 sessions fit in the memory available (50.0 GB)" in capsys.readouterr().out
+    # No plan at all (an image older than --plan-only): not even one fits, the cut is refused.
+    monkeypatch.setattr(mgr, "ragon_serve_plan", lambda *a, **k: None)
+    assert (
+        mgr.fit_ragon_sessions(QWEN38_RAGON_IMAGE, DEFAULT_MODEL_ALIAS, recipe, 50.0, 12.0) is None
+    )
+    # Not even one session fits: the loop runs out without a warning.
+    monkeypatch.setattr(
+        mgr,
+        "ragon_serve_plan",
+        lambda *a, **k: {
+            "sessions": 1,
+            "batch": 1,
+            "max_context": 4096,
+            "planned_bytes": 60_000_000_000,
+        },
+    )
+    assert (
+        mgr.fit_ragon_sessions(QWEN38_RAGON_IMAGE, DEFAULT_MODEL_ALIAS, recipe, 50.0, 12.0) is None
+    )
+    assert capsys.readouterr().out == ""
+
+
 def test_every_ragon_serve_launch_passes_the_sparse_head_when_the_recipe_lists_the_feature():
     # Without --sparse-head-dir the engine serves "drafter head: full", 1-2 ms a step slower.
 
