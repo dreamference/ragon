@@ -3650,6 +3650,22 @@ def test_eval_with_remove_images_grades_one_repository_at_a_time_and_removes_wha
     ]
 
 
+def test_swe_bench_command_evaluate_plain_reports_the_count_and_returns_zero(
+    bench, monkeypatch, capsys
+):
+    from dreamference.night_shift.night_shift_host import NightShiftHost
+
+    monkeypatch.setattr(NightShiftHost, "mem_available_bytes", classmethod(lambda cls: 1 << 50))
+    bench["docker"].modes = {"acme__widget-1": "with_tests"}
+    run(bench, instances=["acme__widget-1"], evaluate=True)
+    calls = len(bench["harness"].calls)
+    assert SweBenchCommand.evaluate("r1") == 0
+    out = capsys.readouterr().out
+    assert "1 graded" in out and "1 resolved" in out
+    assert "report r1" in out
+    assert len(bench["harness"].calls) == calls
+
+
 def test_with_cycled_images_the_index_pass_removes_what_it_pulled(bench):
     docker = bench["docker"]
     # Validated ahead of the run, with the images removed afterwards (scripts/swe_bench_fresh.py).
