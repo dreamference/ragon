@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, Final
 
 AUTH_FILE: Final[str] = "auth.json"
+# Who the node is, written by `ModelGate.write_node_info` beside `auth.json`.
+NODE_FILE: Final[str] = "node.json"
 CACHE_TTL_S: Final[float] = 60.0
 CACHE_LIMIT: Final[int] = 4096
 KEY_PREFIX: Final[str] = "sk-ragon-"
@@ -296,12 +298,18 @@ class ModelGateAuth:
         self.jwks = (now, jwks, issuer)
         return jwks, issuer
 
-    @classmethod
-    def forwarding(cls) -> bool:
-        """True on a secondary: its accounts service already keeps each live answer 60 s (§7)."""
-        from dreamference.node.node_settings import NodeSettings
+    def forwarding(self) -> bool:
+        """True on a secondary: its accounts service already keeps each live answer 60 s (§7).
 
-        return NodeSettings.pinned_primary() is not None
+        Read per request from `node.json` in the gate's state folder (`ModelGate.node_info`
+        writes `secondary`, and rewrites it when the role changes): the gate runs in its own
+        container, with no access to the node's settings.
+        """
+        try:
+            data = json.loads((Path(self.state_dir) / NODE_FILE).read_text())
+        except (OSError, ValueError):
+            return False
+        return isinstance(data, dict) and data.get("secondary") is True
 
     async def lookup(self, bearer: str) -> dict[str, Any] | None:
         """The live answer for a credential: its user, or None when invalid; cached 60 s.

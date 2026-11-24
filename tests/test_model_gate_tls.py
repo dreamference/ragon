@@ -301,8 +301,17 @@ def test_starting_the_gate_stages_the_certificate_and_the_node_info(monkeypatch)
     assert not list(model_gate.GATE_DIR.rglob("ca.key"))
     assert (staged / "ca.pem").read_bytes() == (ModelGateTls.directory() / "ca.pem").read_bytes()
     node = json.loads((model_gate.GATE_DIR / "node.json").read_text())
-    assert set(node) == {"node_id", "name", "primary_id", "primary_name", "issuer", "accounts"}
+    assert set(node) == {
+        "node_id",
+        "name",
+        "primary_id",
+        "primary_name",
+        "issuer",
+        "accounts",
+        "secondary",
+    }
     assert node["primary_id"] is None  # no account store on this machine
+    assert node["secondary"] is False  # nothing pinned: the gate keeps its own cache
     assert node["accounts"] is True  # accounts are on by default from 0.9.9
 
 

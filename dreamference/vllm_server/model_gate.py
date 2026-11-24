@@ -269,7 +269,9 @@ class ModelGate:
         otherwise the primary is not known here yet.
 
         Returns:
-            dict[str, Any]: `node_id`, `name`, `primary_id`, `primary_name` and `issuer`.
+            dict[str, Any]: `node_id`, `name`, `primary_id`, `primary_name` and `issuer`, and
+            `secondary` (a primary is pinned), which the gate's credential check reads and
+            `/ragon/v1/info` does not serve.
         """
         from dreamference.accounts.accounts_service import AccountsService
         from dreamference.accounts.accounts_store import AccountsStore
@@ -287,6 +289,7 @@ class ModelGate:
             "primary_name": name if primary else None,
             "issuer": AccountsService.issuer(name) if primary else None,
             "accounts": NodeSettings.accounts_enabled(),
+            "secondary": NodeSettings.pinned_primary() is not None,
         }
 
     @classmethod

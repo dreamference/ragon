@@ -1,6 +1,7 @@
 """A secondary forwards to its pinned primary and caches the live check (AUTH §7, §10)."""
 
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -304,11 +305,17 @@ def test_a_revoked_key_on_a_secondary_is_refused_within_a_minute(
 
     from dreamference.node.node_settings import NodeSettings
     from dreamference.vllm_server import model_gate_auth
+    from dreamference.vllm_server.model_gate import GATE_DIR, ModelGate
     from dreamference.vllm_server.model_gate_auth import ModelGateAuth
 
     if pinned:
         NodeSettings.set_pinned_primary("6f1d2c3b-4a59-4e68-9f70-8a1b2c3d4e5f")
-    gate = ModelGateAuth("unused", ("127.0.0.1", 1))
+    assert GATE_DIR.is_relative_to(Path.home())  # the test home, never the real gate
+    # The gate runs in its own container: it learns the role from the node.json it is given.
+    GATE_DIR.mkdir(parents=True, exist_ok=True)
+    ModelGate.write_node_info()
+    gate = ModelGateAuth(str(GATE_DIR), ("127.0.0.1", 1))
+    assert gate.forwarding() is pinned
     monkeypatch.setattr(model_gate_auth.time, "monotonic", clock)
 
     async def through_the_secondary(target, bearer=None):
@@ -334,3 +341,27 @@ def test_a_revoked_key_on_a_secondary_is_refused_within_a_minute(
     clock.now = 61.0
     assert asyncio.run(gate.lookup(key)) == (None if pinned else alice)
     assert bool(gate.cache) is not pinned
+
+
+def test_the_gate_reads_its_role_from_its_own_state_folder_only(tmp_path, monkeypatch):
+    """The gate's container has no node settings: an old or missing node.json means primary."""
+    import json
+
+    from dreamference.node.node_settings import NodeSettings
+    from dreamference.vllm_server.model_gate_auth import ModelGateAuth
+
+    gate = ModelGateAuth(str(tmp_path), ("127.0.0.1", 1))
+    monkeypatch.setattr(
+        NodeSettings, "pinned_primary", classmethod(lambda cls: pytest.fail("settings read"))
+    )
+    assert gate.forwarding() is False  # no node.json
+    for content, expected in (
+        ({"node_id": "n"}, False),  # written before 0.9.9
+        ({"secondary": False}, False),
+        ({"secondary": "yes"}, False),
+        ({"secondary": True}, True),
+    ):
+        (tmp_path / "node.json").write_text(json.dumps(content))
+        assert gate.forwarding() is expected
+    (tmp_path / "node.json").write_text("{")
+    assert gate.forwarding() is False
