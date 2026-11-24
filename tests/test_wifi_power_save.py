@@ -378,3 +378,30 @@ def test_a_connection_named_with_a_colon_is_fixed_by_its_own_name(network):
         "802-11-wireless.powersave",
         "2",
     ] in problem["commands"]
+
+
+def test_host_safety_setup_describe_renders_manual_and_commands(monkeypatch, capsys):
+    """_describe prints a manual step verbatim and command steps as `sudo` argv."""
+    from dreamference.vllm_server import host_safety_setup
+
+    monkeypatch.setattr(
+        host_safety_setup.subprocess, "run", lambda *a, **k: pytest.fail("no subprocess")
+    )
+
+    manual = {"name": "do thing", "why": "because", "manual": "fix it by hand"}
+    HostSafetySetup._describe(1, manual)
+    out = capsys.readouterr().out
+    assert "1. do thing: because." in out
+    assert "   fix it by hand" in out
+    assert "sudo" not in out
+
+    capsys.readouterr()
+    commands = {
+        "name": "set knob",
+        "why": "for stability",
+        "commands": [["sysctl", "-w", "vm.min_free_kbytes=1048576"]],
+    }
+    HostSafetySetup._describe(2, commands)
+    out = capsys.readouterr().out
+    assert "2. set knob: for stability." in out
+    assert "     sudo sysctl -w vm.min_free_kbytes=1048576" in out
