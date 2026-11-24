@@ -13,7 +13,7 @@ import sys
 import textwrap
 import time
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
 
@@ -798,3 +798,137 @@ def test_adapter_train_generate_run_units_raises_when_the_tests_are_refused(setu
 
     # The worktree was cleaned up in the finally block.
     assert not (generate.gen_dir / "worktrees" / f"{spec['id']}-a1").exists()
+
+
+# `detect` drops a task or reports the window closed without ever running a test: the worktree
+# add, the file probe and the two grading rounds are the subprocess calls the tests below steer.
+def detect_spec(task: dict[str, str]) -> dict[str, Any]:
+    return AdapterTrainGenerate.task_spec(task)
+
+
+def test_adapter_train_generate_detect_drops_when_the_parent_cannot_be_checked_out(setup):
+    """When the parent does not check out, detect drops the task with the git output."""
+    from unittest import mock
+
+    from dreamference.runner.safe_git import SafeGit
+
+    generate = stage(setup, [setup["tasks"]["fix"]])
+    generate.prepare_clone()
+    spec = detect_spec(setup["tasks"]["fix"])
+    spec["parent"] = "000000000000"
+
+    def fake_run(cls, args, *a, **kw):
+        return subprocess.CompletedProcess(
+            args,
+            128,
+            "",
+            "fatal: invalid reference: 000000000000" if "worktree" in args else "",
+        )
+
+    with mock.patch.object(SafeGit, "run", classmethod(fake_run)):
+        found = generate.detect(spec)
+
+    assert found["fail_to_pass"] == []
+    assert "cannot be checked out" in found["dropped"]
+    # The worktree the add failed on was still pruned away.
+    assert not list((generate.gen_dir / "worktrees").iterdir())
+
+
+def test_adapter_train_generate_detect_drops_when_no_test_file_exists_at_the_commit(setup):
+    """When no touched test file exists at the commit, detect drops the task."""
+    from unittest import mock
+
+    generate = stage(setup, [setup["tasks"]["fix"]])
+    generate.prepare_clone()
+    spec = detect_spec(setup["tasks"]["fix"])
+    spec["tests"] = ["tests/test_absent.py"]
+
+    def fake_run_tests(self, test_command):
+        raise AssertionError("no test runs before the files are known")
+
+    with mock.patch.object(NightShiftTaskRun, "_run_tests", fake_run_tests):
+        found = generate.detect(spec)
+
+    assert found["fail_to_pass"] == []
+    assert "no touched test file exists at the commit" in found["dropped"]
+
+
+def test_adapter_train_generate_detect_drops_when_the_command_cannot_take_files(setup, monkeypatch):
+    """When no test command is found, detect drops the task; `cargo test` is the suite unit."""
+    from unittest import mock
+
+    fix = setup["tasks"]["fix"]
+    cargo = commit(
+        setup["repo"],
+        "Add Cargo.toml",
+        {"Cargo.toml": '[package]\nname = "calc"\nversion = "0.1"\n'},
+    )
+    spec = detect_spec({**fix, "commit": cargo})
+
+    generate = stage(setup, [spec], test_cmd=None)
+    generate.prepare_clone()
+
+    def fake_run_tests(self, test_command):
+        raise AssertionError(f"no test runs without a command ({test_command})")
+
+    with mock.patch.object(NightShiftTaskRun, "_run_tests", fake_run_tests):
+        found = generate.detect(spec)
+
+    assert found["fail_to_pass"] == []
+    assert "no test command" in found["dropped"]
+
+    # The same task with a command that cannot take a file grades the whole suite as one unit.
+    exit_codes = iter([0, 0])
+    suite = stage(setup, [spec], test_cmd="cargo test")
+    suite.prepare_clone()
+
+    def fake_run_tests(self, test_command):
+        assert test_command == "cargo test", test_command
+        return {"command": test_command, "exit_code": next(exit_codes)}
+
+    with mock.patch.object(NightShiftTaskRun, "_run_tests", fake_run_tests):
+        found = suite.detect(spec)
+
+    assert found["fail_to_pass"] == []
+    assert found["pass_to_pass"] == [WHOLE_SUITE]
+    assert found["parent"] == {WHOLE_SUITE: True}
+    assert found["commit"] == {WHOLE_SUITE: True}
+
+
+def test_adapter_train_generate_detect_returns_none_when_the_window_closes(setup, monkeypatch):
+    """When the window closes before the grading finishes, detect returns None and resumption redoes it."""
+    from unittest import mock
+
+    generate = stage(setup, [setup["tasks"]["fix"]])
+    generate.prepare_clone()
+    spec = detect_spec(setup["tasks"]["fix"])
+    state_path = generate.gen_dir / "state" / f"{spec['id']}.json"
+    assert not state_path.exists()
+
+    def fake_run_tests(self, test_command):
+        return {"command": test_command, "timed_out": "window"}
+
+    with mock.patch.object(NightShiftTaskRun, "_run_tests", fake_run_tests):
+        found = generate.detect(spec)
+        assert found is None
+    # detect itself does not write the state: a window-closed detect_all leaves no detect entry,
+    # so the next run redoes the detection.
+    assert not state_path.exists()
+
+
+def test_adapter_train_generate_detect_returns_none_when_the_window_closes_at_the_commit(setup):
+    """When the window closes after the parent grading but before the commit's, detect returns None."""
+    from unittest import mock
+
+    fix = setup["tasks"]["fix"]
+    cargo = commit(setup["repo"], "Add Cargo.toml", {"Cargo.toml": '[package]\nname = "calc"\n'})
+    generate = stage(setup, [fix], test_cmd="cargo test")
+    generate.prepare_clone()
+    spec = detect_spec({**fix, "commit": cargo})
+    results = iter([{"command": "", "exit_code": 0}, {"command": "", "timed_out": "window"}])
+
+    def fake_run_tests(self, test_command):
+        return next(results)
+
+    with mock.patch.object(NightShiftTaskRun, "_run_tests", fake_run_tests):
+        assert generate.detect(spec) is None
