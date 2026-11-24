@@ -1468,6 +1468,44 @@ def test_only_a_trailing_deleted_suffix_is_dropped(monkeypatch):
     assert NightShiftHost.executable_of("4") == ""
 
 
+def test_night_shift_host_is_app_server_keeps_marked_and_drops_unmarked_servers(
+    monkeypatch, tmp_path
+):
+    # The installed binary is an app server no matter what it runs; a copy of it only counts
+    # when its command line names `app-server` or `web`, and a copy whose cmdline vanished
+    # (the read raises OSError) or runs anything else does not.
+    ragon = "/opt/installed/ragon"
+    copy = _make_binary(tmp_path, "ragon")
+    fake_path = _fake_proc(
+        tmp_path,
+        {
+            "4242": {
+                "cmdline": b"sh\0",
+                "environ": b"",
+                "exe": ragon,
+            },
+            "4243": {
+                "cmdline": b"ragon\0app-server\0",
+                "environ": b"",
+                "exe": copy,
+            },
+            "4244": {
+                "cmdline": b"ragon\0exec\0",
+                "environ": b"",
+                "exe": copy,
+            },
+        },
+    )
+    # 4245: same binary name as the target, but no cmdline file: the read raises OSError.
+    (tmp_path / "proc" / "4245").mkdir()
+    (tmp_path / "proc" / "4245" / "exe").symlink_to(copy)
+    monkeypatch.setattr("dreamference.night_shift.night_shift_host.Path", fake_path)
+    assert NightShiftHost._is_app_server(4242, ragon) is True  # the installed binary
+    assert NightShiftHost._is_app_server(4243, ragon) is True
+    assert NightShiftHost._is_app_server(4244, ragon) is False
+    assert NightShiftHost._is_app_server(4245, ragon) is False
+
+
 def _fake_proc(tmp_path, procs):
     """A fake `/proc` holding only the given entries, plus a `Path` remap onto it.
 
