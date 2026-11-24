@@ -169,6 +169,59 @@ def test_heavy_work_is_still_reported_when_systemctl_cannot_be_run(monkeypatch, 
     assert not [job for job in NightShiftHost.heavy_jobs() if "is active (" in job]
 
 
+def test_a_process_that_cannot_be_read_is_skipped_by_heavy_jobs(monkeypatch, tmp_path):
+    """A /proc entry whose cmdline cannot be read is skipped, not fatal (lines 570-571)."""
+    import pathlib
+
+    class UnreadableEntry:
+        name = "9999"
+
+        def __truediv__(self, other):
+            raise OSError("unreadable")
+
+    real_iterdir = pathlib.Path.iterdir
+
+    def fake_iterdir(self):
+        if str(self) == "/proc":
+            return iter([UnreadableEntry()])
+        return real_iterdir(self)
+
+    monkeypatch.setattr(night_shift_host, "BUILD_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=""))
+    monkeypatch.setattr(pathlib.Path, "iterdir", fake_iterdir)
+    assert NightShiftHost.heavy_jobs() == []
+
+
+def test_a_running_ragon_admin_index_is_named_with_its_pid(monkeypatch, tmp_path):
+    """A live `ragon-admin index` process is named with its pid (line 574)."""
+    import pathlib
+
+    class FakeCmdline:
+        def __init__(self, data):
+            self._data = data
+
+        def read_bytes(self):
+            return self._data
+
+    class IndexEntry:
+        name = "1234"
+
+        def __truediv__(self, other):
+            return FakeCmdline(b"/usr/bin/python\0/usr/local/bin/ragon-admin\0index\0repo\0")
+
+    real_iterdir = pathlib.Path.iterdir
+
+    def fake_iterdir(self):
+        if str(self) == "/proc":
+            return iter([IndexEntry()])
+        return real_iterdir(self)
+
+    monkeypatch.setattr(night_shift_host, "BUILD_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=""))
+    monkeypatch.setattr(pathlib.Path, "iterdir", fake_iterdir)
+    assert "ragon-admin index is running (pid 1234)" in NightShiftHost.heavy_jobs()
+
+
 def test_another_nodes_model_server_is_asked_directly_not_through_the_proxy(monkeypatch):
     import http.server
     import threading
