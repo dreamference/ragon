@@ -143,6 +143,44 @@ def test_no_node_keeps_python_on_the_universal_layer(tmp_path, monkeypatch):
     assert not (tmp_path / "indexers").exists()
 
 
+def test_code_index_setup_install_npm_indexers_reports_a_failed_npm_ci(tmp_path, monkeypatch):
+    """A failing `npm ci` reports the failure and leaves no node link behind."""
+    monkeypatch.setattr(code_setup, "INDEXERS_DIR", str(tmp_path / "indexers"))
+    node = tmp_path / "node"
+    node.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(
+        code_setup.shutil, "which", lambda name: str(node) if name == "node" else "/usr/bin/npm"
+    )
+    monkeypatch.setattr(
+        code_setup.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 1),
+    )
+    assert CodeIndexSetup.install_npm_indexers() is False
+    assert not (tmp_path / "indexers" / "node").exists()
+
+
+def test_code_index_setup_install_npm_indexers_removes_a_stale_staging_link(tmp_path, monkeypatch):
+    """A `node.new` left by an interrupted run is replaced by the recorded link."""
+    monkeypatch.setattr(code_setup, "INDEXERS_DIR", str(tmp_path / "indexers"))
+    node = tmp_path / "node"
+    node.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(
+        code_setup.shutil, "which", lambda name: str(node) if name == "node" else "/usr/bin/npm"
+    )
+    monkeypatch.setattr(
+        code_setup.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0),
+    )
+    indexers = tmp_path / "indexers"
+    indexers.mkdir()
+    Path(indexers / "node.new").symlink_to(tmp_path / "old-node")
+    assert CodeIndexSetup.install_npm_indexers() is True
+    assert str(Path(indexers / "node").readlink()) == str(node)
+    assert not os.path.lexists(indexers / "node.new")
+
+
 def test_the_npm_lockfile_pins_both_npm_indexers_by_integrity():
     import json
 
