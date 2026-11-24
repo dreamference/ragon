@@ -283,6 +283,33 @@ def test_the_containers_cap_grows_by_the_loaded_cache_of_the_largest_adapter(mon
     assert AdapterServing.with_headroom(recipe, []) is recipe
 
 
+def test_adapter_serving_size_sums_the_files_it_can_stat_and_skips_the_rest(monkeypatch, tmp_path):
+    # Sums every file its manifest lists; a file that cannot be statted (removed under the
+    # entry) is skipped, not an error, so a half-torn-down snapshot still measures what is
+    # left on disk.
+    entry = install()
+    real_folder = AdapterInstaller.folder_of(entry)
+    real_size = (real_folder / "adapter_model.safetensors").stat().st_size
+    assert AdapterServing.size(entry) == real_size
+
+    class MissingFolder:
+        def __init__(self, path):
+            self.path = path
+
+        def __truediv__(self, relative):
+            if str(relative) == "gone":
+                raise FileNotFoundError(str(relative))
+            return real_folder / relative
+
+    monkeypatch.setattr(
+        AdapterInstaller,
+        "folder_of",
+        classmethod(lambda cls, item: MissingFolder(item["snapshot"])),
+    )
+    # "gone" is in the manifest but raises on stat: it is skipped, the real file still counts.
+    assert AdapterServing.size({**entry, "files": {**entry["files"], "gone": "x"}}) == real_size
+
+
 def test_an_adapter_that_fails_its_check_is_not_served(monkeypatch, capsys):
     AdapterServing.checked.clear()
     install()
