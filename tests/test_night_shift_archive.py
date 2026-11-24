@@ -173,3 +173,35 @@ def test_ragon_admin_night_archive_moves_old_runs_and_rejects_unknown_arguments(
     with pytest.raises(SystemExit) as unknown:
         DreamferenceCLIController.run_cli(["night", "archive", "--days", "3"])
     assert unknown.value.code == 2
+
+
+def test_night_shift_archive_archive_tasks_skips_a_missing_dir_and_misnamed_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without a tasks directory the archiver moves nothing and reports an empty outcome.
+    empty = tmp_path / "empty"
+    outcome = NightShiftArchive.archive(empty, 4, now=NOW)
+    assert outcome is not None
+    assert (outcome.tasks, outcome.logs, outcome.reports, outcome.skipped) == ([], 0, 0, [])
+    assert not (empty / "archive").exists()
+
+    # A task file whose name is not a run id is skipped, even though it is old and finished.
+    night = tmp_path / "night"
+    (night / "tasks").mkdir(parents=True)
+    misnamed = night / "tasks" / "not-a-run-id.json"
+    old = NOW - timedelta(weeks=8)
+    misnamed.write_text(json.dumps({"id": "not-a-run-id", "status": "done"}))
+    os.utime(misnamed, (old.timestamp(), old.timestamp()))
+    # A misnamed file with a lock: the lock is not a run id, so neither is touched.
+    (night / "tasks" / "misnamed.lock").touch()
+    # A matching, old, finished task still moves beside the misnamed one.
+    _task(night, "20150901-0100-abc", "done", old)
+
+    outcome = NightShiftArchive.archive(night, 4, now=NOW)
+
+    assert outcome is not None and outcome.tasks == ["20150901-0100-abc"]
+    assert (night / "archive" / "tasks" / "20150901-0100-abc.json").exists()
+    # The misnamed file and its lock stay where they were; the moved task's lock is dropped.
+    assert misnamed.exists()
+    assert (night / "tasks" / "misnamed.lock").exists()
+    assert not (night / "tasks" / "20150901-0100-abc.lock").exists()
