@@ -1124,6 +1124,22 @@ def test_declining_changes_nothing(seams, monkeypatch):
     assert RemoteAccess.setup(BOX) == 1 and seams == []
 
 
+def test_remote_access_setup_box_only_refuses_when_the_tunnel_key_cannot_be_made(
+    seams, monkeypatch, capsys
+):
+    monkeypatch.setattr(RemoteTunnel, "public_key", classmethod(lambda cls: None))
+    assert RemoteAccess.setup(BOX, yes=True, ssh_to="my-box", box_only=True) == 1
+    assert ("deploy", BOX, "amd64", "my-box") not in seams
+    assert "ssh-keygen could not make the tunnel's key" in capsys.readouterr().out
+
+
+def test_remote_access_setup_box_only_refuses_when_the_box_will_not_deploy(seams, monkeypatch):
+    monkeypatch.setattr(RemoteBox, "deploy", classmethod(lambda cls, *a, ssh_to=None: False))
+    assert RemoteAccess.setup(BOX, yes=True, ssh_to="my-box", box_only=True) == 1
+    assert RemoteSettings.read() is None
+    assert not RemoteTunnel.known_hosts().exists()
+
+
 def test_box_only_deploys_the_box_and_runs_nothing_on_the_node(seams, capsys):
     assert RemoteAccess.setup(BOX, yes=True, ssh_to="my-box", box_only=True) == 0
     steps = [entry[0] for entry in seams]
