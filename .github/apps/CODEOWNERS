@@ -229,3 +229,4 @@
 /dreamference/audit/auth_trace.py              @dreamference/security
 /ragon-rs/tests/auth_old_gate.rs                 @dreamference/security
 /backlog/plan-site-front-page.md                @dreamference/docs
+/backlog/plan-aeo.md                       @dreamference/docs
