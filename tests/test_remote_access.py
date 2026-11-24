@@ -2413,3 +2413,26 @@ def test_a_value_that_holds_another_placeholder_stays_inside_its_quotes(tmp_path
 
     assert not (tmp_path / "PWN").exists()
     assert done.stdout.splitlines() == ["k@PEER@", "p@SSH_USER@", "u; touch PWN #"]
+
+
+def test_remote_box_run_decodes_output_and_reports_a_missing_binary(monkeypatch):
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 3, b"out\xff", b"err")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    done = RemoteBox._run(["x"], input_bytes=b"in", timeout=5)
+
+    assert (done.returncode, done.stdout, done.stderr) == (3, "out�", "err")
+    assert seen["input"] == b"in" and seen["timeout"] == 5
+
+    def missing(argv, **kwargs):
+        raise FileNotFoundError("no such binary")
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    failed = RemoteBox._run(["x"])
+
+    assert failed.returncode == 127
+    assert "no such binary" in failed.stderr
