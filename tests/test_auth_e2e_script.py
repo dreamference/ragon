@@ -137,7 +137,12 @@ def test_a_real_run_outside_the_gpu_window_is_blocked() -> None:
 
 def test_any_time_skips_the_window_check_and_says_so() -> None:
     done = _run(
-        "--primary", "no-such-host.invalid", "--secondary", "b", "--now", "2026-11-20 21:00",
+        "--primary",
+        "no-such-host.invalid",
+        "--secondary",
+        "b",
+        "--now",
+        "2026-11-20 21:00",
         "--any-time",
     )
     assert done.returncode == 3
