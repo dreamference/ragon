@@ -41,6 +41,7 @@ This directory holds the specification, split into focused documents. This page 
 | [DREAMFERENCE_PYTHON_QUALITY.md](./DREAMFERENCE_PYTHON_QUALITY.md) | *Proposed; Phase 0 built (the tool pins and the measured baseline); Phase 1 built without the tree-wide format and fix commits (the ruff and mypy ratchets in the suite, the shims deleted):* a Stanford-grade Python standard (CS106A style, Ousterhout's CS 190 design red flags, PEP 8/257, Google docstrings), enforced by ruff and mypy through a ratchet test in the suite; baseline measured, phases from mechanical cleanup to the five most complex functions |
 | [DREAMFERENCE_SETUP.md](./DREAMFERENCE_SETUP.md) | Requirements, installation, helper scripts, troubleshooting |
 | [DREAMFERENCE_CLI.md](./DREAMFERENCE_CLI.md) | `ragon-admin` command reference (and the launcher's own subcommands), configuration tiers, environment variables |
+| [DREAMFERENCE_AEO.md](./DREAMFERENCE_AEO.md) | *Proposed 2026-11-24 with the owner's decisions built in; nothing built:* answer engine optimisation, being named, described correctly and linked when an AI assistant answers a question about local coding agents. The audit of the site, docs and README (broken canonical addresses of the docs, no root `robots.txt`, sitemap or `llms.txt`), 12 target questions with page and fact sentence, a table of 19 studies and the makers' own crawler pages, a design ordered by evidence, honest presence on other sites, a weekly fixed question list, forbidden methods, and 49 build rows (§9) |
 
 ### Models and inference
 
