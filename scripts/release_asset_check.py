@@ -30,6 +30,11 @@ def _deb(version: str) -> str:
     return re.sub(r"-rc\.(\d+)$", r"~rc.\1", version)
 
 
+def _deb_published(version: str) -> str:
+    """The version in a deb's name as the host publishes it: the tilde is rewritten, 0.9.9-rc.1 -> 0.9.9.rc.1."""
+    return re.sub(r"-rc\.(\d+)$", r".rc.\1", version)
+
+
 def _spellings(name: str, previous_version: str, version: str) -> set[str]:
     """The names a new release may carry for one previous asset name, one per spelling of the version.
 
@@ -40,6 +45,9 @@ def _spellings(name: str, previous_version: str, version: str) -> set[str]:
         names.add(name.replace(_pep440(previous_version), _pep440(version)))
     if name.endswith(".deb"):
         names.add(name.replace(_deb(previous_version), _deb(version)))
+        # The names of an uploaded release: the host publishes the maker's ~ as a dot.
+        names.add(name.replace(_deb_published(previous_version), _deb_published(version)))
+        names.add(name.replace(previous_version, _deb_published(version)))
     return names
 
 

@@ -1,9 +1,11 @@
 """The release's asset-name gate (scripts/release_asset_check.py)."""
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -119,3 +121,47 @@ def test_a_full_release_keeps_its_single_spelling(check):
         "dreamference-0.9.9-py3-none-any.whl",
         "ragon_0.9.9_arm64.deb",
     ]
+
+
+def test_a_pre_release_deb_is_accepted_under_the_name_the_host_publishes(check):
+    # The deb is built as 0.9.9~rc.1; the release job renames it to 0.9.9.rc.1 before the check, and
+    # GitHub publishes it under that name.
+    previous = ["ragon_0.9.8.1_arm64.deb"]
+    new = ["ragon_0.9.9.rc.1_arm64.deb"]
+    assert check.missing_assets(previous, new, "0.9.8.1", "0.9.9-rc.1") == []
+
+
+def test_a_pre_release_deb_from_a_previous_pre_release_is_accepted_when_published(check):
+    # rc.2 compares with rc.1 as GitHub lists it (dotted), not as the maker wrote it.
+    previous = ["ragon_0.9.9.rc.1_arm64.deb"]
+    new = ["ragon_0.9.9.rc.2_arm64.deb"]
+    assert check.missing_assets(previous, new, "0.9.9-rc.1", "0.9.9-rc.2") == []
+
+
+def test_a_missing_published_deb_is_still_reported(check):
+    previous = ["ragon_0.9.8.1_arm64.deb", "a-0.9.8.1.dmg"]
+    new = ["ragon_0.9.9.rc.1_arm64.deb"]
+    assert check.missing_assets(previous, new, "0.9.8.1", "0.9.9-rc.1") == ["a-0.9.9-rc.1.dmg"]
+
+
+def test_the_rename_step_names_a_tilde_deb_as_the_host_publishes_it(tmp_path):
+    # Runs the release job's "Name the files as the host publishes them" step as GitHub runs it.
+    step = next(
+        s
+        for s in yaml.safe_load((ROOT / ".github" / "workflows" / "release.yml").read_text())[
+            "jobs"
+        ]["release"]["steps"]
+        if s.get("name") == "Name the files as the host publishes them"
+    )
+    deb_dir = tmp_path / "artifacts" / "desktop-bundles"
+    deb_dir.mkdir(parents=True)
+    (deb_dir / "ragon_0.9.9~rc.1_arm64.deb").write_bytes(b"deb")
+    (tmp_path / "artifacts" / "wheel.whl").write_bytes(b"whl")
+    subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    names = sorted(p.name for p in (tmp_path / "artifacts").rglob("*") if p.is_file())
+    assert names == ["ragon_0.9.9.rc.1_arm64.deb", "wheel.whl"]

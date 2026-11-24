@@ -220,6 +220,22 @@ jobs:
             (cd "$(dirname "$file")" && sha256sum --strict -c "$(basename "$file")")
           done
           echo "checked ${#sums[@]} checksum files"
+      # The host publishes a tilde in an asset name as a dot (ragon_0.9.9~rc.1_arm64.deb is published as
+      # ragon_0.9.9.rc.1_arm64.deb), so the files are renamed to that spelling before SHA256SUMS lists them:
+      # the sums, the check against the previous release and the upload then name the same files. The
+      # version inside the package keeps its tilde. A full release has no tilde and nothing is renamed.
+      - name: Name the files as the host publishes them
+        run: |
+          mapfile -t tilded < <(find artifacts -type f -name '*~*' | sort)
+          for file in "${tilded[@]}"; do
+            target="$(dirname "$file")/$(basename "$file" | tr '~' '.')"
+            if [[ -e "$target" ]]; then
+              echo "::error::Renaming $file to $target would overwrite a file"
+              exit 1
+            fi
+            mv -- "$file" "$target"
+          done
+          echo "renamed ${#tilded[@]} files"
       - name: Write and sign SHA256SUMS
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
