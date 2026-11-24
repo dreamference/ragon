@@ -12,6 +12,8 @@ import time
 import urllib.parse
 import urllib.request
 
+RFC_EDITOR_RFC_PREFIX = "rfc-editor.org/rfc/rfc"
+
 ROOT = sys.argv[1]
 UA = {"User-Agent": "ragon-eval/0.1 (dgxcoder@dreamference.ai) python-urllib"}
 manifest = []
@@ -35,7 +37,7 @@ def save(rel, url, licence, source, data=None, strict=False):
         try:
             data = get(url, binary=True)
         except RuntimeError:
-            if strict or "rfc-editor.org/rfc/rfc" in url:
+            if strict or RFC_EDITOR_RFC_PREFIX in url:
                 raise
             print("SKIP", rel, url, file=sys.stderr)
             return
