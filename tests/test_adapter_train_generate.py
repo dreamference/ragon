@@ -433,6 +433,12 @@ def test_the_model_host_is_required(setup):
         AdapterTrainGenerate(setup["repo"], setup["out"], [], [], "")
 
 
+def test_adapter_train_generate_init_rejects_fewer_than_one_attempt(setup):
+    """An attempt budget below one is refused before the stage stores anything."""
+    with pytest.raises(ValueError, match="attempts must be at least 1"):
+        stage(setup, [setup["tasks"]["fix"]], attempts=0)
+
+
 def test_unit_commands():
     assert (
         AdapterTrainGenerate.unit_command("pytest -q", "tests/a b.py") == "pytest -q 'tests/a b.py'"
