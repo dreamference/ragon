@@ -919,6 +919,20 @@ def test_blank_lines_and_messages_that_are_not_objects_get_no_reply():
     ]
 
 
+def test_image_search_mcp_run_replies_parse_error_to_a_malformed_line():
+    server, sent = _tool()
+    source = io.StringIO(
+        '{"jsonrpc": "2.0"\n' + json.dumps({"jsonrpc": "2.0", "id": 8, "method": "ping"}) + "\n"
+    )
+    out = io.StringIO()
+    server.run(source, out)
+    assert [json.loads(line) for line in out.getvalue().splitlines()] == [
+        {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}},
+        {"jsonrpc": "2.0", "id": 8, "result": {}},
+    ]
+    assert sent == []
+
+
 def _probe(monkeypatch, outcome):
     def run(argv, **kwargs):
         if isinstance(outcome, Exception):
