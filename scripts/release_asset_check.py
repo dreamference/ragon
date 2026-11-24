@@ -15,8 +15,32 @@ release's files were downloaded to (searched recursively) and ``--extra`` names 
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
+
+
+def _pep440(version: str) -> str:
+    """The version as setuptools writes it into wheel and sdist names: 0.9.9-rc.1 -> 0.9.9rc1."""
+    return re.sub(r"-rc\.(\d+)$", r"rc\1", version)
+
+
+def _deb(version: str) -> str:
+    """The version as the deb maker writes it: 0.9.9-rc.1 -> 0.9.9~rc.1 (a tilde sorts before the release)."""
+    return re.sub(r"-rc\.(\d+)$", r"~rc.\1", version)
+
+
+def _spellings(name: str, previous_version: str, version: str) -> set[str]:
+    """The names a new release may carry for one previous asset name, one per spelling of the version.
+
+    A full release has one spelling, so the set is the single name it always was.
+    """
+    names = {name.replace(previous_version, version)}
+    if name.endswith((".whl", ".tar.gz")):
+        names.add(name.replace(_pep440(previous_version), _pep440(version)))
+    if name.endswith(".deb"):
+        names.add(name.replace(_deb(previous_version), _deb(version)))
+    return names
 
 
 def missing_assets(
@@ -31,11 +55,16 @@ def missing_assets(
         version: the version being released.
 
     Returns:
-        The expected names that are not among ``new_names``, sorted.
+        The expected names that no spelling of the version has in ``new_names``, sorted. A pre-release
+        is accepted under its PEP 440 form (``.whl``, ``.tar.gz``) and its deb form (``.deb``).
     """
     have = set(new_names)
-    expected = {name.replace(previous_version, version) for name in previous_names if name}
-    return sorted(expected - have)
+    missing = {
+        name.replace(previous_version, version)
+        for name in previous_names
+        if name and not _spellings(name, previous_version, version) & have
+    }
+    return sorted(missing)
 
 
 def main(argv: list[str] | None = None) -> int:
