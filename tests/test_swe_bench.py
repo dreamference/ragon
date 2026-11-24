@@ -2569,6 +2569,44 @@ def test_status_and_clean_touch_only_the_benchmarks_own_things(bench, capsys):
     assert ["ps", "-aq", "--filter", "label=ragon.swe-bench.run=r1"] in bench["docker"].calls
 
 
+def test_swe_bench_command_status_keeps_and_counts_the_image_cache(bench, monkeypatch, capsys):
+    """`status` with `image_cache_lists` set: the kept images are counted against the floor."""
+    run(bench, instances=["acme__widget-1"])
+    images = SweBenchImages.local_images()
+    cached = {entry["image"] for entry in images}
+    task_list = swe_bench_settings.CACHE_DIR / "list.txt"
+    task_list.parent.mkdir(parents=True, exist_ok=True)
+    # The task list names the instances, not the images: `cached_images` turns them into images.
+    task_list.write_text("acme__widget-1\n")
+
+    monkeypatch.setattr(
+        "dreamference.swe_bench.swe_bench_image_cache.SweBenchImageCache.floor_bytes",
+        classmethod(lambda cls, settings: 30 * 1024**3),
+    )
+    from dreamference.vllm_server.model_gate import ModelGate
+
+    monkeypatch.setattr(
+        ModelGate, "probe", classmethod(lambda cls, host, timeout=2.0: ModelGate.state())
+    )
+
+    class Settings(SweBenchSettings):
+        """The settings `status` reads: one image cache list, a floor, the default reserve."""
+
+        def __init__(self, table=None):
+            table = dict(table or {})
+            table.setdefault("image_cache_lists", [str(task_list)])
+            table.setdefault("image_cache_floor", "30G")
+            super().__init__(table)
+
+    monkeypatch.setattr(swe_bench_settings, "SweBenchSettings", Settings)
+    assert SweBenchCommand.status() == 0
+    out = capsys.readouterr().out
+    assert f"Image cache: 1 of the {len(cached)} image(s) of {task_list}" in out
+    assert "floor 30 GiB free" in out
+    # The bench's fake disk: 2 TiB free of 4.
+    assert "Disk: 2048 GiB free; reserve 100G" in out
+
+
 def test_swe_bench_command_dispatch_lists_routes_its_three_commands(monkeypatch):
     import argparse
 
