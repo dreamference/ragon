@@ -1662,6 +1662,25 @@ def test_the_chat_template_is_patched_for_efforts_and_late_system_messages(tmp_p
     )
 
 
+def test_chat_template_patcher_prepare_returns_none_when_the_target_cannot_be_written(
+    monkeypatch, tmp_path, capsys
+):
+    from dreamference.hardware.model_downloader import ModelDownloader
+    from dreamference.vllm_server import chat_template_patcher
+    from dreamference.vllm_server.chat_template_patcher import ChatTemplatePatcher
+
+    monkeypatch.setattr(ModelDownloader, "get_hf_cache_dir", classmethod(lambda cls: tmp_path))
+    snapshot = tmp_path / "models--org--model" / "snapshots" / "abc"
+    snapshot.mkdir(parents=True)
+    (snapshot / "chat_template.jinja").write_text("before")
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("a file where the template directory should be")
+    monkeypatch.setattr(chat_template_patcher, "HOST_TEMPLATE_DIR", blocker / "templates")
+
+    assert ChatTemplatePatcher.prepare("org/model", "abc", [("before", "after")]) is None
+    assert "Could not write the patched chat template" in capsys.readouterr().out
+
+
 def test_the_sglang_recipe_samples_with_pytorch_not_flashinfer(monkeypatch):
     # FlashInfer's untruncated sampling kernel returned token 0 ('!') for every sampled
     # completions request on the GB10; the recipe must keep PyTorch's sampler.
