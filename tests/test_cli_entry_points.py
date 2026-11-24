@@ -304,3 +304,37 @@ def test_dreamference_cli_controller_inspect_probe_roles_skips_a_role_whose_prob
     roles = DreamferenceCLIController._inspect_probe_roles(session, "http://h/v1", "org/m", {})
     assert roles == "user, assistant"
     assert session.post.call_count == 4
+
+
+def test_dreamference_cli_controller_inspect_print_capabilities_reports_a_streaming_model():
+    # A model that streams prints its time to first token and, when measured, its decode speed.
+    from unittest.mock import MagicMock
+
+    capabilities = {
+        "kv_cache": "fp8",
+        "moe": "No",
+        "roles": "user, assistant",
+        "tags": "none",
+        "reasoning": True,
+        "tools": False,
+        "json": True,
+        "artifact": False,
+        "chatml": True,
+        "stream": {"supports": True, "ttft": 0.25, "decode_tps": 42.0},
+    }
+    out = MagicMock()
+    DreamferenceCLIController._inspect_print_capabilities(out, capabilities)
+    lines = [c.args[0] for c in out.print.call_args_list]
+    assert any("TTFT: 0.250s, decode: 42.0 tok/s on code" in line for line in lines)
+
+    capabilities["stream"] = {"supports": True, "ttft": 0.5, "decode_tps": 0}
+    out = MagicMock()
+    DreamferenceCLIController._inspect_print_capabilities(out, capabilities)
+    lines = [c.args[0] for c in out.print.call_args_list]
+    assert any("TTFT: 0.500s)" in line for line in lines)
+
+    capabilities["stream"] = {"supports": False}
+    out = MagicMock()
+    DreamferenceCLIController._inspect_print_capabilities(out, capabilities)
+    lines = [c.args[0] for c in out.print.call_args_list]
+    assert any("Streaming:[/cyan]   No" in line for line in lines)
