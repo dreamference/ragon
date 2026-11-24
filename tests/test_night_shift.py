@@ -1660,6 +1660,24 @@ def test_night_shift_host_interactive_ragon_pids_ignores_its_own_sessions_and_me
     assert NightShiftHost.interactive_ragon_pids(ragon) == [4243, 4299]
 
 
+def test_night_shift_host_process_alive_reads_signal_zero_outcomes(monkeypatch):
+    # Signal 0: a vanished pid is not alive, one owned by another user is alive (the kill raises
+    # PermissionError) and a pid the caller owns is alive (the kill succeeds).
+    outcomes = {4242: ProcessLookupError("no such process"), 4243: PermissionError("no")}
+    calls = []
+
+    def kill(pid, signal):
+        calls.append((pid, signal))
+        if pid in outcomes:
+            raise outcomes[pid]
+
+    monkeypatch.setattr(os, "kill", kill)
+    assert NightShiftHost._process_alive(4242) is False
+    assert NightShiftHost._process_alive(4243) is True
+    assert NightShiftHost._process_alive(4244) is True
+    assert calls == [(4242, 0), (4243, 0), (4244, 0)]
+
+
 def test_sizes_parse():
     assert NightShiftHost.parse_size("8G") == 8 * 1024**3
     assert NightShiftHost.parse_size("512M") == 512 * 1024**2
