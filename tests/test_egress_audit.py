@@ -1626,3 +1626,22 @@ def test_egress_audit_search_backends_treats_a_non_list_setting_as_absent(tmp_pa
     config.mkdir(parents=True)
     (config / "config.toml").write_text('[search]\nbackends = "SearXNG"\n')
     assert EgressAudit.search_backends() == ["searxng"]
+
+
+def test_egress_audit_trace_session_tui_reports_failure_when_popen_raises_oserror(
+    tmp_path, monkeypatch
+):
+    """A tui session whose pty cannot open reports no reply and stage `start`."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+
+    def raise_oserror(*_args, **_kwargs):
+        raise OSError("no pty available")
+
+    monkeypatch.setattr(TuiSession, "run", classmethod(raise_oserror))
+    trace, replied, _ = EgressAudit.trace_session(
+        "/opt/ragon", "http://localhost:8000", "hi", str(work_dir), "tui"
+    )
+    assert replied is False
+    assert EgressAudit.tui_stage == "start"
+    assert trace is not None
