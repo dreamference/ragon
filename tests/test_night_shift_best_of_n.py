@@ -1089,6 +1089,36 @@ def test_night_shift_best_of_n_run_catches_a_runner_bug_and_records_a_failed_tas
     assert not bon["calls"].exists()
 
 
+def test_night_shift_best_of_n_run_stops_when_the_task_is_cancelled_between_attempts(
+    bon, monkeypatch
+):
+    record = queue(bon["night"], bon["repo"], test=TEST)
+    run = NightShiftBestOfN.task_run(
+        bon["night"],
+        record,
+        NightShiftSettings({"best_of": 2}),
+        bon["ragon"],
+        time.time() + 60,
+        model_host="http://x",
+    )
+    calls = []
+    monkeypatch.setattr(run, "_cancelled", lambda: calls.append("cancelled") or True)
+    discarded = []
+    monkeypatch.setattr(run, "_discard", lambda outcomes: discarded.append(tuple(outcomes)))
+    monkeypatch.setattr(run, "_timing", lambda outcomes: {"attempts": 1, "wall_s": 0, "nudges": 0})
+    finished = {}
+    monkeypatch.setattr(
+        run,
+        "_finish",
+        lambda status, result: finished.update(status=status, result=result) or status,
+    )
+    assert run._run([]) == "cancelled"
+    assert calls == ["cancelled"]
+    assert discarded == [()]
+    assert finished == {"status": "cancelled", "result": {"attempts": 1, "wall_s": 0, "nudges": 0}}
+    assert not bon["calls"].exists()
+
+
 def test_night_shift_best_of_n_attempts_for_falls_back_to_the_settings_when_the_task_s_best_of_is_not_an_int():
     task = {"id": "t", "repo": ".", "base": "b", "task": "x", "best_of": "three"}
     assert NightShiftBestOfN.attempts_for(task, NightShiftSettings({})) == 3
