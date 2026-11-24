@@ -72,6 +72,14 @@ DIFFUSION_SAMPLER_DEFAULTS: Final[dict[str, Any]] = {
 DEFAULT_MAX_NEW_TOKENS: Final[int] = 256
 MAX_MAX_NEW_TOKENS: Final[int] = 2048
 
+# HTTP paths the handler recognises, named once so the routing checks and the docs agree.
+HEALTH_PATH: Final[str] = "/health"
+MODELS_PATH: Final[str] = "/v1/models"
+CHAT_COMPLETIONS_PATH: Final[str] = "/v1/chat/completions"
+
+# The name of Python's module-name global, as it appears in the AST of ``__main__`` guards.
+MAIN_GUARD_NAME: Final[str] = "__name__"
+
 
 def _say(message: str) -> None:
     """Writes one house-style log line: the [diffusion] prefix, flushed to stdout."""
@@ -213,7 +221,7 @@ def _imports_outside_main_guard(filename: str) -> set:
             isinstance(node, ast.If)
             and isinstance(node.test, ast.Compare)
             and isinstance(node.test.left, ast.Name)
-            and node.test.left.id == "__name__"
+            and node.test.left.id == MAIN_GUARD_NAME
         )
 
     names: set = set()
@@ -372,7 +380,7 @@ def build_handler(runner: "DiffusionModelRunner") -> type:
             self.wfile.write(body)
 
         def do_GET(self) -> None:
-            if self.path == "/health":
+            if self.path == HEALTH_PATH:
                 if runner.ready:
                     self._json(
                         200, {"status": "ok", "model": runner.model_id, "device": runner.device}
@@ -381,7 +389,7 @@ def build_handler(runner: "DiffusionModelRunner") -> type:
                     self._json(503, {"status": "error", "error": runner.error})
                 else:
                     self._json(503, {"status": "loading", "model": runner.model_id})
-            elif self.path == "/v1/models":
+            elif self.path == MODELS_PATH:
                 self._json(
                     200,
                     {
@@ -421,7 +429,7 @@ def build_handler(runner: "DiffusionModelRunner") -> type:
             created = int(time.time())
             response_id = f"dfsn-{uuid.uuid4().hex}"
             try:
-                if self.path == "/v1/chat/completions":
+                if self.path == CHAT_COMPLETIONS_PATH:
                     messages = request.get("messages") or []
                     text = runner.chat(messages, max_tokens, temperature)
                     self._json(

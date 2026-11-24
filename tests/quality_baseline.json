@@ -141,8 +141,7 @@
    "BLE001": 3,
    "C901": 1,
    "PLR0913": 1,
-   "PLR1702": 2,
-   "PLR2004": 4
+   "PLR1702": 2
   },
   "dreamference/vllm_server/host_safety_setup.py": {
    "ANN401": 2,
@@ -179,5 +178,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 203
+ "total": 199
 }
