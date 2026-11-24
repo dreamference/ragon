@@ -716,6 +716,10 @@ def test_a_link_to_a_blob_not_named_by_its_sha256_is_hashed_from_its_content(tmp
     assert AdapterBaseDigest.file_hash(link) == hashlib.sha256(b"partial").hexdigest()
 
 
+def test_adapter_verifier_file_digest_returns_empty_string_when_the_file_cannot_be_read(tmp_path):
+    assert AdapterVerifier.file_digest(tmp_path / "missing.bin") == ""
+
+
 def test_a_cached_base_digest_is_kept_per_revision(tmp_path):
     first, second = tmp_path / "first", tmp_path / "second"
     for snapshot, text in ((first, "one"), (second, "two")):
