@@ -1,145 +1,164 @@
-# The front page: structure and build rows
+# Front page of the product site
 
-**Draft for review, 2026-11-24.** Owner request of 2026-11-24: the front page of the product site should follow the structure and feel of a well-known open-source product page, "the reference layout". Nothing here is built. This spec changes no site code; it says what the page becomes and cuts the work into rows small enough for the local model.
+Status: spec, owner answers of 2026-11-24 applied (DECISIONS.md 11:26–12:17 UTC).
+Branch: site-front-page-spec. Build rows: backlog/plan-site-front-page.md.
+Voice of the page copy: plural first person ("`we`"). Ragon orange accent. Numbers as digits in every language.
 
-**Builds on:** the static one-page site in `website/` (template `website/src/index.template.html`, one JSON file per language in `website/i18n/`, built by `website/src/website_builder.py`, checked by `tests/test_website.py`), the Pages workflow `.github/workflows/docs.yml`, and owner decision Q202 (the full website is built before 1.0, static, no trackers).
+## 0. Boundary
 
----
+- The product sends nothing from the machine. The front page is the only part of the project that talks to the browser, and §7 says exactly what it sets.
+- Ideas are copied, code is not. Structure, grid, spacing, type scale, motion and menu sizes are taken from measurements (§1). text, pictures and code are written fresh.
+- No invented numbers, quotes, logos, testimonials or ratings. Every figure on the page comes from the README, the docs or a measured run, and the row that uses it names the source.
+- No pricing section and no price cards anywhere on the site.
+- No bitmap screenshots. Every product picture is HTML, CSS or SVG, except the one share image in §9, which is rendered from SVG.
+- The public spec does not name any site used as a reference. §1 uses the words "reference site".
+- Nothing goes live on any website page until a legal entity can be named (§7).
 
-## 0. Boundary: what is copied and what is not
+## 1. Measured reference values
 
-The page copies **structure and feel**: the order of sections, the grid and column counts, the spacing rhythm, the type scale, the shapes of buttons, chips and cards, the hairline-ruled frame, the quiet motion, the responsive breakpoints.
+Measured with headless Chrome 152 over the DevTools protocol, at 1440 px and 390 px wide. The numbers are targets for the build, not copied assets.
 
-The page does **not** copy: their text, pictures, logo, icons, illustrations, colours' exact tokens, or any of their CSS or JavaScript. Every sentence, every SVG and every rule in `website/style.css` is written fresh for Ragon. Where a slot of the reference layout has no honest Ragon content (customer logos, quotes, star counts, a usage calculator), the slot is left out or filled with something that can be shown, never with an invented quote, logo or number (section 4).
+| Item | Measured | Use |
+|---|---|---|
+| Header height, sticky | 57 px | header bar, sticky |
+| Header background | 95 % opacity, blur 8 px | same |
+| Desktop dropdown button | 32 px high, radius 8 px | Features, Platforms, Resources |
+| Desktop dropdown panel | 700 px wide, absolute, starts at y 44 px, flat (no shadow, radius 0, no transition) | dropdown panels |
+| Phone menu button | 40 × 40 px, radius 8 px | menu button |
+| Phone menu open | header grows to 410 px, full width, fold-down inside the header | phone menu |
+| Hero h1 | clamp, 75.6 px at 1440 (5.25 vw), 48 px at 390; line-height 0.96; letter-spacing −0.04 em; weight 600 | headline |
+| Content width | 1198–1200 px | container |
+| Radii | buttons 6 px and 8 px, pills full, cards 8 px (also 10, 4, 2, 6 px in parts), window frame top corners 8 px and 5 px | all |
+| Shadows | none | all |
+| Transitions | 150, 200 and 300 ms | all |
+| Picture animations | 1.2–1.6 s | surface pictures |
+| Pictures | 41 images (SVG, some JPG); one iframe in the hero | §4 rules |
 
-The public repository does not name the reference or any other product in this file or in the page; it is "the reference layout" here.
+Not measured (the default is chosen in §10):
+- where the install line sits next to the solid button;
+- FAQ open/close motion (no FAQ on the reference's front page);
+- footer column count.
 
-Fixed site rules that stay as they are (Q202 and the existing `tests/test_website.py`):
+## 2. Section map (15 sections, in order)
 
-- Static HTML, built from the template and the 20 language files; every language keeps the same section ids and the same markup.
-- No trackers, no cookies, no third-party script, style, font or image fetched at view time. The Content-Security-Policy `default-src 'self'` stays. Fonts are the system stack in `website/style.css`.
-- Scripts stay at `init.js` (theme) and `copy.js` (copy button). Everything new works without script: menus and the FAQ use `<details>`, tabs stay as they are.
-- Light and dark follow the existing tokens in `website/style.css` (`:root`, the `prefers-color-scheme` block, `data-theme`). The accent stays the Ragon orange; the reference layout's green accent is not copied.
+| # | id | Content | Notes |
+|---|---|---|---|
+| 1 | top | Bar: logo, dropdowns Features ▾ Platforms ▾ Resources ▾, plain link Docs, language switch, theme switch, star button, "Nothing leaves the machine." in plain words | dropdowns are built (answer 1); 57 px sticky header; phone menu folds down to 410 px |
+| 2 | hero | Headline, one sentence, two solid buttons: Install (copies the install command, copy.js) and Docs; the install line sits beside the solid button; pill "Live demo" links to #hero-demo | §10 default for the pill and the line |
+| 3 | hero-machines | Strip of eight maker names as plain text, caption "Runs on every GB10"; one row of eight on desktop, two rows of four on tablet, four rows of two on phone (2/4/8 responsive) | logos only where a maker allows it; default plain names (§10) |
+| 4 | hero-demo | The slot for a real recording of a node session: stored as text (timed frames), played by the small script of this site; static under reduced motion | not a hosted live demo; that is a later item |
+| 5 | features | Six feature cards, FAST first; each card: text, drawn picture (SVG/HTML), docs link | |
+| 6 | surfaces | Five alternating rows, each with picture and text; tabs in the terminal row; the phone row shows real status text | |
+| 7 | docs-map | Title "Everything in the docs"; four columns Start, Use, Run, Build; 4–6 links per column | |
+| 8 | editor | Tool labels (editor names as plain words), one snippet taken from the docs, plain-words explanation | |
+| 9 | platforms | Tiles = the getting-started list, each with its install command; a Docker tile only when the docs document Docker | |
+| 10 | rbrb | RBRB curve at two-thirds width (8 of 12 columns), latest value and one sentence beside it; stacked on phones | marker `<!-- rbrb:latest -->` in the README |
+| 11 | proof | Headline "Your code stays on your desk."; one summary sentence on the egress check (`audit egress`); number strip of three cells: 0 phone-home connections, $0 per token, 262K tokens of context | §10 default for the strip |
+| 12 | comparison | Table of Ragon, Ollama, LM Studio, llama.cpp (§5) | new row; other products named only with the sources in §5 |
+| 13 | faq | All entries closed at load; open with smooth motion unless reduced motion; no licence entry; a link to LICENSE | |
+| 14 | cta | Closing band: repeats the proof line; buttons INSTALL and DOCS; repeats the install command | |
+| 15 | footer | Columns Product, Docs, Project, Legal; a one-line description by the logo; trademark notices in every footer | |
 
----
+Removed: the pricing section (answer 2). The old row "pricing: one free card" is gone.
 
-## 1. The reference layout, section by section
+## 3. Pictures
 
-Measured on the reference page's markup and stylesheet (Tailwind-built; units converted to px). Content width is 1200 px, centred, drawn as a **frame**: a 1 px neutral border on the left and right of the column, and a 1 px rule between and under every section. Grids inside it use a 12-column grid with 1 px "gap-lines" (cells on a rule-coloured background, `gap: 1px`) rather than boxes with shadows. There are no shadows and no gradients on cards.
+- Every picture is drawn in HTML, CSS or SVG. No PNG/JPG screenshots of the product.
+- The hero demo slot plays a real recording made from a node session. The recording is stored as text (timed frames in a small JSON file) and played by `our` small script. Under reduced motion the slot shows the last frame, static.
+- Pictures load on scroll (lazy). Each surface picture animates in 1.2–1.6 s; reduced motion turns animation off.
+- The OG share image is one PNG rendered from SVG (not a screenshot), used by the main page only.
+- Size budget: 200 KB per page, all assets counted, proposed (§10).
 
-Page padding inside the frame: 20 px below 640 px, 32 px from 640 px, 40 px from 1024 px. Section padding: 64 px top and bottom, 96 px from 768 px (header-less sections with a left title column), 40 to 56 px for rows inside the hero.
+## 4. Content rules
 
-| # | Reference section | Layout | Notes |
-| - | - | - | - |
-| 1 | Sticky header | 56 px high, full-width bottom rule, 95 % background with a small blur; inner frame 1200 px, three zones | Logo left; centred nav of five items (three with drop-down panels, two plain); right: a pill theme toggle, a plain text link, an outlined pill button 36 px high. Under 1024 px the nav collapses to a 40 px icon button. |
-| 2 | Hero | 12-col grid. Left 7: a small bordered pill link above the headline, headline, sub-line, a small chip. Right 5: vertically centred input plus a solid 44 px button, a text link. Below: an 8-cell strip of logos (2 columns under 640 px, 4 from 640 px, 8 from 1024 px), then the product picture in a window frame with a 40 px title bar | Headline `clamp(48px, 5.25vw, 76px)`, weight 600, line height 0.96, letter spacing -0.04em. |
-| 3 | Pitch with three or four feature panels | Title row (headline left, one paragraph right, 7 + 5), then a row of panels, each a rule-bounded cell with a heading (18 px, 600), one sentence and a small live-looking picture | Panels alternate 7/5 and 5/7 from 1024 px; single column below. |
-| 4 | Link grid, "everything in one tag" | Title row (24 to 30 px, 600) and a one-line sub-line; below a 4-column grid of link lists (1 column, 2 from 640 px, 4 from 1024 px) with 1 px gap-lines; each cell a 14 px bold heading and 4 to 6 links in 14 px | Pure navigation, no pictures. |
-| 5 | Two-column feature with a title column | 12-col grid: left 4 holds headline (36 px, 48 px from 768 px), a paragraph and chips; right 8 holds a picture or a list | The title column has a right rule from 1024 px and a bottom rule below. |
-| 6 | Platform tiles plus snippet | Same 4/8 split; right: a code card, then a 2-, 3- or 4-column grid of tiles (min height 80 px), each an icon and a name | |
-| 7 | Testimonials | Full-width block, three columns, fixed height 560 px, clipped, columns scrolling slowly | The only continuous motion on the page. |
-| 8 | FAQ | 4/8 split: left title, right an accordion; each row 16 px type, 24 px side padding, 16 px top and bottom; open state animates the row height in 200 ms ease-out | Honours reduced motion. |
-| 9 | Pricing teaser | Title row, then a 7/5 block: an interactive control on the left, price cards on the right (rounded 6 px, 1 px border, a small solid label on one card) | |
-| 10 | Final call to action | Full-width dark band, 8/4 split: headline (36 px, 60 px from 768 px, line height 1.02), sub-line, input and button on the left; a second outlined button on the right | The only coloured band on the page. |
-| 11 | Footer | Top rule; 12-col grid: brand column 3, four link columns 9 (2 columns under 768 px, 4 from 768 px), each column a 14 px bold heading and a list; a bottom strip with legal links | |
+- Hero and top: "Nothing leaves the machine." said plainly, first line at the top.
+- Feature cards, surfaces, docs-map, editor and platforms use the words in the README and docs; no new claims.
+- Numbers as digits in every language (no spelled-out numerals).
+- The README figures used: 262K tokens of context; about 20 GB model download; `audit egress`; $0 per token.
+- Alt text in every language, from the translation files.
+- Skip link first in the page.
+- Reduced motion is always respected: no animation, no smooth scroll, static recording.
+- Voice "`we`" in all copy.
+- Launch copy (§8) is written in the same voice, not in the page.
 
-Type scale (px, desktop): headline 76, section headline 48, final headline 60, panel heading 18 to 20, link-grid heading 14, body 14 to 16, small and chips 12; sentence-case, weight 600 for headings, 500 for buttons and nav, 400 for body. Buttons and chips: header pill fully rounded; hero action 44 px high with square corners; chips and pills rounded 6 px, 12 px type, 1 px border; tiles and cards rounded 0 to 6 px. Responsive breakpoints: 640 px, 768 px, 1024 px and 1280 px; the header collapses at 1024 px; every 12-col grid is one column below 1024 px.
+## 5. Comparison (new section 12)
 
----
+Heading: "How it compares". Table columns: Ragon, Ollama, LM Studio, llama.cpp. Rows use only the sourced wording below. Where a source does not say a thing, the cell says "not stated".
 
-## 2. The Ragon page: section map ("the reference has X here -> Ragon has Y")
+| Row | Ragon | Ollama | LM Studio | llama.cpp |
+|---|---|---|---|---|
+| Licence | per LICENSE | MIT | not stated (app licence not established) | MIT |
+| Where it runs | "on your machine" (egress check) | "locally or in the cloud" | "natively local" | "locally and in the cloud" |
+| Phone-home connections | 0, verified by `audit egress` | not stated | not stated | not stated |
 
-Section ids are the contract for every language and for the checks. The order is final.
+Sources, listed on the page under the table:
+- Ollama: github.com/ollama/ollama (MIT licence); ollama.com (homepage wording).
+- llama.cpp: github.com/ggml-org/llama.cpp (MIT licence); README wording.
+- LM Studio: lmstudio.ai (homepage wording "Natively local"). The licence of the app is not established; the row says "not stated".
 
-| # | id | Reference has | Ragon has |
-| - | - | - | - |
-| 1 | `top` | Sticky header, three drop-down items, theme pill, text link, outlined pill | Same shape. Logo (existing `favicon.svg` mark plus the word), centred nav of five plain links (Features `#features`, Install `#install`, Proof `#proof`, FAQ `#faq`, Docs `/docs/`), right: the existing language and theme controls, a text link "GitHub", an outlined pill "Install" (`#install`). Drop-down panels are not built (default, section 6). Under 1024 px a `<details>` menu replaces the nav. |
-| 2 | `hero` | Pill link, headline, sub-line, chip, input plus button, text link | Left 7: pill link "Open source · AGPL-3.0" to the repository (no star count); h1 = the existing `install.h101` text, "A coding helper that runs on your own machine."; the existing sub-line `install.p02`; a chip "Qwen3.8-27B · 127.0.0.1". Right 5: the one-line installer in the existing copy-button command box, a solid button "Install" and a text link "Read the docs". |
-| 3 | `hero-machines` | Logo strip, 8 cells | Eight cells, plain text names (no logos, they are trademarks): NVIDIA DGX Spark, Acer Veriton GN100, ASUS Ascent GX10, Dell Pro Max with GB10, Gigabyte TOP ATOM, HP ZGX Nano, Lenovo ThinkStation PGX, MSI EdgeXpert. Caption "Runs on every GB10". |
-| 4 | `hero-demo` | Product picture in a window frame, 40 px title bar | The existing `mock-window` markup (HTML, written for Ragon) moved into the frame, title bar kept. |
-| 5 | `features` | Pitch with four panels | Title row: "Everything stays on your machine." (right: one paragraph from `why.*`). Four rule-bounded cells from the existing "why" pillars: private, fast, on your hardware, open. The comparison block of today's page moves to its own page; the FAQ links to it (section 6). |
-| 6 | `surfaces` | Alternating 7/5 panels | The existing five surface rows (`surface-terminal`, `surface-desktop`, `surface-web`, `surface-editor`, `surface-phone`) as alternating 7/5 and 5/7 cells; the existing code boxes are the pictures. Today's "workflows" tabs move into `surface-terminal`. |
-| 7 | `docs-map` | Four-column link grid | Four columns of links into `/docs/`: Start, Use, Run, Build (headings final; each link must point to a page in `mkdocs.yml`). Title: "Everything in the docs." |
-| 8 | `editor` | Title column plus picture, chips | 4/8: headline "Use it from your editor." paragraph about the MCP server of `ragon-code`; chips only for clients named in the documentation; right: a code card of the real config snippet from the docs. |
-| 9 | `platforms` | Tiles plus snippet | 4/8: headline "One node, every machine." right: tiles for GB10 (Linux), Mac client, Windows client, Linux client, Docker where documented; each a text name and the install command or link. |
-| 10 | `rbrb` | Testimonials block | **No testimonials.** The slot is "Ragon builds Ragon": the RBRB curve (`images/rbrb.svg`, copied to `website/assets/rbrb.svg`) and the latest value, read at build time from the `rbrb:latest` marker in `README.md` (never typed by hand). Three cells: the curve (2 columns wide), the plain-words explanation (what RBRB measures, per ISO week, share of development tokens generated by Ragon). No motion. |
-| 11 | `proof` | Numbers inside other sections | Left 4: headline "Your code stays on your desk, and you can check." (existing `proof.h201`); right 8: the existing egress-audit code box and a four-cell number strip with gap-lines: **0** connections that call home (egress audit), **$0** per token, **262K** tokens of context, **about 20 GB** of weights (README). No other figure. |
-| 12 | `faq` | 4/8 accordion | Same, with the existing FAQ strings as `<details>` rows; no script; the open animation only where `prefers-reduced-motion` is not set. |
-| 13 | `pricing` | Calculator and price cards | **No calculator and no prices.** One card: "Free and open source: AGPL-3.0, every feature, no account", with the licence link. The commercial licence tiers stay private until the entity exists (`specs/DREAMFERENCE_PRICING.md`): the page shows no tier, price or promise until then. |
-| 14 | `cta` | Dark band, 8/4, input and button | Dark band (`--bg-band`), 8/4: headline "Keep your code on your desk" (existing `cta.h201`), the install command with copy button; right: two buttons, "GitHub" and "Latest release". |
-| 15 | `footer` | 3 + 9 grid, four columns, legal strip | Brand column (existing `footer.p01`, `footer.p03`), four columns (Product, Docs, Project, Legal) from the existing footer links, the bottom strip with the existing trademark notices. |
+The table names other products only with these sources. No ratings, no "better than".
 
-Slots with nothing honest: customer logos (replaced by the machines strip), testimonials (replaced by RBRB), star counts and user counts (omitted), usage calculator and prices (replaced by the free card), drop-down panels (not built), live demo link (no hosted demo exists; the pill links to the repository). "What's new" release cards leave the front page; the hero pill and the footer link to the releases.
+## 6. Navigation and interaction
 
-Visual rules for every row above: 1200 px frame with side borders; 1 px rules between sections; 12-column grid with the splits named in section 1; paddings 20 px, 32 px or 40 px by width; section padding 64 px (96 px from 768 px); headline sizes from the type scale; no shadows; radius 6 px for chips and cards, full for the header pill; colour transitions 200 ms; nothing moves except the FAQ rows.
+- Dropdowns: desktop panels 700 px wide, absolute, flat; open on click and on hover; keyboard: Enter opens, Escape closes.
+- Phone: menu button `40` × `40` px; opening grows the sticky header to `410` px, full width.
+- Theme: dark by default; a light switch in the top bar; choice remembered on the device (not a cookie, see §7).
+- Language: browser language if the site has it, else English. The switch lists all 20 languages in their own scripts.
+- Star button: links to the repository; shows no count.
+- Install button: solid, copies the install command; the line sits beside it.
+- Window frame: top corners 8 px and 5 px, as measured.
 
----
+## 7. Cookies and privacy (website only)
 
-## 3. Build rows
+- Cookies are set on every website page for audience collection (Reddit and Google). Audiences are collected before any ad runs.
+- No consent banner, on any page.
+- When the browser sends Global Privacy Control or Do Not Track, no cookies are set.
+- A visitor's opt-out is remembered until they clear it. The opt-out state is held in the site's own storage, read before any cookie is set.
+- Stated neutrally, in one paragraph on the privacy page: in the EU and the UK, the rules ask for consent before these cookies are set. The site does not show a consent prompt in this build; the consent component exists as an optional row and is off.
+- The cookie code sits behind an off build switch (WEBSITE_COOKIES, default off). Nothing sets a cookie until the switch is on.
+- Nothing goes live on any website page until a legal entity can be named. The privacy page is written now in all 20 languages; it names no entity until one is set.
+- Footer: a "Cookie settings" link appears only when the switch is on.
 
-Each row is one section or component, at most two files, under about 150 changed lines, with a check that needs no judgement. All checks live in one new file, `tests/test_website_front_page.py` (row W1 creates it; a row adds one test function to it, so a row's check is `pytest tests/test_website_front_page.py -q -k <name>`) plus the existing `tests/test_website.py`, which must stay green after every row. Rows run in order because the template and `style.css` are shared. New strings go into `website/i18n/en.json` and, in the same row, into the 19 other files as the English text (row W17 syncs the rest) so the key-parity tests stay green; real translations come later.
+## 8. Languages and launch
 
-Common checks in every row: `python website/src/website_builder.py` leaves the committed pages current (`test_committed_page_is_current`), and the section's ids exist in all 20 pages.
+- All 20 languages are translated before launch, as rows for the local model. A missing string stops the build (the build fails with the key name). The languages: ar bn de en es fr ha hi id ja mr pcm pt ru sw te tr ur vi zh.
+- English strings are written first; translations follow (the local-model rows in the plan).
+- Launch post: one post names one modest star goal (value in §10); one Show HN post; no other launch channel in this build.
+- 1.0 is announced only after the clean-machine install test passes.
 
-| Row | Who | Section / component | Files | Check (no judgement) |
-| - | - | - | - | - |
-| W1 | Ragon | Contract test: ordered section ids, no external `src`/`href` in `script`, `link`, `img`, `source`, no `@import` or `url(http` in `style.css`, ids equal across all language pages | `tests/test_website_front_page.py` | `-k contract`: fails on a missing id, passes once the list is `top, hero, hero-machines, hero-demo, features, surfaces, docs-map, editor, platforms, rbrb, proof, faq, pricing, cta, footer` (expected-fail marks lift row by row) |
-| W2 | Ragon | Frame and grid utilities: `.frame` (max-width 1200 px, 1 px side borders), `.row12`, `.cell` with gap-line rules, padding steps 20 / 32 / 40, section padding 64 px or 96 px | `website/style.css`, test file | `-k frame`: asserts the CSS defines those classes with those values and the four media queries `640px`, `768px`, `1024px`, `1280px` |
-| W3 | Ragon | Header: sticky 56 px, centred nav, pill button, `<details>` menu under 1024 px | `website/src/index.template.html`, `website/style.css` | `-k header`: five nav hrefs each equal a section id or `/docs/`; header has one `a.btn` pill with `href="#install"`; no `<script>` inside the header; `height: 56px` present |
-| W4 | Ragon | Hero 7/5 row: pill link, h1, sub-line, chip, install box, solid button, text link | template, `en.json` | `-k hero`: one `h1`; h1 text equals `install.h101`; the install command in the page equals the one in `README.md`; the pill `href` is the repository URL; the h1 font-size rule equals `clamp(3rem, 5.25vw, 4.75rem)` |
-| W5 | Ragon | Machines strip, 8 cells | template, `style.css` | `-k machines`: exactly 8 cells; their texts equal the machine list in `README.md` ("Runs on every GB10"); grid has 2, 4 or 8 columns at the three widths in the CSS |
-| W6 | Ragon | Demo frame with 40 px title bar around the existing `mock-window` | template, `style.css` | `-k demo`: `#hero-demo` contains the `mock-window`; title bar height 40 px in the CSS |
-| W7 | Ragon | `features`: title row and four cells from the "why" pillars | template, `en.json` | `-k features`: 4 cells; each cell has one `h3` and one `p`; every string key used exists in `en.json` |
-| W8 | Ragon | `surfaces`: five rows alternating 7/5 and 5/7, existing code boxes, workflow tabs inside the terminal row | template, `style.css` | `-k surfaces`: the five `surface-*` ids exist; rows 2 and 4 carry the reverse class; tab buttons and panels still pair by id |
-| W9 | Ragon | `docs-map`: four link columns | template, `en.json` | `-k docs_map`: 4 columns, each at least 4 links; every link target maps to a page listed in `mkdocs.yml` |
-| W10 | Ragon | `editor`: 4/8 title column, chips, config snippet | template, `en.json` | `-k editor`: snippet text appears verbatim in a file under `docs/`; each chip names a client that `docs/` also names |
-| W11 | Ragon | `platforms`: tiles and install snippet | template, `style.css` | `-k platforms`: tile count equals the platform list in `docs/getting-started.md`; each install command appears verbatim in `README.md` |
-| W12 | Ragon | `rbrb`: curve, latest value, explanation; builder copies the SVG and fills the value from the README marker | `website/src/website_builder.py`, template | `-k rbrb`: the page's value equals the `rbrb:latest` marker in `README.md`; `website/assets/rbrb.svg` equals `images/rbrb.svg`; the section holds no `<script>` and no quote marks of a testimonial |
-| W13 | Ragon | `proof`: 4/8 split, egress-audit box, four-cell number strip | template, `style.css` | `-k proof`: the number strip equals the set `{0, $0, 262K, about 20 GB}` and nothing else; the section has no digit run outside the audit box and the strip |
-| W14 | Ragon | `faq`: `<details>` accordion in a 4/8 split | template, `style.css` | `-k faq`: `details` count equals the number of FAQ keys; no `<script>` in the section; CSS wraps the open animation in `prefers-reduced-motion: no-preference` |
-| W15 | Ragon | `pricing`: one free card, licence link | template, `en.json` | `-k pricing`: no `USD`, `EUR`, `$` followed by a digit, and no tier word in the section; the licence link resolves to `LICENSE` |
-| W16 | Ragon | `cta` band and `footer` grid (3 + 9) | template, `style.css` | `-k footer`: footer has a brand block and 4 link lists; the trademark notice text of today's page is still present; `#cta` uses `var(--bg-band)` |
-| W17 | Ragon | Sync the new keys into the 19 other language files (English text), builder run | `website/i18n/*.json` (script run, one commit) | existing `tests/test_website.py` all green, and `-k contract` passes with no expected-fail left |
-| W18 | Ragon | Remove dead markup and CSS of the old page (news cards, old numbers block, unused classes) | template, `website/style.css` | `-k no_dead_css`: every class selector in `style.css` appears in the template or in a short allow-list in the test |
-| W19 | haiku | Responsive pass: fix overflow and stacking at 1440 px, 768 px, 390 px by running the page in a headless browser and reading computed sizes; no design change | template, `style.css` | the visual check of section 5, items 1 to 4, all pass; a script prints `scrollWidth <= clientWidth` for the three widths |
-| W20 | haiku | Visual comparison report against the reference layout at 1440 px, 768 px, 390 px in light and dark, plus the two right-to-left languages, filed as a report (screenshots not committed) | report only (no repo file) | the checklist in section 5, every line marked pass or fail with the measured number |
+## 9. Rollout
 
-Totals: 20 rows, 18 for Ragon, 2 for haiku. Rows W19 and W20 are not fit for the local model: they need to look at a rendered page. Nothing goes to the largest cloud model.
+- Main is frozen Wed 2026-11-25 12:55 UTC until the release cut.
+- The new page is built beside the old one as its own directory. It is not linked from the old page and is not the index.
+- The index switch is the last row. The coordinator lands it on Sunday 2026-11-29, after 0.9.9 is published.
+- The new front page goes live with 0.9.9 on Sunday 2026-11-29. The old page stays until the new one is checked.
+- Rows that may slip past the cut: the real recording (needs a node session), the OG image, the browser pass. A slipped row ships as a follow-up; the page does not wait for it.
+- Launch rows (post text, star goal, Show HN) are not website rows; they are listed in the plan under launch.
 
----
+## 10. Decisions with defaults
 
-## 4. Content rules for the rows
+Each default below takes effect after a 10-minute wait without a reply.
 
-- Every string is written fresh. A reviewer must not be able to line up a Ragon sentence with a sentence of the reference page.
-- Every figure on the page is one already published in `README.md` or `docs/` (0 connections, $0 per token, 262K context, about 20 GB weights, the RBRB value). A figure not found there is not shown.
-- No logo, no quote, no star or user count, no price, no hosted-demo link, no invented client name.
-- Images: only Ragon's own SVGs (`website/assets/`) and HTML-built pictures. No raster pictures taken from anywhere else.
-- Text sizes are set in `rem` or `clamp()` from the type scale in section 1.
+| Decision | Default |
+|---|---|
+| Hero pill "Live demo" target | #hero-demo |
+| Install line placement | beside the solid Install button |
+| Machine strip names | plain names (logos forbidden or not located, see below) |
+| Number strip, one figure | keep $0 per token; a measured speed replaces it only once measured (no tokens/s figure is in the README yet) |
+| Size budget per page | 200 KB, all assets |
+| OG image | one PNG rendered from SVG |
+| Header dropdowns | Features ▾, Platforms ▾, Resources ▾; plain Docs |
+| Cookies | behind WEBSITE_COOKIES, off |
+| Star goal value | not named in the launch copy until the owner sets it |
 
----
+Maker logos (for the machine strip): NVIDIA allows logo use only with written authorisation and no implied affiliation; ASUS grants no trademark right without written agreement (terms 1.4); Dell asks for prior written consent for its logo and allows its marks only as adjectives. Acer, Gigabyte, HP, Lenovo and MSI were not located. Rule: a logo that is forbidden or unknown is replaced by the plain name.
 
-## 5. Visual check
+## 11. Checks
 
-Done by the haiku row W20 (or any reviewer), once after W18 and again after W19.
-
-1. Open the reference layout and the built Ragon page (`website/index.html` served locally) at **1440 px**, **768 px** and **390** px wide, light and dark, full page. Save the screenshots in a scratch folder outside the repository; they are never committed.
-2. Put them side by side, section by section, in the order of section 2.
-3. Close enough means all of these hold:
-   - the section order is the same, 1 to 15, with no extra section between;
-   - the column counts match at each width (1440 px: 12-col splits 7/5, 4/8, 3/9 and the 8, 4, 4 and 4-cell rows; 768 px: two-column grids where the reference has two; 390 px: everything one column, two for the machines strip and the number strip);
-   - the content frame is 1200 px at 1440 px with 1 px side borders, and there is no horizontal scroll at any width;
-   - computed headline sizes are within 2 px of the type scale; section padding within 4 px; section heights within 15 % (text length differs, so pictures are compared by height class, not pixels);
-   - the header collapses at 1024 px and not before; the FAQ opens with the same kind of motion and not at all with reduced motion;
-   - the light page has the same ruled, shadow-free feel; the dark page meets WCAG AA contrast for body text.
-4. Differences that are allowed: colours (the Ragon accent), fonts (system stack), all text and pictures, the missing slots listed in section 2, the number of links in the link grid.
-5. A line that fails goes back as a row of its own (one section, one fix), never as a free-form restyle.
-
----
-
-## 6. Decisions this spec makes, until the owner says otherwise
-
-- Header drop-downs are not built; five plain links.
-- Pricing shows only the free card until the entity exists.
-- The comparison block leaves the front page for a page of its own; the FAQ links to it.
-- New strings are English in all 20 files until translated.
-- The accent stays orange; the layout is the only thing borrowed.
+- Visual: desktop 1440, tablet 768, phone 390; each section checked against §2.
+- Measured values in §1 checked against the built page (header 57 px, dropdown 700 px, phone 410 px, headline clamp, radii).
+- No bitmap product screenshot in the build (a file-type check over the page's assets).
+- No reference-site name in any built page or spec file.
+- Translation check: all 20 languages build; a missing key fails the build.
+- Reduced motion: recording static, no animation, no smooth scroll.
+- Browser pass in Chrome, Firefox and Safari (latest) before the cut.
