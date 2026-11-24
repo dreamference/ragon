@@ -20,6 +20,8 @@ from typing import Any, Final
 
 WEBSITE_DIR: Final[Path] = Path(__file__).resolve().parent.parent
 SITE_URL: Final[str] = "https://ragon.dreamference.ai"
+# The MkDocs documentation is served under this path (see .github/workflows/docs.yml).
+DOCS_PATH: Final[str] = "/docs/"
 DEFAULT_LANGUAGE: Final[str] = "en"
 STRING_PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\{\{([a-z0-9_.]+)\}\}")
 RIGHT_TO_LEFT: Final[str] = "rtl"
@@ -211,7 +213,44 @@ class WebsiteBuilder:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(cls.render(language, languages, is_root), encoding="utf-8")
                 written.append(path)
-        return written
+        (out_dir / "sitemap.xml").write_text(cls.sitemap(languages), encoding="utf-8")
+        (out_dir / "robots.txt").write_text(cls.robots(), encoding="utf-8")
+        return [*written, out_dir / "sitemap.xml", out_dir / "robots.txt"]
+
+    @classmethod
+    def sitemap(cls, languages: list[dict[str, Any]]) -> str:
+        """Build ``sitemap.xml``: the front page of every language.
+
+        Args:
+            languages: The language list.
+
+        Returns:
+            The sitemap XML, one ``<url>`` per language page.
+        """
+        urls = "".join(
+            f"  <url><loc>{SITE_URL}{cls.page_path(lang['code'])}</loc></url>\n"
+            for lang in languages
+        )
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            f"{urls}</urlset>\n"
+        )
+
+    @classmethod
+    def robots(cls) -> str:
+        """Build ``robots.txt``: every crawler may fetch everything; both sitemaps are named.
+
+        Returns:
+            The robots.txt text.
+        """
+        return (
+            "User-agent: *\n"
+            "Allow: /\n"
+            "\n"
+            f"Sitemap: {SITE_URL}/sitemap.xml\n"
+            f"Sitemap: {SITE_URL}{DOCS_PATH}sitemap.xml\n"
+        )
 
     @classmethod
     def stale_language_dirs(cls) -> list[Path]:

@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://ragon.dreamference.ai/sitemap.xml
+Sitemap: https://ragon.dreamference.ai/docs/sitemap.xml
