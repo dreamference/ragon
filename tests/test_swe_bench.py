@@ -1772,6 +1772,22 @@ def test_other_commands_are_told_a_swe_bench_run_holds_the_lock(bench, capsys):
     assert NightShiftQueue.runner_holder() is None
 
 
+def test_night_shift_queue_runner_holder_falls_back_when_the_lock_cannot_be_read(
+    bench, monkeypatch
+):
+    real_read_text = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self.name == "runner.lock":
+            raise OSError("unreadable")
+        return real_read_text(self, *args, **kwargs)
+
+    with NightShiftQueue.runner_lock(NightShiftQueue.night_dir(), holder="a SWE-bench run") as held:
+        assert held
+        monkeypatch.setattr(Path, "read_text", read_text)
+        assert NightShiftQueue.runner_holder() == "a run"
+
+
 def test_admission_refuses_on_the_disk_reserve(bench, capsys):
     bench["settings"] = SweBenchSettings({"disk_reserve": "100000T"})
     assert run(bench, instances=["acme__widget-1"]) == 1
