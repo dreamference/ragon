@@ -277,3 +277,8 @@ def test_a_failing_cli_fallback_is_not_reported_as_a_download(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda name: "/bin/huggingface-cli")
     monkeypatch.setattr("subprocess.run", lambda cmd, env=None: types.SimpleNamespace(returncode=1))
     assert ModelDownloader.download_model(KEY, auto_tensorize=False) is False
+
+
+def test_model_downloader_get_tensorized_dir_is_none_when_the_repo_does_not_resolve(monkeypatch):
+    monkeypatch.setattr(ModelMatrixRegistry, "resolve_hf_repo", classmethod(lambda cls, key: ""))
+    assert ModelDownloader.get_tensorized_dir(KEY) is None
