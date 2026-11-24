@@ -324,6 +324,10 @@ impl Primary {
     }
 
     async fn token_request(&self, path: &str, body: Value) -> anyhow::Result<Result<Value, String>> {
+        // A password never goes to another machine over plain HTTP (AUTH §6).
+        if super::plain_to_another_machine(&self.gate) {
+            return Ok(Err(https_only_line(&self.primary_name(), &self.gate)));
+        }
         let response = self.client.post(format!("{}{path}", self.gate)).json(&body).send().await.map_err(http_error)?;
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
@@ -589,6 +593,11 @@ async fn account_form(primary: &Primary, io: &mut Io<'_>, create: bool) -> anyho
 /// # Errors
 /// The accounts server cannot be reached or the home cannot be written.
 pub async fn run_login(primary: &Primary, cmd: Cmd, io: &mut Io<'_>) -> anyhow::Result<Outcome> {
+    if asks_for_a_password(&cmd) && super::plain_to_another_machine(&primary.gate) {
+        // Said before anything is typed: the password would cross the network in the clear.
+        writeln!(io.out, "{}", https_only_line(&primary.primary_name(), &primary.gate))?;
+        return Ok(Outcome::done(1));
+    }
     let code = match cmd {
         Cmd::Screen => {
             writeln!(io.out, "Sign in to {}", primary.node_name())?;
@@ -739,6 +748,11 @@ pub async fn run(which: &str, args: &[String], gate: &str, codex_home: &Path, io
 pub async fn run_pair(_args: &[String], _gate: &str, _codex_home: &Path, io: &mut Io<'_>) -> anyhow::Result<Outcome> {
     writeln!(io.out, "`ragon pair` is not available on Windows yet: the messenger bridges run on Linux and macOS only.")?;
     Ok(Outcome::done(2))
+}
+
+/// The `login` commands that prompt for a password.
+fn asks_for_a_password(cmd: &Cmd) -> bool {
+    matches!(cmd, Cmd::Screen | Cmd::CreateScreen | Cmd::Password { .. })
 }
 
 /// What a sign-in refused over plain HTTP (403 `https_required`, AUTH §6) prints, instead of the

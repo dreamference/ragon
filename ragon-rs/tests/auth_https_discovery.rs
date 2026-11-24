@@ -139,3 +139,48 @@ async fn a_sign_in_refused_over_plain_http_says_so() {
     assert!(message.contains("https only"), "{message}");
     assert!(!message.contains("answered 403"), "{message}");
 }
+
+/// B1: a pinned node whose advert gives no usable name is refused, never used over plain HTTP.
+#[tokio::test]
+async fn a_pinned_node_without_a_usable_name_is_refused_not_downgraded() {
+    let home = home("pinned-noname");
+    let pin = auth::pin::path(&home, "n1");
+    std::fs::create_dir_all(pin.parent().unwrap()).unwrap();
+    std::fs::write(&pin, "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n").unwrap();
+    for name in ["", "a.b", "x_y", "192.0.2.1"] {
+        let refused = auth::secure_gate(NOWHERE, &home, "n1", name).await;
+        assert!(refused.is_err(), "name {name:?} gave {refused:?}");
+    }
+    // Nothing pinned under that id: the old plain route, without sign-in.
+    assert_eq!(auth::secure_gate(NOWHERE, &home, "n2", "").await.unwrap(), Secured::AsIs);
+}
+
+/// B2: once the advertised id is pinned, only an answer with that id stands for the node.
+#[test]
+fn a_pinned_advert_is_answered_only_by_its_own_id() {
+    assert!(auth::answers_as_advertised("n1", true, "n1"));
+    assert!(!auth::answers_as_advertised("n1", true, "n2"));
+    assert!(!auth::answers_as_advertised("n1", true, ""));
+    // Never pinned: first contact, the answer's id is the one pinned.
+    assert!(auth::answers_as_advertised("n1", false, "n2"));
+    assert!(auth::answers_as_advertised("", false, "n2"));
+}
+
+/// B3: credentials never go to another machine over plain HTTP, and a plain "accounts" from
+/// another machine gets no sign-in form.
+#[test]
+fn credentials_never_go_to_another_machine_over_plain_http() {
+    assert!(auth::plain_to_another_machine("http://192.0.2.1:8000"));
+    assert!(auth::plain_to_another_machine("HTTP://192.0.2.1:8000/"));
+    assert!(auth::plain_to_another_machine("http://dgx-a.local:8000"));
+    assert!(auth::plain_to_another_machine("http://localhost:1@192.0.2.1:8000"));
+    assert!(!auth::plain_to_another_machine("https://192.0.2.1:8000"));
+    assert!(!auth::plain_to_another_machine("http://127.0.0.1:8000"));
+    assert!(!auth::plain_to_another_machine("http://localhost:8000"));
+    assert!(!auth::plain_to_another_machine("http://[::1]:8000"));
+    let remote = "http://192.0.2.1:8000";
+    assert_eq!(auth::plain_answer_counted(remote, PlainAnswer::Accounts), PlainAnswer::HttpsRequired);
+    assert_eq!(auth::plain_answer_counted(remote, PlainAnswer::NoAccounts), PlainAnswer::NoAccounts);
+    assert_eq!(auth::plain_answer_counted("http://127.0.0.1:8000", PlainAnswer::Accounts), PlainAnswer::Accounts);
+    assert_eq!(auth::plain_answer_counted("https://192.0.2.1:8000", PlainAnswer::Accounts), PlainAnswer::Accounts);
+}

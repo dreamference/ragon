@@ -333,21 +333,33 @@ pub async fn secure_gate(host: &str, codex_home: &Path, node_id: &str, node_name
         .context("could not build the HTTP client")?;
     let Some(info) = fetch(&lenient, &format!("{tls}/ragon/v1/info")).await.as_deref().and_then(parse_info) else {
         // An older node (no TLS on its port), or one that is not up yet.
-        if let Some(path) = pin_of(node_id)
-            && let Some(gate) = https_gate_for(host, node_name)
-            && let Ok(pem) = std::fs::read(&path)
-        {
-            crate::proxy::trust_node_ca(&pem);
-            return Ok(Secured::Https(gate));
-        }
-        return Ok(Secured::AsIs);
+        // A pinned node stays on HTTPS whatever the advert says: a name that gives no gate, or a pin
+        // that cannot be read, is a refusal, never plain HTTP.
+        let Some(path) = pin_of(node_id) else { return Ok(Secured::AsIs) };
+        let gate = https_gate_for(host, node_name);
+        return match (&gate, std::fs::read(&path)) {
+            (Some(gate), Ok(pem)) => {
+                crate::proxy::trust_node_ca(&pem);
+                Ok(Secured::Https(gate.clone()))
+            }
+            _ => bail!("{}", no_downgrade_line(node_name, gate.as_deref())),
+        };
     };
-    let pinned = pin_of(&info.node_id).is_some() || pin_of(node_id).is_some();
+    let advert_pinned = pin_of(node_id).is_some();
+    if !answers_as_advertised(node_id, advert_pinned, &info.node_id) {
+        bail!(
+            "The certificate of {node_name} has changed: the machine at {host} answers as another node. \
+             If the node was set up again, run ragon login --reset-pin."
+        );
+    }
+    let pinned = advert_pinned || pin_of(&info.node_id).is_some();
     if !info.accounts && !pinned {
         return Ok(Secured::AsIs);
     }
     let presented = fetch(&lenient, &format!("{tls}/ragon/v1/ca.pem")).await.filter(|pem| pem.contains("BEGIN CERTIFICATE"));
-    let gate = https_gate_for(host, &info.node_name);
+    // The gate's name comes from the advert (what the browse found), not from the answer of a
+    // machine not verified yet; the answer's name only when the advert has none usable.
+    let gate = https_gate_for(host, node_name).or_else(|| https_gate_for(host, &info.node_name));
     let reached = match (&presented, &gate) {
         (Some(pem), Some(gate)) => answers_by_name(gate, pem).await,
         _ => false,
@@ -369,6 +381,32 @@ pub async fn secure_gate(host: &str, codex_home: &Path, node_id: &str, node_name
     }
     crate::proxy::trust_node_ca(presented.as_bytes());
     Ok(Secured::Https(gate))
+}
+
+/// Whether the machine that answered at an advertised address may stand for the advertised node:
+/// once the advertised id is pinned, only an answer with that same id may (the answer comes over
+/// TLS not verified yet, so the machine chooses the id it reports; another id would be pinned and
+/// trusted afresh).
+pub fn answers_as_advertised(advert_id: &str, advert_pinned: bool, answered_id: &str) -> bool {
+    !advert_pinned || advert_id == answered_id
+}
+
+/// A gate that would carry credentials in the clear: plain HTTP to another machine. Sign-in and
+/// account creation are refused before anything is typed or sent (the gate refuses them too, but
+/// only after the password crossed the network).
+pub fn plain_to_another_machine(gate: &str) -> bool {
+    let gate = gate.trim();
+    gate.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://")) && !crate::host_is_local(gate)
+}
+
+/// What a plain-HTTP answer about accounts counts for: a gate with accounts answers plain HTTP
+/// only on its own machine (§6), so "accounts" from another machine over plain HTTP is not the
+/// node's answer and gets no sign-in form.
+pub fn plain_answer_counted(gate: &str, answer: PlainAnswer) -> PlainAnswer {
+    match answer {
+        PlainAnswer::Accounts if plain_to_another_machine(gate) => PlainAnswer::HttpsRequired,
+        other => other,
+    }
 }
 
 /// Why a node with accounts stays on plain HTTP this session (said by [`start`]).
@@ -453,7 +491,7 @@ pub async fn start(gate: &str, codex_home: &Path, interactive: bool) -> anyhow::
         }
         accounts
     } else {
-        match plain_accounts(gate).await {
+        match plain_answer_counted(gate, plain_accounts(gate).await) {
             PlainAnswer::Accounts => true,
             PlainAnswer::HttpsRequired => {
                 eprintln!("{}", https_required_line(gate));
