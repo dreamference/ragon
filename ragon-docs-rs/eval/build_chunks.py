@@ -9,14 +9,23 @@ import os
 import re
 import sys
 import time
+from typing import Final
 
 D = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, D)
 import evallib  # noqa: E402
 
+# The argv index where the optional third argument (the tokenizer) starts:
+# arguments 1 and 2 are the required <pdf-engine> and <target-tokens>.
+TOKENIZER_ARGV_INDEX: Final[int] = 3
+
 engine, target = sys.argv[1], int(sys.argv[2])
-tokenizer = sys.argv[3] if len(sys.argv) > 3 else "intfloat/multilingual-e5-small"
-suffix = "" if len(sys.argv) <= 3 else "-" + tokenizer.split("/")[-1]
+tokenizer = (
+    sys.argv[TOKENIZER_ARGV_INDEX]
+    if len(sys.argv) > TOKENIZER_ARGV_INDEX
+    else "intfloat/multilingual-e5-small"
+)
+suffix = "" if len(sys.argv) <= TOKENIZER_ARGV_INDEX else "-" + tokenizer.split("/")[-1]
 root = f"{D}/corpus"
 raw = json.load(open(f"{D}/results/pdf-{engine}.json"))
 pdf_pages = {
