@@ -1162,6 +1162,32 @@ def test_without_image_search_the_turn_is_skipped_and_says_so(tmp_path, monkeypa
     assert not (tmp_path / "home").exists()
 
 
+def test_egress_audit_web_session_a_ask_that_never_completes_is_not_a_reply(
+    tmp_path, monkeypatch, capsys
+):
+    # `subprocess.run` raising `TimeoutExpired` around the untraced `web ask` is the web
+    # session's no-reply path: the session reports no answer, and the verdict says so.
+    _image_search_set_up(tmp_path, monkeypatch)
+    ragon = _web_stand_ins(tmp_path, monkeypatch, "pong")[0]
+    real_run = subprocess.run
+
+    def ask_times_out(argv, **kwargs):
+        # Only the untraced client's asks time out: the one the web session asks and the one the
+        # image turn asks; everything else (git, the tool probe) runs as it really would.
+        if len(argv) > 2 and argv[1] == "web" and argv[2] == "ask":
+            raise subprocess.TimeoutExpired(list(argv), 300)
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", ask_times_out)
+    code = EgressAudit.run(ragon_bin=str(ragon), vllm_host="http://localhost:8000", web=True)
+    out = capsys.readouterr().out
+    # The question timed out, so the session answered nothing: the verdict is trace failed
+    # for exactly that reason, and the image turn got no answer either.
+    assert code == 2 and "Egress audit: trace failed" in out
+    assert "the session produced no reply, so the trace shows nothing" in out
+    assert "Image search turn: no answer" in out
+
+
 def test_the_preview_page_reaches_for_the_internet_every_way_and_records_its_own_load():
     # DESKTOP_PARITY §5, Phase 3 item 4: the page `--app` opens in a preview tab must try each way
     # a page reaches out, so a pass means the preview's rules turned each away; it is on loopback
