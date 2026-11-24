@@ -124,6 +124,31 @@ def test_the_export_builds_from_the_committed_lockfile(stand_in_codex, tmp_path,
         CodexBrandedBuilder.prepare_source(str(stand_in_codex / "export"))
 
 
+def test_codex_branded_builder_prepare_source_raises_when_archive_has_no_stdout(
+    tmp_path, monkeypatch
+):
+    """prepare_source raises a RuntimeError when git archive has no stdout pipe."""
+
+    class _NoStdoutPopen:
+        """A Popen stand-in whose stdout is None (the guard at line 454)."""
+
+        def __init__(self, *args, **kwargs):
+            self.stdout = None
+
+        def wait(self):
+            return 0
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(builder_module.subprocess, "Popen", _NoStdoutPopen)
+    monkeypatch.setattr(CodexBrandedBuilder, "source_commit", classmethod(lambda cls: "a" * 40))
+    monkeypatch.setattr(builder_module, "CODEX_SUBMODULE_DIR", str(tmp_path))
+
+    with pytest.raises(RuntimeError, match="has no stdout"):
+        CodexBrandedBuilder.prepare_source(str(tmp_path / "export"))
+
+
 def _locked_names(lock_path):
     return {package["name"] for package in tomllib.loads(Path(lock_path).read_text())["package"]}
 
