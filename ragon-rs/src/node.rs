@@ -498,6 +498,8 @@ pub async fn resolve_host(interactive: bool) -> anyhow::Result<String> {
     let inputs = inputs();
     let resolution = resolve(&inputs, &MdnsBrowser);
     let missed = browse_missed(&resolution);
+    // The overlay name is not among the names the node's certificate covers: kept as it was.
+    let over_overlay = matches!(resolution, Resolution::Overlay { .. });
     let (node, state, remember, note) = match resolution {
         Resolution::Host(host) => {
             if on_own_port(&inputs) {
@@ -550,7 +552,7 @@ pub async fn resolve_host(interactive: bool) -> anyhow::Result<String> {
         remember_node(&node);
     }
     version_notice(&node);
-    let host = secured(node.model_url(), &node).await?;
+    let host = if over_overlay { node.model_url() } else { secured(node.model_url(), &node).await? };
     match state_verdict(&node, &state, answers(&host).await) {
         Ok(Some(line)) => eprintln!("{line}"),
         Ok(None) => {}
@@ -839,6 +841,9 @@ pub async fn run_cli(args: &[String]) -> i32 {
                 }
             };
             println!("Using node {} at {host}.", label(&node));
+            if let Some(why) = crate::auth::https_fallback() {
+                println!("{why}");
+            }
             if !reachable {
                 println!("Its model server does not answer right now; ragon will wait for it.");
             }

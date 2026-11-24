@@ -250,6 +250,11 @@ pub fn https_required_line(gate: &str) -> String {
 /// Why [`secure_gate`] kept a node with accounts on plain HTTP, said once by [`start`].
 static HTTPS_FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+/// Why [`secure_gate`] kept a node with accounts on plain HTTP in this process, if it did.
+pub fn https_fallback() -> Option<&'static str> {
+    HTTPS_FALLBACK.get().map(String::as_str)
+}
+
 /// A host label (`dgx-a`): what a node's name must be before `<name>.local` is built from it.
 pub fn is_host_label(name: &str) -> bool {
     !name.is_empty()
