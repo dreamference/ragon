@@ -1468,6 +1468,160 @@ def test_only_a_trailing_deleted_suffix_is_dropped(monkeypatch):
     assert NightShiftHost.executable_of("4") == ""
 
 
+def _fake_proc(tmp_path, procs):
+    """A fake `/proc` holding only the given entries, plus a `Path` remap onto it.
+
+    `procs` maps the pid's name to {"cmdline": bytes, "environ": bytes, "exe": str}; the `exe`
+    value is an absolute path to a real binary. A pid without an exe falls out of
+    `executable_of` like a process that vanished while the /proc directory was read.
+
+    Args:
+        tmp_path: The test's scratch folder.
+        procs: The entries, keyed by the pid's name.
+
+    Returns:
+        callable: A `Path` factory that remaps `/proc` onto the fake tree and leaves every
+            other path as it is.
+    """
+    fake = tmp_path / "proc"
+    fake.mkdir()
+    for name, entry in procs.items():
+        directory = fake / name
+        directory.mkdir()
+        for file_name in ("cmdline", "environ"):
+            if file_name in entry:
+                (directory / file_name).write_bytes(entry[file_name])
+        if "exe" in entry:
+            (directory / "exe").symlink_to(entry["exe"])
+
+    def fake_path(root, *parts):
+        joined = "/".join([str(root), *[str(part) for part in parts]])
+        if joined == "/proc" or joined.startswith("/proc/"):
+            return fake / joined[len("/proc/") :].lstrip("/")
+        return Path(joined)
+
+    return fake_path
+
+
+def _make_binary(tmp_path, name):
+    """A stand-in executable under the test's scratch folder.
+
+    Args:
+        tmp_path: The test's scratch folder.
+        name: The binary's file name.
+
+    Returns:
+        str: Its absolute path.
+    """
+    binary = tmp_path / "bin" / name
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    return str(binary)
+
+
+def test_night_shift_host_interactive_ragon_pids_counts_only_a_users_tui(monkeypatch, tmp_path):
+    # A TUI and a prompt as first argument are sessions; a subcommand that runs without a
+    # person is not.
+    ragon = _make_binary(tmp_path, "ragon")
+    fake_path = _fake_proc(
+        tmp_path,
+        {
+            "4242": {
+                "cmdline": b"ragon\0",
+                "environ": b"HOME=/home/u\0",
+                "exe": ragon,
+            },
+            "4243": {
+                "cmdline": b"ragon\0fix the bug\0",
+                "environ": b"",
+                "exe": ragon,
+            },
+            "4244": {
+                "cmdline": b"ragon\0exec\0",
+                "environ": b"",
+                "exe": ragon,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        NightShiftHost, "busy_app_server_pids", classmethod(lambda cls, ragon_bin: [])
+    )
+    monkeypatch.setattr("dreamference.night_shift.night_shift_host.Path", fake_path)
+    assert sorted(NightShiftHost.interactive_ragon_pids(ragon)) == [4242, 4243]
+
+
+def test_night_shift_host_interactive_ragon_pids_skips_a_vanished_and_a_wrong_binary(
+    monkeypatch, tmp_path
+):
+    # An entry that dies between being listed and being read is skipped (the /proc read raises
+    # OSError), as are one that runs a program that is not the installed `ragon` and one whose
+    # `argv[0]` is not the ragon or codex name.
+    ragon = _make_binary(tmp_path, "ragon")
+    other = _make_binary(tmp_path, "other")
+    fake_path = _fake_proc(
+        tmp_path,
+        {
+            "4242": {},  # no exe: it vanished, so `executable_of` cannot read it
+            "4243": {
+                "cmdline": b"other\0",
+                "environ": b"",
+                "exe": other,
+            },
+            "4244": {
+                "cmdline": b"codex\0",
+                "environ": b"",
+                "exe": other,
+            },
+            # 4245: exe matches ragon but argv[0] is not ragon or codex -> line 395
+            "4245": {
+                "cmdline": b"some-other-name\0",
+                "environ": b"",
+                "exe": ragon,
+            },
+        },
+    )
+    # Make 4246 have an exe that matches ragon but no cmdline file (OSError on read -> 391-392)
+    proc_dir = tmp_path / "proc"
+    dir4246 = proc_dir / "4246"
+    dir4246.mkdir()
+    (dir4246 / "exe").symlink_to(ragon)
+    # no cmdline, no environ -> read_bytes raises OSError
+    monkeypatch.setattr(
+        NightShiftHost, "busy_app_server_pids", classmethod(lambda cls, ragon_bin: [])
+    )
+    monkeypatch.setattr("dreamference.night_shift.night_shift_host.Path", fake_path)
+    assert NightShiftHost.interactive_ragon_pids(ragon) == []
+
+
+def test_night_shift_host_interactive_ragon_pids_ignores_its_own_sessions_and_merges_busy_servers(
+    monkeypatch, tmp_path
+):
+    # A session started by the night run itself (its marker environment) is not the user's, and
+    # the busy app-servers are merged in; a pid found both ways is listed only once.
+    ragon = _make_binary(tmp_path, "ragon")
+    fake_path = _fake_proc(
+        tmp_path,
+        {
+            "4242": {
+                "cmdline": b"ragon\0",
+                "environ": b"RAGON_NIGHT_RUN=1\0",
+                "exe": ragon,
+            },
+            "4243": {
+                "cmdline": b"codex\0",
+                "environ": b"",
+                "exe": ragon,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        NightShiftHost, "busy_app_server_pids", classmethod(lambda cls, ragon_bin: [4243, 4299])
+    )
+    monkeypatch.setattr("dreamference.night_shift.night_shift_host.Path", fake_path)
+    assert NightShiftHost.interactive_ragon_pids(ragon) == [4243, 4299]
+
+
 def test_sizes_parse():
     assert NightShiftHost.parse_size("8G") == 8 * 1024**3
     assert NightShiftHost.parse_size("512M") == 512 * 1024**2
