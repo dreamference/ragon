@@ -720,6 +720,22 @@ def test_adapter_verifier_file_digest_returns_empty_string_when_the_file_cannot_
     assert AdapterVerifier.file_digest(tmp_path / "missing.bin") == ""
 
 
+def test_adapter_verifier_json_reads_a_json_object_file_and_refuses_everything_else(tmp_path):
+    path = tmp_path / "adapter_config.json"
+    path.write_text(json.dumps({"r": 16}), encoding="utf-8")
+    assert AdapterVerifier._json(path) == {"r": 16}
+    for record, reason in (
+        (b"\xff\xfe", "not JSON"),
+        (b"not json at all", "not JSON"),
+        (b"[1, 2]", "not a JSON object"),
+    ):
+        path.write_bytes(record)
+        with pytest.raises(ValueError, match=reason):
+            AdapterVerifier._json(path)
+    with pytest.raises(ValueError, match=r"missing\.json is missing"):
+        AdapterVerifier._json(tmp_path / "missing.json")
+
+
 def test_a_cached_base_digest_is_kept_per_revision(tmp_path):
     first, second = tmp_path / "first", tmp_path / "second"
     for snapshot, text in ((first, "one"), (second, "two")):
