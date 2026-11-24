@@ -2569,6 +2569,68 @@ def test_status_and_clean_touch_only_the_benchmarks_own_things(bench, capsys):
     assert ["ps", "-aq", "--filter", "label=ragon.swe-bench.run=r1"] in bench["docker"].calls
 
 
+def test_swe_bench_command_dispatch_lists_routes_its_three_commands(monkeypatch):
+    import argparse
+
+    from dreamference.swe_bench.swe_bench_image_pins import SweBenchImagePins
+
+    calls = []
+    monkeypatch.setattr(
+        SweBenchCommand,
+        "build_images",
+        classmethod(lambda cls, args: calls.append(("build", args)) or 5),
+    )
+    monkeypatch.setattr(
+        SweBenchImagePins,
+        "review",
+        classmethod(lambda cls, accept, new: calls.append(("pin", accept, new)) or 6),
+    )
+    monkeypatch.setattr(
+        SweBenchCommand,
+        "shard",
+        classmethod(
+            lambda cls, source, count, out_dir=None, dataset="verified", balance_by=None: (
+                calls.append(("shard", source, count, out_dir, dataset, balance_by)) or 7
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        SweBenchShardMerge,
+        "merge",
+        classmethod(lambda cls, name, runs: calls.append(("merge", name, runs)) or 8),
+    )
+    parser = argparse.ArgumentParser()
+    SweBenchCommand.add_parser(parser.add_subparsers(dest="command"))
+    build_args = parser.parse_args(["swe-bench", "build-images", "--dataset", "verified"])
+    assert SweBenchCommand.dispatch(build_args) == 5
+    args = parser.parse_args(["swe-bench", "pin-images", "--accept", "a/b", "--new"])
+    assert SweBenchCommand.dispatch(args) == 6
+    args = parser.parse_args(
+        [
+            "swe-bench",
+            "shard",
+            "tasks.txt",
+            "--shards",
+            "2",
+            "--out-dir",
+            "out",
+            "--dataset",
+            "lite",
+            "--balance-by",
+            "fresh.txt",
+        ]
+    )
+    assert SweBenchCommand.dispatch(args) == 7
+    args = parser.parse_args(["swe-bench", "merge", "m", "s1", "s2"])
+    assert SweBenchCommand.dispatch(args) == 8
+    assert calls == [
+        ("build", build_args),
+        ("pin", ["a/b"], True),
+        ("shard", Path("tasks.txt"), 2, Path("out"), "lite", [Path("fresh.txt")]),
+        ("merge", "m", ["s1", "s2"]),
+    ]
+
+
 # -- the system prompt (specs/DREAMFERENCE_RAGON_PROMPT.md §6.2) ---------------------------------
 
 
