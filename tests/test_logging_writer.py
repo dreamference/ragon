@@ -249,6 +249,21 @@ def test_mistyped_and_undeclared_values_are_never_written():
     assert "free text" not in line and "n=[number] session=[id] finish=other" in line
 
 
+def test_log_line_formatter_number_writes_numbers_and_masks_non_finite_floats():
+    number = LogLineFormatter.number
+    assert number(0) == "0"
+    assert number(-12) == "-12"
+    assert number(3.14159) == "3.142"
+    assert number(2.0) == "2"
+    assert number(0.5) == "0.5"
+    assert number(1.0) == "1"
+    assert number(float("inf")) == "[number]"
+    assert number(float("-inf")) == "[number]"
+    assert number(float("nan")) == "[number]"
+    assert number(True) == "[number]"
+    assert number("3") == "[number]"
+
+
 def test_a_thousand_lines_of_one_message_give_ten_and_a_suppressed_line():
     writer, sink = _writer("info")
     for _ in range(1000):
