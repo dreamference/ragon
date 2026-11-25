@@ -326,7 +326,9 @@ def test_changes_to_ragon_web_carry_its_origin_and_reads_do_not(
     ]
 
 
-def test_the_first_run_screen_answers_the_line_prompts_and_the_sdk_python_is_the_operators() -> None:
+def test_the_first_run_screen_answers_the_line_prompts_and_the_sdk_python_is_the_operators() -> (
+    None
+):
     source = HELPER.read_text()
     for prompt in ("Choose 1-4: ", "Username: ", "Confirm password: ", "[y/N] "):
         assert prompt in source, prompt
