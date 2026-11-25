@@ -177,7 +177,7 @@ step E0a "install: the build is on both nodes" "$PRIMARY" 'ragon-admin node user
 step E0b "migrate: the primary question answered, the old tokens migrated" "$PRIMARY" 'ragon-admin node primary --self && ragon-admin node migrate'
 step E0c "the secondary points at the primary" "$SECONDARY" "ragon-admin node primary $PRIMARY"
 ON_TTY=1 step E0d "the test user is created and signs in (ragon login --password-stdin)" "$PRIMARY" \
-  "{ cat $RUN/pass; cat $RUN/pass; } | ragon-admin node user add $TEST_USER && $H ca $RUN && $H signin $RUN"
+  "{ cat $RUN/pass; cat $RUN/pass; } | setsid -w ragon-admin node user add $TEST_USER && $H ca $RUN && $H signin $RUN"
 driven E1 "first-run screen through a pty: sign in, and create an account with an empty password" "$PRIMARY" "$H pty $RUN"
 ON_TTY=1 step E2 "login status shows the user and the issuer" "$PRIMARY" "$SESSION ragon whoami | grep -qF $TEST_USER"
 step E3 "sessions lists this device" "$PRIMARY" "$SESSION ragon sessions"
@@ -206,10 +206,30 @@ else
   record E14 "$e14" "unauthenticated requests are refused (401) and counted on both nodes (refusals rose by $rise, at least $REFUSALS_MIN)"
 fi
 
+# E13: rc.2 refuses a revocation made on a secondary, so the key is minted and revoked on the
+# primary. A fresh key the secondary accepts before its revocation must be refused there after one
+# cache TTL (the gate caches a verdict for 60 s, as §15). The key moves only through the staged file.
+e13() {
+  local text="a fresh key minted on the primary is accepted by the secondary, revoked on the primary, and refused by the secondary within ${REVOKE_REFUSAL_SECONDS_MAX} s"
+  if [ "$DRY" = 1 ]; then
+    record E13 plan "$text (on $PRIMARY: $H mint-fresh $RUN, $H revoke-fresh $RUN; on $SECONDARY: $H key-accepted $RUN, then $H key-refused $RUN after the TTL)"
+    return
+  fi
+  local ok=1
+  run "E13-mint" "$PRIMARY" "$H mint-fresh $RUN"; [ "$RC" = 0 ] || ok=0
+  if [ "$ok" = 1 ]; then
+    on "$PRIMARY" "cat $RUN/revoke-key" < /dev/null | put "$SECONDARY" revoke-key || ok=0
+    run "E13-accepted" "$SECONDARY" "$H ca $RUN && $H key-accepted $RUN"; [ "$RC" = 0 ] || ok=0
+    run "E13-revoke" "$PRIMARY" "$H revoke-fresh $RUN"; [ "$RC" = 0 ] || ok=0
+    run "E13" "$SECONDARY" "sleep ${REVOKE_REFUSAL_SECONDS_MAX} && $H ca $RUN && $H key-refused $RUN"; [ "$RC" = 0 ] || ok=0
+  fi
+  if [ "$ok" = 1 ]; then record E13 pass "$text"; else record E13 FAIL "$text"; fi
+}
+
 # --- The secondary.
 ON_TTY=1 step E12 "a request through the secondary reaches the engine" "$SECONDARY" \
   "$H ca $RUN && $H signin $RUN && $SESSION ragon exec --skip-git-repo-check \"say ok\""
-step E13 "a revoked token is refused within ${REVOKE_REFUSAL_SECONDS_MAX} s on the secondary (WEAK: revoke and wait, the refusal is not checked)" "$SECONDARY" "ragon-admin node user key $TEST_USER --revoke e2e-sdk && sleep ${REVOKE_REFUSAL_SECONDS_MAX}"
+e13
 
 # --- Last on the primary: logout ends this session, then logout --all ends every session.
 ON_TTY=1 step E4 "logout ends this session; logout --all ends every session (the run session and a second password-grant session both get invalid_grant on refresh)" "$PRIMARY" \

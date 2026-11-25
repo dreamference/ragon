@@ -427,6 +427,53 @@ def cmd_revoke_key(run: Run) -> None:
     )
 
 
+FRESH_KEY = "e2e-revoke"
+
+
+def cmd_mint_fresh(run: Run) -> None:
+    """E13 on the primary: mints a fresh key for the test user.
+
+    The key is never printed; it goes to a mode-600 file the secondary reads (`key-accepted`).
+    """
+    proc = admin("node", "user", "key", run.user, "--name", FRESH_KEY)
+    found = re.search(r"sk-ragon-[A-Za-z0-9_\-]+", proc.stdout)
+    check(
+        proc.returncode == 0 and found is not None, "ragon-admin node user key prints a fresh key"
+    )
+    run.write_secret("revoke-key", found.group(0))
+
+
+def cmd_revoke_fresh(run: Run) -> None:
+    """E13 on the primary: revokes the fresh key minted by `mint-fresh`."""
+    check(
+        admin("node", "user", "key", run.user, "--revoke", FRESH_KEY).returncode == 0,
+        "the fresh key is revoked on the primary",
+    )
+
+
+def cmd_key_accepted(run: Run) -> None:
+    """E13 on the secondary: the fresh key is accepted before its revocation (200 on the gate)."""
+    status, _, _ = run.http("GET", f"{GATE}/v1/models", bearer=run.secret("revoke-key"))
+    check(
+        status == 200,  # noqa: PLR2004
+        f"the fresh key is accepted through this node before revocation ({status})",
+    )
+
+
+def cmd_key_refused(run: Run) -> None:
+    """E13 on the secondary, after the revocation and one cache TTL: the key gets 401."""
+    status, answer, _ = run.http("GET", f"{GATE}/v1/models", bearer=run.secret("revoke-key"))
+    code = (
+        answer.get("error", {}).get("code")
+        if isinstance(answer, dict) and isinstance(answer.get("error"), dict)
+        else None
+    )
+    check(
+        status == 401 and error_shape(answer) and code == "invalid_api_key",  # noqa: PLR2004  # noqa: PLR2004
+        f"the revoked key is refused with 401 through this node ({status}, {code})",
+    )
+
+
 def cmd_sdk(run: Run) -> None:
     """The vendor's SDK against the node: list, one respond, one stream, one error."""
     import httpx
@@ -719,9 +766,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def device_cookie(run: Run) -> str:
+def session_cookie(run: Run) -> str:
     """This machine's sign-in to ragon web: the one-time link `ragon web open` prints, then the
-    `ragon_device` cookie its redirect sets (never printed)."""
+    `ragon_session` cookie its redirect sets (never printed). Spec: DREAMFERENCE_RAGON_ASK.md
+    ("the URL is exchanged for a session cookie"); `ragon_device` is for a paired device."""
     proc = subprocess.run(
         ["ragon", "web", "open", "--print-url"], capture_output=True, text=True, timeout=60
     )
@@ -731,7 +779,7 @@ def device_cookie(run: Run) -> str:
     status, _, headers = run.http("GET", f"{WEB}{link.path}?{link.query}", opener=opener)
     pair = headers.get("Set-Cookie", "").split(";")[0]
     check(
-        status in (302, 303) and pair.startswith("ragon_device="),
+        status in (302, 303) and pair.startswith("ragon_session="),
         f"the one-time link sets the sign-in cookie ({status})",
     )
     return pair
@@ -744,7 +792,7 @@ def cmd_web(run: Run) -> None:
         check(status == 200, f"ragon web {path} answers 200")
     status, _, _ = run.http("GET", f"{WEB}/account")
     check(status == 401, f"ragon web /account answers 401 without the sign-in cookie ({status})")
-    cookie = device_cookie(run)
+    cookie = session_cookie(run)
     for path in ("/account", "/account.js"):
         status, _, _ = run.http("GET", WEB + path, headers={"Cookie": cookie})
         check(status == 200, f"ragon web {path} answers 200 with the sign-in cookie ({status})")
@@ -779,6 +827,10 @@ COMMANDS = {
     "device": cmd_device,
     "key": cmd_key,
     "revoke-key": cmd_revoke_key,
+    "mint-fresh": cmd_mint_fresh,
+    "revoke-fresh": cmd_revoke_fresh,
+    "key-accepted": cmd_key_accepted,
+    "key-refused": cmd_key_refused,
     "sdk": cmd_sdk,
     "forgejo": cmd_forgejo,
     "night": cmd_night,

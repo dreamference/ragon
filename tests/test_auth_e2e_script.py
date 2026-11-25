@@ -238,13 +238,32 @@ def test_the_whoami_steps_run_on_a_pty(tmp_path: Path) -> None:
     assert not any(line.endswith("[tty]") for line in lines if "ragon-admin node user list" in line)
 
 
-def test_e13_revokes_a_key_of_the_test_user(tmp_path: Path) -> None:
-    _, calls, _ = _real(tmp_path)
+def test_e13_revokes_a_fresh_key_on_the_primary_and_checks_the_secondary(tmp_path: Path) -> None:
+    done, calls, _ = _real(tmp_path)
     lines = calls.splitlines()
-    revoke = [line for line in lines if "--revoke e2e-sdk" in line and "sleep 60" in line]
-    assert len(revoke) == 1
-    assert revoke[0].startswith("sec\t") and "node user key e2e-" in revoke[0]
-    assert "user key e2e " not in calls
+    # rc.2 refuses a revocation on a secondary: the revoke is on the primary, of a key minted there.
+    revoke = [line for line in lines if "revoke-fresh" in line]
+    assert len(revoke) == 1 and revoke[0].startswith("prim\t")
+    assert "--revoke e2e-sdk" not in calls and "user key e2e " not in calls
+    accepted = [line for line in lines if "key-accepted" in line]
+    refused = [line for line in lines if "key-refused" in line]
+    assert len(accepted) == 1 and accepted[0].startswith("sec\t")
+    assert len(refused) == 1 and refused[0].startswith("sec\t")
+    assert "sleep 60" in refused[0]
+    assert "[pass] E13:" in done.stdout
+
+
+def test_e0d_reads_the_password_without_a_tty(tmp_path: Path) -> None:
+    # user add reads the password from /dev/tty when it has one; setsid -w takes it from the pipe.
+    _, calls, _ = _real(tmp_path)
+    adds = [line for line in calls.splitlines() if "node user add" in line]
+    assert len(adds) == 1 and "setsid -w ragon-admin node user add" in adds[0]
+
+
+def test_e8_expects_the_session_cookie_the_sign_in_link_sets() -> None:
+    text = HELPER.read_text()
+    assert 'startswith("ragon_session=")' in text
+    assert "ragon_device=" not in text.split("def cmd_web", 1)[0].split("def session_cookie", 1)[-1]
 
 
 def test_a_red_fake_run_still_removes_the_test_user(tmp_path: Path) -> None:
