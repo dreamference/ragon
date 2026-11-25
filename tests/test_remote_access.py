@@ -1004,6 +1004,18 @@ def test_node_label_reads_managements_name_for_the_node(monkeypatch):
     assert RemoteAccess.node_label(BOX, "tok", "nobody", seconds=0) is None
 
 
+def test_remote_access_node_label_waits_until_the_peer_appears(monkeypatch):
+    answers = iter([[], PEERS])
+    sleeps = []
+    monkeypatch.setattr(RemoteControlPlane, "peers", classmethod(lambda cls, d, t: next(answers)))
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    assert (
+        RemoteAccess.node_label(BOX, "tok", f"ragon-{NODE_ID}")
+        == f"ragon-{NODE_ID}.netbird.selfhosted"
+    )
+    assert sleeps == [2]
+
+
 def test_a_renewal_leaves_one_node_token(monkeypatch):
     requests = []
 
