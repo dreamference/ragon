@@ -270,7 +270,8 @@ fn runner_lock(dir: &Path) -> Result<Option<File>, String> {
     std::fs::create_dir_all(dir).map_err(|error| format!("could not create {}: {error}", dir.display()))?;
     let mut file = OpenOptions::new()
         .create(true)
-        .append(true)
+        .truncate(false)
+        .write(true)
         .open(dir.join("runner.lock"))
         .map_err(|error| format!("could not open the runner lock: {error}"))?;
     match file.try_lock() {
@@ -1304,7 +1305,8 @@ fn git(cwd: &Path, args: &[&str]) -> Option<String> {
 }
 
 fn git_checked(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let mut all = vec!["-c", "core.hooksPath=", "-c", "commit.gpgSign=false"];
+    // As the Python runner's NO_HOOKS: the hooks are the agent's to write, and none runs on the host.
+    let mut all = vec!["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false"];
     all.extend_from_slice(args);
     let output = ragon_safegit::output(cwd, &all).map_err(|error| error.to_string())?;
     if output.status.success() {

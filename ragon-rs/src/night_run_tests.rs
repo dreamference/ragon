@@ -2,6 +2,7 @@
 //! that plays one scripted turn per `exec` call and runs `sandbox -- cmd` as given.
 
 use super::*;
+#[cfg(unix)]
 use crate::night::Request;
 
 fn scratch(name: &str) -> PathBuf {
@@ -66,12 +67,14 @@ echo '{"type":"turn.completed"}'
     (repo, root.join("night"), fake)
 }
 
+#[cfg(unix)]
 fn queue(dir: &Path, repo: &Path, test: Option<&str>, task: &str) -> String {
     let request = Request::Add { test: test.map(str::to_string), on: None, best_of: None, task: task.to_string() };
     let lines = night::run(dir, request, repo);
     lines[0].split_whitespace().nth(1).unwrap_or_default().to_string()
 }
 
+#[cfg(unix)]
 fn options(fake: &Path) -> Options {
     let mut options = Options::new(fake.to_path_buf());
     options.task_timeout = Duration::from_secs(60);
@@ -79,10 +82,12 @@ fn options(fake: &Path) -> Options {
     options
 }
 
+#[cfg(unix)]
 fn task(dir: &Path, id: &str) -> Value {
     night::read_task(&dir.join("tasks").join(format!("{id}.json"))).unwrap_or_default()
 }
 
+#[cfg(unix)]
 fn branches(repo: &Path) -> String {
     git(repo, &["branch", "--list", "night/*"]).unwrap_or_default()
 }
@@ -192,13 +197,15 @@ fn a_held_runner_lock_stops_a_second_run() {
     assert!(held.is_some());
     let outcome = run(&dir, &Options::new(PathBuf::from("ragon")));
     assert_eq!((outcome.lines, outcome.code), (vec![HELD.to_string()], 1));
-    assert_eq!(read(&dir.join("runner.lock")), HOLDER);
     if let Some(held) = held {
         // Unlocked, not only closed: a test forking beside this one may hold a copy of the descriptor.
         let _ = held.unlock();
     }
+    // Read once it is let go: on Windows a held lock keeps other handles from reading the file.
+    assert_eq!(read(&dir.join("runner.lock")), HOLDER);
     let outcome = run(&dir, &Options::new(PathBuf::from("ragon")));
     assert_eq!(outcome.lines, vec!["Nothing queued.".to_string()]);
+    assert_eq!(read(&dir.join("runner.lock")), HOLDER);
 }
 
 #[test]
