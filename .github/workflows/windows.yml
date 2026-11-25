@@ -81,6 +81,35 @@ jobs:
             cp -r "ragon-rs/$crate" "$RUNNER_TEMP/$crate"
             (cd "$RUNNER_TEMP/$crate" && cargo test --release)
           done
+      # The state directory's ACLs (specs/DREAMFERENCE_WINDOWS_NODE.md §4.2): the table in the node
+      # locator is applied to a temporary folder with three throwaway local accounts, then the
+      # `icacls` listing of every entry is compared with it.
+      - name: Check the state directory's ACLs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'state-acl'
+          $names = 'RagonCiSvc', 'RagonCiJob', 'RagonCiSbx'
+          try {
+            foreach ($n in $names) {
+              $pw = ConvertTo-SecureString ([guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force
+              New-LocalUser -Name $n -Password $pw -AccountNeverExpires | Out-Null
+            }
+            $env:RAGON_STATE_SERVICE = 'RagonCiSvc'
+            $env:RAGON_STATE_JOB = 'RagonCiJob'
+            $env:RAGON_STATE_SANDBOX = 'RagonCiSbx'
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory $dir | Out-Null
+            Push-Location "$env:RUNNER_TEMP/node-locator"
+            cargo run --release --example state_acl -- apply $dir
+            if ($LASTEXITCODE) { throw 'apply failed' }
+            cargo run --release --example state_acl -- check $dir
+            if ($LASTEXITCODE) { throw 'the ACLs differ from the table' }
+            Pop-Location
+          } finally {
+            foreach ($n in $names) { Remove-LocalUser -Name $n -ErrorAction SilentlyContinue }
+            Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          }
       - name: Test the web commands
         working-directory: ragon-web-rs
         run: cargo test --release --locked
