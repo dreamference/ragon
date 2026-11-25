@@ -173,6 +173,26 @@ def test_the_reader_asks_in_the_c_locale_and_drops_a_failure(monkeypatch):
     assert WifiPowerSave.radio_power_save("wlP9s9") is None
 
 
+def test_wifi_power_save_read_gives_up_when_the_reading_fails(monkeypatch):
+    # The reading itself dies (an OSError out of spawn, or a timeout the run raises): the
+    # reader says nothing was read instead of letting the failure up.
+    monkeypatch.setattr(WifiPowerSave, "_read", REAL_READ)
+    monkeypatch.setattr(
+        wifi_power_save.shutil, "which", lambda name, path=None: "/usr/sbin/" + name
+    )
+
+    def run(argv, **kwargs):
+        if "code" not in seen:
+            raise OSError(1, "iw died before it could answer")
+        raise subprocess.SubprocessError("the reading timed out")
+
+    seen = {}
+    monkeypatch.setattr(wifi_power_save.subprocess, "run", run)
+    assert WifiPowerSave.radio_power_save("wlP9s9") is None
+    seen["code"] = 1
+    assert WifiPowerSave.radio_power_save("wlP9s9") is None
+
+
 def test_wifi_power_save_radio_power_save_unanswered_output_says_nothing(monkeypatch):
     # iw answers with a row that is neither `: on` nor `: off`: the radio cannot say.
     monkeypatch.setattr(WifiPowerSave, "_read", classmethod(lambda cls, argv: "Power save:\n"))
