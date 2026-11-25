@@ -1,8 +1,9 @@
 //! The Mac node's power settings (specs/DREAMFERENCE_MAC_NODE.md §4.2): on mains no system sleep,
 //! start after a power failure, wake for network access (`pmset -c sleep 0 autorestart 1 womp 1`);
 //! display sleep is left alone. Set once at install, restored at uninstall from the values saved
-//! before the change. On battery the supervisor does not fight sleep; `server status` says
-//! `power: battery`.
+//! before the change. On battery (a laptop, MN6) the supervisor does not fight sleep: it reports
+//! `state: battery` instead of `healthy` (the node no longer advertises ready) and closes admission
+//! for new sessions below [`MIN_CHARGE_PCT`]; `server status` says `power: battery`.
 //!
 //! Everything here is pure (argument lists and parsers) and is tested on every platform; running
 //! `pmset` (root for a change, any user for a reading) is in src/cli.rs, macOS only.
@@ -110,6 +111,51 @@ pub fn parse_batt(text: &str) -> PowerSource {
     }
 }
 
+/// Below this charge (percent) a node on battery admits no new sessions [E: spec §4.2].
+pub const MIN_CHARGE_PCT: u8 = 20;
+/// How often the supervisor reads `pmset -g batt` (any user may).
+pub const POLL_S: u64 = 60;
+
+/// The internal battery's charge from `pmset -g batt`'s second line
+/// (` -InternalBattery-0 (id=1)\t81%; discharging; ...`); `None` on a desktop or an unreadable line.
+pub fn parse_charge(text: &str) -> Option<u8> {
+    let line = text.lines().find(|l| l.contains("InternalBattery"))?;
+    line.split(|c: char| c.is_whitespace() || c == ';')
+        .find_map(|word| word.strip_suffix('%')?.parse::<u8>().ok())
+        .filter(|pct| *pct <= 100)
+}
+
+/// The node on battery: its charge, when the Mac says, and whether it admits new sessions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Battery {
+    pub charge: Option<u8>,
+    pub admitting: bool,
+}
+
+/// `None` on mains or when the source is unknown (nothing changes); on battery or UPS power the
+/// charge and admission. An unknown charge (a desktop on a UPS) never closes admission.
+pub fn battery(batt: &str, min_charge: u8) -> Option<Battery> {
+    if parse_batt(batt) != PowerSource::Battery {
+        return None;
+    }
+    let charge = parse_charge(batt);
+    Some(Battery { charge, admitting: charge.is_none_or(|pct| pct >= min_charge) })
+}
+
+/// The status file on battery: `state: healthy` becomes `state: battery` (the engine still serves,
+/// the node no longer says ready); `charge` and `admission` follow the shared keys. Any other state
+/// (starting, backoff, refused) is left as it is: it says more than the power source.
+pub fn status_on_battery(status: &str, battery: &Battery) -> String {
+    let mut out: String = status
+        .lines()
+        .map(|line| if line == "state: healthy" { "state: battery".to_string() } else { line.to_string() })
+        .map(|line| line + "\n")
+        .collect();
+    out.push_str(&format!("charge: {}\n", battery.charge.map(|c| c.to_string()).unwrap_or_else(|| "none".into())));
+    out.push_str(&format!("admission: {}\n", if battery.admitting { "open" } else { "closed" }));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +215,42 @@ displaysleep         10\n";
         assert_eq!(parse_batt("Now drawing from 'UPS Power'\n"), PowerSource::Battery);
         assert_eq!(parse_batt(""), PowerSource::Unknown);
         assert_eq!(PowerSource::Battery.as_str(), "battery");
+    }
+
+    const ON_BATTERY: &str = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=21823587)\t81%; discharging; 4:02 remaining present: true\n";
+    const LOW: &str = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=21823587)\t12%; discharging; 0:41 remaining present: true\n";
+    const CHARGING: &str = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=21823587)\t9%; charging; 2:10 remaining present: true\n";
+    const UPS: &str = "Now drawing from 'UPS Power'\n";
+
+    #[test]
+    fn the_charge_is_read_from_the_internal_battery_line() {
+        assert_eq!(parse_charge(ON_BATTERY), Some(81));
+        assert_eq!(parse_charge(LOW), Some(12));
+        assert_eq!(parse_charge(UPS), None, "a desktop has no internal battery");
+        assert_eq!(parse_charge(" -InternalBattery-0 (id=1)\t250%; x\n"), None);
+        assert_eq!(parse_charge(""), None);
+    }
+
+    #[test]
+    fn admission_closes_only_on_battery_below_the_threshold() {
+        assert_eq!(battery(ON_BATTERY, MIN_CHARGE_PCT), Some(Battery { charge: Some(81), admitting: true }));
+        assert_eq!(battery(LOW, MIN_CHARGE_PCT), Some(Battery { charge: Some(12), admitting: false }));
+        assert_eq!(battery(CHARGING, MIN_CHARGE_PCT), None, "on mains a low charge changes nothing");
+        assert_eq!(battery(UPS, MIN_CHARGE_PCT), Some(Battery { charge: None, admitting: true }));
+        assert_eq!(battery("", MIN_CHARGE_PCT), None, "an unknown source changes nothing");
+        assert_eq!(battery(LOW, 12).map(|b| b.admitting), Some(true), "the threshold itself admits");
+    }
+
+    #[test]
+    fn the_status_on_battery() {
+        let status = "name: ragon-node\nstate: healthy\nengine_pid: 4\n";
+        let low = Battery { charge: Some(12), admitting: false };
+        assert_eq!(
+            status_on_battery(status, &low),
+            "name: ragon-node\nstate: battery\nengine_pid: 4\ncharge: 12\nadmission: closed\n"
+        );
+        let ups = Battery { charge: None, admitting: true };
+        let starting = "name: ragon-node\nstate: starting\n";
+        assert_eq!(status_on_battery(starting, &ups), "name: ragon-node\nstate: starting\ncharge: none\nadmission: open\n");
     }
 }

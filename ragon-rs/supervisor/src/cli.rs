@@ -8,7 +8,9 @@
 //!   LaunchDaemon), otherwise a detached `run` with the same options; `stop` stops the service,
 //!   otherwise asks the running supervisor to stop through a `stop` file in the state directory.
 //! - `status` prints stable `key: value` lines (see [`status_report`]); exit 0 when healthy, 3 not.
-//!   On macOS one more line follows the shared ones: `power: mains|battery|unknown`.
+//!   On macOS one more line follows the shared ones: `power: mains|battery|unknown`. On battery the
+//!   state of a serving engine is `battery` (exit 0 too) and `charge` and `admission` follow
+//!   `updated` (src/macos_power.rs).
 //! - `install` / `uninstall` (administrator / root): on Windows the service under
 //!   `NT SERVICE\ragon-node`, a virtual account that is not an administrator; on macOS the
 //!   LaunchDaemon `ai.dreamference.ragon-node` as the role account `_ragon` (src/macos_launchd.rs),
@@ -247,19 +249,55 @@ pub fn supervise(opts: &Options, stop: &AtomicBool) -> i32 {
     }
     let mut sup = Supervisor::new(engine, probe, policy);
     let me = std::process::id();
+    let mut power = PowerWatch::default();
     loop {
         if stop.load(Ordering::SeqCst) || stop_file.exists() {
             sup.stop();
             let _ = std::fs::remove_file(&stop_file);
-            write_status(opts, &url, &sup.snapshot(Instant::now()), None);
+            write_status(opts, &url, &sup.snapshot(Instant::now()), None, None);
             return 0;
         }
         let wait = sup.tick(Instant::now());
-        write_status(opts, &url, &sup.snapshot(Instant::now()), Some(me));
+        let battery = power.poll(Instant::now());
+        write_status(opts, &url, &sup.snapshot(Instant::now()), Some(me), battery.as_ref());
         let due = Instant::now() + wait;
         while Instant::now() < due && !stop.load(Ordering::SeqCst) && !stop_file.exists() {
             std::thread::sleep(due.saturating_duration_since(Instant::now()).min(Duration::from_millis(100)));
         }
+    }
+}
+
+/// The power source as the supervision loop sees it: `pmset -g batt` every
+/// [`POLL_S`](crate::macos_power::POLL_S) on macOS, never elsewhere. A change is logged once.
+#[derive(Default)]
+struct PowerWatch {
+    read_at: Option<Instant>,
+    battery: Option<crate::macos_power::Battery>,
+}
+
+impl PowerWatch {
+    fn poll(&mut self, now: Instant) -> Option<crate::macos_power::Battery> {
+        #[cfg(target_os = "macos")]
+        if self.read_at.is_none_or(|t| now.duration_since(t).as_secs() >= crate::macos_power::POLL_S) {
+            use crate::macos_power as power;
+            self.read_at = Some(now);
+            let read = mac::output("pmset", &["-g".into(), "batt".into()])
+                .and_then(|text| power::battery(&text, power::MIN_CHARGE_PCT));
+            if read != self.battery {
+                match read {
+                    Some(b) => eprintln!(
+                        "server run: on battery ({}%): admission {}",
+                        b.charge.map(|c| c.to_string()).unwrap_or_else(|| "?".into()),
+                        if b.admitting { "open" } else { "closed" }
+                    ),
+                    None => eprintln!("server run: off battery"),
+                }
+            }
+            self.battery = read;
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (now, &mut self.read_at);
+        self.battery
     }
 }
 
@@ -284,8 +322,17 @@ pub fn status_file_text(name: &str, url: &str, snap: &Snapshot, supervisor_pid: 
     ])
 }
 
-fn write_status(opts: &Options, url: &str, snap: &Snapshot, supervisor_pid: Option<u32>) {
-    let text = status_file_text(&opts.name, url, snap, supervisor_pid, unix_now());
+fn write_status(
+    opts: &Options,
+    url: &str,
+    snap: &Snapshot,
+    supervisor_pid: Option<u32>,
+    battery: Option<&crate::macos_power::Battery>,
+) {
+    let mut text = status_file_text(&opts.name, url, snap, supervisor_pid, unix_now());
+    if let Some(b) = battery {
+        text = crate::macos_power::status_on_battery(&text, b);
+    }
     let path = opts.state_dir.join(STATUS_FILE);
     let tmp = opts.state_dir.join(format!("{STATUS_FILE}.tmp"));
     if std::fs::write(&tmp, text).is_ok() {
@@ -296,7 +343,8 @@ fn write_status(opts: &Options, url: &str, snap: &Snapshot, supervisor_pid: Opti
 
 /// What `server status` prints. `service_state` is the service manager's view (`not installed`,
 /// or `n/a` off Windows), `file` the supervisor's status file, `probe` a live probe's HTTP code.
-/// Always the same 13 keys in the same order. Exit code 0 when the engine is healthy, 3 otherwise.
+/// Always the same 13 keys in the same order; a running supervisor on battery adds `charge` and
+/// `admission` after them. Exit code 0 when the engine is healthy (or serving on battery), 3 otherwise.
 pub fn status_report(
     name: &str,
     service_state: &str,
@@ -340,7 +388,12 @@ pub fn status_report(
         ("last_error", get("last_error")),
         ("updated", get("updated")),
     ]);
-    let code = if state == "healthy" && probe == Some(200) { 0 } else { 3 };
+    let mut text = text;
+    if running && fields.iter().any(|(k, _)| k == "admission") {
+        text.push_str(&core::render_status(&[("charge", get("charge")), ("admission", get("admission"))]));
+    }
+    let serving = state == "healthy" || state == "battery";
+    let code = if serving && probe == Some(200) { 0 } else { 3 };
     (text, code)
 }
 
@@ -461,7 +514,7 @@ fn start(opts: &Options) -> i32 {
     }
     wait_for(opts.wait_s.max(5), || supervisor_running(opts));
     let healthy = wait_for(opts.wait_s, || {
-        read_status_file(opts).is_some_and(|t| t.contains("\nstate: healthy\n"))
+        read_status_file(opts).is_some_and(|t| t.contains("\nstate: healthy\n") || t.contains("\nstate: battery\n"))
     });
     let code = status(opts);
     if healthy || supervisor_running(opts) { 0 } else { code.max(1) }
@@ -975,5 +1028,21 @@ mod tests {
             status_report("ragon-node", "n/a", Some(&file(State::Healthy, Some(77), NOW)), NOW, Some(401), "u");
         assert!(unhealthy_probe.contains("\nprobe: http 401\n"));
         assert_eq!(code, 3);
+    }
+
+    #[test]
+    fn on_battery_the_engine_still_serves_and_the_status_says_so() {
+        use crate::macos_power::{Battery, status_on_battery};
+        let low = Battery { charge: Some(12), admitting: false };
+        let on_battery = status_on_battery(&file(State::Healthy, Some(77), NOW), &low);
+        let (text, code) = status_report("ragon-node", "running", Some(&on_battery), NOW, Some(200), "u");
+        assert_eq!(code, 0, "serving on battery is not a failure");
+        assert!(text.contains("\nsupervisor: running\nstate: battery\n"), "{text}");
+        assert!(text.ends_with("\nupdated: 2026-11-25T10:00:00Z\ncharge: 12\nadmission: closed\n"), "{text}");
+        let (_, code) = status_report("ragon-node", "running", Some(&on_battery), NOW, None, "u");
+        assert_eq!(code, 3, "the probe still decides");
+        // A stale file from a supervisor on battery: the 13 shared keys only.
+        let (stale, _) = status_report("ragon-node", "n/a", Some(&on_battery), NOW + 60, None, "u");
+        assert!(stale.ends_with("\nupdated: 2026-11-25T10:00:00Z\n"), "{stale}");
     }
 }
