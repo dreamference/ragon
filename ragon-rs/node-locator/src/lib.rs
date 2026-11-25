@@ -320,9 +320,17 @@ pub fn node_file() -> Option<PathBuf> {
 
 /// The file that marks a machine as a node, and holds its id.
 // One line on purpose: a test checks the path's source text.
+#[cfg(not(windows))]
 #[rustfmt::skip]
 pub fn node_id_file() -> Option<PathBuf> {
     Some(home_dir()?.join(".config").join("dreamference").join("node-id"))
+}
+
+/// The file that marks a machine as a node, and holds its id: `%ProgramData%\Ragon\node-id`, not
+/// the user's home, because the service account and the job accounts share one node.
+#[cfg(windows)]
+pub fn node_id_file() -> Option<PathBuf> {
+    Some(state::StateLayout::from_env()?.node_id)
 }
 
 /// Whether this machine is a node: it then uses its own services on loopback and never browses.
@@ -333,6 +341,352 @@ pub fn is_node() -> bool {
 /// [`is_node`] for a given id file: it must hold something, not merely exist.
 pub fn is_node_at(path: &Path) -> bool {
     std::fs::read_to_string(path).is_ok_and(|text| !text.trim().is_empty())
+}
+
+/// The Windows node's state directory (`%ProgramData%\Ragon`) as a pure description: the paths in
+/// it and the ACL each carries (specs/DREAMFERENCE_WINDOWS_NODE.md §4.2). Nothing here touches the
+/// disk, so Linux builds and tests it; [`state::apply`] (Windows only) is the one part that does.
+pub mod state {
+    use std::path::{Path, PathBuf};
+
+    /// The folder under `%ProgramData%`.
+    pub const DIR_NAME: &str = "Ragon";
+
+    /// Default local account names; the installer creates them.
+    pub const SERVICE_ACCOUNT: &str = "RagonNode";
+    pub const JOB_ACCOUNT: &str = "RagonJob";
+    pub const SANDBOX_ACCOUNTS: [&str; 2] = ["CodexSandboxOffline", "CodexSandboxOnline"];
+
+    /// Where each kind of state lives.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct StateLayout {
+        pub root: PathBuf,
+        /// Model weights: `<root>\models`.
+        pub models: PathBuf,
+        /// The node id file: `<root>\node-id`.
+        pub node_id: PathBuf,
+        /// The advertisement's state: `<root>\advert`.
+        pub advert: PathBuf,
+        /// Job working folders and records: `<root>\jobs`.
+        pub jobs: PathBuf,
+    }
+
+    impl StateLayout {
+        /// The layout under a `%ProgramData%` folder.
+        pub fn under(program_data: &Path) -> Self {
+            let root = program_data.join(DIR_NAME);
+            Self {
+                models: root.join("models"),
+                node_id: root.join("node-id"),
+                advert: root.join("advert"),
+                jobs: root.join("jobs"),
+                root,
+            }
+        }
+
+        /// The layout under the `ProgramData` environment variable.
+        pub fn from_env() -> Option<Self> {
+            let base = std::env::var_os("ProgramData").filter(|value| !value.is_empty())?;
+            Some(Self::under(Path::new(&base)))
+        }
+    }
+
+    /// Who an ACL entry names.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Principal {
+        System,
+        Administrators,
+        Service,
+        Job,
+        /// Both sandbox accounts.
+        Sandbox,
+    }
+
+    /// What an entry allows.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Access {
+        Full,
+        Modify,
+        ReadExecute,
+        Read,
+    }
+
+    impl Access {
+        fn letter(self) -> &'static str {
+            match self {
+                Access::Full => "F",
+                Access::Modify => "M",
+                Access::ReadExecute => "RX",
+                Access::Read => "R",
+            }
+        }
+    }
+
+    /// Which entry of the layout a rule is for.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Item {
+        Root,
+        Models,
+        NodeId,
+        Advert,
+        Jobs,
+    }
+
+    impl Item {
+        pub const ALL: [Item; 5] = [Item::Root, Item::Models, Item::NodeId, Item::Advert, Item::Jobs];
+
+        pub fn path(self, layout: &StateLayout) -> &Path {
+            match self {
+                Item::Root => &layout.root,
+                Item::Models => &layout.models,
+                Item::NodeId => &layout.node_id,
+                Item::Advert => &layout.advert,
+                Item::Jobs => &layout.jobs,
+            }
+        }
+
+        /// Folders hand their entries down to what is created in them; the id file does not.
+        pub fn is_dir(self) -> bool {
+            self != Item::NodeId
+        }
+    }
+
+    /// One row of the table: `item` allows `access` to `who`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Rule {
+        pub item: Item,
+        pub who: Principal,
+        pub access: Access,
+    }
+
+    /// The table. Inheritance from `%ProgramData%` is cut at the root, so ordinary users have no
+    /// entry anywhere. The service account writes everything; the job account reads the weights, the
+    /// id and the advert and works in `jobs`; the sandbox accounts see the id (a sandboxed
+    /// `ragon` asks whether it runs on a node) and work in `jobs`, and never see the weights.
+    pub fn table() -> Vec<Rule> {
+        use Access::*;
+        use Item::*;
+        use Principal::*;
+        let rule = |item, who, access| Rule { item, who, access };
+        let mut rows = Vec::new();
+        for item in Item::ALL {
+            rows.push(rule(item, System, Full));
+            rows.push(rule(item, Administrators, Full));
+            rows.push(rule(item, Service, Modify));
+        }
+        rows.push(rule(Root, Job, ReadExecute));
+        rows.push(rule(Models, Job, ReadExecute));
+        rows.push(rule(NodeId, Job, Read));
+        rows.push(rule(NodeId, Sandbox, Read));
+        rows.push(rule(Advert, Job, Read));
+        rows.push(rule(Jobs, Job, Modify));
+        rows.push(rule(Jobs, Sandbox, Modify));
+        rows
+    }
+
+    /// The accounts a table is applied to; tests and CI name other ones.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Accounts {
+        pub service: String,
+        pub job: String,
+        pub sandbox: Vec<String>,
+    }
+
+    impl Default for Accounts {
+        fn default() -> Self {
+            Self {
+                service: SERVICE_ACCOUNT.to_string(),
+                job: JOB_ACCOUNT.to_string(),
+                sandbox: SANDBOX_ACCOUNTS.iter().map(|name| name.to_string()).collect(),
+            }
+        }
+    }
+
+    impl Accounts {
+        /// The names a principal covers, as `icacls` takes them (well-known SIDs by `*S-…`).
+        pub fn grant_names(&self, who: Principal) -> Vec<String> {
+            match who {
+                Principal::System => vec!["*S-1-5-18".into()],
+                Principal::Administrators => vec!["*S-1-5-32-544".into()],
+                Principal::Service => vec![self.service.clone()],
+                Principal::Job => vec![self.job.clone()],
+                Principal::Sandbox => self.sandbox.clone(),
+            }
+        }
+
+        /// The name `icacls` prints for an account: the part after the domain.
+        fn listed_names(&self, who: Principal) -> Vec<String> {
+            match who {
+                Principal::System => vec!["SYSTEM".into()],
+                Principal::Administrators => vec!["Administrators".into()],
+                other => self.grant_names(other),
+            }
+        }
+    }
+
+    /// The inheritance flags and right of one entry as `icacls` prints them: `(OI)(CI)(M)`.
+    fn flags(item: Item, access: Access) -> String {
+        let inherit = if item.is_dir() { "(OI)(CI)" } else { "" };
+        format!("{inherit}({})", access.letter())
+    }
+
+    /// The `icacls` arguments that make `item` match the table: inheritance off, then one grant
+    /// per entry. The root's entries are written with `/inheritance:r`; the others too, so
+    /// nothing leaks in from the parent, and they are applied after the root.
+    pub fn icacls_args(layout: &StateLayout, item: Item, accounts: &Accounts) -> Vec<String> {
+        let mut args = vec![item.path(layout).display().to_string(), "/inheritance:r".into()];
+        for rule in table().into_iter().filter(|rule| rule.item == item) {
+            for name in accounts.grant_names(rule.who) {
+                args.push("/grant:r".into());
+                args.push(format!("{name}:{}", flags(item, rule.access)));
+            }
+        }
+        args
+    }
+
+    /// The entries expected in the listing of `item`, as `(account, flags)`, sorted.
+    pub fn expected(item: Item, accounts: &Accounts) -> Vec<(String, String)> {
+        let mut rows: Vec<(String, String)> = table()
+            .into_iter()
+            .filter(|rule| rule.item == item)
+            .flat_map(|rule| {
+                accounts
+                    .listed_names(rule.who)
+                    .into_iter()
+                    .map(move |name| (name, flags(item, rule.access)))
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    /// Reads `icacls <path>` output into `(account, flags)` rows, sorted: the account without its
+    /// domain, `(I)` marks dropped. The path on the first line and the summary line are skipped.
+    pub fn parse_listing(listing: &str) -> Vec<(String, String)> {
+        let mut rows: Vec<(String, String)> = listing
+            .lines()
+            .filter_map(|line| {
+                let entry = line.trim();
+                let (name, rest) = entry.rsplit_once(":(")?;
+                // The first line carries the path: `C:\ProgramData\Ragon BUILTIN\...:(OI)...`.
+                let name = name.rsplit_once(' ').map_or(name, |(_, last)| last);
+                let name = name.rsplit_once('\\').map_or(name, |(_, last)| last);
+                Some((name.to_string(), format!("({rest}").replace("(I)", "")))
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
+    /// Compares one item's `icacls` listing with the table; the error names the difference.
+    pub fn check_listing(item: Item, listing: &str, accounts: &Accounts) -> Result<(), String> {
+        let want = expected(item, accounts);
+        let got = parse_listing(listing);
+        if want == got {
+            Ok(())
+        } else {
+            Err(format!("{item:?}: expected {want:?}, found {got:?}"))
+        }
+    }
+
+    /// Creates the folders and applies the table (needs an elevated session).
+    #[cfg(windows)]
+    pub fn apply(layout: &StateLayout, accounts: &Accounts) -> std::io::Result<()> {
+        for item in Item::ALL {
+            let path = item.path(layout);
+            if item.is_dir() {
+                std::fs::create_dir_all(path)?;
+            } else if !path.exists() {
+                std::fs::write(path, "")?;
+            }
+            icacls(&icacls_args(layout, item, accounts))?;
+        }
+        Ok(())
+    }
+
+    /// Lists every item with `icacls` and compares it with the table.
+    #[cfg(windows)]
+    pub fn check(layout: &StateLayout, accounts: &Accounts) -> Result<(), String> {
+        for item in Item::ALL {
+            let out = std::process::Command::new("icacls")
+                .arg(item.path(layout))
+                .output()
+                .map_err(|error| error.to_string())?;
+            check_listing(item, &String::from_utf8_lossy(&out.stdout), accounts)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn icacls(args: &[String]) -> std::io::Result<()> {
+        let status = std::process::Command::new("icacls").args(args).status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!("icacls failed on {}", args[0])))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_layout_is_under_program_data_ragon_with_weights_in_models() {
+            let layout = StateLayout::under(Path::new("/pd"));
+            assert_eq!(layout.root, Path::new("/pd/Ragon"));
+            assert_eq!(layout.models, Path::new("/pd/Ragon/models"));
+            assert_eq!(layout.node_id, Path::new("/pd/Ragon/node-id"));
+        }
+
+        #[test]
+        fn a_leftover_empty_node_id_in_the_layout_is_not_a_node() {
+            let dir = std::env::temp_dir().join(format!("ragon-state-{}", std::process::id()));
+            let layout = StateLayout::under(&dir);
+            std::fs::create_dir_all(&layout.root).unwrap();
+            std::fs::write(&layout.node_id, " \n").unwrap();
+            assert!(!super::super::is_node_at(&layout.node_id));
+            std::fs::write(&layout.node_id, "11111111-1111-4111-8111-111111111111\n").unwrap();
+            assert!(super::super::is_node_at(&layout.node_id));
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn nobody_but_the_named_accounts_has_an_entry_and_sandboxes_never_see_the_weights() {
+            for rule in table() {
+                assert!(!(rule.item == Item::Models && rule.who == Principal::Sandbox));
+            }
+            for item in Item::ALL {
+                assert!(expected(item, &Accounts::default()).iter().any(|(name, _)| name == "SYSTEM"));
+            }
+        }
+
+        #[test]
+        fn a_listing_in_icacls_form_matches_and_a_stray_entry_does_not() {
+            let accounts = Accounts::default();
+            let good = "C:\\ProgramData\\Ragon\\jobs NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n\
+                BUILTIN\\Administrators:(OI)(CI)(F)\n\
+                BOX\\RagonNode:(OI)(CI)(M)\n\
+                BOX\\RagonJob:(OI)(CI)(M)\n\
+                BOX\\CodexSandboxOffline:(OI)(CI)(M)\n\
+                BOX\\CodexSandboxOnline:(OI)(CI)(M)\n\nSuccessfully processed 1 files; Failed processing 0 files\n";
+            assert_eq!(check_listing(Item::Jobs, good, &accounts), Ok(()));
+            let stray = format!("{good}BUILTIN\\Users:(OI)(CI)(RX)\n");
+            assert!(check_listing(Item::Jobs, &stray, &accounts).is_err());
+            assert!(check_listing(Item::Models, good, &accounts).is_err());
+        }
+
+        #[test]
+        fn the_grants_cut_inheritance_and_files_carry_no_inherit_flags() {
+            let layout = StateLayout::under(Path::new("/pd"));
+            let args = icacls_args(&layout, Item::NodeId, &Accounts::default());
+            assert_eq!(args[1], "/inheritance:r");
+            assert!(args.contains(&"RagonJob:(R)".to_string()));
+            assert!(!args.iter().any(|arg| arg.contains("(OI)")));
+            let dir = icacls_args(&layout, Item::Models, &Accounts::default());
+            assert!(dir.contains(&"RagonJob:(OI)(CI)(RX)".to_string()));
+        }
+    }
 }
 
 /// The remembered node, if this client has one.
