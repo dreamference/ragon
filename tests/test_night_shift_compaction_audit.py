@@ -350,3 +350,24 @@ def test_night_shift_compaction_audit_parse_returns_none_for_invalid_or_non_dict
         "type": "session_meta",
         "payload": {},
     }
+
+
+def test_night_shift_compaction_audit_records_yields_dicts_and_stops_on_a_missing_file(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        '{"type": "a"}\nnot json\n[1, 2]\n42\n\n{"type": "b"}\n',
+        encoding="utf-8",
+    )
+
+    records = list(NightShiftCompactionAudit._records(path))
+
+    assert records == [{"type": "a"}, {"type": "b"}]
+
+    def broken_open(self, *args, **kwargs):
+        raise OSError("gone")
+
+    monkeypatch.setattr(Path, "open", broken_open)
+
+    assert list(NightShiftCompactionAudit._records(path)) == []
