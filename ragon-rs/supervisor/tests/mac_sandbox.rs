@@ -106,6 +106,14 @@ fn the_homes_and_the_ssh_keys_are_denied() {
     denied(&j, &["list", "/private/etc/ssh"]);
     denied(&j, &["read", "/private/etc/ssh/ssh_config"]);
     denied(&j, &["read", "/etc/ssh/sshd_config"]);
+    // The node's state (weights, keys): only a Mac that is a node has it, and a path that does not
+    // exist answers ENOENT before the profile is asked.
+    let state = ragon_supervisor::seatbelt::NODE_STATE_DIR;
+    if works_unsandboxed(&["list", state]) {
+        denied(&j, &["list", state]);
+    } else {
+        println!("{state} is absent here: the profile-text test in src/seatbelt.rs covers it");
+    }
 }
 
 #[test]
