@@ -909,3 +909,26 @@ def test_prepare_for_ragon_serve_names_the_engine_and_patches_nothing(verified, 
     )
     AdapterServing.prepare(DEFAULT_MODEL_ALIAS, "image", gated=True, engine=SGLANG)
     assert "engine" not in json.loads((AdapterServing.gate_dir() / LIST_FILE).read_text())
+
+
+def test_adapter_serving_withdraw_removes_only_the_named_adapter(monkeypatch, tmp_path):
+    # A withdraw reads the list from disk and pops only the named adapter. A missing or
+    # unreadable list, and one whose adapters are not a dict, leave it untouched.
+    state = tmp_path / "gate"
+    state.mkdir()
+    monkeypatch.setattr(AdapterServing, "gate_dir", classmethod(lambda cls: state))
+    AdapterServing.withdraw("rust")
+    assert not (state / LIST_FILE).exists()
+    (state / LIST_FILE).write_text("not json")
+    AdapterServing.withdraw("rust")
+    assert (state / LIST_FILE).read_text() == "not json"
+    (state / LIST_FILE).write_text(json.dumps({"base": BASE, "adapters": []}))
+    AdapterServing.withdraw("rust")
+    assert json.loads((state / LIST_FILE).read_text())["adapters"] == []
+    listing = {"base": BASE, "adapters": {"rust": {"path": "/x"}, "cpp": {"path": "/y"}}}
+    (state / LIST_FILE).write_text(json.dumps(listing))
+    AdapterServing.withdraw("rust")
+    assert json.loads((state / LIST_FILE).read_text()) == {
+        "base": BASE,
+        "adapters": {"cpp": {"path": "/y"}},
+    }
