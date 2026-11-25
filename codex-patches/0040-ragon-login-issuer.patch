@@ -47,7 +47,7 @@ diff --git a/codex-rs/login/src/server.rs b/codex-rs/login/src/server.rs
  
  pub(super) const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 +
-+/// The issuer: `RAGON_ISSUER`, else the top-level `ragon_issuer` of `$CODEX_HOME/config.toml`, else the constant.
++/// The issuer: `RAGON_ISSUER`, else top-level `chatgpt_base_url` in `config.toml` less `/backend-api`, else the constant.
 +pub(super) fn issuer() -> String {
 +    let set =
 +        |v: String| Some(v.trim().trim_end_matches('/').to_string()).filter(|v| !v.is_empty());
@@ -65,9 +65,9 @@ diff --git a/codex-rs/login/src/server.rs b/codex-rs/login/src/server.rs
 +                .take_while(|l| !l.trim_start().starts_with('['))
 +                .find_map(|l| {
 +                    let (k, v) = l.split_once('=')?;
-+                    (k.trim() == "ragon_issuer")
-+                        .then(|| v.trim().trim_matches('"').to_string())
-+                        .and_then(set)
++                    (k.trim() == "chatgpt_base_url")
++                        .then(|| v.trim().trim_matches(['"', '/']).strip_suffix("/backend-api"))?
++                        .and_then(|v| set(v.into()))
 +                })
 +        })
 +        .unwrap_or_else(|| DEFAULT_ISSUER.to_string())
