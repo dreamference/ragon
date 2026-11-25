@@ -27,6 +27,8 @@ from typing import Final
 ROOT: Final[Path] = Path(__file__).resolve().parent.parent
 RELEASES_DIR: Final[str] = "docs/releases"
 PAGE: Final[str] = "docs/benchmarks.md"
+CMD_RECORD: Final[str] = "record"
+CMD_RENDER: Final[str] = "render"
 VERSION_RE: Final[re.Pattern] = re.compile(r"^\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$")
 FIELDS: Final[tuple] = (
     "version",
@@ -67,7 +69,7 @@ class BenchmarkError(Exception):
     """An entry is missing a field, inconsistent, or carries something that must not be published."""
 
 
-def entries(root: Optional[Path] = None) -> list[dict]:
+def entries(root: Path | None = None) -> list[dict]:
     """Every release's entry, newest version first.
 
     Args:
@@ -182,12 +184,12 @@ def main(argv: list[str] | None = None) -> int:
     rec.add_argument("--previous-solved", type=int, required=True)
     rec.add_argument("--p-value", type=float)
     rec.add_argument("--wall-hours", type=float, required=True)
-    sub.add_parser("render")
+    sub.add_parser(CMD_RENDER)
     chk = sub.add_parser("check")
     chk.add_argument("--version")
     args = parser.parse_args(argv)
     try:
-        if args.cmd == "record":
+        if args.cmd == CMD_RECORD:
             entry = validate(
                 {
                     "version": args.version,
@@ -207,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(entry, indent=2) + "\n", encoding="utf-8"
             )
             (ROOT / PAGE).write_text(render(entries()), encoding="utf-8")
-        elif args.cmd == "render":
+        elif args.cmd == CMD_RENDER:
             (ROOT / PAGE).write_text(render(entries()), encoding="utf-8")
         else:
             items = entries()
