@@ -92,6 +92,7 @@ pub mod update;
 
 /// For the Codex patches that print a version (`update::shown_version`).
 pub use update::shown_version;
+pub mod supervisor_macos;
 pub mod supervisor_windows;
 pub mod usage;
 pub mod userns;
@@ -417,10 +418,14 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
     {
         std::process::exit(uninstall::run_cli(&user_args[index + 1..]));
     }
-    // `server` is the Windows node's model server under its supervisor (supervisor_windows.rs).
+    // `server` is the Windows or Mac node's model server under its supervisor
+    // (supervisor_windows.rs, supervisor_macos.rs).
     if let Some(index) = subcommand
         && user_args[index] == "server"
     {
+        #[cfg(target_os = "macos")]
+        std::process::exit(supervisor_macos::run_cli(&user_args[index + 1..]));
+        #[cfg(not(target_os = "macos"))]
         std::process::exit(supervisor_windows::run_cli(&user_args[index + 1..]));
     }
     // `night` is Night Shift's queue (night.rs): `/night` from a shell, for scripts and cron.

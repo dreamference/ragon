@@ -119,7 +119,8 @@ codex-windows-sandbox = { workspace = true }
 # `ragon audit egress`: the ETW real-time trace (src/audit.rs; WINDOWS_ARM §14).
 ferrisetw = "1.2"
 # `ragon server`: the node's model server under a supervisor, as a Windows service with the engine
-# in a Job Object (src/supervisor_windows.rs; the crate's neutral core is shared with the Mac node).
+# in a Job Object (src/supervisor_windows.rs) or a macOS LaunchDaemon with the engine in a guarded
+# process group (src/supervisor_macos.rs); both on the crate's shared neutral core.
 ragon-supervisor = { path = "supervisor" }
 
 [dev-dependencies]
