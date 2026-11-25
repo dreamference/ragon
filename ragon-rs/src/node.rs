@@ -763,6 +763,8 @@ pub enum Request {
     Forget,
     /// `ragon node remote …` (remote_join.rs).
     Remote(Vec<String>),
+    /// `ragon node authorize | unauthorize <tag>` (the node's half of a pairing) and `pair <user@host> [port]`.
+    Pairing(Vec<String>),
     Usage,
 }
 
@@ -774,6 +776,7 @@ impl Request {
             ["use", name] => Request::Use(name.to_string()),
             ["forget"] => Request::Forget,
             ["remote", ..] => Request::Remote(args[1..].to_vec()),
+            ["authorize"] | ["unauthorize", _] | ["pair", _] | ["pair", _, _] => Request::Pairing(args.to_vec()),
             _ => Request::Usage,
         }
     }
@@ -781,12 +784,23 @@ impl Request {
 
 /// Runs `ragon node …` and returns the exit code.
 pub async fn run_cli(args: &[String]) -> i32 {
+    if let Request::Pairing(rest) = Request::from_args(args) {
+        return match rest.as_slice() {
+            [cmd, target] if cmd == "pair" => crate::node_pairing::run_pair(target, 22),
+            [cmd, target, port] if cmd == "pair" => match port.parse() {
+                Ok(port) => crate::node_pairing::run_pair(target, port),
+                Err(_) => 2,
+            },
+            _ => crate::node_pairing::run_node_side(&rest),
+        };
+    }
     let Some(path) = locator::node_file() else {
         eprintln!("ragon node: could not resolve CODEX_HOME");
         return 1;
     };
     match Request::from_args(args) {
         Request::Remote(rest) => crate::remote_join::run_cli(&rest).await,
+        Request::Pairing(_) => unreachable!("handled above"),
         Request::Usage => {
             println!("{USAGE}");
             2

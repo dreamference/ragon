@@ -189,6 +189,7 @@
 /ragon-rs/src/metal_recipe.rs                   @dreamference/nodes
 /ragon-rs/vectors/metal-recipes.json             @dreamference/nodes
 /ragon-rs/src/node_command.rs                    @dreamference/nodes
+/ragon-rs/src/node_pairing.rs                    @dreamference/nodes
 /dreamference/vllm_server/model_gate*.py        @dreamference/nodes @dreamference/models
 /dreamference/vllm_server/wifi_power_save.py    @dreamference/nodes
 /dreamference/vllm_server/psi_guard_unit.py     @dreamference/models @dreamference/nodes
