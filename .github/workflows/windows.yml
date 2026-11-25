@@ -465,6 +465,26 @@ jobs:
           $rules = @(Get-NetFirewallRule | Where-Object { $_.Name -like "Ragon-mDNS-*" } | Where-Object { ($_ | Get-NetFirewallApplicationFilter).Program -eq $program })
           if ($rules.Count -ne 0) { throw "the mDNS rule for $program is still there" }
 
+      # %ProgramData%\Ragon is the node's machine-wide state folder (node id, advertisement, jobs,
+      # weights). Its ACL: administrators and SYSTEM full control, the job and sandbox accounts
+      # (members of Users) read and execute only, inheritance on so the files below follow.
+      - name: The node state folder's ACL
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dir = Join-Path $env:ProgramData "Ragon"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          icacls $dir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" | Out-Null
+          $acl = Get-Acl $dir
+          $users = $acl.Access | Where-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq "S-1-5-32-545" }
+          if (-not $users) { throw "Users have no rule on $dir" }
+          foreach ($rule in $users) {
+            if ($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::WriteData) { throw "Users can write to $dir" }
+          }
+          Set-Content -Path (Join-Path $dir "node-id") -Value "ci"
+          if (-not (Test-Path (Join-Path $dir "node-id"))) { throw "the node id file is not there" }
+          Remove-Item -Recurse -Force $dir
+
   # The desktop app for Windows (DESKTOP_PARITY Phase 3 item 12; WINDOWS_ARM §11, superseded by
   # Electron): desktop/electron packaged natively on each runner with this run's ragon.exe and
   # codex-code-mode-host.exe inside, its tests and typecheck first, then the same hidden audit
