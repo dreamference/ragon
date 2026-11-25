@@ -70,6 +70,7 @@ pub mod night;
 pub mod node;
 pub mod metal_recipe;
 pub mod model_registry;
+pub mod host_safety_macos;
 pub mod node_advertise_macos;
 pub mod node_command;
 pub mod notice;

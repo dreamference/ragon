@@ -175,6 +175,7 @@
 /scripts/mac_node_gate.sh                       @dreamference/nodes
 /scripts/mac_node_gate_client.sh                @dreamference/nodes
 /tests/test_mac_node_gate.py                    @dreamference/nodes
+/ragon-rs/src/host_safety_macos.rs               @dreamference/nodes
 /scripts/auth_e2e.sh                             @dreamference/nodes @dreamference/security
 /scripts/auth_e2e_node.py                        @dreamference/nodes @dreamference/security
 /tests/test_auth_e2e_script.py                   @dreamference/nodes @dreamference/security
