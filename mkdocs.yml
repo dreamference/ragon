@@ -1,6 +1,6 @@
 site_name: Ragon
 site_url: https://ragon.dreamference.ai/docs/
-site_description: A private AI assistant and coding agent that runs entirely on your NVIDIA GB10.
+site_description: Ragon is an open-source coding agent that runs entirely on a desk-side NVIDIA GB10 machine, with no cloud.
 copyright: Ragon by Dreamference · licensed AGPL-3.0-or-later.
 
 theme:

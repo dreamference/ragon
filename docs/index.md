@@ -1,4 +1,5 @@
 ---
+title: What is Ragon?
 hide:
   - navigation
 ---
@@ -8,9 +9,12 @@ hide:
 <div markdown>
 # Ragon
 
+Ragon is an open-source coding agent that runs entirely on a desk-side NVIDIA GB10 machine, with no cloud.
 Your own AI coding agent. On your desk. Nothing leaves. Ragon turns an NVIDIA DGX Spark, or any
 GB10 machine, into a private AI that codes, searches and answers for you, with no cloud, no
 account, no API bill and no telemetry.
+
+[Ragon product page →](https://ragon.dreamference.ai/)
 </div>
 </div>
 
