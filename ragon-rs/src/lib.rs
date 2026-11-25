@@ -68,6 +68,7 @@ pub mod mask;
 pub mod monitor;
 pub mod night;
 pub mod node;
+pub mod host_safety_macos;
 pub mod metal_recipe;
 pub mod node_advertise_macos;
 pub mod node_command;

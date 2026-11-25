@@ -83,6 +83,9 @@ openssl-sys = { workspace = true, features = ["vendored"] }
 
 # `/node` ignores Ctrl-C while its child has the terminal (src/node_command.rs).
 [target.'cfg(unix)'.dependencies]
+# The Mac node's host safety (src/host_safety_macos.rs) kills the engine through the supervisor's
+# Engine trait; its decisions are tested on Linux too.
+ragon-supervisor = { path = "supervisor" }
 libc = { workspace = true }
 # `ragon web`: the web server, a crate of its own so its tests run without the Codex workspace
 # (src/web.rs). Unix only: it reaches the app-server over a Unix socket; Windows has no `ragon web` yet.
