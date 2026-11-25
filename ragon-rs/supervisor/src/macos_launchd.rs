@@ -13,24 +13,55 @@ use std::path::{Path, PathBuf};
 pub const ROLE_ACCOUNT: &str = "_ragon";
 /// Where the installed node keeps its state (status, logs, the saved power settings).
 pub const STATE_DIR: &str = "/Library/Application Support/Ragon/node";
+/// The node's home: `HOME` of the daemon and its children, so the node id and the advertisement
+/// (`.config/dreamference/...`) sit under `/Library/Application Support/Ragon` (§4.2), not under
+/// the role account's `/var/empty`.
+pub const NODE_HOME: &str = "/Library/Application Support/Ragon";
 /// The directory of the system daemons' plists.
 pub const DAEMONS_DIR: &str = "/Library/LaunchDaemons";
+/// The directory of the agents every login session loads (root's, so the user cannot change it).
+pub const AGENTS_DIR: &str = "/Library/LaunchAgents";
 /// Seconds launchd waits before it starts a supervisor that died again (its own floor is 10).
 pub const THROTTLE_S: u32 = 10;
+
+/// Who owns the engine (owner ruling MN4). (a) [`Kind::Daemon`], the system domain as `_ragon`,
+/// with nobody logged in; (b) [`Kind::Agent`], a LaunchAgent of the login session of the account
+/// whose uid it carries, the fallback with automatic login (FileVault off).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Daemon,
+    Agent(u32),
+}
+
+/// The one switch between MN4 (a) and (b): `true` until the probe mac-probe-metal-daemon shows
+/// that a daemon has no Metal device; `server install --launchd agent` takes (b) on one machine.
+pub const MN4_DAEMON: bool = true;
 
 /// `ragon-node` -> `ai.dreamference.ragon-node`.
 pub fn label_for(service: &str) -> String {
     format!("ai.dreamference.{service}")
 }
 
-/// `/Library/LaunchDaemons/ai.dreamference.ragon-node.plist`.
-pub fn plist_path(service: &str) -> PathBuf {
-    Path::new(DAEMONS_DIR).join(format!("{}.plist", label_for(service)))
+/// `/Library/LaunchDaemons/ai.dreamference.ragon-node.plist` (an agent's under /Library/LaunchAgents).
+pub fn plist_path(kind: Kind, service: &str) -> PathBuf {
+    let dir = match kind {
+        Kind::Daemon => DAEMONS_DIR,
+        Kind::Agent(_) => AGENTS_DIR,
+    };
+    Path::new(dir).join(format!("{}.plist", label_for(service)))
+}
+
+/// The launchd domain: `system`, or `gui/<uid>` for an agent.
+pub fn domain(kind: Kind) -> String {
+    match kind {
+        Kind::Daemon => "system".to_string(),
+        Kind::Agent(uid) => format!("gui/{uid}"),
+    }
 }
 
 /// `system/ai.dreamference.ragon-node`, the target of `launchctl print|kickstart|bootout`.
-pub fn service_target(service: &str) -> String {
-    format!("system/{}", label_for(service))
+pub fn service_target(kind: Kind, service: &str) -> String {
+    format!("{}/{}", domain(kind), label_for(service))
 }
 
 /// What the plist describes.
@@ -39,8 +70,13 @@ pub struct Daemon {
     pub label: String,
     /// The full command line: the launcher, then `server run ...`.
     pub program_arguments: Vec<String>,
+    /// `UserName`: the role account; empty for an agent (it runs as the session's user).
     pub user_name: String,
     pub working_directory: String,
+    /// `HOME` for the supervisor and its children, if set ([`NODE_HOME`] for the daemon).
+    pub home: Option<String>,
+    /// An agent's plist: loaded in login (Aqua) sessions only, no `UserName`.
+    pub agent: bool,
     /// launchd's own stdout/stderr for the supervisor (the engine logs to its own file).
     pub log_path: String,
 }
@@ -52,8 +88,15 @@ impl Daemon {
             program_arguments,
             user_name: ROLE_ACCOUNT.to_string(),
             working_directory: state_dir.to_string(),
+            home: Some(NODE_HOME.to_string()),
+            agent: false,
             log_path: format!("{}/launchd.log", state_dir.trim_end_matches('/')),
         }
+    }
+
+    /// MN4 (b): the same job as a LaunchAgent of the login session (its user's own `HOME`).
+    pub fn agent(service: &str, program_arguments: Vec<String>, state_dir: &str) -> Self {
+        Daemon { user_name: String::new(), home: None, agent: true, ..Daemon::new(service, program_arguments, state_dir) }
     }
 }
 
@@ -92,7 +135,16 @@ pub fn plist(daemon: &Daemon) -> String {
         out.push_str(&format!("\t\t<string>{}</string>\n", escape(arg)));
     }
     out.push_str("\t</array>\n");
-    key_string(&mut out, "UserName", &daemon.user_name);
+    if !daemon.agent {
+        key_string(&mut out, "UserName", &daemon.user_name);
+    }
+    if let Some(home) = &daemon.home {
+        out.push_str("\t<key>EnvironmentVariables</key>\n\t<dict>\n");
+        out.push_str(&format!("\t\t<key>HOME</key>\n\t\t<string>{}</string>\n\t</dict>\n", escape(home)));
+    }
+    if daemon.agent {
+        key_string(&mut out, "LimitLoadToSessionType", "Aqua");
+    }
     key_string(&mut out, "WorkingDirectory", &daemon.working_directory);
     out.push_str("\t<key>RunAtLoad</key>\n\t<true/>\n");
     out.push_str("\t<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>\n");
@@ -104,24 +156,45 @@ pub fn plist(daemon: &Daemon) -> String {
     out
 }
 
-/// `launchctl bootstrap system <plist>`: load (and, with RunAtLoad, start) the daemon.
-pub fn bootstrap_args(service: &str) -> Vec<String> {
-    vec!["bootstrap".into(), "system".into(), plist_path(service).display().to_string()]
+/// `launchctl bootstrap system <plist>` (`gui/<uid>` for an agent): load (and, with RunAtLoad, start) it.
+pub fn bootstrap_args(kind: Kind, service: &str) -> Vec<String> {
+    vec!["bootstrap".into(), domain(kind), plist_path(kind, service).display().to_string()]
 }
 
 /// `launchctl bootout system/<label>`: stop (SIGTERM, the supervisor stops the engine) and unload.
-pub fn bootout_args(service: &str) -> Vec<String> {
-    vec!["bootout".into(), service_target(service)]
+pub fn bootout_args(kind: Kind, service: &str) -> Vec<String> {
+    vec!["bootout".into(), service_target(kind, service)]
 }
 
 /// `launchctl kickstart system/<label>`: start a loaded daemon that is not running.
-pub fn kickstart_args(service: &str) -> Vec<String> {
-    vec!["kickstart".into(), service_target(service)]
+pub fn kickstart_args(kind: Kind, service: &str) -> Vec<String> {
+    vec!["kickstart".into(), service_target(kind, service)]
 }
 
 /// `launchctl print system/<label>`: readable without root.
-pub fn print_args(service: &str) -> Vec<String> {
-    vec!["print".into(), service_target(service)]
+pub fn print_args(kind: Kind, service: &str) -> Vec<String> {
+    vec!["print".into(), service_target(kind, service)]
+}
+
+/// The installed kind from which plist exists (the daemon's first) and the console user's uid.
+pub fn installed_kind(service: &str, exists: impl Fn(&Path) -> bool, console_uid: Option<u32>) -> Option<Kind> {
+    if exists(&plist_path(Kind::Daemon, service)) {
+        return Some(Kind::Daemon);
+    }
+    let agent = Kind::Agent(console_uid.unwrap_or(0));
+    exists(&plist_path(agent, service)).then_some(agent)
+}
+
+/// `server install --launchd daemon|agent`: the kind to install, [`MN4_DAEMON`] when not given.
+/// An agent needs the uid of the account whose session runs it.
+pub fn kind_to_install(choice: Option<&str>, uid: Option<u32>) -> Result<Kind, String> {
+    match (choice, MN4_DAEMON) {
+        (Some("daemon"), _) | (None, true) => Ok(Kind::Daemon),
+        (Some("agent"), _) | (None, false) => {
+            uid.filter(|&u| u != 0).map(Kind::Agent).ok_or_else(|| "an agent needs the login account (--account)".to_string())
+        }
+        (Some(other), _) => Err(format!("--launchd takes daemon or agent, not {other:?}")),
+    }
 }
 
 /// The `service_state` value of `server status` from `launchctl print`'s output: `running`,
@@ -174,10 +247,15 @@ mod tests {
     fn the_names() {
         assert_eq!(label_for("ragon-node"), "ai.dreamference.ragon-node");
         assert_eq!(
-            plist_path("ragon-node"),
+            plist_path(Kind::Daemon, "ragon-node"),
             PathBuf::from("/Library/LaunchDaemons/ai.dreamference.ragon-node.plist")
         );
-        assert_eq!(service_target("ragon-node"), "system/ai.dreamference.ragon-node");
+        assert_eq!(service_target(Kind::Daemon, "ragon-node"), "system/ai.dreamference.ragon-node");
+        assert_eq!(
+            plist_path(Kind::Agent(501), "ragon-node"),
+            PathBuf::from("/Library/LaunchAgents/ai.dreamference.ragon-node.plist")
+        );
+        assert_eq!(service_target(Kind::Agent(501), "ragon-node"), "gui/501/ai.dreamference.ragon-node");
     }
 
     #[test]
@@ -194,6 +272,9 @@ mod tests {
         ));
         assert!(!text.contains("AbandonProcessGroup"));
         assert!(!text.contains("LimitLoadToSessionType"), "a daemon, not an agent");
+        assert!(text.contains(
+            "\t<key>EnvironmentVariables</key>\n\t<dict>\n\t\t<key>HOME</key>\n\t\t<string>/Library/Application Support/Ragon</string>\n\t</dict>\n"
+        ));
         assert!(text.ends_with("</dict>\n</plist>\n"));
     }
 
@@ -216,12 +297,52 @@ mod tests {
     #[test]
     fn the_launchctl_arguments() {
         assert_eq!(
-            bootstrap_args("ragon-node"),
+            bootstrap_args(Kind::Daemon, "ragon-node"),
             ["bootstrap", "system", "/Library/LaunchDaemons/ai.dreamference.ragon-node.plist"]
         );
-        assert_eq!(bootout_args("ragon-node"), ["bootout", "system/ai.dreamference.ragon-node"]);
-        assert_eq!(kickstart_args("ragon-node"), ["kickstart", "system/ai.dreamference.ragon-node"]);
-        assert_eq!(print_args("ragon-node"), ["print", "system/ai.dreamference.ragon-node"]);
+        assert_eq!(bootout_args(Kind::Daemon, "ragon-node"), ["bootout", "system/ai.dreamference.ragon-node"]);
+        assert_eq!(kickstart_args(Kind::Daemon, "ragon-node"), ["kickstart", "system/ai.dreamference.ragon-node"]);
+        assert_eq!(print_args(Kind::Daemon, "ragon-node"), ["print", "system/ai.dreamference.ragon-node"]);
+        let agent = Kind::Agent(501);
+        assert_eq!(
+            bootstrap_args(agent, "ragon-node"),
+            ["bootstrap", "gui/501", "/Library/LaunchAgents/ai.dreamference.ragon-node.plist"]
+        );
+        assert_eq!(bootout_args(agent, "ragon-node"), ["bootout", "gui/501/ai.dreamference.ragon-node"]);
+        assert_eq!(kickstart_args(agent, "ragon-node"), ["kickstart", "gui/501/ai.dreamference.ragon-node"]);
+    }
+
+    #[test]
+    fn the_agent_plist_runs_in_the_login_session_without_a_user_name() {
+        let d = daemon();
+        let agent = Daemon::agent("ragon-node", d.program_arguments.clone(), STATE_DIR);
+        let text = plist(&agent);
+        assert!(!text.contains("UserName"), "an agent runs as the session's user");
+        assert!(!text.contains("EnvironmentVariables"), "the user's own HOME");
+        assert!(text.contains("\t<key>LimitLoadToSessionType</key>\n\t<string>Aqua</string>\n"));
+        assert!(text.contains("\t<key>RunAtLoad</key>\n\t<true/>\n"));
+        assert!(text.contains("<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>"));
+        assert!(text.contains("<key>ThrottleInterval</key>\n\t<integer>10</integer>"));
+    }
+
+    #[test]
+    fn one_switch_picks_the_daemon_and_install_can_take_the_agent() {
+        const { assert!(MN4_DAEMON, "MN4 (a) until the Metal-from-a-daemon probe says otherwise") };
+        assert_eq!(kind_to_install(None, Some(501)), Ok(Kind::Daemon));
+        assert_eq!(kind_to_install(Some("daemon"), None), Ok(Kind::Daemon));
+        assert_eq!(kind_to_install(Some("agent"), Some(501)), Ok(Kind::Agent(501)));
+        assert!(kind_to_install(Some("agent"), None).is_err());
+        assert!(kind_to_install(Some("agent"), Some(0)).is_err(), "never root's session");
+        assert!(kind_to_install(Some("launchd"), Some(501)).is_err());
+    }
+
+    #[test]
+    fn the_installed_kind_is_read_from_the_plist_that_exists() {
+        let daemon_plist = plist_path(Kind::Daemon, "ragon-node");
+        let agent_plist = plist_path(Kind::Agent(0), "ragon-node");
+        assert_eq!(installed_kind("ragon-node", |p| p == daemon_plist, Some(501)), Some(Kind::Daemon));
+        assert_eq!(installed_kind("ragon-node", |p| p == agent_plist, Some(501)), Some(Kind::Agent(501)));
+        assert_eq!(installed_kind("ragon-node", |_| false, Some(501)), None);
     }
 
     #[test]

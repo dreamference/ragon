@@ -38,7 +38,8 @@ pub const SUPERVISOR_LOG: &str = "supervisor.log";
 pub const STALE_AFTER_S: u64 = 15;
 
 const USAGE: &str = "usage: server <start|stop|status|run|install|uninstall> [--name N] [--state-dir D] \
-[--host H] [--port P] [--wait S] [--start-timeout S] [--account A] [--service] [-- <engine> [args...]]";
+[--host H] [--port P] [--wait S] [--start-timeout S] [--account A] [--service] [--launchd daemon|agent] \
+[-- <engine> [args...]]";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -51,13 +52,15 @@ pub struct Options {
     pub start_timeout_s: Option<u64>,
     pub account: Option<String>,
     pub service: bool,
+    /// macOS `install`: `daemon` (MN4 a) or `agent` (MN4 b); `None` follows `MN4_DAEMON`.
+    pub launchd: Option<String>,
     pub engine: Vec<String>,
 }
 
 pub fn default_state_dir() -> PathBuf {
     // macOS: the daemon's directory for root (install) and whenever the daemon is installed.
     #[cfg(target_os = "macos")]
-    if mac::is_root() || crate::macos_launchd::plist_path(DEFAULT_SERVICE_NAME).exists() {
+    if mac::is_root() || crate::macos_launchd::installed_kind(DEFAULT_SERVICE_NAME, |p| p.exists(), None).is_some() {
         return PathBuf::from(crate::macos_launchd::STATE_DIR);
     }
     if cfg!(windows) {
@@ -87,6 +90,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         start_timeout_s: None,
         account: None,
         service: false,
+        launchd: None,
         engine: Vec::new(),
     };
     while let Some(arg) = it.next() {
@@ -107,6 +111,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--account" => opts.account = Some(value("--account")?),
             "--service" => opts.service = true,
+            "--launchd" => opts.launchd = Some(value("--launchd")?),
             "-h" | "--help" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown option {other:?}\n{USAGE}")),
         }
@@ -354,10 +359,10 @@ fn service_state(opts: &Options) -> String {
     }
     #[cfg(target_os = "macos")]
     {
-        if !service_installed(opts) {
+        let Some(kind) = mac::installed(opts) else {
             return "not installed".to_string();
-        }
-        match mac::output("launchctl", &crate::macos_launchd::print_args(&opts.name)) {
+        };
+        match mac::output("launchctl", &crate::macos_launchd::print_args(kind, &opts.name)) {
             Some(text) => crate::macos_launchd::parse_print_state(&text).to_string(),
             None => "unknown".to_string(),
         }
@@ -401,7 +406,7 @@ fn service_installed(opts: &Options) -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        crate::macos_launchd::plist_path(&opts.name).exists()
+        mac::installed(opts).is_some()
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
@@ -615,7 +620,8 @@ mod mac {
     use std::process::Command;
 
     use super::{Options, run_args, supervisor_running, wait_for};
-    use crate::{macos_launchd as launchd, macos_power as power};
+    use crate::macos_launchd::{self as launchd, Kind};
+    use crate::macos_power as power;
 
     unsafe extern "C" {
         fn geteuid() -> u32;
@@ -643,13 +649,29 @@ mod mac {
         Err(format!("{program} {} failed: {}", args.join(" "), said.trim()))
     }
 
-    fn loaded(opts: &Options) -> bool {
-        output("launchctl", &launchd::print_args(&opts.name))
+    /// The uid of the account logged in at the console (an agent's session), if any.
+    fn console_uid() -> Option<u32> {
+        output("stat", &["-f".into(), "%u".into(), "/dev/console".into()])?.trim().parse().ok()
+    }
+
+    /// The installed kind (MN4 a or b), from the plist that exists.
+    pub fn installed(opts: &Options) -> Option<Kind> {
+        launchd::installed_kind(&opts.name, |p| p.exists(), console_uid())
+    }
+
+    fn uid_of(account: &str) -> Option<u32> {
+        output("id", &["-u".into(), account.to_string()])?.trim().parse().ok()
+    }
+
+    fn loaded(kind: Kind, opts: &Options) -> bool {
+        output("launchctl", &launchd::print_args(kind, &opts.name))
             .is_some_and(|t| launchd::parse_print_state(&t) != "not loaded")
     }
 
-    fn need_root(opts: &Options, what: &str) -> Result<(), String> {
-        if is_root() {
+    fn need_root(kind: Kind, opts: &Options, what: &str) -> Result<(), String> {
+        // SAFETY: a plain system call.
+        let me = unsafe { geteuid() };
+        if me == 0 || kind == Kind::Agent(me) {
             return Ok(());
         }
         Err(format!(
@@ -660,8 +682,13 @@ mod mac {
 
     /// `server start` with the daemon installed: load it (RunAtLoad starts it), or start a loaded one.
     pub fn start_daemon(opts: &Options) -> Result<(), i32> {
-        let started = need_root(opts, "start").and_then(|()| {
-            let args = if loaded(opts) { launchd::kickstart_args(&opts.name) } else { launchd::bootstrap_args(&opts.name) };
+        let kind = installed(opts).unwrap_or(Kind::Daemon);
+        let started = need_root(kind, opts, "start").and_then(|()| {
+            let args = if loaded(kind, opts) {
+                launchd::kickstart_args(kind, &opts.name)
+            } else {
+                launchd::bootstrap_args(kind, &opts.name)
+            };
             run("launchctl", &args)
         });
         started.map_err(|e| {
@@ -673,8 +700,9 @@ mod mac {
     /// `server stop` with the daemon installed: unload it. launchd sends the supervisor SIGTERM and
     /// it stops the engine; the daemon stays stopped until `server start` or the next boot.
     pub fn stop_daemon(opts: &Options) -> Result<(), i32> {
-        let stopped = need_root(opts, "stop").and_then(|()| {
-            if loaded(opts) { run("launchctl", &launchd::bootout_args(&opts.name)) } else { Ok(()) }
+        let kind = installed(opts).unwrap_or(Kind::Daemon);
+        let stopped = need_root(kind, opts, "stop").and_then(|()| {
+            if loaded(kind, opts) { run("launchctl", &launchd::bootout_args(kind, &opts.name)) } else { Ok(()) }
         });
         if let Err(e) = stopped {
             eprintln!("server stop: {e}");
@@ -701,11 +729,16 @@ mod mac {
         if !is_root() {
             return Err("needs root: sudo ragon server install -- <engine> [args...]".into());
         }
-        // The role account, never a person's: the installer creates it (a hidden system user).
-        let account = opts.account.clone().unwrap_or_else(|| launchd::ROLE_ACCOUNT.to_string());
-        if output("id", &["-u".into(), account.clone()]).is_none_or(|t| t.trim().parse::<u32>().is_err()) {
-            return Err(format!("the role account {account} does not exist; the installer creates it"));
-        }
+        // MN4 (a): the role account, never a person's (the installer creates it, a hidden system
+        // user). MN4 (b): the login account whose session runs the agent (automatic login).
+        let agent = opts.launchd.as_deref() == Some("agent") || (opts.launchd.is_none() && !launchd::MN4_DAEMON);
+        let default_account =
+            if agent { std::env::var("SUDO_USER").unwrap_or_default() } else { launchd::ROLE_ACCOUNT.to_string() };
+        let account = opts.account.clone().unwrap_or(default_account);
+        let Some(uid) = uid_of(&account) else {
+            return Err(format!("the account {account:?} does not exist; the installer creates the role account"));
+        };
+        let kind = launchd::kind_to_install(opts.launchd.as_deref(), Some(uid))?;
         let state = &opts.state_dir;
         let fail = |what: &str, e: std::io::Error| format!("{what} {}: {e}", state.display());
         std::fs::create_dir_all(state).map_err(|e| fail("cannot create", e))?;
@@ -723,16 +756,29 @@ mod mac {
         let exe = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
         let mut words = vec![exe.display().to_string()];
         words.extend(run_args(opts, false));
-        let mut daemon = launchd::Daemon::new(&opts.name, words, &state.display().to_string());
-        daemon.user_name = account.clone();
-        if loaded(opts) {
-            run("launchctl", &launchd::bootout_args(&opts.name))?;
+        let state_text = state.display().to_string();
+        let daemon = match kind {
+            Kind::Daemon => launchd::Daemon { user_name: account.clone(), ..launchd::Daemon::new(&opts.name, words, &state_text) },
+            Kind::Agent(_) => launchd::Daemon::agent(&opts.name, words, &state_text),
+        };
+        // A reinstall, also from the other kind: unload and remove what is there first.
+        if let Some(old) = installed(opts) {
+            if loaded(old, opts) {
+                run("launchctl", &launchd::bootout_args(old, &opts.name))?;
+            }
+            if old != kind {
+                let _ = std::fs::remove_file(launchd::plist_path(old, &opts.name));
+            }
         }
-        let path = launchd::plist_path(&opts.name);
+        let path = launchd::plist_path(kind, &opts.name);
         std::fs::write(&path, launchd::plist(&daemon)).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
             .map_err(|e| format!("cannot chmod {}: {e}", path.display()))?;
-        run("launchctl", &launchd::bootstrap_args(&opts.name))?;
+        if kind != Kind::Agent(uid) || console_uid() == Some(uid) {
+            run("launchctl", &launchd::bootstrap_args(kind, &opts.name))?;
+        } else {
+            println!("{account} is not logged in: the agent starts at its next (automatic) login");
+        }
         println!("installed {} as {account}: {}", daemon.label, path.display());
         println!("power on mains: pmset {}", power::set_args().join(" "));
         Ok(())
@@ -752,11 +798,12 @@ mod mac {
         if !is_root() {
             return Err("needs root: sudo ragon server uninstall".into());
         }
-        if loaded(opts) {
-            run("launchctl", &launchd::bootout_args(&opts.name))?;
-        }
-        let path = launchd::plist_path(&opts.name);
-        if path.exists() {
+        // Whichever kind is installed (MN4 a or b); the saved power settings are restored either way.
+        if let Some(kind) = installed(opts) {
+            if loaded(kind, opts) {
+                run("launchctl", &launchd::bootout_args(kind, &opts.name))?;
+            }
+            let path = launchd::plist_path(kind, &opts.name);
             std::fs::remove_file(&path).map_err(|e| format!("cannot remove {}: {e}", path.display()))?;
         }
         let saved = opts.state_dir.join(power::SAVED_FILE);
