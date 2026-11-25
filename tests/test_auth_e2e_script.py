@@ -4,6 +4,7 @@ Dry runs, plus real runs against a fake `ssh` on PATH that records every call (n
 touched), and the node helper's pure parts.
 """
 
+import base64
 import importlib.util
 import os
 import py_compile
@@ -59,6 +60,7 @@ case "$cmd" in
   *" sdk "*) echo "Authorization: Bearer abc.def-ghi"; echo "key sk-ragon-AbC123_x"; echo "id eyJhbGc.eyJzdWIi.c2ln" ;;
 esac
 case "$cmd" in *"$FAKE_SSH_FAIL"*) [ -n "$FAKE_SSH_FAIL" ] && exit 7 ;; esac
+case "$cmd" in *"$FAKE_SSH_HANG"*) [ -n "$FAKE_SSH_HANG" ] && exec sleep 60 ;; esac
 exit 0
 """
 
@@ -90,6 +92,7 @@ def _fake(tmp_path: Path, fail: str = "") -> tuple[dict[str, str], Path, Path]:
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "FAKE_SSH_LOG": str(calls),
         "FAKE_SSH_FAIL": fail,
+        "FAKE_SSH_HANG": "",
     }
     return env, calls, evidence
 
@@ -226,14 +229,16 @@ def test_a_green_fake_run_writes_masked_evidence_and_removes_the_user(tmp_path: 
     assert "--password " not in calls
 
 
-def test_the_whoami_steps_run_on_a_pty(tmp_path: Path) -> None:
-    # `ragon whoami` refuses to run without a terminal; the helper's signin runs it too.
+def test_login_status_runs_over_plain_ssh_and_the_sign_in_steps_get_a_pty(tmp_path: Path) -> None:
+    # `ragon login status` prints the signed-in user without a terminal; `ragon whoami` is not used.
     _, calls, _ = _real(tmp_path)
     lines = calls.splitlines()
-    whoami = [line for line in lines if "ragon whoami" in line]
+    assert not any("ragon whoami" in line for line in lines)
+    status = [line for line in lines if "ragon login status" in line]
     signin = [line for line in lines if " signin " in line]
-    assert len(whoami) == 1 and len(signin) >= 3
-    assert all(line.endswith("[tty]") for line in whoami + signin)
+    assert len(status) == 1 and len(signin) >= 3
+    assert not status[0].endswith("[tty]")
+    assert all(line.endswith("[tty]") for line in signin)
     # Steps that do not need a terminal keep plain ssh.
     assert not any(line.endswith("[tty]") for line in lines if "ragon-admin node user list" in line)
 
@@ -312,6 +317,7 @@ def test_the_node_helper_compiles_and_its_checks_hold(tmp_path: Path) -> None:
     )
     assert helper.unauth_rows(rows) == 7
     assert helper.tampered("abc") != "abc"
+    assert helper.tampered("abc") == "abA"
     assert helper.main(["auth_e2e_node.py", "nope", str(tmp_path)]) == 2
     assert helper.main(["auth_e2e_node.py", "refusals", str(tmp_path / "missing")]) == 1
 
@@ -353,3 +359,55 @@ def test_the_first_run_screen_answers_the_line_prompts_and_the_sdk_python_is_the
         assert prompt in source, prompt
     script = SCRIPT.read_text()
     assert 'SDK="${AUTH_E2E_SDK_PYTHON:-python3} -I $RUN/auth_e2e_node.py sdk $RUN"' in script
+
+
+def test_tampered_flips_one_signature_bit_and_keeps_the_token_shape() -> None:
+    # Spec §7: a secondary verifies the JWT signature locally, and the signature alone never admits a
+    # request, so the tampered token must be a real change to the signature, of the same shape.
+    helper = _helper()
+    header = base64.urlsafe_b64encode(b'{"alg":"RS256"}').decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(b'{"sub":"x"}').decode().rstrip("=")
+    for size in range(1, 40):  # every base64 padding case
+        raw = bytes(range(size))
+        signature = base64.urlsafe_b64encode(raw).decode().rstrip("=")
+        token = f"{header}.{payload}.{signature}"
+        flipped = helper.tampered(token)
+        assert flipped != token, size
+        assert len(flipped) == len(token), size
+        assert flipped.startswith(f"{header}.{payload}."), size
+        back = base64.urlsafe_b64decode(flipped.rsplit(".", 1)[1] + "=" * (-len(signature) % 4))
+        assert back[:-1] == raw[:-1], size
+        assert back[-1] == raw[-1] ^ 0x01, size
+
+
+def test_a_hung_node_command_fails_its_step_at_the_step_timeout(tmp_path: Path) -> None:
+    # Each ssh call runs under `timeout`: a command that hangs is killed and its step fails with 124.
+    env, _, evidence = _fake(tmp_path)
+    env["FAKE_SSH_HANG"] = " unauth "
+    env["AUTH_E2E_STEP_TIMEOUT_S"] = "1"
+    done = _run(
+        "--primary",
+        "prim",
+        "--secondary",
+        "sec",
+        "--evidence",
+        str(evidence),
+        "--any-time",
+        env=env,
+    )
+    # The E14 unauthenticated check runs the command on both nodes: the hung call is logged with exit 124.
+    assert "[FAIL] E14:" in done.stdout
+    logs = [log.read_text() for log in evidence.glob("E14-*.log")]
+    assert logs and all("--- exit: 124" in log for log in logs)
+    assert done.returncode != 0
+
+
+def test_every_node_command_goes_through_the_step_timeout() -> None:
+    text = SCRIPT.read_text()
+    assert "STEP_TIMEOUT_S=${AUTH_E2E_STEP_TIMEOUT_S:-600}" in text
+    on_line = next(line for line in text.splitlines() if line.startswith("on() {"))
+    assert "timeout --foreground -k 15" in on_line and " ssh " in on_line
+    # No ssh call outside on(): put, run, cleanup and the E13 pipeline all go through it.
+    assert [
+        line for line in text.splitlines() if "ssh " in line and not line.startswith(("on()", "#"))
+    ] == []
