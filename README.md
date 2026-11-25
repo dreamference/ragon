@@ -1,3 +1,5 @@
+Ragon is an open-source coding agent that runs entirely on a desk-side NVIDIA GB10 machine, with no cloud.
+
 <div align="center">
 
 <picture>

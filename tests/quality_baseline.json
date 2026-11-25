@@ -1,7 +1,6 @@
 {
  "counts": {
   "dreamference/__init__.py": {
-   "D415": 1,
    "PQ002": 1
   },
   "dreamference/audit/egress_audit.py": {
@@ -178,5 +177,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 199
+ "total": 198
 }
