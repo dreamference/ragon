@@ -29,6 +29,13 @@ path = "src/main.rs"
 name = "ragon-standin-engine"
 path = "src/bin/ragon-standin-engine.rs"
 
+[dependencies]
+# The advertisement (src/advertise.rs): the same pure-Rust responder crate the launcher browses with.
+mdns-sd = { version = "0.21.4", default-features = false }
+
+[dev-dependencies]
+serde_json = "1"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",

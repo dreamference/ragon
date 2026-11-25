@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::advertise::{self, Advertisement, Responder};
 use crate::core::{self, Policy, Snapshot, Supervisor};
 use crate::probe::HttpProbe;
 use crate::process::ChildEngine;
@@ -33,7 +34,7 @@ pub const SUPERVISOR_LOG: &str = "supervisor.log";
 pub const STALE_AFTER_S: u64 = 15;
 
 const USAGE: &str = "usage: server <start|stop|status|run|install|uninstall> [--name N] [--state-dir D] \
-[--host H] [--port P] [--wait S] [--start-timeout S] [--account A] [--service] [-- <engine> [args...]]";
+[--host H] [--port P] [--wait S] [--start-timeout S] [--account A] [--service] [--advertise NODE_ID [--node-version V] [--web-port P] [--search-port P] [--main] [--remote NAME]] [-- <engine> [args...]]";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -46,6 +47,8 @@ pub struct Options {
     pub start_timeout_s: Option<u64>,
     pub account: Option<String>,
     pub service: bool,
+    /// Advertise the node on the LAN while supervising (src/advertise.rs); `port` is the SRV port.
+    pub advertise: Option<Advertisement>,
     pub engine: Vec<String>,
 }
 
@@ -77,8 +80,10 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         start_timeout_s: None,
         account: None,
         service: false,
+        advertise: None,
         engine: Vec::new(),
     };
+    let (mut version, mut web_port, mut search_port, mut main, mut remote) = (None, None, None, false, None);
     while let Some(arg) = it.next() {
         let mut value = |flag: &str| it.next().cloned().ok_or_else(|| format!("{flag} needs a value"));
         match arg.as_str() {
@@ -97,9 +102,24 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--account" => opts.account = Some(value("--account")?),
             "--service" => opts.service = true,
+            "--advertise" => opts.advertise = Some(Advertisement { node_id: value("--advertise")?, ..Default::default() }),
+            "--node-version" => version = Some(value("--node-version")?),
+            "--web-port" => web_port = Some(value("--web-port")?.parse().map_err(|_| "--web-port needs a number".to_string())?),
+            "--search-port" => {
+                search_port = Some(value("--search-port")?.parse().map_err(|_| "--search-port needs a number".to_string())?)
+            }
+            "--main" => main = true,
+            "--remote" => remote = Some(value("--remote")?),
             "-h" | "--help" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown option {other:?}\n{USAGE}")),
         }
+    }
+    if let Some(ad) = opts.advertise.as_mut() {
+        ad.version = version.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+        ad.port = opts.port;
+        (ad.web_port, ad.search_port, ad.main, ad.remote) = (web_port, search_port, main, remote);
+    } else if version.is_some() || web_port.is_some() || search_port.is_some() || main || remote.is_some() {
+        return Err(format!("--node-version, --web-port, --search-port, --main and --remote go with --advertise\n{USAGE}"));
     }
     let needs_engine = matches!(opts.command.as_str(), "run" | "install");
     if needs_engine && opts.engine.is_empty() {
@@ -144,6 +164,21 @@ pub fn run_args(opts: &Options, service: bool) -> Vec<String> {
     args.extend(["--host".into(), opts.host.clone(), "--port".into(), opts.port.to_string()]);
     if let Some(s) = opts.start_timeout_s {
         args.extend(["--start-timeout".into(), s.to_string()]);
+    }
+    if let Some(ad) = &opts.advertise {
+        args.extend(["--advertise".into(), ad.node_id.clone(), "--node-version".into(), ad.version.clone()]);
+        if let Some(p) = ad.web_port {
+            args.extend(["--web-port".into(), p.to_string()]);
+        }
+        if let Some(p) = ad.search_port {
+            args.extend(["--search-port".into(), p.to_string()]);
+        }
+        if ad.main {
+            args.push("--main".into());
+        }
+        if let Some(r) = &ad.remote {
+            args.extend(["--remote".into(), r.clone()]);
+        }
     }
     args.push("--".into());
     args.extend(opts.engine.iter().cloned());
@@ -197,20 +232,74 @@ pub fn supervise(opts: &Options, stop: &AtomicBool) -> i32 {
         policy.start_timeout = Duration::from_secs(s);
     }
     let mut sup = Supervisor::new(engine, probe, policy);
+    let mut announcer = Announcer::new(opts.advertise.clone());
     let me = std::process::id();
     loop {
         if stop.load(Ordering::SeqCst) || stop_file.exists() {
             sup.stop();
+            // Withdraw first: the record is gone (goodbye sent) before the stop is reported.
+            announcer.withdraw();
             let _ = std::fs::remove_file(&stop_file);
             write_status(opts, &url, &sup.snapshot(Instant::now()), None);
             return 0;
         }
         let wait = sup.tick(Instant::now());
+        announcer.follow(sup.state());
         write_status(opts, &url, &sup.snapshot(Instant::now()), Some(me));
         let due = Instant::now() + wait;
         while Instant::now() < due && !stop.load(Ordering::SeqCst) && !stop_file.exists() {
             std::thread::sleep(due.saturating_duration_since(Instant::now()).min(Duration::from_millis(100)));
         }
+    }
+}
+
+/// The supervisor's advertisement: registered on the first tick, re-announced when the engine's
+/// state moves (`loading` to `ready`), withdrawn on stop. A failure to register is logged once
+/// and retried on later ticks; it never stops the supervisor.
+struct Announcer {
+    template: Option<Advertisement>,
+    responder: Option<Responder>,
+    sent_state: Option<&'static str>,
+    complained: bool,
+}
+
+impl Announcer {
+    fn new(template: Option<Advertisement>) -> Announcer {
+        Announcer { template, responder: None, sent_state: None, complained: false }
+    }
+
+    fn follow(&mut self, state: core::State) {
+        let Some(template) = self.template.as_ref() else { return };
+        let wanted = advertise::advertised_state(state);
+        if self.sent_state == Some(wanted) {
+            return;
+        }
+        let mut ad = template.clone();
+        ad.state = wanted.to_string();
+        let result = match self.responder.as_mut() {
+            Some(responder) => responder.update(&ad).map(|()| true),
+            None => Responder::start(&ad).map(|r| {
+                let on = r.is_some();
+                self.responder = r;
+                on
+            }),
+        };
+        match result {
+            // A public network registers nothing; the state is remembered so it is not retried each tick.
+            Ok(_) => self.sent_state = Some(wanted),
+            Err(e) if !self.complained => {
+                self.complained = true;
+                eprintln!("server run: advertisement not started: {e} (retrying)");
+            }
+            Err(_) => {}
+        }
+    }
+
+    fn withdraw(&mut self) {
+        if let Some(responder) = self.responder.take() {
+            responder.stop();
+        }
+        self.sent_state = None;
     }
 }
 
@@ -485,6 +574,13 @@ fn install(opts: &Options) -> i32 {
         let account = opts.account.clone().unwrap_or_else(|| format!(r"NT SERVICE\{}", opts.name));
         match crate::windows_service::install(&opts.name, &account, &command_line, &opts.state_dir) {
             Ok(()) => {
+                if opts.advertise.is_some() {
+                    let engine = opts.engine.first().map(String::as_str).unwrap_or_default();
+                    if let Err(e) = crate::firewall::apply(&opts.name, &exe.display().to_string(), engine, opts.port) {
+                        // The service is in; the node is reachable on the LAN once the rules are.
+                        eprintln!("server install: {e}");
+                    }
+                }
                 println!("installed service {} as {account}", opts.name);
                 println!("command line: {command_line}");
                 0
@@ -508,6 +604,7 @@ fn uninstall(opts: &Options) -> i32 {
     {
         match crate::windows_service::uninstall(&opts.name) {
             Ok(()) => {
+                let _ = crate::firewall::remove(&opts.name);
                 println!("removed service {}", opts.name);
                 0
             }
@@ -611,6 +708,17 @@ mod tests {
         assert_eq!(again.port, 9);
         assert_eq!(again.start_timeout_s, Some(20));
         assert_eq!(again.engine, o.engine);
+        assert_eq!(again.advertise, None);
+    }
+
+    #[test]
+    fn the_advertisement_options_round_trip_and_need_the_flag() {
+        let o = parse(&args(&["run", "--port", "9", "--advertise", "nid-1", "--web-port", "3100", "--main", "--remote", "r.example", "--", "e"]))
+            .unwrap();
+        let ad = o.advertise.clone().unwrap();
+        assert_eq!((ad.node_id.as_str(), ad.port, ad.web_port, ad.main), ("nid-1", 9, Some(3100), true));
+        assert_eq!(parse(&run_args(&o, false)[1..]).unwrap().advertise, Some(ad));
+        assert!(parse(&args(&["run", "--main", "--", "e"])).is_err());
     }
 
     #[test]

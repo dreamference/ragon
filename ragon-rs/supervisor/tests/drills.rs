@@ -2,7 +2,9 @@
 //! - the stand-in killed: restarted after 1 s, then (killed again) after 2 s;
 //! - the supervisor killed (Windows): the engine dies with it (Job Object);
 //! - `server start|status|stop` without a service: a detached supervisor, stable status output;
-//! - an engine that refuses (exit 3) is not restarted.
+//! - an engine that refuses (exit 3) is not restarted;
+//! - `--advertise`: a browse sees the node record (TXT, `loading` then `ready`) and sees it go when
+//!   the supervisor stops (needs multicast, so it is `#[ignore]`: `cargo test -- --ignored`).
 //!
 //! Ports come from the OS (port 0), never the node's.
 
@@ -173,4 +175,48 @@ fn a_killed_supervisor_takes_the_engine_with_it() {
     let probe = ragon_supervisor::probe::HttpProbe::models("127.0.0.1", port);
     assert_eq!(probe.status_code(), None);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore = "needs a multicast-capable interface"]
+fn the_advertisement_follows_the_engine_and_goes_with_the_supervisor() {
+    use mdns_sd::{ServiceDaemon, ServiceEvent};
+    let dir = state_dir("advertise");
+    let port = free_port();
+    let node = format!("drill-{}", std::process::id());
+    let browser = ServiceDaemon::new().unwrap();
+    let rx = browser.browse(ragon_supervisor::advertise::NODE_TYPE).unwrap();
+    let mut sup = Command::new(SUPERVISOR)
+        .args(["server", "run", "--state-dir"])
+        .arg(&dir)
+        .args(["--port", &port.to_string(), "--advertise", &node, "--node-version", "9.9.9", "--web-port", "3100", "--main"])
+        .args(engine_args(port, &[]))
+        .spawn()
+        .unwrap();
+    let mut states = Vec::new();
+    let until = Instant::now() + Duration::from_secs(30);
+    while !states.contains(&"ready".to_string()) && Instant::now() < until {
+        if let Ok(ServiceEvent::ServiceResolved(info)) = rx.recv_timeout(Duration::from_millis(500))
+            && info.get_property_val_str("node") == Some(node.as_str())
+        {
+            assert_eq!(info.get_port(), port);
+            assert_eq!(info.get_property_val_str("proto"), Some("1"));
+            assert_eq!(info.get_property_val_str("version"), Some("9.9.9"));
+            assert_eq!(info.get_property_val_str("web"), Some("3100"));
+            assert_eq!(info.get_property_val_str("main"), Some("1"));
+            states.push(info.get_property_val_str("state").unwrap().to_string());
+        }
+    }
+    assert!(states.contains(&"ready".to_string()), "never saw ready: {states:?}");
+    assert!(server(&dir, port, &["stop"], false).status.success());
+    let _ = sup.wait();
+    let until = Instant::now() + Duration::from_secs(10);
+    let mut gone = false;
+    while !gone && Instant::now() < until {
+        if let Ok(ServiceEvent::ServiceRemoved(..)) = rx.recv_timeout(Duration::from_millis(500)) {
+            gone = true;
+        }
+    }
+    assert!(gone, "the record was not withdrawn when the supervisor stopped");
+    let _ = browser.shutdown();
 }
