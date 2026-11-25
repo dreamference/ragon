@@ -6,10 +6,18 @@ import json
 import os
 import re
 import sys
+from typing import Final
+
+# The position of the optional count argument on the command line.
+ARGV_COUNT_INDEX: Final[int] = 3
+
+# The most reference words between two reported missed-8-gram occurrences before the next one
+# must appear (keeps the output to the interesting clusters rather than every miss).
+MAX_GAP: Final[int] = 30
 
 D = os.path.dirname(os.path.abspath(__file__))
 name, eng = sys.argv[1], sys.argv[2]
-k = int(sys.argv[3]) if len(sys.argv) > 3 else 4
+k = int(sys.argv[ARGV_COUNT_INDEX]) if len(sys.argv) > ARGV_COUNT_INDEX else 4
 W = re.compile(r"[a-z0-9]+")
 ref = W.findall(open(f"{D}/reference/{name}.txt").read().lower())
 got_text = "\n".join(
@@ -25,7 +33,7 @@ print(
 )
 shown, last = 0, -100
 for i in miss:
-    if i - last > 30 and shown < k:
+    if i - last > MAX_GAP and shown < k:
         print("  ref:", " ".join(ref[i : i + 14]))
         shown += 1
     last = i
