@@ -174,3 +174,25 @@ fn a_killed_supervisor_takes_the_engine_with_it() {
     assert_eq!(probe.status_code(), None);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_stand_in_told_to_connect_out_does_so_on_every_probe() {
+    // The egress audit's drill (`ragon audit egress --node`) needs an engine that reaches where it
+    // must not; here the "forbidden" destination is a listener on loopback.
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    target.set_nonblocking(true).unwrap();
+    let address = target.local_addr().unwrap().to_string();
+    let dir = state_dir("connect");
+    let port = free_port();
+    let mut supervisor = run_supervisor(&dir, port, &["--connect", &address]);
+    wait_until(30, "a connection from the stand-in", || target.accept().is_ok());
+    kill_pid(supervisor.id());
+    let _ = supervisor.wait();
+    if let Some(pid) = field(&dir, "engine_pid").and_then(|pid| pid.parse::<u32>().ok()) {
+        let _ = Command::new(if cfg!(windows) { "taskkill" } else { "kill" })
+            .args(if cfg!(windows) { vec!["/F", "/PID"] } else { vec!["-9"] })
+            .arg(pid.to_string())
+            .output();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

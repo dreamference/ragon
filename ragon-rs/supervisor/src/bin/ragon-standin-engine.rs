@@ -2,11 +2,14 @@
 //! `GET /v1/models` with a one-model list and 404 to anything else, and can be killed on demand
 //! (by pid, or `GET /exit` makes it exit with `--exit-code`).
 //!
-//! `ragon-standin-engine --port P [--pid-file F] [--exit-code N] [--exit-after-ms MS] [--refuse]`
-//! `--refuse` exits 3 at once (the "do not retry" code); `--exit-after-ms` exits on its own.
+//! `ragon-standin-engine --port P [--pid-file F] [--exit-code N] [--exit-after-ms MS] [--refuse]
+//! [--connect ADDR:PORT]`
+//! `--refuse` exits 3 at once (the "do not retry" code); `--exit-after-ms` exits on its own;
+//! `--connect` opens a TCP connection to ADDR:PORT on every request it answers, the forbidden
+//! egress the egress audit's drill must catch (`ragon audit egress --node`).
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
 fn main() {
@@ -15,6 +18,7 @@ fn main() {
     let mut pid_file = None;
     let mut exit_code = 1i32;
     let mut exit_after_ms = None;
+    let mut connect: Option<SocketAddr> = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let value = it.clone().next().cloned().unwrap_or_default();
@@ -24,6 +28,7 @@ fn main() {
             "--exit-code" => exit_code = value.parse().expect("--exit-code needs a number"),
             "--exit-after-ms" => exit_after_ms = Some(value.parse::<u64>().expect("--exit-after-ms needs a number")),
             "--refuse" => std::process::exit(3),
+            "--connect" => connect = Some(value.parse().expect("--connect needs ADDR:PORT")),
             other => panic!("unknown argument {other}"),
         }
         it.next();
@@ -40,6 +45,11 @@ fn main() {
     let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
     eprintln!("standin: listening on {} pid {}", listener.local_addr().unwrap(), std::process::id());
     for stream in listener.incoming().flatten() {
+        if let Some(target) = connect {
+            std::thread::spawn(move || {
+                let _ = TcpStream::connect_timeout(&target, Duration::from_secs(2));
+            });
+        }
         if handle(stream) {
             std::process::exit(exit_code);
         }
