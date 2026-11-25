@@ -187,6 +187,7 @@
 /ragon-web-rs/src/node_locator.rs                @dreamference/nodes
 /ragon-rs/src/node.rs                            @dreamference/nodes
 /ragon-rs/src/node_advertise_macos.rs            @dreamference/nodes
+/ragon-rs/src/node_job_macos.rs                  @dreamference/nodes
 /ragon-rs/vectors/node-txt-keys.json             @dreamference/nodes
 /ragon-rs/src/metal_recipe.rs                   @dreamference/nodes
 /ragon-rs/vectors/metal-recipes.json             @dreamference/nodes
