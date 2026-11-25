@@ -12,9 +12,15 @@ import subprocess
 from pathlib import Path
 from typing import Final
 
+from dreamference.hardware.gpu_platform import (
+    PLATFORM_STRIX_HALO_LINUX,
+    current_platform,
+    strix_usable_gpu_gb,
+)
 from dreamference.hardware.hardware_telemetry import HardwareTelemetry
 from dreamference.hardware.memory_metrics import MemoryMetrics
 from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
+from dreamference.hardware.model_spec import ModelSpec
 
 # The GB10's GPU as the PCI bus lists it: the same chip in every GB10 machine (NVIDIA's DGX Spark
 # and the seven partner boxes), so it identifies one before a driver is installed, when there is
@@ -227,10 +233,14 @@ class HardwareManager:
         if not spec:
             return True, f"Unknown model '{model_key}'. Make sure host has enough memory."
 
+        platform = current_platform()
+        if platform == PLATFORM_STRIX_HALO_LINUX:
+            return cls._check_strix_compatibility(spec)
+
         hw = cls.detect_gb10_hardware()
         avail_mem = hw.total_unified_memory_gb or 128.0
 
-        if not spec.compatible_gb10:
+        if not spec.compatible_with(platform):
             return (
                 False,
                 f"Model '{spec.name}' exceeds GB10 128GB unified memory budget ({spec.min_memory_gb} GB required).",
@@ -242,6 +252,28 @@ class HardwareManager:
                 f"{avail_mem * 0.95:.1f} GB budget (95% of {avail_mem:.1f} GB unified memory)."
             )
 
+        return True, f"✅ Compatible: {spec.name} ({spec.notes})"
+
+    @classmethod
+    def _check_strix_compatibility(cls, spec: ModelSpec) -> tuple[bool, str]:
+        """The compatibility check on strix-halo-linux: the GPU's measured usable memory, not 128 GB.
+
+        Args:
+            spec: The model's registry entry.
+
+        Returns:
+            Tuple[bool, str]: Tuple of (is_compatible, status_message).
+        """
+        if not spec.compatible_with(PLATFORM_STRIX_HALO_LINUX):
+            return False, f"Model '{spec.name}' is not qualified on {PLATFORM_STRIX_HALO_LINUX}."
+        usable_gb = strix_usable_gpu_gb()
+        if usable_gb <= 0:
+            return False, "No AMD GPU memory is reported (mem_info_vram_total); is amdgpu loaded?"
+        if spec.min_memory_gb > usable_gb * 0.95:
+            return False, (
+                f"Model '{spec.name}' requires {spec.min_memory_gb} GB, more than the "
+                f"{usable_gb * 0.95:.1f} GB budget (95% of {usable_gb:.1f} GB GPU-usable memory)."
+            )
         return True, f"✅ Compatible: {spec.name} ({spec.notes})"
 
     @classmethod
