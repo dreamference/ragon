@@ -1,0 +1,42 @@
+# `ragon-supervisor`, the node's model-server supervisor (specs/DREAMFERENCE_WINDOWS_NODE.md §4.2,
+# owner ruling WN1: node tooling on Windows is Rust subcommands of the launcher). It starts the
+# engine, probes `/v1/models`, restarts it with backoff and stops it.
+#
+# src/core.rs is the platform-neutral state machine (no I/O, a caller-supplied clock) that the
+# Mac rows reuse; src/windows_job.rs (the Job Object the engine runs in) and
+# src/windows_service.rs (the `ragon-node` service) are the Windows parts. A crate of its own so
+# `cargo test` in a copy of this folder needs no Codex workspace; versions are the Codex
+# workspace's, so building inside it adds no second copy of any crate. The launcher links it on
+# Windows only (src/supervisor_windows.rs, `ragon server ...`).
+[package]
+name = "ragon-supervisor"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "ragon_supervisor"
+path = "src/lib.rs"
+
+# The drill binary: `ragon-supervisor server <start|stop|status|run|install|uninstall>`.
+[[bin]]
+name = "ragon-supervisor"
+path = "src/main.rs"
+
+# The stand-in engine the tests and drills supervise: answers GET /v1/models.
+[[bin]]
+name = "ragon-standin-engine"
+path = "src/bin/ragon-standin-engine.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+] }
