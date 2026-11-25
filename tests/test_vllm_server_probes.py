@@ -139,6 +139,15 @@ def test_a_docker_or_vllm_probe_that_cannot_run_reports_absent(monkeypatch):
     assert mgr.is_vllm_installed() is False
 
 
+def test_vllm_server_manager_is_vllm_installed_reports_true_when_the_binary_exists(monkeypatch):
+    """When shutil.which finds the vllm binary, the probe reports it as installed."""
+    from dreamference.vllm_server import vllm_server_manager as vsm
+
+    monkeypatch.setattr(vsm.shutil, "which", lambda name: "/usr/local/bin/vllm")
+    mgr = VLLMServerManager()
+    assert mgr.is_vllm_installed() is True
+
+
 @pytest.mark.parametrize(
     "failure",
     [subprocess.CalledProcessError(1, ["docker", "pull"]), OSError("docker vanished")],
