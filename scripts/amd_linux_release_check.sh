@@ -27,8 +27,9 @@
 #                      LD_LIBRARY_PATH. The output line says bare=1.
 #   --rocm DIR         ROCm runtime lib directory for --bare
 #   --gpu-lock FILE    on the box (default $HOME/.ling-gpu.lock)
+#   --lock-wait S      seconds to wait for the GPU lock (default 60, or AMD_LINUX_LOCK_WAIT)
 #   --expect FILE      expected ids file (default scripts/amd_linux_release_check.ids)
-# Environment: AMD_LINUX_SSH names the ssh command (default ssh), AMD_LINUX_FS a root prefix for /dev
+# Environment: AMD_LINUX_SSH names the ssh command (default ssh), AMD_LINUX_LOCK_WAIT, AMD_LINUX_FS a root prefix for /dev
 # and /sys and AMD_LINUX_GROUPS the group list, so the tests can stand in for the box.
 set -uo pipefail
 
@@ -36,6 +37,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(dirname "$here")"
 
 mode=local
+lock_wait="${AMD_LINUX_LOCK_WAIT:-60}"
 host="" workdir="" image="" testdir=/opt/ragon/build exclude="" bare="" rocm="" lock='$HOME/.ling-gpu.lock'
 expect="$here/amd_linux_release_check.ids"
 while [ $# -gt 0 ]; do
@@ -51,6 +53,7 @@ while [ $# -gt 0 ]; do
     --gpu-lock) lock="$2"; shift ;;
     --expect) expect="$2"; shift ;;
     --expect-ids) expect_ids="$2"; shift ;;
+    --lock-wait) lock_wait="$2"; shift ;;
     *) echo "AMD_LINUX_RELEASE_CHECK FAIL unknown argument $1"; exit 2 ;;
   esac
   shift
@@ -74,7 +77,7 @@ if [ "$mode" = local ]; then
   ssh_cmd="${AMD_LINUX_SSH:-ssh}"
   q() { printf '%q ' "$@"; }
   args="$(q --remote --workdir "$workdir" --image "$image" --test-dir "$testdir" --ctest-exclude "$exclude" \
-    --bare "$bare" --rocm "$rocm" --gpu-lock "$lock" --expect-ids "$ids")"
+    --bare "$bare" --rocm "$rocm" --gpu-lock "$lock" --lock-wait "$lock_wait" --expect-ids "$ids")"
   # The script itself is the remote program: no file is copied to the box.
   $ssh_cmd "$host" "bash -s -- $args" < "${BASH_SOURCE[0]}"
   exit $?
@@ -86,7 +89,7 @@ fails=()
 res_pull=skip res_ctest=skip res_smoke=skip res_quick=skip
 
 exec 9>"$lock" || { echo "AMD_LINUX_RELEASE_CHECK FAIL cannot open the GPU lock"; exit 1; }
-if ! flock -w "${AMD_LINUX_LOCK_WAIT:-60}" 9; then
+if ! flock -w "$lock_wait" 9; then
   echo "AMD_LINUX_RELEASE_CHECK FAIL the GPU lock is held (a lane or a night has the box)"; exit 1
 fi
 
