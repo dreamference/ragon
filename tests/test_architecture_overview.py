@@ -224,6 +224,7 @@ def test_the_launchers_member_crates_are_the_ones_the_overview_lists():
         "web",
         "signal",
         "chat",
+        "supervisor",
     }
 
 
