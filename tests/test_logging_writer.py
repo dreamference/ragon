@@ -194,6 +194,23 @@ def test_every_token_shape_is_redacted_and_a_near_miss_stays():
         assert redactor.redact(f"plain {sample[:6]} word") == f"plain {sample[:6]} word", name
 
 
+def test_log_redactor_url_keeps_trailing_punctuation_away_from_the_match():
+    redactor = LogRedactor()
+    assert redactor.redact("see https://h.example/p now") == "see https://h.example/p now"
+    assert redactor.redact("see https://h.example/p,.") == "see https://h.example/p,."
+
+
+def test_log_redactor_url_keeps_the_port_and_brackets_an_ipv6_host():
+    redactor = LogRedactor()
+    assert redactor.redact("see https://h.example:8443/p") == "see https://h.example:8443/p"
+    assert redactor.redact("see http://[2001:db8::1]:8443/p") == "see http://[[addr]]:8443/p"
+
+
+def test_log_redactor_url_unsplittable_input_keeps_its_host_down_to_the_user_info():
+    redactor = LogRedactor()
+    assert redactor.redact("see https://[::zz]/x?q=1#f") == "see https://[::zz]/x"
+
+
 def test_a_ten_kilobyte_value_is_cut_at_the_last_whole_field():
     redactor = LogRedactor()
     fields = (*LogField.count(a=1), *LogField.error({"class": "E", "message": "x" * 10000}))
