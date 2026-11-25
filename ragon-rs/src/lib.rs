@@ -1620,12 +1620,14 @@ pub fn updated_config_for(existing: &str, catalog_path: &Path, host: &str, accou
     // a `true` left in the file turned the request back on.
     doc["check_for_update_on_startup"] = value(false);
     // Always, not only when absent: this is a privacy boundary, not a preference. Codex's backend
-    // requests go to the node's gate (stubs, spec AUTH §5.9), never to the vendor; `ragon_issuer`
-    // is read by the login crate's patch 0040 (spec AUTH §5.1).
+    // requests go to the node's gate (stubs, spec AUTH §5.9), never to the vendor; the login
+    // crate's patch 0040 takes the issuer from it, less `/backend-api` (spec AUTH §5.1). The
+    // `ragon_issuer` key of 0.9.9-rc.2 is dropped: Codex's schema does not know it and warned on
+    // every start.
     let gate = host.trim_end_matches('/');
     doc["model_provider"] = value(PROVIDER);
     doc["chatgpt_base_url"] = value(format!("{gate}/backend-api/"));
-    doc["ragon_issuer"] = value(gate);
+    doc.remove("ragon_issuer");
     // A chosen terminal pet downloads its art from OpenAI's CDN (persistent.oaistatic.com) at
     // startup; /pets is hidden (patch 0010), and a pet left in the file is dropped for the same
     // reason.
@@ -2239,6 +2241,13 @@ mod tests {
     }
 
     #[test]
+    fn an_issuer_key_left_by_an_older_launcher_is_removed() {
+        let existing = "ragon_issuer = \"http://x:8000\"\n";
+        let text = updated_config(existing, Path::new("/h/model_catalog.json"), "http://x:8000/").unwrap();
+        assert!(!text.contains("ragon_issuer"));
+    }
+
+    #[test]
     fn top_level_keys_stay_top_level_after_a_table() {
         let existing = "[tui.model_availability_nux]\nfoo = 1\n";
         let text = updated_config(existing, Path::new("/h/model_catalog.json"), "http://x:8000/")
@@ -2256,7 +2265,7 @@ mod tests {
             parsed.get("chatgpt_base_url").and_then(toml::Value::as_str),
             Some("http://x:8000/backend-api/")
         );
-        assert_eq!(parsed.get("ragon_issuer").and_then(toml::Value::as_str), Some("http://x:8000"));
+        assert!(!parsed.contains_key("ragon_issuer"));
         assert_eq!(parsed.get("model_provider").and_then(toml::Value::as_str), Some(PROVIDER));
         assert_eq!(parsed.get("suppress_unstable_features_warning").and_then(toml::Value::as_bool), Some(true));
         let tui = parsed.get("tui").and_then(toml::Value::as_table);
