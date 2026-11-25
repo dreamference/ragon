@@ -1078,6 +1078,23 @@ def test_one_session_that_does_not_fit_still_aborts(monkeypatch, capsys):
     assert "Not enough memory to start ragon-serve." in capsys.readouterr().out
 
 
+def test_vllm_server_manager_abort_falls_back_to_static_process_note(monkeypatch, capsys):
+    """If `ps` blows up, _abort still reports the abort and exits with a static note."""
+    mgr, _calls = _cut_setup(monkeypatch, 60.0, base_gb=55.0)
+
+    def _boom(*a, **kw):
+        raise OSError("ps exploded")
+
+    monkeypatch.setattr(
+        "dreamference.vllm_server.vllm_server_manager.subprocess.check_output", _boom
+    )
+    with pytest.raises(SystemExit):
+        mgr.start_server(model=DEFAULT_MODEL_ALIAS, background=True, engine=ENGINE_RAGON)
+    out = capsys.readouterr().out
+    assert "Could not retrieve process list." in out
+    assert "Not enough memory to start ragon-serve." in out
+
+
 def test_sessions_set_by_the_recipe_are_refused_not_cut(monkeypatch, capsys):
     mgr, calls = _cut_setup(monkeypatch, 70.0, recipe_sessions=3)  # 3 sessions need 82.1 GB
     with pytest.raises(SystemExit):
