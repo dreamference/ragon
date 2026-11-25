@@ -84,6 +84,16 @@ def test_close_without_a_listener_and_with_a_failing_listener_does_not_raise():
     assert relay._closed.is_set()
 
 
+def test_accept_returns_without_a_listener(monkeypatch):
+    relay = SweBenchRelay("127.0.0.1", ("model", 1))
+
+    def never(*args, **kwargs):
+        raise AssertionError("must not connect")
+
+    monkeypatch.setattr(socket, "create_connection", never)
+    relay._accept()
+
+
 def test_pipe_survives_a_dead_peer_and_a_failing_close():
     source = FakeSocket(chunks=[b"abc"], fail_close=True)
     sink = FakeSocket(fail_send=True)
