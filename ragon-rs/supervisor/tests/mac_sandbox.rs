@@ -167,11 +167,11 @@ fn host_sockets_denied(j: &Job) {
             }
         }
     }
-    if let Ok(agent) = std::env::var("SSH_AUTH_SOCK") {
-        if works_unsandboxed(&["connect-unix", &agent]) {
-            denied(j, &["connect-unix", &agent]);
-            probed += 1;
-        }
+    if let Ok(agent) = std::env::var("SSH_AUTH_SOCK")
+        && works_unsandboxed(&["connect-unix", &agent])
+    {
+        denied(j, &["connect-unix", &agent]);
+        probed += 1;
     }
     assert!(probed > 0, "no host control socket to probe on this Mac");
 }
