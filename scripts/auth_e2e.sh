@@ -59,6 +59,9 @@ TAG=$(od -An -tx1 -N6 /dev/urandom | tr -d ' \n')
 TEST_USER="e2e-$TAG"
 RUN="/tmp/ragon-auth-e2e.$TAG"           # the private run folder on each node
 H="python3 -I $RUN/auth_e2e_node.py"     # the node helper
+# The SDK step runs under AUTH_E2E_SDK_PYTHON on the primary: an interpreter the operator prepared with the
+# vendor's SDK and httpx (the node's own venv has neither). Default: the system python3.
+SDK="${AUTH_E2E_SDK_PYTHON:-python3} -I $RUN/auth_e2e_node.py sdk $RUN"
 SESSION="env CODEX_HOME=$RUN/home RAGON_HOME=$RUN/home"
 
 PASS=0; FAIL=0; PLAN=0
@@ -180,7 +183,7 @@ ON_TTY=1 step E2 "login status shows the user and the issuer" "$PRIMARY" "$SESSI
 step E3 "sessions lists this device" "$PRIMARY" "$SESSION ragon sessions"
 step E5 "device auth in both shapes (user code; verification_uri_complete) completes; the tokens name the user" "$PRIMARY" "$H device $RUN"
 step E6 "an API key works with the vendor's SDK: list, respond, stream, error; then revoked" "$PRIMARY" \
-  "$H key $RUN && $H sdk $RUN; rc=\$?; $H revoke-key $RUN && exit \$rc"
+  "$H key $RUN && { $SDK; }; rc=\$?; $H revoke-key $RUN && exit \$rc"
 evidence E7 "the desktop app's sign-in form"
 driven E8 "ragon web over HTTP (WEAK: page script not executed): login page, login API, Account page and its API" "$PRIMARY" "$H web $RUN"
 step E9 "Forgejo sign-in through the accounts service; Forgejo's API names the user" "$PRIMARY" "$H forgejo $RUN"

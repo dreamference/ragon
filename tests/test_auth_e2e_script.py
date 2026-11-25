@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import ClassVar
 
 import pytest
 
@@ -294,3 +295,40 @@ def test_the_node_helper_compiles_and_its_checks_hold(tmp_path: Path) -> None:
     assert helper.tampered("abc") != "abc"
     assert helper.main(["auth_e2e_node.py", "nope", str(tmp_path)]) == 2
     assert helper.main(["auth_e2e_node.py", "refusals", str(tmp_path / "missing")]) == 1
+
+
+def test_changes_to_ragon_web_carry_its_origin_and_reads_do_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = _helper()
+    sent = []
+
+    class Answer:
+        status = 200
+        headers: ClassVar[dict[str, str]] = {}
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    def urlopen(request, timeout=None, context=None):
+        sent.append((request.get_method(), request.full_url, request.get_header("Origin")))
+        return Answer()
+
+    monkeypatch.setattr(helper.urllib.request, "urlopen", urlopen)
+    run = helper.Run(str(tmp_path))
+    run.http("POST", f"{helper.WEB}/api/auth/device", {"user_code": "x"})
+    run.http("GET", f"{helper.WEB}/signin")
+    run.http("POST", f"{helper.ACCOUNTS}/oauth/token", {"a": "b"}, form=True)
+    assert sent == [
+        ("POST", f"{helper.WEB}/api/auth/device", helper.WEB),
+        ("GET", f"{helper.WEB}/signin", None),
+        ("POST", f"{helper.ACCOUNTS}/oauth/token", None),
+    ]
+
+
+def test_the_first_run_screen_answers_the_line_prompts_and_the_sdk_python_is_the_operators() -> None:
+    source = HELPER.read_text()
+    for prompt in ("Choose 1-4: ", "Username: ", "Confirm password: ", "[y/N] "):
+        assert prompt in source, prompt
+    script = SCRIPT.read_text()
+    assert 'SDK="${AUTH_E2E_SDK_PYTHON:-python3} -I $RUN/auth_e2e_node.py sdk $RUN"' in script

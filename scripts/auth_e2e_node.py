@@ -151,6 +151,10 @@ class Run:
             )
         if bearer:
             hdrs["Authorization"] = f"Bearer {bearer}"
+        if method != "GET" and url.startswith(WEB):
+            # ragon web refuses a change without its own Origin (server.rs CSRF guard), as a
+            # browser always sends one.
+            hdrs.setdefault("Origin", WEB)
         req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
         try:
             if opener is not None:
@@ -462,12 +466,16 @@ def cmd_sdk(run: Run) -> None:
 
 def cmd_forgejo(run: Run) -> None:
     """Forgejo sign-in through the accounts service, then Forgejo's API as the test user."""
-    jar = http.cookiejar.CookieJar()
 
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *args: Any, **kwargs: Any) -> None:
-            return None
+    class AnyPath(http.cookiejar.DefaultCookiePolicy):
+        # Forgejo serves at its root, but its cookies carry ROOT_URL's /forge path.
+        def path_return_ok(self, path: str, request: Any) -> bool:
+            return True
 
+        def return_ok_path(self, cookie: Any, request: Any) -> bool:
+            return True
+
+    jar = http.cookiejar.CookieJar(AnyPath())
     opener = urllib.request.build_opener(
         urllib.request.HTTPCookieProcessor(jar),
         NoRedirect(),
@@ -490,7 +498,7 @@ def cmd_forgejo(run: Run) -> None:
     )
     callback = urllib.parse.urlparse(target)
     status, _, headers = run.http(
-        "GET", f"{FORGEJO}{callback.path}?{callback.query}", opener=opener
+        "GET", f"{FORGEJO}{callback.path.removeprefix('/forge')}?{callback.query}", opener=opener
     )
     check(
         status in (302, 303) and "/user/login" not in headers.get("Location", ""),
@@ -633,7 +641,8 @@ def cmd_pty(run: Run) -> None:
     import pty
     import select
 
-    def screen(keys: list[str], expect: str, home: str) -> str:
+    def screen(answers: list[tuple[str, str]], expect: str, home: str) -> str:
+        """Runs `ragon login` in a pty and answers each prompt once it shows (line prompts)."""
         pid, fd = pty.fork()
         if pid == 0:
             os.execvpe(
@@ -642,9 +651,9 @@ def cmd_pty(run: Run) -> None:
                 {**run.env(home), "TERM": "xterm-256color", "COLUMNS": "100", "LINES": "30"},
             )
         seen = b""
+        mark = 0
         deadline = time.monotonic() + 90
-        pending = list(keys)
-        sent_at = time.monotonic()
+        pending = list(answers)
         ended = False
         while time.monotonic() < deadline:
             ready, _, _ = select.select([fd], [], [], 1.0)
@@ -658,26 +667,44 @@ def cmd_pty(run: Run) -> None:
                     ended = True
                     break
                 seen += chunk
-            # The next key goes after one quiet second, or after two seconds
-            # even while the screen keeps redrawing.
-            if pending and (not ready or time.monotonic() - sent_at >= 2.0):
-                os.write(fd, pending.pop(0).encode())
-                sent_at = time.monotonic()
+            if pending:
+                label = pending[0][0].encode()
+                found = seen.find(label, mark)
+                if found >= 0:
+                    mark = found + len(label)
+                    os.write(fd, (pending.pop(0)[1] + "\r").encode())
         if not ended:
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
-            check(False, f"the screen ends within 90 s ({home})")
-        _, status = os.waitpid(pid, 0)
         text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", seen.decode("utf-8", "replace"))
+        for line in text.splitlines()[-20:]:
+            say(f"  {home}| {line}")
+        check(ended, f"the screen ends within 90 s ({home})")
+        _, status = os.waitpid(pid, 0)
+        check(not pending, f"every prompt was asked ({home}; left {[p for p, _ in pending]})")
         check(os.waitstatus_to_exitcode(status) == 0, f"the screen exits 0 ({home})")
         check(expect in text, f"the screen shows {expect!r}")
         return text
 
-    screen(["1", run.user, "\t", run.secret("pass"), "\r"], "Sign in to", "pty-signin")
+    screen(
+        [("Choose 1-4: ", "1"), ("Username: ", run.user), ("Password: ", run.secret("pass"))],
+        "Sign in to",
+        "pty-signin",
+    )
     check((run.dir / "pty-signin" / "auth.json").exists(), "the screen's sign-in wrote a session")
     created = run.user + "-np"
     run.write_secret("created", created)
-    screen(["2", created, "\t", "\t", "\r", "y"], "Continue without a password?", "pty-create")
+    screen(
+        [
+            ("Choose 1-4: ", "2"),
+            ("Username: ", created),
+            ("Password: ", ""),
+            ("Confirm password: ", ""),
+            ("Continue without a password? [y/N] ", "y"),
+        ],
+        "Continue without a password?",
+        "pty-create",
+    )
     check(
         (run.dir / "pty-create" / "auth.json").exists(),
         "the empty-password account wrote a session",
@@ -685,11 +712,42 @@ def cmd_pty(run: Run) -> None:
     run.me(run.password_token(created, ""), created, "empty-password account")
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Keeps a redirect as the answer, so its Location and cookies can be read."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def device_cookie(run: Run) -> str:
+    """This machine's sign-in to ragon web: the one-time link `ragon web open` prints, then the
+    `ragon_device` cookie its redirect sets (never printed)."""
+    proc = subprocess.run(
+        ["ragon", "web", "open", "--print-url"], capture_output=True, text=True, timeout=60
+    )
+    check(proc.returncode == 0, f"ragon web open --print-url exits 0 ({proc.returncode})")
+    link = urllib.parse.urlparse(proc.stdout.strip())
+    opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=run.ctx))
+    status, _, headers = run.http("GET", f"{WEB}{link.path}?{link.query}", opener=opener)
+    pair = headers.get("Set-Cookie", "").split(";")[0]
+    check(
+        status in (302, 303) and pair.startswith("ragon_device="),
+        f"the one-time link sets the sign-in cookie ({status})",
+    )
+    return pair
+
+
 def cmd_web(run: Run) -> None:
     """E8 over HTTP: the sign-in page, its login API, the Account page and the API it calls."""
-    for path in ("/signin", "/signin.js", "/account", "/account.js"):
+    for path in ("/signin", "/signin.js"):
         status, _, _ = run.http("GET", WEB + path)
         check(status == 200, f"ragon web {path} answers 200")
+    status, _, _ = run.http("GET", f"{WEB}/account")
+    check(status == 401, f"ragon web /account answers 401 without the sign-in cookie ({status})")
+    cookie = device_cookie(run)
+    for path in ("/account", "/account.js"):
+        status, _, _ = run.http("GET", WEB + path, headers={"Cookie": cookie})
+        check(status == 200, f"ragon web {path} answers 200 with the sign-in cookie ({status})")
     status, body, _ = run.http(
         "POST",
         f"{WEB}/api/auth/login",
