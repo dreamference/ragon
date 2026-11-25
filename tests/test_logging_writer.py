@@ -206,6 +206,13 @@ def test_log_redactor_url_keeps_the_port_and_brackets_an_ipv6_host():
     assert redactor.redact("see http://[2001:db8::1]:8443/p") == "see http://[[addr]]:8443/p"
 
 
+def test_log_redactor_swap_keeps_a_match_that_is_not_an_address():
+    redactor = LogRedactor()
+    assert redactor._addresses("loop 127.0.0.1 and 2001:db8::1, not a 999.999.999.999 one") == (
+        "loop 127.0.0.1 and [addr], not a 999.999.999.999 one"
+    )
+
+
 def test_log_redactor_url_unsplittable_input_keeps_its_host_down_to_the_user_info():
     redactor = LogRedactor()
     assert redactor.redact("see https://[::zz]/x?q=1#f") == "see https://[::zz]/x"
