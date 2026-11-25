@@ -21,11 +21,17 @@ from dreamference.config.dreamference_config import (
     DEFAULT_GUIDED_DECODING_BACKEND,
 )
 from dreamference.config.ports import DEFAULT_MODEL_PORT, DEFAULT_VLLM_HOST
+from dreamference.hardware.gpu_platform import (
+    gpu_docker_args,
+    platform_ragon_sessions,
+)
 from dreamference.hardware.model_matrix_registry import DEFAULT_MODEL_ALIAS as DEFAULT_MODEL
 from dreamference.hardware.model_matrix_registry import (
     ENGINE_VLLM,
+    QWEN38_RAGON_FLAT_CONTEXT,
     QWEN38_RAGON_SESSIONS,
     ModelMatrixRegistry,
+    require_pinned_image,
 )
 from dreamference.vllm_server.psi_guard_unit import PsiGuardUnit
 from dreamference.vllm_server.psi_watchdog import MemoryPressureWatchdog
@@ -1108,6 +1114,10 @@ class VLLMServerManager:
         # the cap is reachable by construction, and hitting it kills the container instead.
         # Still clamped by the host reserve, so a reckless recipe cannot raise it back out of
         # range.
+        #
+        # On strix-halo-linux the cap covers host memory only: the GPU's GTT pages are not charged to
+        # the container's cgroup (what the engine allocates on the device never counts here, as on
+        # the GB10), so the GPU side is bounded by the session fit and the pre-load check instead.
         from dreamference.hardware.hardware_manager import HardwareManager
 
         total_mem_gb = HardwareManager.detect_gb10_hardware().total_unified_memory_gb
@@ -1131,8 +1141,7 @@ class VLLMServerManager:
             "unless-stopped",
             "--name",
             f"dreamference-vllm-{port}",
-            "--gpus",
-            "all",
+            *gpu_docker_args(),
             f"--cpus={cpus_limit:.1f}",
             f"--memory={container_mem_gb:.0f}g",
             f"--memory-swap={container_mem_gb:.0f}g",
@@ -1876,8 +1885,7 @@ class VLLMServerManager:
             "run",
             "--rm",
             *ContainerLogOptions.args("engine"),
-            "--gpus",
-            "all",
+            *gpu_docker_args(),
             "--entrypoint",
             RAGON_SERVE_PROGRAM,
             *ModelDownloader.container_volume_args(),
@@ -1985,6 +1993,11 @@ class VLLMServerManager:
 
         if docker_image is None:
             docker_image = _recipe_for_image(model, engine).get("docker_image", DEFAULT_VLLM_IMAGE)
+
+        try:
+            require_pinned_image(docker_image)
+        except ValueError as e:
+            raise RuntimeError(str(e)) from e
 
         if not self.ensure_docker_image(docker_image):
             raise RuntimeError(
@@ -2132,6 +2145,29 @@ class VLLMServerManager:
         # engine's own plan, once the checkpoint is on disk for the engine to read.
         engine_plans = RagonServeLaunchBuilder.is_ragon(overrides)
         ragon_sessions: int | None = None
+        # On strix-halo-linux the sessions come from the GPU's measured usable memory (the GB10's come
+        # from the engine's plan below): fewer than the recipe's start with what fits and say so,
+        # none that fit refuse. The plan below is then asked about the sessions that start.
+        platform_sessions = (
+            platform_ragon_sessions(int(overrides.get("sessions") or QWEN38_RAGON_SESSIONS))
+            if engine_plans
+            else None
+        )
+        if platform_sessions is not None:
+            if platform_sessions < 1:
+                _abort(
+                    "Not enough GPU memory for one ragon-serve session.",
+                    "   The graphics memory carve-out or GTT is too small for the weights and one\n"
+                    f"   session at the recipe's context ({QWEN38_RAGON_FLAT_CONTEXT:,} tokens).\n\n"
+                    "Raise the GPU memory setting (firmware graphics memory, or the amdgpu.gttsize and\n"
+                    "ttm.pages_limit kernel arguments) and start again.",
+                )
+            if platform_sessions < int(overrides.get("sessions") or QWEN38_RAGON_SESSIONS):
+                sys.stdout.write(
+                    f"⚠️  Only {platform_sessions} of {overrides.get('sessions')} sessions fit in the "
+                    f"GPU memory. Starting with {platform_sessions}.\n"
+                )
+            overrides = self.with_ragon_sessions(overrides, platform_sessions)
         if not engine_plans and actual_free_gb < required_gb:
             # The arena is a fraction of total memory, so the fix is expressed as the fraction
             # that would fit — otherwise the operator is left to work backwards from four numbers.
@@ -2243,6 +2279,9 @@ class VLLMServerManager:
                     f"Free memory on the host (closing the desktop session recovers the most), or give\n"
                     f"ragon-serve fewer sessions or a shorter --max-context.",
                 )
+
+        if platform_sessions and platform_sessions < QWEN38_RAGON_SESSIONS:
+            ragon_sessions = min(ragon_sessions or platform_sessions, platform_sessions)
 
         # The compile cache persists across container lifetimes now, which means it also outlives
         # the recipe that produced it. Reconcile the two before the graph is loaded rather than

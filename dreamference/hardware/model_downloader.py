@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Final
 
+from dreamference.hardware.gpu_platform import current_platform, gpu_docker_args
 from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
 
 REPO_SEPARATOR: Final[str] = "/"
@@ -323,8 +324,7 @@ class ModelDownloader:
                         "run",
                         "--rm",
                         *ContainerLogOptions.args("model-downloader"),
-                        "--gpus",
-                        "all",
+                        *gpu_docker_args(),
                         f"--cpus={cpus_limit:.1f}",
                         f"--memory={container_mem_gb:.0f}g",
                         f"--memory-swap={container_mem_gb:.0f}g",
@@ -690,7 +690,7 @@ class ModelDownloader:
         results: dict[str, bool] = {}
         _say("🚀 Pre-downloading all qualified NVIDIA GB10 LLM & Draft models...")
         for key, spec in ModelMatrixRegistry.MATRIX.items():
-            if spec.compatible_gb10 and ModelMatrixRegistry.is_offered(key):
+            if spec.compatible_with(current_platform()) and ModelMatrixRegistry.is_offered(key):
                 results[key] = cls.download_model(
                     key, hf_token=hf_token, auto_tensorize=auto_tensorize
                 )
