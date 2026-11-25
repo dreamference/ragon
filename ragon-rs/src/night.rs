@@ -281,6 +281,9 @@ pub fn run_cli(args: &[String]) -> i32 {
         eprintln!("Night Shift: could not resolve CODEX_HOME");
         return 1;
     };
+    if crate::night_run::handles(args) {
+        return crate::night_run::cli(&dir, args);
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let request = Request::from_args(args);
     if let Some(refusal) = client_refusal(&request, runner_present()) {

@@ -1,0 +1,91 @@
+{
+  "id": "20151001-0100-abc",
+  "repo": "<REPO>",
+  "base": "<BASE>",
+  "branch": "night/20151001-0100-abc",
+  "task": "Add hello.txt",
+  "test": "grep -q hi hello.txt",
+  "model_at_add": "test-model",
+  "status": "done",
+  "history": [
+    {
+      "at": "<AT>",
+      "status": "queued"
+    },
+    {
+      "at": "<AT>",
+      "status": "running"
+    },
+    {
+      "at": "<AT>",
+      "status": "done"
+    }
+  ],
+  "attempts": 1,
+  "nudges": 0,
+  "session": null,
+  "result": {
+    "attempts": 1,
+    "nudges": 0,
+    "wall_s": 0,
+    "test_command": "grep -q hi hello.txt",
+    "test_source": "--test",
+    "test_result": "passed",
+    "test_tail": "",
+    "test_sandbox": "workspace-write",
+    "diff_stat": " hello.txt | 1 +\n 1 file changed, 1 insertion(+)",
+    "branch": "night/20151001-0100-abc",
+    "best_of": {
+      "n": 3,
+      "ran": 3,
+      "chosen": 1,
+      "stage": "judge skipped: no model server",
+      "points": {
+        "a1": 0.05,
+        "a3": 0.05
+      },
+      "survivors": [
+        "a1",
+        "a3"
+      ],
+      "judge_calls": 0,
+      "judge_errors": 0,
+      "judge_log": null,
+      "test_command": "grep -q hi hello.txt",
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": "candidate",
+          "wall_s": 0,
+          "test_result": "passed",
+          "diff": "<NIGHT>/logs/20151001-0100-abc-a1.diff",
+          "log": "<NIGHT>/logs/20151001-0100-abc-a1.jsonl",
+          "test_log": "<NIGHT>/logs/20151001-0100-abc-a1.test.log",
+          "changes": "1 file changed, 1 insertion(+)"
+        },
+        {
+          "attempt": 2,
+          "status": "candidate",
+          "wall_s": 0,
+          "test_result": "failed (exit 1)",
+          "diff": "<NIGHT>/logs/20151001-0100-abc-a2.diff",
+          "log": "<NIGHT>/logs/20151001-0100-abc-a2.jsonl",
+          "test_log": "<NIGHT>/logs/20151001-0100-abc-a2.test.log",
+          "changes": "1 file changed, 1 insertion(+)"
+        },
+        {
+          "attempt": 3,
+          "status": "candidate",
+          "wall_s": 0,
+          "test_result": "passed",
+          "diff": "<NIGHT>/logs/20151001-0100-abc-a3.diff",
+          "log": "<NIGHT>/logs/20151001-0100-abc-a3.jsonl",
+          "test_log": "<NIGHT>/logs/20151001-0100-abc-a3.test.log",
+          "changes": "1 file changed, 1 insertion(+)"
+        }
+      ],
+      "reason": "judge skipped: no model server, so the tie went to the attempt whose tests passed, then the earliest"
+    }
+  },
+  "airgapped": "off"
+}

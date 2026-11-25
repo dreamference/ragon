@@ -67,6 +67,7 @@ pub mod loop_guard;
 pub mod mask;
 pub mod monitor;
 pub mod night;
+pub mod night_run;
 pub mod node;
 pub mod metal_recipe;
 pub mod node_advertise_macos;
