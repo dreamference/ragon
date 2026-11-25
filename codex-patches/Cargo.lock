@@ -10379,6 +10379,7 @@ dependencies = [
 name = "ragon-supervisor"
 version = "0.1.0"
 dependencies = [
+ "mdns-sd",
  "windows-sys 0.52.0",
 ]
 
