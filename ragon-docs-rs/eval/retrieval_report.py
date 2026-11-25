@@ -10,7 +10,10 @@ import os
 import subprocess
 import sys
 
+from typing import Final
+
 D = os.path.dirname(os.path.abspath(__file__))
+LICENCE_KEY: Final[str] = "licence"
 rows = []
 for chunks in sorted(glob.glob(f"{D}/chunks/pdfium-ordered-*.json")):
     tag = os.path.splitext(os.path.basename(chunks))[0]
@@ -31,7 +34,7 @@ with open(f"{D}/results/retrieval.jsonl", "w") as f:
 models = {}
 for p in sorted(glob.glob(f"{D}/emb/*.json")):
     info = json.load(open(p))
-    if "licence" not in info:
+    if LICENCE_KEY not in info:
         continue  # the English-only runs before the multilingual decision
     base = os.path.basename(p)
     if base.startswith("batch"):
