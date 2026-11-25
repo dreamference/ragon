@@ -1053,3 +1053,22 @@ def test_registration_that_cannot_write_its_folders_or_entry_reports_false(tmp_p
         assert DesktopRunner.install_desktop_entry() is False
         run.assert_not_called()
     assert "Could not write the desktop entry" in capsys.readouterr().out
+
+
+def test_desktop_runner_install_desktop_entry_survives_icon_copy_failure(tmp_path, capsys):
+    # shutil.copyfile can raise OSError (e.g. read-only mount); the entry must
+    # still be written even when the icon copy fails.
+    from dreamference.chat import desktop_runner
+
+    with (
+        patch.object(desktop_runner, "DESKTOP_ENTRY_DIR", str(tmp_path / "applications")),
+        patch.object(desktop_runner, "ICON_DIR", str(tmp_path / "icons")),
+        patch.object(desktop_runner, "APP_ICON_SOURCE", tmp_path / "missing.png"),
+        patch.object(DesktopRunner, "binary_path", return_value="/opt/Ragon"),
+        patch("subprocess.run") as run,
+    ):
+        assert DesktopRunner.install_desktop_entry() is True
+    assert "Could not install the app icon" in capsys.readouterr().out
+    entry = tmp_path / "applications" / desktop_runner.DESKTOP_ENTRY_NAME
+    assert entry.is_file()
+    assert run.call_count == 1
