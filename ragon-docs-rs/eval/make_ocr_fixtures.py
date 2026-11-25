@@ -19,6 +19,7 @@ import os
 import sys
 import urllib.parse
 import urllib.request
+from typing import Final
 
 import numpy as np
 import pypdfium2 as pdfium
@@ -35,6 +36,8 @@ os.makedirs(f"{OUT}/fixtures", exist_ok=True)
 os.makedirs(f"{OUT}/sources", exist_ok=True)
 UA = {"User-Agent": "ragon-eval/0.1 (dgxcoder@dreamference.ai)"}
 rng = np.random.default_rng(7)
+KIND_SCAN: Final[str] = "scan"
+KIND_PHOTO: Final[str] = "photo"
 
 SOURCES = [  # (name, pdf path, 1-based page, language code for Tesseract)
     ("en-prose", f"{D}/corpus/pdf/nist-sp-800-63b.pdf", 24, "eng"),
@@ -119,14 +122,14 @@ for name, path, page, tess in SOURCES:
     truth_text = ordered_page(pg)
     for kind, dpi in (("scan", 200), ("photo", 170), ("poor", 100)):
         img = pg.render(scale=dpi / 72, grayscale=True).to_pil().convert("L")
-        if kind == "scan":
+        if kind == KIND_SCAN:
             img = jpeg(noise(skew(img, 0.6), 6), 60)
-        elif kind == "photo":
+        elif kind == KIND_PHOTO:
             img = jpeg(light(perspective(img)).filter(ImageFilter.GaussianBlur(0.8)), 80)
         else:
             img = jpeg(noise(skew(img, 2.5).filter(ImageFilter.GaussianBlur(1.1)), 22), 35)
         fid = f"{name}-{kind}"
-        if kind == "photo":
+        if kind == KIND_PHOTO:
             img.convert("RGB").save(f"{OUT}/fixtures/{fid}.jpg", quality=80)
             fpath = f"ocr/fixtures/{fid}.jpg"
         else:
