@@ -1,8 +1,24 @@
-from setuptools import setup, find_packages
+from pathlib import Path
+
+from setuptools import find_packages, setup
+
+# The PyPI page is the README, read from the checkout the wheel is built from.
+LONG_DESCRIPTION = (Path(__file__).parent / "README.md").read_text(encoding="utf-8")
 
 setup(
     name="dreamference",
     version="0.9.0",
+    description="Ragon by Dreamference: private AI coding agent on your own NVIDIA GB10 (the ragon-admin CLI)",
+    long_description=LONG_DESCRIPTION,
+    long_description_content_type="text/markdown",
+    url="https://github.com/dreamference/ragon",
+    project_urls={
+        "Repository": "https://github.com/dreamference/ragon",
+        "Releases": "https://github.com/dreamference/ragon/releases",
+        "Documentation": "https://github.com/dreamference/ragon/blob/main/docs/getting-started.md",
+    },
+    # The code reads tomllib and datetime.UTC (both 3.11); CI and the node install run 3.12.
+    python_requires=">=3.11",
     license="AGPL-3.0-or-later",
     classifiers=[
         "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",

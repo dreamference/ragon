@@ -216,7 +216,7 @@ def test_a_release_wheel_carries_the_pins_and_code_setup_reads_them_from_it(tmp_
     pytest.importorskip("setuptools")
     source = tmp_path / "source"
     source.mkdir()
-    for name in ("setup.py", "pyproject.toml"):
+    for name in ("setup.py", "pyproject.toml", "README.md"):
         shutil.copy2(CHECKOUT / name, source / name)
     shutil.copytree(
         CHECKOUT / "dreamference",

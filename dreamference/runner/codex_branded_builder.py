@@ -227,6 +227,15 @@ class CodexBrandedBuilder:
         return Path(CODEX_PATCH_DIR).is_dir() and Path(RAGON_CRATE_DIR).is_dir()
 
     @classmethod
+    def is_wheel_only(cls) -> bool:
+        """Tells a pip-only install from a release install: no checkout and no `ragon` binary.
+
+        Returns:
+            bool: True if there is no source beside the package and `ragon` is not installed.
+        """
+        return not cls.has_source() and not cls.binaries_installed((BRANDED_EXECUTABLE_NAME,))
+
+    @classmethod
     def binaries_installed(cls, names: tuple) -> bool:
         """Checks that binaries are present in the install directory.
 

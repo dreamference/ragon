@@ -96,3 +96,51 @@ def test_status_command(monkeypatch, tmp_path):
     )
     ctl.DreamferenceCLIController.run_cli(["--config", str(tmp_path / "d.toml"), "status"])
     assert called
+
+
+def _wheel_only(monkeypatch, tmp_path, *, source: bool, binary: bool):
+    from dreamference.runner import codex_branded_builder as builder
+
+    monkeypatch.setattr(builder, "INSTALL_DIR", str(tmp_path / "install"))
+    monkeypatch.setattr(builder.CodexBrandedBuilder, "has_source", classmethod(lambda cls: source))
+    if binary:
+        (tmp_path / "install" / "bin").mkdir(parents=True)
+        exe = tmp_path / "install" / "bin" / ("ragon" + builder.EXE_SUFFIX)
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+
+
+@pytest.mark.parametrize("command", ["init", "run", "status"])
+def test_a_wheel_only_install_says_where_the_binaries_come_from(
+    monkeypatch, tmp_path, capsys, command
+):
+    _wheel_only(monkeypatch, tmp_path, source=False, binary=False)
+    from dreamference.vllm_server import SandboxPrerequisite
+
+    monkeypatch.setattr(SandboxPrerequisite, "gate", classmethod(lambda cls, *a: False))
+    assert _go(tmp_path, command, *(["x"] if command == "run" else [])) == 1
+    err = capsys.readouterr().err
+    assert err.count("not installed") == 1
+    assert "releases/latest/download/install.sh" in err
+    assert "releases/latest/download/install.ps1" in err
+
+
+@pytest.mark.parametrize(("source", "binary"), [(True, False), (False, True), (True, True)])
+def test_the_line_is_absent_with_a_checkout_or_installed_binaries(
+    monkeypatch, tmp_path, capsys, source, binary
+):
+    _wheel_only(monkeypatch, tmp_path, source=source, binary=binary)
+    from dreamference.vllm_server import SandboxPrerequisite
+
+    monkeypatch.setattr(SandboxPrerequisite, "gate", classmethod(lambda cls, *a: False))
+    assert _go(tmp_path, "status") == 1
+    assert "not installed" not in capsys.readouterr().err
+
+
+def test_other_commands_stay_silent_on_a_wheel_only_install(monkeypatch, tmp_path, capsys):
+    _wheel_only(monkeypatch, tmp_path, source=False, binary=False)
+    from dreamference.vllm_server import SandboxPrerequisite
+
+    monkeypatch.setattr(SandboxPrerequisite, "gate", classmethod(lambda cls, *a: False))
+    assert _go(tmp_path, "clear", "model-cache") == 1
+    assert "not installed" not in capsys.readouterr().err

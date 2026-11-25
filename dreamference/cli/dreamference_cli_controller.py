@@ -113,6 +113,12 @@ _PROBE_ERRORS: Final[tuple[type[BaseException], ...]] = (
 _INSPECT_NO_THINKING: Final[dict[str, Any]] = {"chat_template_kwargs": {"enable_thinking": False}}
 _ARG_IM_START: Final[str] = "<|im_start|>"
 _ARG_INIT: Final[str] = "init"
+BINARIES_MISSING_LINE: Final[str] = (
+    "⚠️  The ragon binaries are not installed (this is the Python package alone). For the full install "
+    "run the release installer: Linux and macOS `curl -fsSL "
+    "https://github.com/dreamference/ragon/releases/latest/download/install.sh | bash`, Windows "
+    "`irm https://github.com/dreamference/ragon/releases/latest/download/install.ps1 | iex`."
+)
 _ARG_INSPECT: Final[str] = "inspect"
 _ARG_INSTALL: Final[str] = "install"
 _ARG_KWARGS: Final[str] = "kwargs"
@@ -137,6 +143,7 @@ _ARG_SERVICE_INITIALIZED_AS_CLIENT: Final[str] = "Service initialized as client"
 _ARG_SET: Final[str] = "set"
 _ARG_START: Final[str] = "start"
 _ARG_STATUS: Final[str] = "status"
+WHEEL_ONLY_COMMANDS: Final[frozenset[str]] = frozenset({_ARG_INIT, _ARG_RUN, _ARG_STATUS})
 _ARG_STOP: Final[str] = "stop"
 _ARG_SWE_BENCH: Final[str] = "SWE-bench"
 _ARG_TENSORIZER: Final[str] = "tensorizer"
@@ -4520,6 +4527,14 @@ class DreamferenceCLIController:
         sys.exit(2)
 
     @classmethod
+    def say_binaries_missing(cls) -> None:
+        """Prints one line on a pip-only install, which has `ragon-admin` but no `ragon` binaries."""
+        from dreamference.runner.codex_branded_builder import CodexBrandedBuilder
+
+        if CodexBrandedBuilder.is_wheel_only():
+            print(BINARIES_MISSING_LINE, file=sys.stderr)
+
+    @classmethod
     def run_cli(cls, argv: list[str] | None = None) -> None:
         """Main execution entrypoint for CLI command parsing and subcommand dispatching.
 
@@ -4541,6 +4556,9 @@ class DreamferenceCLIController:
         if not args.command:
             parser.print_help()
             sys.exit(0)
+
+        if args.command in WHEEL_ONLY_COMMANDS:
+            cls.say_binaries_missing()
 
         group = parser.command_groups.get(args.command)  # type: ignore[attr-defined]
         if group is not None and not getattr(args, group[1], None):

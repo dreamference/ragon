@@ -90,3 +90,11 @@ def test_no_hard_coded_version_reaches_the_node() -> None:
     from dreamference.node.node_advertiser import NodeAdvertiser
 
     assert NodeAdvertiser.version() == dreamference.__version__
+
+
+def test_the_wheel_describes_itself_for_pypi() -> None:
+    setup_py = (REPO / "setup.py").read_text(encoding="utf-8")
+    assert 'long_description_content_type="text/markdown"' in setup_py
+    assert 'python_requires=">=3.11"' in setup_py
+    for link in ("Repository", "Releases", "Documentation"):
+        assert f'"{link}": "https://github.com/dreamference/ragon' in setup_py
