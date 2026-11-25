@@ -12,15 +12,31 @@ import subprocess
 from pathlib import Path
 from typing import Final
 
+from dreamference.hardware.hardware_platform import HardwarePlatform
 from dreamference.hardware.hardware_telemetry import HardwareTelemetry
 from dreamference.hardware.memory_metrics import MemoryMetrics
 from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
+from dreamference.hardware.strix_halo_memory import StrixHaloMemory
 
 # The GB10's GPU as the PCI bus lists it: the same chip in every GB10 machine (NVIDIA's DGX Spark
 # and the seven partner boxes), so it identifies one before a driver is installed, when there is
 # no `nvidia-smi` to ask. Read on an ASUS Ascent GX10 (`000f:01:00.0`, class 0x030000).
 GB10_PCI_VENDOR: Final[str] = "0x10de"
 GB10_PCI_DEVICE: Final[str] = "0x2e12"
+# A Strix Halo (Ryzen AI Max) as the same two sources name it: its GPU on the PCI bus, and the
+# compute driver's topology saying gfx1151 (gfx_target_version 11.5.1 as 110501). Never the vendor.
+STRIX_HALO_PCI_VENDOR: Final[str] = "0x1002"
+STRIX_HALO_PCI_DEVICE: Final[str] = "0x1586"
+STRIX_HALO_GFX_TARGET: Final[str] = "110501"
+KFD_GFX_KEY: Final[str] = "gfx_target_version"
+KFD_NODES_DIR: Final[str] = "/sys/class/kfd/kfd/topology/nodes"
+DRM_DIR: Final[str] = "/sys/class/drm"
+CMDLINE_PATH: Final[str] = "/proc/cmdline"
+CMDLINE_PREFIXES: Final[tuple[str, ...]] = ("amdgpu.", "ttm.", "amd_iommu", "iommu", "mem_encrypt")
+# TODO(amdlinux-memory-mode): defaults until that job measures them; install.sh holds the same two
+# numbers (STRIX_MIN_USABLE_GIB, STRIX_WARN_USABLE_GIB) and a test keeps them equal.
+STRIX_HALO_MIN_USABLE_GIB: Final[int] = 43  # one session at 196,608: 24 + 14.4 + 4 reserve
+STRIX_HALO_WARN_USABLE_GIB: Final[int] = 86  # below it fewer than 4 sessions run
 MEMINFO_PATH: Final[str] = "/proc/meminfo"
 NOT_AVAILABLE: Final[str] = "N/A"
 GB10_NAME: Final[str] = "GB10"
@@ -157,6 +173,99 @@ class HardwareManager:
         return False
 
     @classmethod
+    def strix_halo_on_pci(cls) -> bool:
+        """Looks for a Strix Halo's GPU (1002:1586) on the PCI bus, without a driver."""
+        try:
+            entries = list(Path(PCI_DEVICES_DIR).iterdir())
+        except OSError:
+            return False
+        return any(
+            cls._read_line(entry / "vendor") == STRIX_HALO_PCI_VENDOR
+            and cls._read_line(entry / "device") == STRIX_HALO_PCI_DEVICE
+            for entry in entries
+        )
+
+    @classmethod
+    def strix_halo_in_kfd(cls) -> bool:
+        """True when a KFD topology node names gfx1151 (gfx_target_version 110501)."""
+        try:
+            nodes = list(Path(KFD_NODES_DIR).iterdir())
+        except OSError:
+            return False
+        for node in nodes:
+            for line in cls._read_lines(node / "properties"):
+                key, _, value = line.partition(" ")
+                if key == KFD_GFX_KEY and value.strip() == STRIX_HALO_GFX_TARGET:
+                    return True
+        return False
+
+    @classmethod
+    def detect_platform(cls) -> HardwarePlatform | None:
+        """The node platform of this machine, from sysfs facts only; None for any other.
+
+        A Strix Halo is x86-64 Linux with 1002:1586 on the bus and a KFD node on gfx1151; the
+        GB10 keeps its own test (`detect_gb10_hardware`).
+
+        Returns:
+            HardwarePlatform | None: GB10, STRIX_HALO_LINUX, or None.
+        """
+        if cls.detect_gb10_hardware().is_gb10:
+            return HardwarePlatform.GB10
+        if (
+            os.uname().machine in ("x86_64", "amd64")
+            and cls.strix_halo_on_pci()
+            and cls.strix_halo_in_kfd()
+        ):
+            return HardwarePlatform.STRIX_HALO_LINUX
+        return None
+
+    @classmethod
+    def strix_halo_memory(cls) -> StrixHaloMemory:
+        """Reads the Strix Halo's memory facts: the largest amdgpu card, /proc/meminfo, /proc/cmdline."""
+        vram = gtt = 0
+        with contextlib.suppress(OSError):
+            for card in sorted(Path(DRM_DIR).glob("card*/device")):
+                if cls._read_line(card / "vendor") != STRIX_HALO_PCI_VENDOR:
+                    continue
+                try:
+                    card_vram = int(cls._read_line(card / "mem_info_vram_total"))
+                    card_gtt = int(cls._read_line(card / "mem_info_gtt_total") or 0)
+                except ValueError:
+                    continue
+                if card_vram > vram:
+                    vram, gtt = card_vram, card_gtt
+        total_kb, _ = cls._meminfo_kb("\n".join(cls._read_lines(Path(MEMINFO_PATH))))
+        options = tuple(
+            token
+            for token in " ".join(cls._read_lines(Path(CMDLINE_PATH))).split()
+            if token.startswith(CMDLINE_PREFIXES)
+        )
+        return StrixHaloMemory(vram, gtt, total_kb * 1024, options)
+
+    @classmethod
+    def strix_halo_memory_verdict(cls, memory: StrixHaloMemory) -> tuple[bool, str]:
+        """(node allowed, the facts and any refusal or warning) for the Strix Halo memory.
+
+        Unreadable VRAM (no driver answering) is reported, never refused: the kernel and device
+        checks say what is missing then.
+        """
+        facts = (
+            f"GPU carve-out {memory.vram_bytes / 2**30:.1f} GiB, GTT {memory.gtt_bytes / 2**30:.1f} GiB, "
+            f"system RAM {memory.ram_bytes / 2**30:.1f} GiB, usable by the GPU about {memory.usable_gib:.1f} GiB; "
+            f"kernel options: {' '.join(memory.cmdline_options) or 'none of amdgpu.*, ttm.*, iommu'}"
+        )
+        if memory.vram_bytes <= 0:
+            return True, f"{facts} (the amdgpu driver reports no VRAM size)"
+        if memory.usable_gib < STRIX_HALO_MIN_USABLE_GIB:
+            return False, f"{facts}: below the {STRIX_HALO_MIN_USABLE_GIB} GiB one session needs"
+        if memory.usable_gib < STRIX_HALO_WARN_USABLE_GIB:
+            return (
+                True,
+                f"{facts}: fewer than 4 sessions will run (about {STRIX_HALO_WARN_USABLE_GIB} GiB needed)",
+            )
+        return True, facts
+
+    @classmethod
     def machine_name(cls) -> str:
         """The vendor's name for this machine, from the firmware's DMI tables.
 
@@ -198,6 +307,14 @@ class HardwareManager:
                 return handle.readline().strip()
         except OSError:
             return ""
+
+    @staticmethod
+    def _read_lines(path: str | Path) -> list[str]:
+        try:
+            with Path(path).open(encoding="utf-8", errors="replace") as handle:
+                return [line.rstrip("\n") for line in handle]
+        except OSError:
+            return []
 
     @staticmethod
     def _key_values(path: str) -> dict[str, str]:
