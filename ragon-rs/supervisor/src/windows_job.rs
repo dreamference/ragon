@@ -12,7 +12,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
     TerminateJobObject,
 };
@@ -29,6 +29,14 @@ unsafe impl Send for Job {}
 
 impl Job {
     pub fn new() -> io::Result<Self> {
+        Self::with_memory_cap(None)
+    }
+
+    /// A job like [`Job::new`] that also caps the memory all its processes together may commit at
+    /// `bytes` (`JOB_OBJECT_LIMIT_JOB_MEMORY`): an allocation past the cap fails in the process
+    /// that asked for it. The night run gives each task's `ragon exec` and its tests such a job, the
+    /// counterpart of the systemd scope's `MemoryMax` on Linux.
+    pub fn with_memory_cap(bytes: Option<u64>) -> io::Result<Self> {
         // SAFETY: plain Win32 calls; the handle is owned by the returned value and closed in Drop.
         unsafe {
             let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
@@ -38,6 +46,10 @@ impl Job {
             let job = Job(handle);
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if let Some(bytes) = bytes {
+                info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+                info.JobMemoryLimit = usize::try_from(bytes).unwrap_or(usize::MAX);
+            }
             let ok = SetInformationJobObject(
                 job.0,
                 JobObjectExtendedLimitInformation,
