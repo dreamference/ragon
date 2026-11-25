@@ -6,8 +6,11 @@ import json
 import os
 import re
 import sys
+from typing import Final
 
 D = os.path.dirname(os.path.abspath(__file__))
+COUNT_ARG_INDEX: Final[int] = 4
+MIN_EXAMPLE_GAP: Final[int] = 40
 name, a, b = sys.argv[1], sys.argv[2], sys.argv[3]
 W = re.compile(r"[a-z0-9]+")
 ref = W.findall(open(f"{D}/reference/{name}.txt").read().lower())
@@ -29,7 +32,9 @@ miss = [
 print(len(miss), "lost by", a, "kept by", b)
 last, shown = -100, 0
 for i in miss:
-    if i - last > 40 and shown < int(sys.argv[4] if len(sys.argv) > 4 else 6):
+    if i - last > MIN_EXAMPLE_GAP and shown < int(
+        sys.argv[COUNT_ARG_INDEX] if len(sys.argv) > COUNT_ARG_INDEX else 6
+    ):
         print("REF:", " ".join(ref[i : i + 16]))
         shown += 1
         m = re.search(r"\W+".join(ref[i : i + 3]), ta.lower())
