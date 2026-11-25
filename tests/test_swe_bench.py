@@ -1727,6 +1727,14 @@ def test_an_instance_the_harness_gave_no_verdict_for_stays_ungraded(bench, monke
     assert "INCOMPLETE          0 not run yet, 1 run but not graded yet" in report
 
 
+def test_swe_bench_evaluator_grade_rejects_a_variant_that_is_not_a_known_series(bench):
+    run(bench, instances=["acme__widget-1"])
+    store = SweBenchRunStore("r1")
+    with pytest.raises(ValueError, match="unknown grading series: plain-and-loud"):
+        SweBenchEvaluator.grade(store, bench["settings"], variant="plain-and-loud")
+    assert store.gradings() == [] and store.gradings(DROP_TEST_HUNKS) == []
+
+
 def test_remove_images_works_one_repository_at_a_time(bench):
     assert run(bench, evaluate=True, keep_images=False) == 0
     docker, harness = bench["docker"], bench["harness"]
