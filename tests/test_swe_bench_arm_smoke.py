@@ -103,6 +103,28 @@ def test_a_failed_turn_is_refused_and_a_retried_stream_error_is_not():
     assert reason and "Reconnecting" in reason
 
 
+def test_swe_bench_arm_smoke_model_replied_counts_any_model_item_or_a_turn_with_tokens():
+    # An item of any model type counts, whatever the event around it says.
+    assert SweBenchArmSmoke.model_replied([COMMAND])
+    assert SweBenchArmSmoke.model_replied([MESSAGE])
+    assert SweBenchArmSmoke.model_replied(
+        [{"type": "item.started", "item": {"id": "item_3", "type": "reasoning"}}]
+    )
+    assert SweBenchArmSmoke.model_replied(
+        [{"type": "item.updated", "item": {"id": "item_4", "type": "todo_list"}}]
+    )
+    # An item that is not a dict, and an item type that is not the model's, count nothing.
+    assert SweBenchArmSmoke.model_replied([{"type": "item.completed", "item": "x"}]) is False
+    assert SweBenchArmSmoke.model_replied([WARNING]) is False
+    # A turn that completed with tokens counts, even when its usage is partial.
+    assert SweBenchArmSmoke.model_replied([COMPLETED])
+    assert SweBenchArmSmoke.model_replied(
+        [{"type": "turn.completed", "usage": {"output_tokens": 1}}]
+    )
+    # Events with no item and a zero-token turn prove nothing.
+    assert SweBenchArmSmoke.model_replied([STARTED, {"type": "turn.completed"}]) is False
+
+
 @pytest.mark.parametrize("status", ["running", "interrupted", "error"])
 def test_a_task_that_did_not_finish_running_is_refused(status):
     reason = SweBenchArmSmoke.verdict(
