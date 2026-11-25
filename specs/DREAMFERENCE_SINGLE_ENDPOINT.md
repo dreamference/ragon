@@ -1,7 +1,7 @@
 # One endpoint for the whole group: the primary node as the front door
 
 **Status:** decided, build starts 2026-11-24. It answers the owner's words of 2026-11-24 (the primary node becomes the load balancer and proxy for everything, so the group looks like a single endpoint); the owner's answers of the same day are folded in (§14 lists them, §15 is the record). Where it changes an earlier decision, §14 quotes the old line.
-**Target:** slices 0 and 1 in 0.9.10, switched off; slices 2 to 5 in version 1.0 (the standby in version 1.1); nothing in 0.9.9 (§12).
+**Target:** slices 0 and 1, and the rows pulled forward in §12, in 0.9.10 with the endpoint **switched on for every group** and every member refusing clients that go around the primary (owner, 2026-11-25); slices 2 to 5 in version 1.0 (the standby in version 1.1); nothing in 0.9.9 (§12). A single node, alone, is unchanged.
 **Builds on:**
 - the model gate in front of every engine, port 8000 (`dreamference/vllm_server/model_gate_service.py`, [INFERENCE](./DREAMFERENCE_INFERENCE.md), [docs/dev/swe-bench.md](../docs/dev/swe-bench.md#the-model-gate-the-benchmark-first));
 - accounts, one primary per network, TLS, the 60 s check cache ([AUTH](./DREAMFERENCE_AUTH.md) §5-§7, §10, §13);
@@ -150,7 +150,7 @@ The primary becomes the one door, so it is also the one place to get right.
 
 - **TLS.** The gate serves HTTPS today (AUTH §6, owner 2026-11-19: "TLS NOW"; plain HTTP is refused except on loopback at 1.0). The primary-to-member hop is HTTPS too, against the CA the primary pinned for that member at pairing. The README's "Accepted by design" says the local network is trusted, the same premise as RAGON_EGRESS ("Ragon assumes the local network is trusted") and SECURITY_REVIEW item 10 ("trusted-LAN premise"). Those say the LAN needs no more than the node's own TLS; they do not say a hop may be plain, and AUTH's TLS decision is the later word. **The hop stays encrypted** (owner, 2026-11-24): HTTPS on every wire, a wired LAN included. The cost, a little CPU per connection, is measured in §7.2.
 - **Node-to-node authentication.** The primary calls a member with its own service account's key (AUTH §13: `ragon-node-<short id>`, created on the primary, key in a 0600 file). A new account property, `forwarder`, is set only on the primary's own service account. A member accepts `X-Ragon-User: <user id>` and `X-Ragon-Role` only from a caller authenticated as that account **and** whose source address is the primary's resolved address; from anyone else the headers are ignored. The member then skips the live check against the primary (AUTH §7) for forwarded requests: the user's token never leaves the primary, and the request costs one check, not two.
-- **No bypass of the primary by talking to a member.** Today any client may talk to a secondary, which checks against the primary. In a group whose endpoint is switched on, **a member accepts requests only from the primary and from loopback**; any other client address is refused with `403`, `code: use_group_endpoint`, whose message names the group's endpoint. This holds **from 0.9.10, as soon as the group's endpoint is switched on** (owner, 2026-11-24: on right away, not at 1.0), not from 1.0. The switch is `[node] endpoint_only`, which `node balancer add` sets on the member and `remove` clears; nobody sets it by hand. **Unaffected:** a single node (its own primary), a primary with no members, and a group with the endpoint off: none of them has the setting. In 0.9.10 the primary calls a member with its own service account's key and the member checks that key and the source address (S1.7); the forwarded user header and the skipped second check (S2.1, S2.2) follow in 1.0. Cost for debugging: a developer cannot point a client at a member; the replacements are `X-Ragon-Backend` through the primary (§3.3), `ragon-admin node debug-direct <node> --for 10m` (opens the member to one named client address for a stated time, logged; S1.8) and loopback on the member itself.
+- **No bypass of the primary by talking to a member.** Today any client may talk to a secondary, which checks against the primary. In a group (its endpoint is on from 0.9.10), **a member accepts requests only from the primary and from loopback**; any other client address is refused with `403`, `code: use_group_endpoint`, whose message names the group's endpoint. This holds **from 0.9.10, and the endpoint is on for every group from 0.9.10** (owner, 2026-11-24 and 2026-11-25: on right away, not at 1.0, and no group is left off), not from 1.0. The switch is `[node] endpoint_only`, which `node balancer add` sets on the member and `remove` clears; nobody sets it by hand. **Unaffected:** a single node (its own primary) and a primary with no members: neither has the setting. In 0.9.10 the primary calls a member with its own service account's key and the member checks that key and the source address (S1.7); the forwarded user header and the skipped second check (S2.1, S2.2) follow in 1.0. Cost for debugging: a developer cannot point a client at a member; the replacements are `X-Ragon-Backend` through the primary (§3.3), `ragon-admin node debug-direct <node> --for 10m` (opens the member to one named client address for a stated time, logged; S1.8) and loopback on the member itself.
 - **Audit lines.** The gate's request line (AUTH §10) gains `endpoint=1 backend=<node id> place=new|sticky|moved|retried queue_ms=<n> session=<8 hex of the key hash> reused=<n>/<n>`; the member logs the same request once with `forwarded=1` and no user name beyond the id. Nothing about the prompt or answer is logged. Usage per user stays on the primary and is never exported (AUTH round no. 24).
 - **Air gap and the egress audit.** Nothing here sends anything off the LAN, and load polling carries no content. The audit (AUTH round no. 25: "allowlists the gate of the resolved node and of its pinned primary … and still fails on any other address or DNS query") traces the agent's own connections, which now go to the primary only. The primary's connections to members are LAN traffic by the gate process, outside that trace, so they are declared the way the tunnel is (REMOTE_ACCESS §6): a verdict line "Group endpoint: the gate forwards to <member names>, by node id, on port 8000" and an `audit egress --group` check that every connection of the primary's gate is to a paired member's resolved address. Any other destination fails. `/airgapped on` changes nothing, as for login.
 - **Remote access** reaches only the primary: `remote setup` is run on the primary, and a member's gate listens on the LAN interface only when `endpoint_only` is on, never on the overlay.
@@ -165,13 +165,15 @@ Today the primary is a single point of failure for sign-in. With the endpoint it
 | B. Clients fall back to a known member | a member cannot authenticate (no accounts, 60 s cache, then "authentication server unreachable", AUTH §7) | works for about a minute for tokens already seen, and in 0.9.x mode for unauthenticated requests; useless after that, and it reopens direct access (§5) |
 | C. Standby primary | a second node holds a replica of the accounts store and the signing key (hourly export/import, AUTH round 17), advertises `auth=standby`; promotion is one command, `ragon-admin node promote <node>`, which imports the last export on that node, makes it the primary and points every member at it over SSH; automatic promotion needs a quorum the group does not have, so it is manual | back in about five minutes by hand; users keep their sign-in only if the signing key is replicated, which is a stored secret on a second machine |
 
+**In 0.9.10, before the promotion command exists** (this follows from the rulings of 2026-11-24 and 2026-11-25): members refuse direct clients (§5), so option B is not available, and the group is down for work until the primary is back or an administrator re-points the group by the documented manual steps (import the last accounts export on another node, make it the primary, set each member's primary over SSH; S1.12 writes the steps). Nothing promotes itself. A single node is not affected.
+
 **Decided (owner, 2026-11-24):** at 1.0, A with **one tested command** for manual promotion (`node promote`, C without its automation, using the export/import AUTH already specifies); at 1.1 a **synced standby** (S5.7); **never automatic for now**. A standby that promotes itself is not built: two primaries issuing tokens is worse than an outage.
 
 ## 7. Single-node users, and the added-time budget
 
 ### 7.1 Nothing changes for one node
 
-A lone node, or a primary with no members (`[node] backends` empty, the default), takes the gate's existing path: no placement, no table, no polling, no second hop. The code that runs is the code that runs today (and a member refuses nothing, §5), and a test (§11) compares the bytes and timing of a request with the feature compiled in against one without.
+A lone node, or a primary with no members, takes the gate's existing path: no placement, no table, no polling, no second hop. The code that runs is the code that runs today (and a member refuses nothing, §5), and a test (§11) compares the bytes and timing of a request with the feature compiled in against one without.
 
 ### 7.2 The budget
 
@@ -229,7 +231,7 @@ See §5. The status table's counters come from the same lines.
 [node]
 group = "serve"          # serve | hold-only | out        (every node)
 endpoint_only = false    # members accept requests only from the primary; set by node balancer add, cleared by remove
-backends = []            # primary only: node ids; "paired" = every paired node serving a model; empty = endpoint off
+backends = "paired"      # primary only: "paired" (the default) = every paired node serving a model, or a list of node ids; no setting turns the endpoint off for a group (owner, 2026-11-25)
 queue_wait_s = 60
 ```
 
@@ -238,7 +240,7 @@ queue_wait_s = 60
 | Slice | Gate (the slice is not released until it holds) |
 |---|---|
 | 0 | per-task speed with 1 versus 4 sessions per node on the seven-node SWE slice shape: a task's steps per minute through the proxy at 4 sessions per node is at least 70% of its direct, one-session figure, and the total throughput is at least 3.5x one node's; added time within §7.2; cache reuse through the proxy: `reused / prompt tokens` over a 20-turn agent session matches direct use within 2 points; cancellation frees the node's session within 1 s |
-| 1 | the catalogue equals the union on a mixed group (full, entry-level, one with an adapter); a request for the adapter goes only to its node; an over-long prompt goes only to a node that fits; a member with `endpoint_only` refuses a direct client with `use_group_endpoint` and admits the primary and loopback; a single node and a group with the endpoint off refuse nobody (byte-for-byte test) |
+| 1 | the catalogue equals the union on a mixed group (full, entry-level, one with an adapter); a request for the adapter goes only to its node; an over-long prompt goes only to a node that fits; a member with `endpoint_only` refuses a direct client with `use_group_endpoint` and admits the primary and loopback; a single node and a primary with no members refuse nobody (byte-for-byte test); the same checks pass on a real pair of nodes, with the endpoint on, before 0.9.10 ships |
 | 2 | a revoked key is refused through the proxy within the 60 s of AUTH; a forwarded-user header from a non-primary caller is ignored (test); a vendor SDK client against the primary passes the AUTH suite test |
 | 3 | `ragon web` search, images and speech work against the primary alone, with the members' sidecar ports closed to the client |
 | 4 | a drain finishes running turns and places the next ones elsewhere; a benchmark hold on the primary does not refuse the endpoint; a night start moves traffic off a node with no failed request |
@@ -246,11 +248,11 @@ queue_wait_s = 60
 
 ## 12. Delivery in slices
 
-Main freezes on Wednesday 2026-11-25 at 12:55 UTC for 0.9.9, which ships on Sunday 2026-11-29 with the accounts work (AUTH). **Nothing in this spec is in 0.9.9** (owner, 2026-11-24): the accounts rows are the freeze's whole budget, and the gate is the file they change most. **The build starts today (2026-11-24)**, on branches. Rows that only add new files can land before the freeze, behind the flag; a row that edits a file the freeze covers (`dreamference/vllm_server/model_gate_service.py`, `dreamference/node/node_settings.py`, `dreamference/swe_bench/swe_bench_runner.py`, the launcher's resolve step, the accounts modules) waits for Sunday's release. The backlog `backlog/plan-primary-endpoint.md` marks each row. This spec's own commit is documentation only. 1.0 is planned before the end of the year.
+Main freezes on Wednesday 2026-11-25 at 12:55 UTC for 0.9.9, which ships on Sunday 2026-11-29 with the accounts work (AUTH). **Nothing in this spec is in 0.9.9** (owner, 2026-11-24 and 2026-11-25): the accounts rows are the freeze's whole budget, and the gate is the file they change most. **The build starts today (2026-11-24)**, on branches. Rows that only add new files can land before the freeze, because nothing calls them while the gate's code path is unchanged; a row that edits a file the freeze covers (`dreamference/vllm_server/model_gate_service.py`, `dreamference/node/node_settings.py`, `dreamference/swe_bench/swe_bench_runner.py`, the launcher's resolve step, the accounts modules) waits for Sunday's release. The backlog `backlog/plan-primary-endpoint.md` marks each row. This spec's own commit is documentation only. 1.0 is planned before the end of the year. **0.9.10 carries the whole single endpoint, switched on** (owner, 2026-11-25), so its date moves as late as the rows listed in `backlog/plan-primary-endpoint.md` need; the plan gives the count, the sizes and the estimate.
 
 Each row has a mechanical check; **L** is for the local model (small, testable, one named test), **C** is for a cloud model with review.
 
-### Slice 0: a sticky reverse proxy for `/v1/*`, behind a flag (release: 0.9.10, off by default; build starts 2026-11-24)
+### Slice 0: a sticky reverse proxy for `/v1/*` (release: 0.9.10, on for every group; build starts 2026-11-24)
 
 Enough for a benchmark run with one task per node.
 
@@ -269,7 +271,7 @@ Enough for a benchmark run with one task per node.
 | S0.11 | the benchmark harness takes one endpoint and a `--sessions-per-node` figure | harness test with fake nodes; one real 14-task run, one task per node, no 5xx | C |
 | S0.12 | `docs/dev/balancer.md`, the AGENTS.md line, spec status | the docs test (links resolve, row in `specs/README.md`) | L |
 
-### Slice 1: the catalogue and the closed door (0.9.10, endpoint off by default; refusal only where it is switched on)
+### Slice 1: the catalogue and the closed door (0.9.10, on for every group)
 
 | Row | What | Check | Who |
 |---|---|---|---|
@@ -279,8 +281,20 @@ Enough for a benchmark run with one task per node.
 | S1.4 | `X-Ragon-Backend` for admins and service accounts | test: honoured, ignored for a user, failing when the node is down | L |
 | S1.5 | the quality-admission table read from PLATFORM_QUALITY's result file | test against a fixture; real file read on the QA run | C |
 | S1.6 | the mixed-group acceptance (full + entry-level + adapter node) | the gate row of §11 on real nodes | C |
-| S1.7 | `endpoint_only`: a member accepts only the primary (its service key and source address) and loopback, refuses others with `use_group_endpoint`; set by `node balancer add`, cleared by `remove` | tests: direct client refused, primary and loopback admitted, setting absent on a single node and on a group with the endpoint off | C |
+| S1.7 | `endpoint_only`: a member accepts only the primary (its service key and source address) and loopback, refuses others with `use_group_endpoint`; set by `node balancer add`, cleared by `remove` | tests: direct client refused, primary and loopback admitted, setting absent on a single node and on a primary with no members | C |
 | S1.8 | `ragon-admin node debug-direct <node> --for <t>` | test: one named address admitted, window expires, logged | C |
+| S1.9 | the default: a primary with paired members runs the endpoint with `backends = "paired"`; no setting turns it off for a group | test: a primary with members forwards with no setting written; a primary with none takes the existing path | L |
+| S1.10 | the upgrade path for an existing group: on its first start in 0.9.10 the primary runs `node balancer add` for every paired member over SSH (pins the CA, sets `endpoint_only`); a member it cannot reach is listed as "not closed" in `balancer status` and is retried at each start | test with fake SSH: members set, an unreachable one listed and retried | C |
+| S1.11 | the real-pair test: two real nodes, endpoint on; a direct client refused by the member, the primary admitted, a streamed turn through the primary, a member stopped mid-stream gives the shaped error | the script's pass line on two real nodes, run before 0.9.10 ships | C |
+| S1.12 | docs: what to do while the primary is down in 0.9.10 (the manual re-pointing steps of §6) | docs test | L |
+
+**Rows pulled forward from later slices into 0.9.10**, because the endpoint is on and the door is single: S2.7 (pin the member CA at `balancer add`), S2.8 (the egress audit of the group's gate), S3.6 (the launcher stops picking a member; the `info` object and the member advert, since a client that picks a member is refused), S4.1 (states), S4.3 (`node balancer add`, `remove` and `status`; `sessions` stays 1.0), S4.4 and S4.5 (the holds; without S4.5 a benchmark hold on the primary refuses the whole endpoint).
+
+### Open for the owner
+
+- **Upgrade order.** A member that runs 0.9.10 before its primary does must not close its door early. The plan assumes `endpoint_only` is set only by the primary's `balancer add` (S1.10), so an older or not-yet-upgraded member stays open until the primary reaches it. Say if the primary should instead refuse to switch on until every member runs 0.9.10.
+- **A kill switch.** The rulings leave no setting that turns the endpoint off for a group, and the spec ships none. If the owner wants an operator escape for a bad release (a member's `endpoint_only` cleared by hand, or `backends` set empty), it is one more row; say so.
+- **Clients while the primary is down.** S5.6 (the 503 with `Retry-After` that stops a tight retry loop) stays in 1.0. In 0.9.10 a client that talks to a down primary gets a connection error, and one that talks to a member gets `use_group_endpoint`. Say if S5.6 should ship in 0.9.10.
 
 ### Slice 2: auth through the proxy (version 1.0)
 
@@ -337,9 +351,9 @@ Enough for a benchmark run with one task per node.
 | Slice | Release | Reason |
 |---|---|---|
 | spec and docs | 0.9.9 (documentation only) | nothing runs |
-| 0 and 1 | 0.9.10, endpoint off | the benchmark needs them; no effect on anyone who does not set `backends`; a group that switches it on closes its members' doors at once |
+| 0 and 1, and the rows pulled forward below | 0.9.10, endpoint on for every group | the benchmark needs them; a group's primary becomes its one address at the upgrade and its members' doors close at once; a single node is unaffected |
 | 2, 3, 4 | 1.0 (release candidate window) | the forwarded user and the sidecars, drain and status |
-| 5 | 1.0 (S5.1-S5.6), 1.1 (S5.7) | the outage story must exist before the door is single |
+| 5 | 1.0 (S5.1-S5.6), 1.1 (S5.7) | the promotion command, the stream endings and the kill-a-node test follow in 1.0; the door is single from 0.9.10 (§6 says what happens meanwhile) |
 
 ## 13. Tests and keeping it honest
 
@@ -374,11 +388,11 @@ Each is quoted from the record. Rows 1 and 3 are **changed by the owner on 2026-
 |---|---|---|---|
 | 1 | Per-user limits | none in 1.0; fair turns and one reserved typing seat; limits stay 3.0 | §2.3, §2.4 |
 | 2 | TLS on the member hop | stays encrypted | §5 |
-| 3 | `endpoint_only` | refuse direct clients **as soon as a group's endpoint is switched on, from 0.9.10**; single nodes and groups with the endpoint off unaffected | §5, S1.7 |
+| 3 | `endpoint_only` | refuse direct clients **from 0.9.10, with the endpoint on for every group**; single nodes unaffected (2026-11-25: no group is left with the endpoint off) | §5, S1.7 |
 | 4 | Primary failure | manual promotion with one tested command at 1.0; synced standby at 1.1; never automatic for now | §6, S5.5, S5.7 |
 | 5 | Benchmark hold on the primary | covers only the primary's own model; the endpoint keeps serving through other nodes | §8.2, S4.5 |
 | 6 | Interactive reserve | yes, one reserved typing seat | §2.3 |
-| 7 | Release plan | build starts today; slices 0 and 1 in 0.9.10 switched off; the rest 1.0; nothing in 0.9.9 | §12 |
+| 7 | Release plan | build starts today; **2026-11-25 ruling: the endpoint ships switched on for every group in 0.9.10 and every member refuses clients that go around the primary; this replaces "slices 0 and 1 in 0.9.10 switched off"**; the rest 1.0; nothing in 0.9.9; the date of 0.9.10 moves as late as this needs | §12 |
 | 8 | Quality admission per model | yes, before a member gets traffic | §3.3, S1.3 |
 | 9 | Which-box header | yes, for admins and service accounts | §3.3, S1.4 |
 | 10 | The primary is the address | yes: clients talk only to it | §1, §9, §14 |
