@@ -160,6 +160,18 @@ def test_the_time_limit_is_strict_and_nothing_raises():
     assert not passed and "out of memory" in line
 
 
+def test_tool_call_canary_output_items_collects_done_events_when_the_final_event_has_no_output():
+    item = call_item()
+    events = [
+        {"type": "response.created", "response": {"output": []}},
+        {"type": "response.output_item.done", "item": item},
+        {"type": "response.completed", "response": {}},
+    ]
+    lines = ["data: " + json.dumps(event) for event in events]
+    passed, line = check(Response(lines=lines))
+    assert passed and line.startswith('get_weather {"city": "Paris"}')
+
+
 class Manager:
     host = "http://127.0.0.1:8000"
 
