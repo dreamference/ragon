@@ -21,7 +21,11 @@ pub async fn run_cli(args: &[String]) -> i32 {
         eprintln!("Could not resolve CODEX_HOME.");
         return 1;
     };
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+    #[cfg(windows)]
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+    let Some(home) = home.map(PathBuf::from) else {
         eprintln!("HOME is not set.");
         return 1;
     };

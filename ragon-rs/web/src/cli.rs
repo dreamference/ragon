@@ -119,7 +119,24 @@ pub fn lan_names() -> Vec<String> {
             libc::freeifaddrs(list);
         }
     }
-    if let Ok(host) = std::fs::read_to_string("/etc/hostname") {
+    #[cfg(windows)]
+    {
+        // No getifaddrs: a UDP socket "connected" to a routable address sends nothing but makes
+        // the OS pick the interface it would use, whose address is the LAN one.
+        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0")
+            && socket.connect("192.0.2.1:9").is_ok()
+            && let Ok(std::net::SocketAddr::V4(local)) = socket.local_addr()
+            && !local.ip().is_loopback()
+            && !local.ip().is_unspecified()
+        {
+            names.push(local.ip().to_string());
+        }
+    }
+    #[cfg(windows)]
+    let hostname = std::env::var("COMPUTERNAME").ok();
+    #[cfg(not(windows))]
+    let hostname = std::fs::read_to_string("/etc/hostname").ok();
+    if let Some(host) = hostname {
         let host = host.trim().to_ascii_lowercase();
         if !host.is_empty() {
             names.push(format!("{host}.local"));
@@ -266,7 +283,11 @@ fn launchd_plist_path(home: &Path) -> PathBuf {
 /// The launchd domain of this user's login session, `gui/<uid>`.
 fn launchd_domain() -> String {
     // SAFETY: getuid has no preconditions and cannot fail.
-    format!("gui/{}", unsafe { libc::getuid() })
+    #[cfg(unix)]
+    return format!("gui/{}", unsafe { libc::getuid() });
+    // Only macOS has launchd; the function is still compiled everywhere.
+    #[cfg(not(unix))]
+    "gui/0".to_string()
 }
 
 /// Stops the web server: the user unit on Linux, the launchd agent on macOS.
@@ -497,9 +518,20 @@ async fn serve_command(args: &[String], environment: &Environment) -> i32 {
         eprintln!("HTTPS with the node's certificate on {}", https_urls.join(", "));
     }
     let shutdown = async {
+        #[cfg(unix)]
         let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+        // Windows has no SIGTERM: the console's close and the system's shutdown are its equivalents.
+        #[cfg(windows)]
+        let mut terminate = tokio::signal::windows::ctrl_close().ok();
+        #[cfg(windows)]
+        let mut shutdown_event = tokio::signal::windows::ctrl_shutdown().ok();
+        #[cfg(windows)]
+        let system_shutdown = async { match shutdown_event.as_mut() { Some(signal) => { signal.recv().await; } None => std::future::pending::<()>().await } };
+        #[cfg(unix)]
+        let system_shutdown = std::future::pending::<()>();
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
+            _ = system_shutdown => {}
             _ = async { match terminate.as_mut() { Some(signal) => { signal.recv().await; } None => std::future::pending::<()>().await } } => {}
         }
     };

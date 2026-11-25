@@ -14,6 +14,9 @@ use std::time::Duration;
 
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
+#[cfg(windows)]
+use tokio::net::TcpStream;
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::process::Child;
 use tokio::process::Command;
@@ -23,7 +26,12 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::WebSocketStream;
 
 /// A connection to the app-server.
+#[cfg(unix)]
 pub type Upstream = WebSocketStream<UnixStream>;
+/// A connection to the app-server: Windows has no Unix socket the app-server can listen on, so it
+/// listens on loopback and every client presents a token (see [`windows_listen`]).
+#[cfg(windows)]
+pub type Upstream = WebSocketStream<TcpStream>;
 
 /// How long a start may take: the launcher first waits for a model server that may still be loading.
 pub const START_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -62,6 +70,8 @@ pub fn prepare_socket_dir(socket: &Path) -> std::io::Result<()> {
 }
 
 /// The socket to use: `$XDG_RUNTIME_DIR/ragon/app-server.sock`, else one in the state folder.
+/// On Windows the same path names a small file instead: the loopback port the app-server listens
+/// on, written once it is spawned; the token for that port sits beside it.
 pub fn default_socket(state_dir: &Path) -> PathBuf {
     match std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
         Some(dir) => PathBuf::from(dir).join("ragon").join("app-server.sock"),
@@ -85,9 +95,25 @@ impl AppServer {
     }
 
     /// One attempt to connect.
+    #[cfg(unix)]
     pub async fn connect_once(&self) -> std::io::Result<Upstream> {
         let stream = UnixStream::connect(&self.socket).await?;
         let (upstream, _) = tokio_tungstenite::client_async("ws://localhost/", stream)
+            .await
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+        Ok(upstream)
+    }
+
+    /// One attempt to connect: the loopback port and token the spawn left beside the socket path.
+    #[cfg(windows)]
+    pub async fn connect_once(&self) -> std::io::Result<Upstream> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let (port, token) = windows_listen::read(&self.socket)?;
+        let stream = TcpStream::connect(("127.0.0.1", port)).await?;
+        let mut request = format!("ws://127.0.0.1:{port}/").into_client_request().map_err(std::io::Error::other)?;
+        let value = format!("Bearer {token}").parse().map_err(std::io::Error::other)?;
+        request.headers_mut().insert("Authorization", value);
+        let (upstream, _) = tokio_tungstenite::client_async(request, stream)
             .await
             .map_err(|err| std::io::Error::other(err.to_string()))?;
         Ok(upstream)
@@ -140,10 +166,14 @@ impl AppServer {
 
     fn spawn(&self) -> Result<Running, String> {
         prepare_socket_dir(&self.socket).map_err(|err| format!("could not prepare {}: {err}", self.socket.display()))?;
-        let listen = format!("unix://{}", self.socket.display());
+        #[cfg(unix)]
+        let listen = vec!["--listen".to_string(), format!("unix://{}", self.socket.display())];
+        #[cfg(windows)]
+        let listen = windows_listen::prepare(&self.socket)?;
         let mut command = Command::new(&self.launch.ragon);
         command
-            .args(["-c", "features.code_mode_host=true", "app-server", "--listen", &listen])
+            .args(["-c", "features.code_mode_host=true", "app-server"])
+            .args(&listen)
             .envs(self.launch.env.iter().map(|(key, value)| (key.as_str(), value.as_str())))
             .env("RUST_LOG", "warn")
             .stdin(Stdio::null())
@@ -184,6 +214,54 @@ impl AppServer {
         if let Some(mut running) = self.child.lock().await.take() {
             let _ = running.child.kill().await;
         }
+    }
+}
+
+/// The Windows transport: the app-server listens on `ws://127.0.0.1:PORT` and accepts a client
+/// only with the capability token in `Authorization: Bearer`. The port is in the file at the
+/// socket path (`{"port":N}`), the token in `<socket>.token`, both private to the user.
+#[cfg(windows)]
+pub mod windows_listen {
+    use std::path::Path;
+    use std::path::PathBuf;
+
+    pub fn token_path(socket: &Path) -> PathBuf {
+        let mut name = socket.as_os_str().to_os_string();
+        name.push(".token");
+        PathBuf::from(name)
+    }
+
+    /// The port and token of the server the files describe.
+    pub fn read(socket: &Path) -> std::io::Result<(u16, String)> {
+        let port: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(socket)?).map_err(std::io::Error::other)?;
+        let port = port["port"].as_u64().and_then(|port| u16::try_from(port).ok()).ok_or_else(|| std::io::Error::other("no port"))?;
+        let token = std::fs::read_to_string(token_path(socket))?.trim().to_string();
+        Ok((port, token))
+    }
+
+    /// Picks a free loopback port, writes the token and the port, and returns the app-server's
+    /// listen arguments. The port is written before the server binds it: a client that reads it
+    /// early just fails to connect and tries again, like one that finds no socket yet.
+    pub fn prepare(socket: &Path) -> Result<Vec<String>, String> {
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .and_then(|listener| listener.local_addr())
+            .map_err(|err| format!("could not pick a loopback port: {err}"))?
+            .port();
+        let token = crate::auth::random_hex(32);
+        let token_file = token_path(socket);
+        crate::auth::write_private(&token_file, &token).map_err(|err| format!("could not write {}: {err}", token_file.display()))?;
+        // The server's own copy of the port is in the listen URL; the file is for the clients.
+        let _ = std::fs::remove_file(socket);
+        let args = vec![
+            "--listen".to_string(),
+            format!("ws://127.0.0.1:{port}"),
+            "--ws-auth".to_string(),
+            "capability-token".to_string(),
+            "--ws-token-file".to_string(),
+            token_file.display().to_string(),
+        ];
+        crate::auth::write_private(socket, &format!("{{\"port\":{port}}}")).map_err(|err| format!("could not write {}: {err}", socket.display()))?;
+        Ok(args)
     }
 }
 
@@ -246,8 +324,11 @@ mod tests {
         prepare_socket_dir(&socket).unwrap();
         let meta = std::fs::metadata(root.join("a").join("b")).unwrap();
         assert!(meta.is_dir());
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -265,6 +346,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn connect_once_to_a_non_websocket_listener_fails() {
         let root = scratch("plain");
@@ -289,6 +371,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_server_that_exits_early_reports_its_last_line_and_the_log() {
         let root = scratch("exits");
@@ -305,6 +388,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn stderr_lines_are_redacted_before_they_are_written() {
         let root = scratch("redact");
@@ -322,6 +406,55 @@ mod tests {
         assert!(kept.contains("saw [secret] here"), "{kept}");
         assert!(!err.contains(&token), "{err}");
         assert!(ragon_log::SECRETS_TXT.contains("github|gh|"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Windows: a stand-in for the app-server's loopback listener, which lets a client in only
+    /// with the token the spawn wrote.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn connect_once_presents_the_token_on_loopback() {
+        use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+        let root = scratch("loopback");
+        let socket = root.join("run").join("s.sock");
+        let args = windows_listen::prepare(&socket).unwrap();
+        assert!(args.contains(&"capability-token".to_string()), "{args:?}");
+        let (port, token) = windows_listen::read(&socket).unwrap();
+        assert_eq!(token.len(), 64);
+        assert_eq!(std::fs::read_to_string(windows_listen::token_path(&socket)).unwrap(), token);
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+        let expected = format!("Bearer {token}");
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let expected = expected.clone();
+                let check = move |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
+                    match request.headers().get("authorization").and_then(|value| value.to_str().ok()) {
+                        Some(value) if value == expected => Ok(response),
+                        _ => Err(ErrorResponse::new(Some("no token".to_string()))),
+                    }
+                };
+                let _ = tokio_tungstenite::accept_hdr_async(stream, check).await;
+            }
+        });
+        let server = AppServer::new(socket.clone(), launch("ragon.exe", root.join("log")));
+        assert!(server.connect_once().await.is_ok());
+        // The wrong token is refused.
+        std::fs::write(windows_listen::token_path(&socket), "wrong").unwrap();
+        assert!(server.connect_once().await.is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_server_that_exits_early_reports_its_last_line_on_windows() {
+        let root = scratch("exits-win");
+        let script = root.join("fake-ragon.cmd");
+        std::fs::write(&script, "@echo off\r\necho model server missing 1>&2\r\nexit /b 3\r\n").unwrap();
+        let log = root.join("app-server.log");
+        let server = AppServer::new(root.join("run").join("s.sock"), launch(script.to_str().unwrap(), log.clone()));
+        let err = server.connect().await.err().expect("must fail");
+        assert!(err.contains("exited"), "{err}");
+        assert!(err.contains("model server missing"), "{err}");
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -35,7 +35,11 @@ impl Drop for Scratch {
 
 /// A scratch folder short enough for a Unix socket path.
 fn scratch(tag: &str) -> Scratch {
-    let dir = PathBuf::from("/tmp").join(format!("lw-{tag}-{}", std::process::id()));
+    #[cfg(unix)]
+    let base = PathBuf::from("/tmp");
+    #[cfg(windows)]
+    let base = std::env::temp_dir();
+    let dir = base.join(format!("lw-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     Scratch { dir }
@@ -716,13 +720,37 @@ async fn night_shift_is_queued_and_read_for_a_phone_bridge() {
 /// The stand-in app-server: one WebSocket connection on the Unix socket, its frames handed to the test.
 async fn fake_app_server(socket: &Path) -> tokio::sync::mpsc::UnboundedReceiver<(Value, tokio::sync::mpsc::UnboundedSender<Value>)> {
     ragon_web_server::app_server::prepare_socket_dir(socket).unwrap();
+    #[cfg(unix)]
     let listener = tokio::net::UnixListener::bind(socket).unwrap();
+    // Windows: the app-server listens on loopback behind a token; the stand-in takes the port the
+    // spawn step would have picked and, like the real one, refuses a client without the token.
+    #[cfg(windows)]
+    let (listener, token) = {
+        let _ = ragon_web_server::app_server::windows_listen::prepare(socket).unwrap();
+        let (port, token) = ragon_web_server::app_server::windows_listen::read(socket).unwrap();
+        (tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap(), token)
+    };
     let (frames, received) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
             let frames = frames.clone();
+            #[cfg(windows)]
+            let token = token.clone();
             tokio::spawn(async move {
+                #[cfg(unix)]
                 let websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                #[cfg(windows)]
+                let websocket = {
+                    use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+                    let expected = format!("Bearer {token}");
+                    let check = move |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
+                        match request.headers().get("authorization").and_then(|value| value.to_str().ok()) {
+                            Some(value) if value == expected => Ok(response),
+                            _ => Err(ErrorResponse::new(Some("no token".to_string()))),
+                        }
+                    };
+                    tokio_tungstenite::accept_hdr_async(stream, check).await.unwrap()
+                };
                 let (mut sink, mut stream) = websocket.split();
                 let (reply, mut replies) = tokio::sync::mpsc::unbounded_channel::<Value>();
                 tokio::spawn(async move {

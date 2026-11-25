@@ -237,7 +237,34 @@ impl HostProbe for SystemHostProbe {
     }
 }
 
+/// Free bytes available to the user on the filesystem holding `path` (`GetDiskFreeSpaceExW`).
+#[cfg(windows)]
+pub fn statvfs_free_bytes(path: &Path) -> Result<u64, String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    unsafe extern "system" {
+        fn GetDiskFreeSpaceExW(directory: *const u16, available: *mut u64, total: *mut u64, free: *mut u64) -> i32;
+    }
+    let mut check = path.to_path_buf();
+    while !check.exists() {
+        let Some(parent) = check.parent() else { break };
+        if parent.as_os_str().is_empty() {
+            break;
+        }
+        check = parent.to_path_buf();
+    }
+    let wide: Vec<u16> = check.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut available = 0u64;
+    // SAFETY: `wide` is NUL-terminated and outlives the call; the two outputs we do not want are null.
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut()) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(available)
+}
+
 /// Free bytes available to an unprivileged process on the filesystem holding `path`.
+#[cfg(unix)]
 pub fn statvfs_free_bytes(path: &Path) -> Result<u64, String> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
