@@ -4,8 +4,8 @@
 //! profile hides every home, so a stand-in under one could not be started): the drill sets
 //! CARGO_TARGET_DIR under /private/tmp.
 //!
-//! Not covered here: the GPU user-client denial needs the real node (a Metal job under the
-//! profile); it is a profile-text test in src/seatbelt.rs only.
+//! The GPU probe asks Metal for a device; on a Mac without one (a VM) it has nothing to deny and
+//! says so.
 #![cfg(target_os = "macos")]
 
 use std::net::TcpListener;
@@ -166,4 +166,48 @@ fn host_sockets_denied(j: &Job) {
         }
     }
     assert!(probed > 0, "no host control socket to probe on this Mac");
+}
+
+/// Whether this Mac's GPU is Apple's own (an `AGXAccelerator` in the IOKit registry), the one whose
+/// user-client classes the profile names; a VM's paravirtual GPU is denied by the deny default.
+fn gpu_is_apple_silicon() -> bool {
+    Command::new("/usr/sbin/ioreg")
+        .args(["-r", "-c", "IOAccelerator", "-d", "1"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("AGXAccelerator"))
+}
+
+#[test]
+fn the_gpu_user_clients_are_denied() {
+    if !works_unsandboxed(&["metal"]) {
+        println!("no Metal device on this Mac: nothing for the profile to deny");
+        return;
+    }
+    // The job profile, with the network on (the most it allows): no device.
+    let j = job("gpu", true);
+    let (code, text) = probe(&j, &["metal"]);
+    assert_eq!(code, 1, "a job got a Metal device: {text}");
+    // The profile's GPU lines alone over (allow default), so the denial is theirs and not the deny
+    // default's; (allow default) without them must keep the device.
+    let gpu_lines: String = profile(&j.sandbox)
+        .lines()
+        .filter(|l| l.contains("iokit-user-client-class"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert!(!gpu_lines.is_empty());
+    let run = |extra: &str| {
+        let path = j.dir.join("gpu.sb");
+        std::fs::write(&path, format!("(version 1)\n(allow default)\n{extra}")).unwrap();
+        let argv = wrap(&path, &[STANDIN.to_string(), "metal".to_string()]);
+        let out = Command::new(&argv[0]).args(&argv[1..]).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        println!("gpu lines {} -> {:?}: {}", !extra.is_empty(), out.status.code(), text.trim());
+        out.status.code().unwrap_or(-1)
+    };
+    assert_eq!(run(""), 0, "(allow default) alone took the device away: the probe proves nothing");
+    if gpu_is_apple_silicon() {
+        assert_eq!(run(&gpu_lines), 1, "the GPU user-client lines left a job a Metal device");
+    } else {
+        println!("not Apple's GPU: the user-client lines are not this GPU's, the deny default covers it");
+    }
 }

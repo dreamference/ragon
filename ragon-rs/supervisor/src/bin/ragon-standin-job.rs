@@ -9,6 +9,7 @@
 //! - `read <path>`, `write <path>`, `list <dir>`
 //! - `connect <host:port>`, `connect-unix <path>`, `resolve <host>`
 //! - `print <text>`
+//! - `metal` (macOS): asks Metal for the default GPU device, as a Metal job's first call does
 
 use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -17,6 +18,14 @@ use std::time::Duration;
 unsafe extern "C" {
     fn signal(sig: i32, handler: usize) -> usize;
 }
+// The GPU probe: Metal opens the GPU's IOKit user client to create the device, so a profile that
+// denies the user client leaves it none.
+#[cfg(target_os = "macos")]
+#[link(name = "Metal", kind = "framework")]
+unsafe extern "C" {
+    fn MTLCreateSystemDefaultDevice() -> *mut std::ffi::c_void;
+}
+
 const SIGTERM: i32 = 15;
 const SIG_IGN: usize = 1;
 
@@ -98,12 +107,18 @@ fn main() {
                 .to_socket_addrs()
                 .and_then(|mut a| a.next().ok_or_else(|| std::io::Error::other("no address"))),
         ),
+        #[cfg(target_os = "macos")]
+        (Some("metal"), _) => {
+            // SAFETY: no arguments; the returned device (or null) is only compared, never used.
+            let device = unsafe { MTLCreateSystemDefaultDevice() };
+            report("metal device", if device.is_null() { Err("none") } else { Ok(()) })
+        }
         (Some("print"), Some(text)) => {
             println!("{text}");
             0
         }
         _ => {
-            eprintln!("usage: ragon-standin-job <hog|sleep|stubborn|spawn|read|write|list|connect|connect-unix|resolve|print> ...");
+            eprintln!("usage: ragon-standin-job <hog|sleep|stubborn|spawn|read|write|list|connect|connect-unix|resolve|print|metal> ...");
             2
         }
     };
