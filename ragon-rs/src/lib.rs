@@ -72,6 +72,7 @@ pub mod metal_recipe;
 pub mod model_registry;
 pub mod node_advertise_macos;
 pub mod node_command;
+pub mod node_pairing;
 pub mod notice;
 pub mod plugins;
 pub mod prompt;
