@@ -312,10 +312,8 @@ mod tests {
     }
 
     /// A directory removed when the test ends.
-    #[cfg(unix)]
     struct Scratch(std::path::PathBuf);
 
-    #[cfg(unix)]
     impl Scratch {
         fn new() -> Self {
             static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -330,7 +328,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     impl Drop for Scratch {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
@@ -373,5 +370,68 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "a\nx\nb\nx\n");
         assert_eq!(run_capped(&say("c", 0), dir.path(), &out, false, &[], &cap).unwrap(), Exit::Code(0));
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "c\n\n");
+    }
+
+    /// `powershell -Command <script>`.
+    #[cfg(windows)]
+    fn powershell(script: &str) -> Vec<OsString> {
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script].iter().map(OsString::from).collect()
+    }
+
+    /// A script that starts a second PowerShell writing `late` after four seconds, says `started`,
+    /// then sleeps for `sleep` seconds.
+    #[cfg(windows)]
+    fn leaves_a_child(late: &Path, sleep: u32) -> Vec<OsString> {
+        powershell(&format!(
+            "Start-Process -NoNewWindow powershell -ArgumentList '-NoProfile','-Command','Start-Sleep 4; Set-Content -Path ''{}'' -Value x'; 'started'; Start-Sleep {sleep}",
+            late.display()
+        ))
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_limit_ends_the_whole_job() {
+        let dir = Scratch::new();
+        let (out, late) = (dir.path().join("out.log"), dir.path().join("late.txt"));
+        let stop = || false;
+        let cap = Cap { unit: "u", memory: "1G", use_scope: false, limit: Instant::now() + Duration::from_secs(2), stop: &stop };
+        let began = Instant::now();
+        assert_eq!(run_capped(&leaves_a_child(&late, 60), dir.path(), &out, false, &[], &cap).unwrap(), Exit::TimedOut);
+        assert!(began.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_secs(6));
+        assert!(!late.exists(), "the child outlived the limit");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn closing_the_job_ends_what_the_command_left_running() {
+        let dir = Scratch::new();
+        let (out, late) = (dir.path().join("out.log"), dir.path().join("late.txt"));
+        let stop = || false;
+        let cap = Cap { unit: "u", memory: "1G", use_scope: false, limit: Instant::now() + Duration::from_secs(60), stop: &stop };
+        assert_eq!(run_capped(&leaves_a_child(&late, 0), dir.path(), &out, false, &[], &cap).unwrap(), Exit::Code(0));
+        assert!(std::fs::read_to_string(&out).unwrap().contains("started"));
+        std::thread::sleep(Duration::from_secs(6));
+        assert!(!late.exists(), "the child outlived the job");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_allocation_past_the_memory_cap_fails() {
+        let dir = Scratch::new();
+        let out = dir.path().join("out.log");
+        let stop = || false;
+        let script = "$ErrorActionPreference = 'Stop'; 'started'; $b = New-Object byte[] 1500000000; 'allocated'";
+        let run = |memory: &str| {
+            let cap = Cap { unit: "u", memory, use_scope: false, limit: Instant::now() + Duration::from_secs(60), stop: &stop };
+            let exit = run_capped(&powershell(script), dir.path(), &out, false, &[], &cap).unwrap();
+            (exit, std::fs::read_to_string(&out).unwrap())
+        };
+        let (exit, text) = run("8G");
+        assert_eq!(exit, Exit::Code(0), "{text}");
+        assert!(text.contains("allocated"), "{text}");
+        let (exit, text) = run("400M");
+        assert_ne!(exit, Exit::Code(0), "{text}");
+        assert!(text.contains("started") && !text.contains("allocated"), "{text}");
     }
 }

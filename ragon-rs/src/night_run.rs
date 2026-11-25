@@ -20,6 +20,8 @@ mod report;
 mod task_run;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, windows))]
+mod windows_tests;
 
 use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
