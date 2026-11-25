@@ -249,6 +249,16 @@ def test_mistyped_and_undeclared_values_are_never_written():
     assert "free text" not in line and "n=[number] session=[id] finish=other" in line
 
 
+def test_log_line_formatter_format_wraps_a_failing_field_value_as_an_error_placeholder():
+    redactor = LogRedactor()
+    broken = LogField("error", "k", {"class": 1, "message": 2})  # value() raises inside the loop
+    line = LogLineFormatter.format(
+        EPOCH, "web", 2, "boom", (*LogField.count(n=3), broken), redactor
+    )
+    assert line.endswith(" n=3 k=[error]")
+    assert LINE_RE.match(line)
+
+
 def test_log_line_formatter_number_writes_numbers_and_masks_non_finite_floats():
     number = LogLineFormatter.number
     assert number(0) == "0"
