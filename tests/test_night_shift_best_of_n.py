@@ -423,6 +423,31 @@ def test_without_a_model_server_the_judge_is_skipped_not_asked(bon, monkeypatch)
     assert asked == []
 
 
+def test_night_shift_best_of_n_choose_skips_the_judge_when_the_window_has_closed(bon, monkeypatch):
+    asked = []
+    monkeypatch.setattr(
+        NightShiftChooser, "server_judge", staticmethod(lambda *a, **k: asked.append(a))
+    )
+    record = queue(bon["night"], bon["repo"], test=TEST)
+    run = NightShiftBestOfN(
+        bon["night"],
+        record,
+        NightShiftSettings({}),
+        bon["ragon"],
+        time.time() + 60,
+        best_of=2,
+        model_host="http://x",
+    )
+    run.window_end = time.time() - 1  # the window closed before the judging
+    passed = [
+        {"attempt": i, "status": "candidate", "result": {"test_result": "passed"}} for i in (1, 2)
+    ]
+    chosen, choice = run._choose(passed)
+    assert choice["stage"] == "judge skipped: the window had closed" and chosen["attempt"] == 1
+    assert choice["judge_calls"] == 0
+    assert asked == []
+
+
 def test_the_server_judge_never_waits_past_the_window_and_always_gets_a_minute(bon, monkeypatch):
     from dreamference.night_shift.night_shift_best_of_n import MIN_JUDGE_TIMEOUT_S
 
