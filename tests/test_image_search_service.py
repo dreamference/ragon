@@ -869,6 +869,17 @@ def test_image_search_service_collapse_returns_thumbs_unchanged_without_pillow(m
     assert ImageSearchService._collapse(thumbs) is thumbs
 
 
+def test_image_search_service_thumb_hash_returns_none_without_pillow(monkeypatch):
+    from dreamference.chat import image_search_service
+
+    monkeypatch.setattr(image_search_service, "Image", None)
+    assert ImageSearchService._thumb_hash(b"junk") is None
+
+
+def test_image_search_service_thumb_hash_returns_none_for_an_undecodable_thumbnail():
+    assert ImageSearchService._thumb_hash(b"junk") is None
+
+
 def test_a_full_download_refusal_drops_the_winner_instead_of_failing(tmp_path):
     cand = _candidate(1)
     table = {cand["thumb_url"]: _jpeg("red")}  # the full image is not in the table
