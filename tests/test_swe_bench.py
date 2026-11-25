@@ -1667,6 +1667,26 @@ def test_validation_decides_from_the_two_verdicts():
     assert "could not be graded" in problem({"resolved": True}, None)
 
 
+def test_swe_bench_evaluator_validate_instance_not_in_dataset(bench):
+    """An instance id that does not appear in the dataset is reported as not in the dataset."""
+    outcome = SweBenchEvaluator.validate("verified", ["ghost__missing-0"], bench["settings"])
+    assert outcome == {"ghost__missing-0": "not in verified"}
+    assert SweBenchImages.rejected() == {}
+
+
+def test_swe_bench_evaluator_validate_disk_low_and_image_not_present(bench, monkeypatch):
+    """When disk reserve is exceeded and the image is not present yet, it is not validated."""
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: types.SimpleNamespace(total=4 << 40, used=(4 << 40) - 1, free=1),
+    )
+    outcome = SweBenchEvaluator.validate("verified", ["acme__widget-1"], bench["settings"])
+    assert "not validated yet" in outcome["acme__widget-1"]
+    assert "GiB of disk is free" in outcome["acme__widget-1"]
+    assert SweBenchImages.rejected() == {}
+
+
 # -- grading --------------------------------------------------------------------------------------
 
 
