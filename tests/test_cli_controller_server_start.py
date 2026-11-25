@@ -203,3 +203,100 @@ def test_dreamference_cli_controller_start_diffusion_sidecar_nulls_the_manager_o
     _start(monkeypatch, _Monitor(ready=True))
     out = capsys.readouterr().out
     assert "Diffusion sidecar failed to start: no docker" in out and not slept
+
+
+def test_dreamference_cli_controller_report_diffusion_state_polls_until_healthy(
+    monkeypatch, capsys
+):
+    """The poll loop sleeps while /health answers non-200, then reports a ready sidecar."""
+    import time as time_mod
+
+    from dreamference.hardware import ModelMatrixRegistry
+    from dreamference.vllm_server import DiffusionServerManager
+
+    monkeypatch.setattr(ModelMatrixRegistry, "diffusion_enabled", classmethod(lambda cls: True))
+    monkeypatch.setattr(DiffusionServerManager, "start_server", lambda self, **k: True)
+
+    sidecar_hits = []
+
+    def sidecar_get(url, *a, **k):
+        if url.endswith("/health"):
+            sidecar_hits.append(1)
+            if len(sidecar_hits) == 1:
+                return MagicMock(status_code=503, json=dict)
+            return MagicMock(status_code=200, json=lambda: {"status": "ok"})
+        return MagicMock(status_code=200, json=lambda: {"data": [{"id": "m"}]})
+
+    monkeypatch.setattr(requests, "get", sidecar_get)
+    ticks = itertools.count(1.0, 1.0)
+    monkeypatch.setattr(time_mod, "time", lambda: next(ticks))
+    slept = []
+    monkeypatch.setattr(time_mod, "sleep", lambda s: slept.append(s))
+
+    _start(monkeypatch, _Monitor(ready=True))
+
+    out = capsys.readouterr().out
+    assert "Diffusion model ready at http://localhost:8001/v1" in out
+    assert sidecar_hits == [1, 1, 1]
+    assert slept == [2]
+
+
+def test_dreamference_cli_controller_report_diffusion_state_reports_load_failure(
+    monkeypatch, capsys
+):
+    """A /health 'error' payload reports the failed load and the sidecar's container name."""
+    import time as time_mod
+
+    from dreamference.hardware import ModelMatrixRegistry
+    from dreamference.vllm_server import DiffusionServerManager
+
+    monkeypatch.setattr(ModelMatrixRegistry, "diffusion_enabled", classmethod(lambda cls: True))
+    monkeypatch.setattr(DiffusionServerManager, "start_server", lambda self, **k: True)
+
+    def sidecar_get(url, *a, **k):
+        if url.endswith("/health"):
+            return MagicMock(status_code=200, json=lambda: {"status": "error", "error": "crashed"})
+        return MagicMock(status_code=200, json=lambda: {"data": [{"id": "m"}]})
+
+    monkeypatch.setattr(requests, "get", sidecar_get)
+    ticks = itertools.count(1.0, 1.0)
+    monkeypatch.setattr(time_mod, "time", lambda: next(ticks))
+    slept = []
+    monkeypatch.setattr(time_mod, "sleep", lambda s: slept.append(s))
+
+    _start(monkeypatch, _Monitor(ready=True))
+
+    out = capsys.readouterr().out
+    assert "failed to load: crashed" in out
+    assert "dreamference-diffusion-8001" in out
+    assert not slept
+
+
+def test_dreamference_cli_controller_report_diffusion_state_reports_still_loading(
+    monkeypatch, capsys
+):
+    """A 'loading' /health payload reports the sidecar as still loading in the background."""
+    import time as time_mod
+
+    from dreamference.hardware import ModelMatrixRegistry
+    from dreamference.vllm_server import DiffusionServerManager
+
+    monkeypatch.setattr(ModelMatrixRegistry, "diffusion_enabled", classmethod(lambda cls: True))
+    monkeypatch.setattr(DiffusionServerManager, "start_server", lambda self, **k: True)
+
+    def sidecar_get(url, *a, **k):
+        if url.endswith("/health"):
+            return MagicMock(status_code=200, json=lambda: {"status": "loading"})
+        return MagicMock(status_code=200, json=lambda: {"data": [{"id": "m"}]})
+
+    monkeypatch.setattr(requests, "get", sidecar_get)
+    ticks = itertools.count(1.0, 1.0)
+    monkeypatch.setattr(time_mod, "time", lambda: next(ticks))
+    slept = []
+    monkeypatch.setattr(time_mod, "sleep", lambda s: slept.append(s))
+
+    _start(monkeypatch, _Monitor(ready=True))
+
+    out = capsys.readouterr().out
+    assert "still loading in background (state: loading)" in out
+    assert not slept
