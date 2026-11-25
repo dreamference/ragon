@@ -1,6 +1,7 @@
 """Render the RBRB chart and badge (Ragon-Builds-Ragon benchmark) from docs/rbrb.json.
 
-The chart, images/rbrb.svg, has two panels (x = ISO weeks; closed weeks filled, the running week hollow): Ragon's share of development tokens in percent, and the
+The chart, images/rbrb.svg, has two panels (x = ISO weeks; closed weeks filled,
+the running week hollow): Ragon's share of development tokens in percent, and the
 quality band, the revert rate of Ragon's commits against the others' (the "quality" entries of the
 data: week, ragon_reverted, ragon_commits, other_reverted, other_commits). The badge,
 images/rbrb-badge.svg, shows the latest share.
@@ -50,6 +51,7 @@ TARGET_AT = 4  # the target is published, and drawn as a line, once the curve ha
 BAND_MIN_COMMITS = 20  # spec 2.8, condition 3
 CAPTION = "generated tokens by Ragon as a share of all development tokens, per ISO week (Monday to Sunday)"
 STEPS = (1, 2, 5, 10, 20, 25, 50)
+FONT_FAMILY = "system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"
 STYLE = (
     "<style>"
     ".bg{fill:#ffffff}.tx{fill:#444444}.hd{fill:#111111}.gr{stroke:#dddddd}"
@@ -109,8 +111,9 @@ def _panel(
     series: list[tuple[str, list[tuple[float, float, bool]]]],
     height: int = PANEL_H,
 ) -> list[str]:
-    """One line panel: a title, a grid every `step`, and per (class suffix, [(x, value, hollow)]) series a line and points.
+    """One line panel: a title, a grid every `step`, and one line and points per series.
 
+    A series is a class suffix with its (x, value, hollow) points.
     The line joins the closed points; a hollow point is a running week, drawn without a line to it from nothing
     but joined to the last closed point by a dashed segment.
     """
@@ -149,7 +152,10 @@ def _panel(
 def count_axis(highest: int) -> tuple[int, int]:
     """The top and the tick step of the landed-task axis: at least 5, at most four steps, a clean step."""
     target = max(5, highest)
-    step = next((c for c in (1, 2, 5, 10, 20, 25, 50, 100, 200, 500) if target / c <= TASK_AXIS_MAX_STEPS), 1000)
+    step = next(
+        (c for c in (1, 2, 5, 10, 20, 25, 50, 100, 200, 500) if target / c <= TASK_AXIS_MAX_STEPS),
+        1000,
+    )
     return -(-target // step) * step, step
 
 
@@ -158,7 +164,8 @@ def _bars(
 ) -> list[str]:
     """The landed-task panel: a grid and one bar per week (hollow while the week is running) with its count."""
     out = [
-        f'<text class="hd" x="{LEFT}" y="{top - 14}" font-size="14" font-weight="bold">Ragon tasks landed per week</text>'
+        f'<text class="hd" x="{LEFT}" y="{top - 14}" font-size="14" font-weight="bold">'
+        f"Ragon tasks landed per week</text>"
     ]
     for k in range(top_value // step + 1):
         y = top + height * (1 - k * step / top_value)
@@ -173,7 +180,8 @@ def _bars(
             f'<rect class="{cls}" x="{x - 12:.1f}" y="{top + height - h:.1f}" width="24" height="{h:.1f}"/>'
         )
         out.append(
-            f'<text class="hd" x="{x:.1f}" y="{top + height - h - 5:.1f}" text-anchor="middle" font-weight="bold">{count}</text>'
+            f'<text class="hd" x="{x:.1f}" y="{top + height - h - 5:.1f}" text-anchor="middle" '
+            f'font-weight="bold">{count}</text>'
         )
     return out
 
@@ -191,7 +199,10 @@ def band(entry: dict[str, Any]) -> str:
 
 def _label(x: float, y: float, text: str) -> str:
     anchor = "end" if x > WIDTH - RIGHT - INSET - 10 and x > WIDTH / 2 else "middle"
-    return f'<text class="hd" x="{x:.1f}" y="{y:.1f}" text-anchor="{anchor}" font-size="12" font-weight="bold">{text}</text>'
+    return (
+        f'<text class="hd" x="{x:.1f}" y="{y:.1f}" text-anchor="{anchor}" '
+        f'font-size="12" font-weight="bold">{text}</text>'
+    )
 
 
 def render(data: dict[str, Any]) -> str:
@@ -207,7 +218,7 @@ def render(data: dict[str, Any]) -> str:
         f'viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-label="RBRB chart">',
         STYLE,
         f'<rect class="bg" width="{WIDTH}" height="{HEIGHT}"/>',
-        '<g font-family="system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11">',
+        '<g font-family="' + FONT_FAMILY + '" font-size="11">',
     ]
     series = [
         (x_of(p["week"]), s, bool(p.get("provisional")))
@@ -258,7 +269,8 @@ def render(data: dict[str, Any]) -> str:
     )
     for q in quality:
         out.append(
-            f'<text class="tx" x="{x_of(q["week"]):.1f}" y="{QUALITY_TOP + PANEL_H + 18}" text-anchor="middle">{q["week"]}</text>'
+            f'<text class="tx" x="{x_of(q["week"]):.1f}" '
+            f'y="{QUALITY_TOP + PANEL_H + 18}" text-anchor="middle">{q["week"]}</text>'
         )
         out.append(
             f'<text class="hd" x="{x_of(q["week"]):.1f}" y="{QUALITY_TOP + PANEL_H + 32}" text-anchor="middle" '
@@ -278,7 +290,8 @@ def render(data: dict[str, Any]) -> str:
     out.append(f'<text class="tx" x="{LEFT + 230}" y="{legend_y}">running week so far</text>')
     if targets:
         out.append(
-            f'<line class="tg" x1="{LEFT + 360}" y1="{legend_y - 4}" x2="{LEFT + 380}" y2="{legend_y - 4}" stroke-width="1.5" stroke-dasharray="2 3"/>'
+            f'<line class="tg" x1="{LEFT + 360}" y1="{legend_y - 4}" '
+            f'x2="{LEFT + 380}" y2="{legend_y - 4}" stroke-width="1.5" stroke-dasharray="2 3"/>'
         )
         out.append(f'<text class="tx" x="{LEFT + 386}" y="{legend_y}">target</text>')
     out.append(f'<text class="tx" x="{LEFT}" y="{HEIGHT - 10}" font-size="10">{CAPTION}</text>')
@@ -308,7 +321,7 @@ def render_badge(data: dict[str, Any]) -> str:
         f'role="img" aria-label="RBRB: {value}">\n'
         f'<rect width="{left_w}" height="20" fill="#555555"/>\n'
         f'<rect x="{left_w}" width="{right_w}" height="20" fill="#2a6fdb"/>\n'
-        '<g font-family="system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="11" fill="#ffffff" text-anchor="middle">\n'
+        '<g font-family="' + FONT_FAMILY + '" font-size="11" fill="#ffffff" text-anchor="middle">\n'
         f'<text x="{left_w / 2:g}" y="14">RBRB</text>\n'
         f'<text x="{left_w + right_w / 2:g}" y="14">{value}</text>\n'
         "</g>\n</svg>\n"
@@ -388,7 +401,8 @@ def ingest(
             "all": counts["ragon_commits"] + counts["other_commits"],
         },
         "notes": (old or {}).get("final_notes", "")
-        or "Complete week, generated tokens only (method_version 0): the export carries no prompt or cached token counts yet, so no price-weighted point exists.",
+        or "Complete week, generated tokens only (method_version 0): the export carries no "
+        "prompt or cached token counts yet, so no price-weighted point exists.",
         "method_version": 0,
     }
     if provisional:
@@ -430,8 +444,11 @@ FLAT_COUNTS = re.compile(r"\{\n(?:\s+\"[a-z_]+\": \d+,?\n)+\s*\}")
 
 
 def dump_json(data: dict[str, Any]) -> str:
-    """The data file's text: indented, with each small object of counts on one line (the land queue's prose lint
-    reads a number that ends a line without a unit as a mistake; a count closed by a brace is not one)."""
+    """The data file's text: indented, with each small object of counts on one line.
+
+    The land queue's prose lint reads a number that ends a line without a unit as a mistake;
+    a count closed by a brace is not one.
+    """
     text = json.dumps(data, indent=2, ensure_ascii=False)
     return (
         FLAT_COUNTS.sub(lambda m: "{" + " ".join(m.group(0).split())[1:-1].strip() + "}", text)
