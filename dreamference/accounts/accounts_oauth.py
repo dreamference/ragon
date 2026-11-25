@@ -42,8 +42,13 @@ AUTHORIZE_PATH: Final[str] = "/oauth/authorize"
 # The login page on the primary's `ragon web` that serves Forgejo's authorization step (§14.4).
 WEB_PORT_ON_PRIMARY: Final[int] = 3100
 SECRET_HASH: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
-MAX_REDIRECT_URIS: Final[int] = 4
-MAX_URI_LENGTH: Final[int] = 512
+# The one redirect URI a node's Forgejo may register: its `ragon` source's callback behind the
+# node's own `ragon web` (`http(s)://<name>.local:3100/forge/user/oauth2/ragon/callback`, <name>
+# one DNS label). Anything else (another host, port or path, userinfo, a query) is refused (§14.2).
+FORGEJO_CALLBACK: Final[re.Pattern[str]] = re.compile(
+    r"https?://[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.local:3100"
+    r"/forge/user/oauth2/ragon/callback"
+)
 BASIC_SCHEME: Final[str] = "basic"
 RESPONSE_TYPE_CODE: Final[str] = "code"
 CHALLENGE_S256: Final[str] = "S256"
@@ -812,38 +817,39 @@ class AccountsOauth:
         return (200 if existed else 201), {}, answer
 
     def register_forgejo(self, headers: dict[str, str], body: bytes) -> Answer:
-        """`POST /ragon/v1/nodes/forgejo`: records a node's Forgejo OAuth client (§14.4).
+        """`POST /ragon/v1/nodes/forgejo`: records a node's Forgejo OAuth client (§14.2, §14.4).
 
-        Only that node's service key (or an admin) may write the node's client. The body holds
-        the SHA-256 of the secret, never the secret; a repeat with the same record changes
-        nothing.
+        An admin registers it (§14.2): a service key is not enough, since anyone on the LAN can
+        get one for a fresh node id. The record names exactly one redirect URI, the node's
+        Forgejo callback (`FORGEJO_CALLBACK`). The body holds the SHA-256 of the secret, never the
+        secret; a repeat with the same record changes nothing.
         """
         found = self.caller(headers)
         if found is None:
             return self.unauthorized()
         user = found[0]
+        if user["role"] != ROLE_ADMIN:
+            return self.api_error(403, "forbidden", "Only an admin registers a node's Forgejo.")
         fields = self.parse_body(headers, body) or {}
         node_id = fields.get("node_id")
         if not isinstance(node_id, str) or not NODE_ID.match(node_id):
             return self.api_error(400, "invalid_request", "Send the node's node_id.")
-        if user["role"] != ROLE_ADMIN and user["username"] != self.store.service_name(node_id):
-            return self.api_error(403, "forbidden", "Only the node's own service key may do this.")
         secret_hash = fields.get("secret_hash")
         uris = fields.get("redirect_uris")
         if not isinstance(secret_hash, str) or not SECRET_HASH.match(secret_hash):
             return self.api_error(400, "invalid_request", "secret_hash is the SHA-256 in hex.")
         if (
             not isinstance(uris, list)
-            or not 0 < len(uris) <= MAX_REDIRECT_URIS
-            or not all(
-                isinstance(uri, str)
-                and len(uri) <= MAX_URI_LENGTH
-                and urllib.parse.urlsplit(uri).scheme in ("http", "https")
-                and urllib.parse.urlsplit(uri).netloc
-                for uri in uris
-            )
+            or len(uris) != 1
+            or not isinstance(uris[0], str)
+            or not FORGEJO_CALLBACK.fullmatch(uris[0])
         ):
-            return self.api_error(400, "invalid_request", "redirect_uris are 1-4 http(s) URLs.")
+            return self.api_error(
+                400,
+                "invalid_request",
+                "redirect_uris is the node's Forgejo callback, "
+                "http(s)://<name>.local:3100/forge/user/oauth2/ragon/callback.",
+            )
         client = AccountsForgejoClient(CLIENT_ID_PREFIX + node_id, secret_hash, tuple(uris))
         changed = self.store.put_forgejo_client(node_id, client)
         return 200, {}, {"client_id": client.client_id, "changed": changed}

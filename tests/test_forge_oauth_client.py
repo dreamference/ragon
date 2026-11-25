@@ -189,7 +189,7 @@ def test_a_refusing_or_unreachable_primary_leaves_local_sign_in(primary, kept, m
 
     monkeypatch.setattr(ForgeOauthClient, "local_json", classmethod(refused))
     lines, changed = ForgeOauthClient.ensure("n1", "http://box.local:3100/forge/")
-    assert not changed and "HTTP 403" in lines[0]
+    assert not changed and "HTTP 403" in lines[0] and "an admin registers it" in lines[0]
 
     def down(cls, path, payload=None, key=None):
         raise OSError("connection refused")

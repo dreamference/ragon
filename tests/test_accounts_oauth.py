@@ -763,27 +763,34 @@ def node_key(store):
     return store.mint_key(store.service_name(NODE))
 
 
-def test_a_node_registers_its_forgejo_client_with_its_service_key(oauth, store, node_key, lines):
-    status, _, body = post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), node_key)
+@pytest.fixture
+def admin_token(oauth, users):
+    return sign_in(oauth, "t-alice", ALICE_PW)["access_token"]
+
+
+def test_an_admin_registers_a_nodes_forgejo_client_once(oauth, store, admin_token, lines):
+    status, _, body = post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), admin_token)
     assert (status, body) == (200, {"client_id": f"forgejo-{NODE}", "changed": True})
     assert store.forgejo_client(f"forgejo-{NODE}").allows(CALLBACK)
     assert any("forgejo_client" in line for line in lines)
-    again = post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), node_key)
+    again = post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), admin_token)
     assert again[2]["changed"] is False
     assert FORGE_SECRET not in json.dumps(lines)
 
 
-def test_only_the_nodes_own_key_or_an_admin_writes_its_client(oauth, store, node_key, users):
-    other = "12345678-0000-4000-8000-000000000000"
-    store.ensure_service_account(other)
-    other_key = store.mint_key(store.service_name(other))
-    status, _, _ = post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), other_key)
-    assert status == 403
+def test_only_an_admin_registers_a_forgejo_client(oauth, store, node_key, admin_token):
+    # A service key is not enough: anyone on the LAN can get one for a fresh node id (§14.2).
+    assert post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), node_key)[0] == 403
+    stranger = "12345678-0000-4000-8000-000000000000"
+    store.ensure_service_account(stranger)
+    stranger_key = store.mint_key(store.service_name(stranger))
+    record = forge_record() | {"node_id": stranger}
+    assert post_json(oauth, "/ragon/v1/nodes/forgejo", record, stranger_key)[0] == 403
+    assert store.forgejo_client(f"forgejo-{stranger}") is None
     bob = sign_in(oauth, "t-bob", BOB_PW)["access_token"]
     assert post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), bob)[0] == 403
-    alice = sign_in(oauth, "t-alice", ALICE_PW)["access_token"]
-    assert post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), alice)[0] == 200
     assert post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record())[0] == 401
+    assert post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), admin_token)[0] == 200
 
 
 @pytest.mark.parametrize(
@@ -792,14 +799,34 @@ def test_only_the_nodes_own_key_or_an_admin_writes_its_client(oauth, store, node
         {"secret_hash": "not-a-hash"},
         {"redirect_uris": []},
         {"redirect_uris": ["javascript:alert(1)"]},
-        {"redirect_uris": [CALLBACK] * 5},
-        {"redirect_uris": ["http://box.local/" + "x" * 600]},
+        {"redirect_uris": [CALLBACK, CALLBACK]},
+        {"redirect_uris": ["https://attacker.example/cb"]},
+        {"redirect_uris": ["https://attacker.example/forge/user/oauth2/ragon/callback"]},
+        {"redirect_uris": ["http://box.local:3100/forge/user/oauth2/other/callback"]},
+        {"redirect_uris": ["http://box.local:3100/user/oauth2/ragon/callback"]},
+        {"redirect_uris": ["http://box.local:8000/forge/user/oauth2/ragon/callback"]},
+        {"redirect_uris": ["http://box.local/forge/user/oauth2/ragon/callback"]},
+        {"redirect_uris": ["http://evil@box.local:3100/forge/user/oauth2/ragon/callback"]},
+        {"redirect_uris": ["http://box.evil.local:3100/forge/user/oauth2/ragon/callback"]},
+        {"redirect_uris": ["http://box.local:3100/forge/user/oauth2/ragon/callback?x=1"]},
+        {"redirect_uris": ["http://box.local:3100/forge/user/oauth2/ragon/callback#x"]},
+        {"redirect_uris": [CALLBACK + "\n"]},
+        {"redirect_uris": ["ftp://box.local:3100/forge/user/oauth2/ragon/callback"]},
+        {"redirect_uris": [CALLBACK.replace("http:", "https:", 1)[:-1]]},
         {"node_id": "../etc"},
     ],
 )
-def test_a_bad_forgejo_record_is_refused(oauth, node_key, change):
-    status, _, _ = post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record() | change, node_key)
+def test_a_bad_forgejo_record_is_refused(oauth, store, admin_token, change):
+    status, _, _ = post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record() | change, admin_token)
     assert status == 400
+    assert store.forgejo_client(f"forgejo-{NODE}") is None
+
+
+def test_the_callback_over_https_is_accepted(oauth, store, admin_token):
+    https = CALLBACK.replace("http:", "https:", 1)
+    record = forge_record(uris=(https,))
+    assert post_json(oauth, "/ragon/v1/nodes/forgejo", record, admin_token)[0] == 200
+    assert store.forgejo_client(f"forgejo-{NODE}").allows(https)
 
 
 def test_discovery_names_what_forgejo_needs(oauth):
@@ -817,8 +844,8 @@ def test_the_authorize_url_sends_the_browser_to_the_sign_in_page(oauth):
 
 
 @pytest.fixture
-def forge_client(oauth, node_key):
-    assert post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), node_key)[0] == 200
+def forge_client(oauth, admin_token):
+    assert post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), admin_token)[0] == 200
     return f"forgejo-{NODE}"
 
 

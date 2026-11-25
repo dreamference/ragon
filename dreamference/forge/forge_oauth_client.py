@@ -16,6 +16,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Final
 
@@ -231,6 +232,8 @@ class ForgeOauthClient:
         try:
             cls.local_json(REGISTER_PATH, payload, key)
         except urllib.error.HTTPError as error:
+            if error.code == HTTPStatus.FORBIDDEN:
+                return "the primary refused the client (HTTP 403): an admin registers it there"
             return f"the primary refused the client (HTTP {error.code})"
         except (OSError, ValueError):
             return "the primary could not be reached"
