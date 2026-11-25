@@ -527,3 +527,14 @@ def test_log_field_error_takes_an_exception_class_and_message():
     assert field.type == "error"
     assert field.key == "error"
     assert field.value == {"class": "ValueError", "message": "boom"}
+
+
+def test_log_line_formatter_url_invalid_port_is_masked():
+    assert LogLineFormatter.url("http://host:99999999/p", "info", LogRedactor()) == "[url]"
+
+
+def test_log_line_formatter_url_brackets_an_ipv6_host():
+    assert (
+        LogLineFormatter.url("http://[::1]:8000/p?q=1", "info", LogRedactor())
+        == "http://[::1]:8000/p"
+    )
