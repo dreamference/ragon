@@ -156,8 +156,20 @@ fn take_code(dir: &Path, code: &str) -> bool {
     let path = dir.join(sha256_hex(code));
     let Ok(text) = std::fs::read_to_string(&path) else { return false };
     // Removing the file is what takes the code: of requests that read it at once, one removes it.
+    #[cfg(unix)]
     if std::fs::remove_file(&path).is_err() {
         return false;
+    }
+    // On Windows removing or renaming a file another request holds open succeeds for each of them;
+    // creating the code's `.taken` marker is what only one of them can do. The marker stays, so a
+    // request that read the code before it was removed still finds it taken.
+    #[cfg(windows)]
+    {
+        let marker = std::fs::OpenOptions::new().write(true).create_new(true).open(path.with_extension("taken"));
+        if marker.is_err() {
+            return false;
+        }
+        let _ = std::fs::remove_file(&path);
     }
     serde_json::from_str::<Value>(&text)
         .ok()

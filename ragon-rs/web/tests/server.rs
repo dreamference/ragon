@@ -436,6 +436,7 @@ async fn a_loopback_server_issues_no_pairing_code_from_the_devices_page() {
 
 /// A stand-in `ragon-admin`: `remote code --bundle-file PATH` writes a bundle there; with the marker
 /// file `fail` beside it, it exits 1 instead.
+#[cfg(unix)]
 fn fake_admin(dir: &Path) -> PathBuf {
     let path = dir.join("ragon-admin");
     std::fs::write(
@@ -449,6 +450,8 @@ printf '{\"management_url\":\"https://ragon-ab12.example:443\",\"setup_key\":\"K
     path
 }
 
+// The stand-in is a shell script, so this runs on Unix only.
+#[cfg(unix)]
 #[tokio::test]
 async fn the_devices_page_shows_the_phones_qr_code_and_the_matrix_steps_only_to_this_machine() {
     let scratch = scratch("phone");
@@ -495,6 +498,8 @@ async fn a_node_without_remote_access_shows_no_phone_section() {
 
 /// An attachment the disk took only part of is an error, not a saved file: run in a child process
 /// of this test binary whose files may not grow past 1 MiB, as a full disk refuses a write.
+// The file-size limit is a Unix rlimit.
+#[cfg(unix)]
 #[test]
 fn an_upload_the_disk_could_not_hold_is_refused_and_removed() {
     let child = std::process::Command::new(std::env::current_exe().unwrap())
@@ -506,6 +511,8 @@ fn an_upload_the_disk_could_not_hold_is_refused_and_removed() {
     assert!(child.status.success() && out.contains("1 passed"), "{out}{}", String::from_utf8_lossy(&child.stderr));
 }
 
+// The file-size limit is a Unix rlimit.
+#[cfg(unix)]
 #[tokio::test]
 #[ignore = "run by an_upload_the_disk_could_not_hold_is_refused_and_removed"]
 async fn an_upload_into_a_full_disk() {
@@ -605,6 +612,8 @@ async fn uploads_of_one_name_at_once_each_get_their_own_file() {
 /// A phone bridge's image (`read=1`): its text is read by the offline reader, here a stand-in with
 /// Tesseract's command line, and the answer says whether the served model takes images, as the
 /// launcher's catalog records it; a plain upload's answer is unchanged.
+// The stand-in `ragon` is a shell script, so this runs on Unix only.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_bridge_upload_reads_an_images_text_and_says_whether_the_model_takes_images() {
     let scratch = scratch("ocr");
@@ -673,6 +682,8 @@ async fn a_threads_files_are_listed_and_given_and_never_at_air_gap_on() {
 
 /// Night Shift from a phone: the repositories a task may go to (a checkout already queued in),
 /// queueing through `ragon night add` there and nowhere else, the queue, and the reports after a name.
+// The stand-in `ragon` is a shell script, so this runs on Unix only.
+#[cfg(unix)]
 #[tokio::test]
 async fn night_shift_is_queued_and_read_for_a_phone_bridge() {
     let scratch = scratch("night");
@@ -810,6 +821,8 @@ async fn next_frame(
     tokio::time::timeout(Duration::from_secs(10), received.recv()).await.unwrap().unwrap()
 }
 
+// The stand-in `ragon` is a shell script, so this runs on Unix only.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_tab_reaches_the_app_server_through_the_policy_and_ask_threads_get_their_prompt_and_folder() {
     let scratch = scratch("ws");
@@ -1267,6 +1280,8 @@ async fn a_device_narrowed_or_revoked_with_its_tab_open_is_held_to_it_on_the_nex
     serving.await.unwrap().unwrap();
 }
 
+// The stand-in `ragon` is a shell script, so this runs on Unix only.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn with_nothing_listening_the_server_starts_the_app_server_and_reports_why_it_failed() {
     let scratch = scratch("spawn");
@@ -1301,6 +1316,8 @@ async fn with_nothing_listening_the_server_starts_the_app_server_and_reports_why
     serving.await.unwrap().unwrap();
 }
 
+// The stand-in `ragon` is a shell script, so this runs on Unix only.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn ragon_web_ask_signs_in_like_a_browser_and_runs_one_ask_thread() {
     let scratch = scratch("askcli");
@@ -1346,6 +1363,8 @@ async fn ragon_web_ask_signs_in_like_a_browser_and_runs_one_ask_thread() {
     serving.await.unwrap().unwrap();
 }
 
+// The stand-in `ragon` is a shell script, so this runs on Unix only.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_cited_document_is_served_by_its_id_and_never_runs_on_this_origin() {
     let scratch = scratch("docs");
@@ -1378,6 +1397,8 @@ async fn a_cited_document_is_served_by_its_id_and_never_runs_on_this_origin() {
     }
 }
 
+// The stand-in `ragon` is a shell script, so this runs on Unix only.
+#[cfg(unix)]
 #[tokio::test]
 async fn the_collections_are_managed_through_ragon_docs_with_names_and_full_paths_only() {
     let scratch = scratch("docset");
@@ -2047,6 +2068,7 @@ async fn every_answer_carries_the_safety_headers() {
 
 /// A stand-in for `ragon-node-monitor`: counts its runs in `runs` beside it and prints a document
 /// with one item down on a node that is otherwise ok.
+#[cfg(unix)]
 fn fake_monitor(dir: &Path) -> PathBuf {
     let path = dir.join("ragon-node-monitor");
     std::fs::write(
@@ -2064,6 +2086,8 @@ printf '{\"node\":{\"state\":\"down\"},\"items\":[{\"name\":\"engine\",\"state\"
     path
 }
 
+// The stand-in is a shell script, so this runs on Unix only.
+#[cfg(unix)]
 #[tokio::test]
 async fn the_status_page_and_its_json_come_from_the_monitor_and_are_cached_for_ten_seconds() {
     let scratch = scratch("monitor");
@@ -2100,6 +2124,8 @@ async fn the_status_page_and_its_json_come_from_the_monitor_and_are_cached_for_t
     assert!(!page.contains("<script"), "{page}");
 }
 
+// The stand-in is a shell script, so this runs on Unix only.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_status_page_with_no_samples_says_so_instead_of_drawing_an_empty_chart() {
     let scratch = scratch("monitor-empty");

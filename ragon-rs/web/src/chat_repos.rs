@@ -2270,6 +2270,13 @@ fn build_git_command(
     if let Some(path) = std::env::var_os("PATH") {
         cmd.env("PATH", path);
     }
+    // Without SYSTEMROOT Windows sockets do not start, and git reaches no forge.
+    #[cfg(windows)]
+    for name in ["SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "TEMP", "TMP"] {
+        if let Some(value) = std::env::var_os(name) {
+            cmd.env(name, value);
+        }
+    }
     cmd.env("HOME", &server.config.codex_home);
     cmd.env("LANG", "C");
     cmd.env("LC_ALL", "C");
@@ -5391,7 +5398,8 @@ mod tests {
     }
 
     fn scratch(tag: &str) -> Scratch {
-        let dir = PathBuf::from("/tmp").join(format!("lw-repos-{tag}-{}-{}", std::process::id(), auth::random_hex(3)));
+        let base = if cfg!(windows) { std::env::temp_dir() } else { PathBuf::from("/tmp") };
+        let dir = base.join(format!("lw-repos-{tag}-{}-{}", std::process::id(), auth::random_hex(3)));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Scratch { dir }
@@ -6258,18 +6266,23 @@ mod tests {
         let askpass = server.config.state_dir.join(ASKPASS_SCRIPT);
         let askpass_text = std::fs::read_to_string(&askpass).unwrap();
         assert!(!askpass_text.contains(TEST_TOKEN));
-        let askpass_out = std::process::Command::new(&askpass)
-            .arg(format!("Password for '{forge_url}': "))
-            .output()
-            .unwrap();
-        assert!(askpass_out.status.success());
-        assert_eq!(String::from_utf8_lossy(&askpass_out.stdout).trim(), TEST_TOKEN);
-        let askpass_bad = std::process::Command::new(&askpass)
-            .arg("Password for 'http://127.0.0.1:9999': ")
-            .output()
-            .unwrap();
-        assert!(!askpass_bad.status.success());
-        assert!(askpass_bad.stdout.is_empty());
+        // It is a shell script: on Windows git runs it through its own shell
+        // (the_askpass_answers_git_for_the_forge_and_only_the_forge), not as a program.
+        #[cfg(unix)]
+        {
+            let askpass_out = std::process::Command::new(&askpass)
+                .arg(format!("Password for '{forge_url}': "))
+                .output()
+                .unwrap();
+            assert!(askpass_out.status.success());
+            assert_eq!(String::from_utf8_lossy(&askpass_out.stdout).trim(), TEST_TOKEN);
+            let askpass_bad = std::process::Command::new(&askpass)
+                .arg("Password for 'http://127.0.0.1:9999': ")
+                .output()
+                .unwrap();
+            assert!(!askpass_bad.status.success());
+            assert!(askpass_bad.stdout.is_empty());
+        }
 
         // 4. Read-only repository opens detached with read_only=true and no phone/<id> branch.
         let ro_req = Request::builder()
@@ -7337,10 +7350,16 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::OK, "{a_body}");
         assert_eq!(a_res["aborted"], json!(true));
-        let readme_restored = std::fs::read_to_string(wt.join("README.md")).unwrap();
+        // Git for Windows checks text out with CRLF line ends.
+        let readme_restored = std::fs::read_to_string(wt.join("README.md")).unwrap().replace("\r\n", "\n");
         assert_eq!(readme_restored, "# Demo\nphone branch change\n");
-        let status_porcelain = git_stdout(&wt, &["status", "--porcelain"]);
-        assert!(status_porcelain.trim().is_empty(), "expected clean tree after abort: {status_porcelain}");
+        // On Windows the checkout's line ends follow the box's git config, which git status may
+        // report as a change; the content is checked above.
+        #[cfg(unix)]
+        {
+            let status_porcelain = git_stdout(&wt, &["status", "--porcelain"]);
+            assert!(status_porcelain.trim().is_empty(), "expected clean tree after abort: {status_porcelain}");
+        }
         let (_, after_state, _) = get_json(&server, &cookie, &format!("/api/repos/state?thread={thread}")).await;
         assert_eq!(after_state["merge_in_progress"], json!(false), "{after_state}");
     }
@@ -9031,6 +9050,8 @@ mod tests {
         assert_eq!(again["repo"], Value::Null, "{body}");
     }
 
+    // `a*` is not a file name Windows allows.
+    #[cfg(unix)]
     #[tokio::test]
     async fn diff_lists_name_files_as_they_are_and_a_file_s_diff_is_that_file_only() {
         let s = scratch("diff-names");
@@ -9832,6 +9853,8 @@ mod tests {
 
     /// Ending Full Access takes the checkout's loaded threads back to their sandbox at once and
     /// interrupts a turn still running, over a connection of its own to the app-server.
+    // The stand-in app-server listens on a Unix socket.
+    #[cfg(unix)]
     #[tokio::test]
     async fn ending_full_access_resets_the_threads_sandbox_and_interrupts_a_running_turn() {
         use futures::SinkExt;
@@ -9917,6 +9940,8 @@ mod tests {
     /// request in between: the checkout's threads get their sandbox back, a turn started before the
     /// grant was dropped is interrupted and one started after it (with the sandbox) runs on. A
     /// sweep while the grant still stands connects to nothing.
+    // The stand-in app-server listens on a Unix socket.
+    #[cfg(unix)]
     #[tokio::test]
     async fn the_sweep_ends_full_access_the_node_turned_off_without_a_request() {
         use futures::SinkExt;
