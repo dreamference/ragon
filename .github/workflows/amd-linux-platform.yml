@@ -1,0 +1,49 @@
+# The AMD Strix Halo Linux node platform's tests, on every push. They need no GPU, no Docker and no
+# AMD hardware: platform detection, the registry's image per platform, the launch arguments and the
+# installer all run against fake sysfs and KFD trees. The engine's own compile check for the
+# gfx1151 HIP build lives in the engine repository's CI; the real-hardware check is
+# scripts/amd_linux_release_check.sh, which the release operator runs on the box each RC.
+#
+# Push and workflow_dispatch only: this repository is public, so never add pull_request or
+# pull_request_target (build-clients.yml and windows.yml say why).
+name: AMD Linux platform
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: amd-linux-platform-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  platform-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: setup.py
+      - name: Install
+        run: pip install -e ".[dev]" pytest
+      - name: Platform tests
+        # Every file that exercises the Strix Halo platform, the hardware manager, the registry and
+        # the launch builder, and the installer. A file named here that a branch has not got yet is
+        # skipped, so the same workflow runs on each stacked branch.
+        run: |
+          files=""
+          for f in tests/test_amd_platform.py tests/test_hardware.py tests/test_hardware_manager_branches.py \
+                   tests/test_vllm_server_manager.py tests/test_release_install.py; do
+            [ -f "$f" ] && files="$files $f"
+          done
+          python -m pytest $files -q
+      - name: Release check script
+        run: |
+          bash -n scripts/amd_linux_release_check.sh
+          python -m pytest tests/test_amd_linux_release_check.py -q
