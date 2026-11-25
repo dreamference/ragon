@@ -29,6 +29,12 @@ path = "src/main.rs"
 name = "ragon-standin-engine"
 path = "src/bin/ragon-standin-engine.rs"
 
+# The stand-in job the job drills run (tests/jobs.rs, the Mac sandbox probes): allocates, sleeps,
+# ignores SIGTERM, reads, writes and connects on request.
+[[bin]]
+name = "ragon-standin-job"
+path = "src/bin/ragon-standin-job.rs"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",

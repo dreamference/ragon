@@ -3,8 +3,13 @@
 
 pub mod cli;
 pub mod core;
+#[cfg(unix)]
+pub mod footprint;
+#[cfg(unix)]
+pub mod jobs;
 pub mod probe;
 pub mod process;
+pub mod seatbelt;
 #[cfg(windows)]
 pub mod windows_job;
 #[cfg(windows)]
