@@ -246,9 +246,16 @@ case "$1" in
     *) echo "uid=1000(tester)";;
 esac
 """,
-    "getent": r"""[ "$1 $2" = "group docker" ] && [ -z "$FAKE_NO_DOCKER_GROUP" ] && echo "docker:x:999:" || exit 2""",
+    "getent": r"""[ "$1" = group ] || exit 2
+case "$2" in
+    docker) [ -z "$FAKE_NO_DOCKER_GROUP" ] || exit 2;;
+    video|render) ;;
+    *) exit 2;;
+esac
+echo "$2:x:999:"
+""",
     "usermod": r'''echo "usermod $*" >> "$HOME/root.log";
-    echo "$(cat "$HOME/groups-db" 2>/dev/null || echo tester) docker" > "$HOME/groups-db"''',
+    echo "$(cat "$HOME/groups-db" 2>/dev/null || echo tester) $2" > "$HOME/groups-db"''',
     "loginctl": r'''echo "loginctl $*" >> "$HOME/root.log";
     [ "$1" = enable-linger ] && mkdir -p "$RAGON_LINGER_DIR" && touch "$RAGON_LINGER_DIR/$2"''',
     "sg": r'''echo "sg $*" >> "$HOME/sg.log"; [ "$1" = docker ] && [ "$2" = -c ] && exec sh -c "$3"''',
@@ -331,6 +338,7 @@ def run_install(
     *args,
     token=None,
     uname_m="aarch64",
+    uname_r="6.11.0-1016-nvidia",
     gpu="Some Other GPU",
     pci=(),
     nvidia_smi=True,
@@ -352,7 +360,8 @@ def run_install(
     tools = [
         (
             "uname",
-            f'case "$1" in -s) echo {uname_s};; -m) echo {uname_m};; -n) echo spark-test;; *) echo {uname_s};; esac',
+            f'case "$1" in -s) echo {uname_s};; -m) echo {uname_m};; -r) echo {uname_r};; '
+            f"-n) echo spark-test;; *) echo {uname_s};; esac",
         ),
         (
             "nvidia-smi",
@@ -2433,3 +2442,184 @@ def test_a_real_404_on_an_asset_says_the_release_is_missing_it(tmp_path, release
     assert f"release v9.9.9 is missing codex-code-mode-host-{TARGET}.gz." in result.stderr
     assert "download failed" not in result.stderr
     assert nothing_installed(tmp_path)
+
+
+# -- the AMD Strix Halo node (x86-64 Ubuntu, PCI 1002:1586, KFD gfx1151) ----------------------------
+
+GIB = 2**30
+STRIX_PCI = [("0x1002", "0x1586")]
+STRIX_RELEASE_TARGET = "x86_64-unknown-linux-gnu"
+
+
+def strix_machine(home, gfx="110501", vram=64 * GIB, gtt=31 * GIB, devices=True, cmdline=""):
+    """Fake KFD topology, DRM cards, /dev, /proc/meminfo and /proc/cmdline of a Strix Halo."""
+    home = Path(home)
+    for name in ("kfd", "drm", "dev"):
+        shutil.rmtree(home / name, ignore_errors=True)
+    for number, target in enumerate(("0", gfx)):
+        node = home / "kfd" / str(number)
+        node.mkdir(parents=True)
+        (node / "properties").write_text(f"simd_count 80\ngfx_target_version {target}\n")
+    card = home / "drm" / "card0" / "device"
+    card.mkdir(parents=True)
+    (card / "vendor").write_text("0x1002\n")
+    (card / "mem_info_vram_total").write_text(f"{vram}\n")
+    (card / "mem_info_gtt_total").write_text(f"{gtt}\n")
+    (home / "dev" / "dri").mkdir(parents=True)
+    if devices:
+        (home / "dev" / "kfd").write_text("")
+        (home / "dev" / "dri" / "renderD128").write_text("")
+    (home / "meminfo").write_text("MemTotal:       65466940 kB\nMemAvailable:   62893496 kB\n")
+    (home / "cmdline").write_text(f"BOOT_IMAGE=/vmlinuz root=UUID=x ro {cmdline}\n")
+    return {
+        "RAGON_KFD_NODES": str(home / "kfd"),
+        "RAGON_DRM_DIR": str(home / "drm"),
+        "RAGON_DEV_DIR": str(home / "dev"),
+        "RAGON_MEMINFO": str(home / "meminfo"),
+        "RAGON_CMDLINE": str(home / "cmdline"),
+    }
+
+
+def run_strix(
+    home, release_server, *args, kernel="7.0.0-43-generic", env=None, machine=None, **kwargs
+):
+    """Runs install.sh on the fake Strix Halo (or what `machine` changes about it)."""
+    server = release_server(node_release(target=STRIX_RELEASE_TARGET))
+    env_extra = {**strix_machine(home, **(machine or {})), **(env or {})}
+    return run_install(
+        home,
+        server,
+        *args,
+        uname_m="x86_64",
+        uname_r=kernel,
+        nvidia_smi=False,
+        pci=kwargs.pop("pci", STRIX_PCI),
+        env_extra=env_extra,
+        **kwargs,
+    )
+
+
+def test_a_strix_halo_is_a_node_by_default_and_prints_its_facts(tmp_path, release_server):
+    (tmp_path / "groups-db").write_text("tester docker video render\n")
+    result = run_strix(tmp_path, release_server, machine={"cmdline": "ttm.pages_limit=31457280"})
+    out = result.stdout
+    assert result.returncode == 0, out + result.stderr
+    assert "role: node" in out and "not a GB10" not in out
+    assert "AMD Strix Halo (gfx1151) found" in out
+    assert "GPU carve-out 64.0 GiB, GTT 31.0 GiB, usable by the GPU about 95.0 GiB" in out
+    assert "system RAM 65466940 kB" in out and "ttm.pages_limit=31457280" in out
+    assert "GPU device: " in out and "kfd present" in out
+    assert "video group: tester is in it" in out and "render group: tester is in it" in out
+    # Nothing of the GB10's: no host settings, no model, and no NVIDIA toolkit named.
+    assert "host settings: the GB10's, not applied" in out
+    assert "model: the model server's recipes are the GB10's" in out
+    admin = logged(tmp_path, "admin.log")
+    assert (
+        "host setup" not in admin and "model download" not in admin and "server start" not in admin
+    )
+
+
+def test_a_strix_halo_user_outside_the_gpu_groups_is_offered_usermod(tmp_path, release_server):
+    result = run_strix(tmp_path, release_server)
+    out = result.stdout
+    assert result.returncode == 0, out + result.stderr
+    assert "video group: tester added" in out and "render group: tester added" in out
+    root = logged(tmp_path, "root.log")
+    assert "usermod -aG video tester" in root and "usermod -aG render tester" in root
+
+
+def test_a_strix_halo_without_the_gpu_devices_fails_the_step(tmp_path, release_server):
+    (tmp_path / "groups-db").write_text("tester docker video render\n")
+    result = run_strix(tmp_path, release_server, machine={"devices": False})
+    out = result.stdout
+    assert result.returncode == 1
+    assert "❌ GPU device:" in out and "/kfd is missing" in out and "renderD*" in out
+
+
+@pytest.mark.parametrize(
+    "kernel, accepted",
+    [
+        ("7.0.0-43-generic", True),
+        ("6.19.2-1-generic", True),
+        ("6.18.4-061804-generic", True),
+        ("6.18.3-1-generic", False),
+        ("6.17.0-19-generic", True),
+        ("6.17.0-14-generic", False),
+        ("6.14.0-1018-oem", True),
+        ("6.14.0-1017-oem", False),
+        ("6.8.0-31-generic", False),
+        ("6.18.4", True),
+    ],
+)
+def test_the_kernel_floor_of_a_strix_halo_node(tmp_path, release_server, kernel, accepted):
+    result = run_strix(tmp_path, release_server, kernel=kernel)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ("role: node" in result.stdout) is accepted
+    if not accepted:
+        # The default role falls back to the client; naming the node is refused with the reason.
+        assert (
+            f"kernel {kernel} is below the floor" in result.stdout
+            and "role: client" in result.stdout
+        )
+        refused = run_strix(tmp_path, release_server, "--role", "node", kernel=kernel)
+        assert refused.returncode == 1
+        assert "cannot be a Ragon node" in refused.stderr and "--role client" in refused.stderr
+
+
+def test_a_strix_halo_with_too_little_memory_is_refused_as_a_node(tmp_path, release_server):
+    result = run_strix(tmp_path, release_server, machine={"vram": 8 * GIB, "gtt": 16 * GIB})
+    assert "less than the 43 GiB" in result.stdout and "role: client" in result.stdout
+    refused = run_strix(
+        tmp_path, release_server, "--role", "node", machine={"vram": 8 * GIB, "gtt": 16 * GIB}
+    )
+    assert refused.returncode == 1 and "less than the 43 GiB" in refused.stderr
+
+
+def test_a_strix_halo_with_a_small_budget_warns_about_sessions(tmp_path, release_server):
+    (tmp_path / "groups-db").write_text("tester docker video render\n")
+    result = run_strix(tmp_path, release_server, machine={"vram": 32 * GIB, "gtt": 31 * GIB})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "role: node" in result.stdout and "Fewer than 4 sessions will run" in result.stdout
+
+
+def test_other_amd_and_x86_machines_stay_clients(tmp_path, release_server):
+    server = release_server(binaries(target=STRIX_RELEASE_TARGET))
+    env = strix_machine(tmp_path)
+    for pci, gfx in (
+        ([("0x1002", "0x1585")], "110501"),  # another AMD APU
+        (STRIX_PCI, "110000"),  # the right chip id, a different gfx target
+        ([("0x8086", "0x1586")], "110501"),  # not AMD
+        ([], "110501"),
+    ):
+        env = strix_machine(tmp_path, gfx=gfx)
+        result = run_install(
+            tmp_path, server, uname_m="x86_64", nvidia_smi=False, pci=pci, env_extra=env
+        )
+        assert "role: client" in result.stdout, result.stdout + result.stderr
+        assert "Strix Halo" not in result.stdout.replace("an AMD Strix Halo", "")
+    # Asked for by hand, such a machine gets the warning of every machine that is no node platform.
+    result = run_install(
+        tmp_path,
+        release_server(node_release(target=STRIX_RELEASE_TARGET)),
+        "--role",
+        "node",
+        uname_m="x86_64",
+        nvidia_smi=False,
+        pci=[("0x1002", "0x1585")],
+        env_extra=env,
+    )
+    assert "This machine is not a GB10" in result.stdout
+
+
+def test_the_client_message_names_both_node_platforms(tmp_path, release_server):
+    server = release_server(binaries())
+    result = run_install(tmp_path, server)
+    assert "start one on a GB10 or an AMD Strix Halo" in result.stdout
+
+
+def test_the_memory_thresholds_of_install_and_the_hardware_manager_agree():
+    from dreamference.hardware import hardware_manager
+
+    script = Path(KEYS["installer"]).read_text()
+    assert f"STRIX_MIN_USABLE_GIB={hardware_manager.STRIX_HALO_MIN_USABLE_GIB} " in script
+    assert f"STRIX_WARN_USABLE_GIB={hardware_manager.STRIX_HALO_WARN_USABLE_GIB} " in script
