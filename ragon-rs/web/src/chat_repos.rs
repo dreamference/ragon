@@ -237,11 +237,8 @@ impl HostProbe for SystemHostProbe {
     }
 }
 
-/// Free bytes available to an unprivileged process on the filesystem holding `path`.
-pub fn statvfs_free_bytes(path: &Path) -> Result<u64, String> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-
+/// The nearest existing folder at or above `path`: what a free-space query can ask about.
+fn existing_ancestor(path: &Path) -> PathBuf {
     let mut check = path.to_path_buf();
     while !check.exists() {
         let Some(parent) = check.parent() else { break };
@@ -250,6 +247,32 @@ pub fn statvfs_free_bytes(path: &Path) -> Result<u64, String> {
         }
         check = parent.to_path_buf();
     }
+    check
+}
+
+/// Free bytes available to this user on the volume holding `path` (`GetDiskFreeSpaceExW`).
+#[cfg(windows)]
+pub fn statvfs_free_bytes(path: &Path) -> Result<u64, String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetDiskFreeSpaceExW(directory: *const u16, available: *mut u64, total: *mut u64, free: *mut u64) -> i32;
+    }
+    let wide: Vec<u16> = existing_ancestor(path).as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut available = 0u64;
+    // SAFETY: `wide` is NUL-terminated and outlives the call; the null totals are optional outputs.
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut()) };
+    if ok == 0 { Err(std::io::Error::last_os_error().to_string()) } else { Ok(available) }
+}
+
+/// Free bytes available to an unprivileged process on the filesystem holding `path`.
+#[cfg(unix)]
+pub fn statvfs_free_bytes(path: &Path) -> Result<u64, String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let check = existing_ancestor(path);
     let c_path = CString::new(check.as_os_str().as_bytes()).map_err(|_| "invalid path".to_string())?;
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
     let rc = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
@@ -6055,6 +6078,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn checkouts_reuse_askpass_submodules_hooks_and_readonly() {
         let s = scratch("checkouts");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -6289,6 +6313,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn refusals_cover_names_listing_forge_off_max_checkouts_disk_bridges_and_watch_scope() {
         let s = scratch("refusals");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -6477,6 +6502,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn state_diff_and_log_routes_and_unknown_thread_refusal() {
         let s = scratch("state-diff-log");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -6706,6 +6732,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn confirmation_nonces_enforce_presence_thread_intent_caller_and_single_use() {
         let s = scratch("nonces");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -6845,6 +6872,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn commit_uses_owner_identity_without_trailers_and_refuses_missing_identity_or_empty() {
         let s = scratch("commit");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -6956,6 +6984,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn push_sends_only_phone_branch_never_forces_and_checks_anonymity_and_readonly() {
         let s = scratch("push-anon");
         let pub_bare = make_bare_repo(&s.dir, "org/pubrepo");
@@ -7228,6 +7257,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn update_merges_default_reports_conflicts_and_aborts_cleanly() {
         let s = scratch("update");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -7319,6 +7349,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn pr_and_merge_routes_drive_forge_api_and_respect_status_and_mergeable() {
         let s = scratch("pr-merge");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -7464,6 +7495,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn bound_confirmations_pin_commit_branch_and_base_refuse_replay_expiry_and_moves() {
         let s = scratch("bound-confirm");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -7649,6 +7681,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn main_route_requires_allow_main_clean_tree_and_refuses_non_fast_forward_push() {
         let s = scratch("main-branch");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -7851,6 +7884,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn concurrency_warnings_for_same_checkout_and_other_checkout_block_nothing() {
         let s = scratch("concurrency-warnings");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -7944,6 +7978,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn budget_80_notice_refusal_at_100_and_raise_until_midnight() {
         let s = scratch("budget-lifecycle");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -8044,6 +8079,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn nights_turn_failure_with_benchmark_refusal_records_busy_notice() {
         let s = scratch("nights-busy");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -8107,6 +8143,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn relay_chat_work_turn_tool_bound_steers_then_interrupts() {
         let s = scratch("relay-bounds");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -8223,6 +8260,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn relay_chat_work_turn_command_and_answer_bounds_steer_then_interrupt() {
         let s = scratch("relay-cmd-ans-bounds");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -8364,6 +8402,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn fork_of_repo_thread_and_legacy_app_thread_field_are_recorded_and_bounded() {
         let s = scratch("fork-and-legacy");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -8478,6 +8517,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn untracked_line_count_skips_symlinks_and_caps_over_8_mib_as_null() {
         let s = scratch("untracked-bounds");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -8528,6 +8568,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn anonymity_scans_merge_commits_binary_files_and_refuses_on_scan_error() {
         let s = scratch("anon-merge-bin-err");
         let pub_bare = make_bare_repo(&s.dir, "org/pubrepo");
@@ -8674,6 +8715,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn concurrent_opens_and_record_app_thread_preserve_all_index_updates() {
         let s = scratch("concurrent-index");
         let bare_a = make_bare_repo(&s.dir, "org/alpha");
@@ -8773,6 +8815,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn repo_main_uses_default_branch_refuses_other_worktree_and_push_rechecks_allow_main() {
         let s = scratch("main-default-branch");
         let bare = make_bare_repo(&s.dir, "org/trunkrepo");
@@ -8939,6 +8982,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn off_and_current_find_the_repo_open_set_for_a_chat_id_that_names_its_bridge() {
         let s = scratch("chat-key");
         let bare = make_bare_repo(&s.dir, "org/keyrepo");
@@ -9005,6 +9049,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn diff_lists_name_files_as_they_are_and_a_file_s_diff_is_that_file_only() {
         let s = scratch("diff-names");
         let bare = make_bare_repo(&s.dir, "org/names");
@@ -9147,6 +9192,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn open_fails_when_the_chat_s_current_repository_cannot_be_saved() {
         let s = scratch("current-unsaved");
         let bare = make_bare_repo(&s.dir, "org/unsaved");
@@ -9182,6 +9228,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn a_read_only_checkout_gets_its_phone_branch_once_the_repo_is_writable() {
         let s = scratch("ro-to-rw");
         let bare = make_bare_repo(&s.dir, "org/rorepo");
@@ -9219,6 +9266,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn repo_main_again_keeps_the_commits_not_yet_pushed() {
         let s = scratch("main-again");
         let bare = make_bare_repo(&s.dir, "org/mainrepo");
@@ -9320,6 +9368,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn pr_and_merge_on_the_base_branch_are_refused_before_anything_is_pushed() {
         let s = scratch("pr-on-main");
         let bare = make_bare_repo(&s.dir, "org/mainrepo");
@@ -9398,6 +9447,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn submodule_one_line_off_forge_entry_is_left_empty() {
         let s = scratch("submodule-oneline");
         let bare = make_bare_repo(&s.dir, "org/subtest");
@@ -9446,6 +9496,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn a_reopened_checkout_keeps_what_was_put_in_a_submodule_folder() {
         let s = scratch("submodule-reopen");
         let bare = make_bare_repo(&s.dir, "org/subkeep");
@@ -9508,6 +9559,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn turn_watches_do_not_duplicate_steers_hand_over_on_tab_close_and_record_unbounded() {
         let s = scratch("watch-handover");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -9631,6 +9683,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn diff_output_is_capped_at_1_mib_and_untracked_files_over_8_mib_are_not_diffed() {
         let s = scratch("diff-caps");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -9690,6 +9743,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn ensure_worktree_refuses_existing_non_worktree_folder_without_deleting_it() {
         let s = scratch("worktree-preserve");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -9721,6 +9775,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn refused_mutation_requests_do_not_consume_confirmation_nonce() {
         let s = scratch("nonce-preserved-on-refusal");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -9813,11 +9868,10 @@ mod tests {
 
         let s = scratch("full-access-reset");
         let (server, _probe) = test_server(&s.dir, None, true);
-        crate::app_server::prepare_socket_dir(&server.config.socket).unwrap();
-        let listener = tokio::net::UnixListener::bind(&server.config.socket).unwrap();
+        let listener = crate::app_server::TestListener::bind(&server.config.socket).unwrap();
         let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel::<Value>();
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
+            let stream = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
             while let Some(Ok(Message::Text(text))) = ws.next().await {
                 let request: Value = serde_json::from_str(text.as_str()).unwrap();
@@ -9898,11 +9952,10 @@ mod tests {
 
         let s = scratch("full-access-sweep");
         let (server, probe) = test_server(&s.dir, None, true);
-        crate::app_server::prepare_socket_dir(&server.config.socket).unwrap();
-        let listener = tokio::net::UnixListener::bind(&server.config.socket).unwrap();
+        let listener = crate::app_server::TestListener::bind(&server.config.socket).unwrap();
         let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel::<Value>();
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
+            let stream = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
             while let Some(Ok(Message::Text(text))) = ws.next().await {
                 let request: Value = serde_json::from_str(text.as_str()).unwrap();
@@ -10002,6 +10055,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn full_access_typed_confirmation_grant_refusals_and_workspace_reset() {
         let s = scratch("full-access-route");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -10312,6 +10366,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn g14_drain_route_auth_and_signal_matrix_exclusion() {
         let s = scratch("g14-drain-auth");
         let bare = make_bare_repo(&s.dir, "org/widget");
@@ -10405,6 +10460,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(not(unix), ignore = "phone repos need a POSIX askpass helper and file:// stand-in forges")]
     async fn g14_recording_points_deduplicated_across_two_tabs_and_bridge_turn_refusal() {
         let s = scratch("g14-dedup-and-events");
         let bare = make_bare_repo(&s.dir, "org/widget");

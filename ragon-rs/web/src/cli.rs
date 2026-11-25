@@ -119,7 +119,13 @@ pub fn lan_names() -> Vec<String> {
             libc::freeifaddrs(list);
         }
     }
-    if let Ok(host) = std::fs::read_to_string("/etc/hostname") {
+    #[cfg(windows)]
+    names.extend(windows_lan_address());
+    #[cfg(windows)]
+    let hostname = std::env::var("COMPUTERNAME");
+    #[cfg(not(windows))]
+    let hostname = std::fs::read_to_string("/etc/hostname");
+    if let Ok(host) = hostname {
         let host = host.trim().to_ascii_lowercase();
         if !host.is_empty() {
             names.push(format!("{host}.local"));
@@ -129,6 +135,18 @@ pub fn lan_names() -> Vec<String> {
     names.sort();
     names.dedup();
     names
+}
+
+/// The address Windows routes LAN traffic from: a UDP socket "connected" to the mDNS group, which
+/// sends nothing, names the interface a device on the LAN reaches.
+#[cfg(windows)]
+fn windows_lan_address() -> Option<String> {
+    let socket = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    socket.connect((std::net::Ipv4Addr::new(224, 0, 0, 251), 5353)).ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip.to_string()),
+        _ => None,
+    }
 }
 
 fn server_file(state: &Path) -> PathBuf {
@@ -216,6 +234,7 @@ fn exec_path(path: &Path) -> String {
     }
 }
 
+#[cfg_attr(windows, allow(dead_code, reason = "Windows starts the server itself, without a service manager"))]
 fn systemctl(args: &[&str]) -> Result<(), String> {
     let status = std::process::Command::new("systemctl")
         .arg("--user")
@@ -250,6 +269,7 @@ pub fn launchd_plist(ragon: &Path, lan: bool, port: u16, log: &Path) -> String {
     )
 }
 
+#[cfg_attr(windows, allow(dead_code, reason = "Windows starts the server itself, without a service manager"))]
 fn launchctl(args: &[&str]) -> Result<(), String> {
     let status = std::process::Command::new("launchctl")
         .args(args)
@@ -259,18 +279,89 @@ fn launchctl(args: &[&str]) -> Result<(), String> {
 }
 
 /// Where the macOS agent's property list lives.
+#[cfg_attr(windows, allow(dead_code, reason = "Windows starts the server itself, without a service manager"))]
 fn launchd_plist_path(home: &Path) -> PathBuf {
     home.join("Library/LaunchAgents").join(format!("{LAUNCHD_LABEL}.plist"))
 }
 
 /// The launchd domain of this user's login session, `gui/<uid>`.
+#[cfg(unix)]
 fn launchd_domain() -> String {
     // SAFETY: getuid has no preconditions and cannot fail.
     format!("gui/{}", unsafe { libc::getuid() })
 }
 
-/// Stops the web server: the user unit on Linux, the launchd agent on macOS.
-fn stop() -> i32 {
+/// No launchd off Unix: never asked there, since only macOS takes the launchd branch.
+#[cfg(not(unix))]
+#[cfg_attr(windows, allow(dead_code, reason = "Windows starts the server itself, without a service manager"))]
+fn launchd_domain() -> String {
+    "gui/0".to_string()
+}
+
+/// Where a server `ragon web start` detached on Windows writes its output.
+#[cfg(windows)]
+fn windows_log(state: &Path) -> PathBuf {
+    state.join("web.log")
+}
+
+/// Stops the server `server.json` names, on Windows: no user unit there, so the process itself.
+#[cfg(windows)]
+fn stop_windows(state: &Path) -> Result<(), String> {
+    let pid = std::fs::read_to_string(server_file(state))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value| value.get("pid")?.as_u64())
+        .ok_or_else(|| "The Ragon web server is not running.".to_string())?;
+    let status = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|err| format!("could not run taskkill: {err}"))?;
+    // A killed server cannot remove its own file.
+    remove_server_file_if_ours(state, u32::try_from(pid).unwrap_or(0));
+    if status.success() { Ok(()) } else { Err(format!("taskkill /PID {pid} failed ({status})")) }
+}
+
+/// Starts `ragon web serve` detached from this console, on Windows, after stopping one running.
+#[cfg(windows)]
+fn start_windows(environment: &Environment, lan: bool, port: u16) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    /// `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW`.
+    const FLAGS: u32 = 0x0000_0200 | 0x0000_0008 | 0x0800_0000;
+    let state = environment.state_dir();
+    let _ = stop_windows(&state);
+    auth::private_dir(&state).map_err(|err| format!("Could not create {}: {err}", state.display()))?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(windows_log(&state))
+        .map_err(|err| format!("Could not open {}: {err}", windows_log(&state).display()))?;
+    let mut command = std::process::Command::new(&environment.ragon);
+    command.args(["web", "serve"]);
+    if lan {
+        command.arg("--lan");
+    }
+    if port != DEFAULT_PORT {
+        command.args(["--port", &port.to_string()]);
+    }
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone().map_err(|err| err.to_string())?)
+        .stderr(log)
+        .creation_flags(FLAGS)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("could not start {} web serve: {err}", environment.ragon.display()))
+}
+
+/// Stops the web server: the user unit on Linux, the launchd agent on macOS, the process on Windows.
+fn stop(state: &Path) -> i32 {
+    #[cfg(not(windows))]
+    let _ = state;
+    #[cfg(windows)]
+    let result = stop_windows(state);
+    #[cfg(not(windows))]
     let result = if cfg!(target_os = "macos") {
         let target = format!("{}/{LAUNCHD_LABEL}", launchd_domain());
         launchctl(&["bootout", &target])
@@ -289,7 +380,14 @@ fn stop() -> i32 {
     }
 }
 
+/// Starts the server detached on Windows, which has no user unit.
+#[cfg(windows)]
+fn install_and_restart(environment: &Environment, lan: bool, port: u16) -> Result<(), String> {
+    start_windows(environment, lan, port)
+}
+
 /// Writes the service definition and (re)starts it: a user unit on Linux, a launchd agent on macOS.
+#[cfg(not(windows))]
 fn install_and_restart(environment: &Environment, lan: bool, port: u16) -> Result<(), String> {
     let macos = cfg!(target_os = "macos");
     let (path, text) = if macos {
@@ -318,8 +416,16 @@ fn install_and_restart(environment: &Environment, lan: bool, port: u16) -> Resul
 
 /// Opens a URL in this machine's browser, without waiting for it.
 fn open_browser(url: &str) -> bool {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    // On Windows the URL handler, not `cmd /c start`, which would read `&` in the URL.
+    let (opener, first): (&str, &[&str]) = if cfg!(windows) {
+        ("rundll32", &["url.dll,FileProtocolHandler"])
+    } else if cfg!(target_os = "macos") {
+        ("open", &[])
+    } else {
+        ("xdg-open", &[])
+    };
     std::process::Command::new(opener)
+        .args(first)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -372,7 +478,7 @@ pub async fn run_cli(args: &[String], environment: Environment) -> i32 {
     match words.first().copied() {
         Some("serve") => serve_command(&args[1..], &environment).await,
         Some("start") => start(&args[1..], &environment),
-        Some("stop") => stop(),
+        Some("stop") => stop(&state),
         Some("status") => status(&state),
         Some("open") if words.contains(&"--print-url") => print_login_url(&state),
         Some("open") => open(&state, words.contains(&"--no-browser")),
@@ -497,7 +603,11 @@ async fn serve_command(args: &[String], environment: &Environment) -> i32 {
         eprintln!("HTTPS with the node's certificate on {}", https_urls.join(", "));
     }
     let shutdown = async {
+        #[cfg(unix)]
         let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+        // Windows' stand-in for SIGTERM: the console closing.
+        #[cfg(windows)]
+        let mut terminate = tokio::signal::windows::ctrl_close().ok();
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
             _ = async { match terminate.as_mut() { Some(signal) => { signal.recv().await; } None => std::future::pending::<()>().await } } => {}

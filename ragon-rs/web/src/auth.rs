@@ -154,6 +154,16 @@ fn take_code(dir: &Path, code: &str) -> bool {
         return false;
     }
     let path = dir.join(sha256_hex(code));
+    // On Windows several requests may each delete the same file (a delete only marks it), so a
+    // rename to a name of this request's own takes the code: of renames at once, one finds it.
+    #[cfg(windows)]
+    let path = {
+        let claimed = path.with_extension(format!("taken-{}", random_hex(8)));
+        if std::fs::rename(&path, &claimed).is_err() {
+            return false;
+        }
+        claimed
+    };
     let Ok(text) = std::fs::read_to_string(&path) else { return false };
     // Removing the file is what takes the code: of requests that read it at once, one removes it.
     if std::fs::remove_file(&path).is_err() {

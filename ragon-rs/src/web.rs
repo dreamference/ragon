@@ -21,7 +21,8 @@ pub async fn run_cli(args: &[String]) -> i32 {
         eprintln!("Could not resolve CODEX_HOME.");
         return 1;
     };
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+    // Windows names the home USERPROFILE.
+    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from) else {
         eprintln!("HOME is not set.");
         return 1;
     };

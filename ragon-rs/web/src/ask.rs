@@ -53,7 +53,14 @@ pub fn folder_of(root: &Path, thread_id: &str) -> Option<PathBuf> {
     if !valid_thread_id(thread_id) {
         return None;
     }
-    let folder = root.join(thread_id).canonicalize().ok()?;
+    let link = root.join(thread_id);
+    // Off Unix `link_thread` writes the folder's name into a file instead of a symlink.
+    #[cfg(not(unix))]
+    let link = match std::fs::read_to_string(&link) {
+        Ok(name) if link.is_file() => root.join(name.trim()),
+        _ => link,
+    };
+    let folder = link.canonicalize().ok()?;
     let root = root.canonicalize().ok()?;
     (folder.is_dir() && folder.parent() == Some(root.as_path())).then_some(folder)
 }
@@ -383,6 +390,8 @@ mod tests {
     #[test]
     fn a_repository_turns_workspace_sandbox_is_the_users_with_no_network_at_on() {
         let home = scratch("workspace-sandbox");
+        // An absolute path on this platform: a relative root is dropped.
+        let skills = if cfg!(windows) { "C:/codex/skills" } else { "/codex/skills" };
         // The launcher writes `network_access = true` when absent: absent is true.
         assert_eq!(
             configured_workspace_sandbox(&home),
@@ -390,14 +399,14 @@ mod tests {
         );
         std::fs::write(
             home.join("config.toml"),
-            "[sandbox_workspace_write]\nnetwork_access = false\nwritable_roots = [\"/codex/skills\", \"relative\", 3]\nexclude_slash_tmp = true\n",
+            format!("[sandbox_workspace_write]\nnetwork_access = false\nwritable_roots = [\"{skills}\", \"relative\", 3]\nexclude_slash_tmp = true\n"),
         )
         .unwrap();
         assert_eq!(
             configured_workspace_sandbox(&home),
             crate::policy::WorkspaceSandbox {
                 network_access: false,
-                writable_roots: vec!["/codex/skills".to_string()],
+                writable_roots: vec![skills.to_string()],
                 exclude_tmpdir_env_var: false,
                 exclude_slash_tmp: true,
             }
@@ -406,7 +415,7 @@ mod tests {
         // The file says network on, the checkout's air gap says on: the turn gets no network.
         std::fs::write(
             home.join("config.toml"),
-            "[sandbox_workspace_write]\nnetwork_access = true\nwritable_roots = [\"/codex/skills\"]\n",
+            format!("[sandbox_workspace_write]\nnetwork_access = true\nwritable_roots = [\"{skills}\"]\n"),
         )
         .unwrap();
         let root = root(&home);
@@ -437,11 +446,11 @@ mod tests {
         }
         .with_bridge(false);
         let open = prompts.workspace_sandbox("app-net");
-        assert!(open.network_access && open.writable_roots == vec!["/codex/skills".to_string()]);
+        assert!(open.network_access && open.writable_roots == vec![skills.to_string()]);
         std::fs::write(checkout.join("dreamference.toml"), "ragon_airgapped = \"on\"\n").unwrap();
         let closed = prompts.workspace_sandbox("app-net");
         assert!(!closed.network_access, "the air gap at on takes the network away");
-        assert_eq!(closed.writable_roots, vec!["/codex/skills".to_string()]);
+        assert_eq!(closed.writable_roots, vec![skills.to_string()]);
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -487,7 +496,13 @@ mod tests {
         }
         .with_bridge(true);
 
-        let canonical_checkout = checkout.canonicalize().unwrap().to_string_lossy().into_owned();
+        // As recorded: the scratch path is canonical on Unix; on Windows a canonical path is verbatim
+        // (`\\?\`) and the record keeps the path as given.
+        let canonical_checkout = if cfg!(windows) {
+            checkout.to_string_lossy().into_owned()
+        } else {
+            checkout.canonicalize().unwrap().to_string_lossy().into_owned()
+        };
         assert!(prompts.is_bridge());
         assert_eq!(prompts.repo_checkout(&checkout.to_string_lossy()), Some(false));
         assert_eq!(prompts.repo_checkout(&outside.to_string_lossy()), None);
