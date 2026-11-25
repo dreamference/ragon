@@ -12,6 +12,7 @@ import hashlib
 import itertools
 import json
 import pathlib
+import subprocess
 import types
 from typing import Any, Optional
 
@@ -29,7 +30,10 @@ from dreamference.hardware.model_matrix_registry import (
     ModelMatrixRegistry,
 )
 from dreamference.vllm_server.chat_template_patcher import ChatTemplatePatcher
-from dreamference.vllm_server.sglang_runtime_patcher import SGLangRuntimePatcher
+from dreamference.vllm_server.sglang_runtime_patcher import (
+    DOCKER_TIMEOUT_S,
+    SGLangRuntimePatcher,
+)
 from dreamference.vllm_server.vllm_server_manager import VLLMServerManager
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "sglang"
@@ -257,3 +261,47 @@ def test_another_image_is_refused_before_docker_runs_even_with_a_cached_file(ima
     assert SGLangRuntimePatcher.file_name(patch) != SGLangRuntimePatcher.file_name(
         {**patch, "image": other}
     )
+
+
+# -- _docker ------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def docker_subprocess(monkeypatch):
+    """A `subprocess.run` stand-in for `SGLangRuntimePatcher._docker`'s one command."""
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    result = types.SimpleNamespace(returncode=0, stdout="id\n", stderr="")
+
+    def run(command, **kwargs):
+        calls.append((list(command), dict(kwargs)))
+        return result
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+def test_sglang_runtime_patcher_docker_runs_the_command_and_returns_its_result(
+    docker_subprocess,
+):
+    command = ["docker", "version"]
+    result = SGLangRuntimePatcher._docker(command)
+    assert result.returncode == 0
+    assert result.stdout == "id\n"
+    (ran,) = docker_subprocess
+    assert ran[0] == command
+    assert ran[1] == {
+        "capture_output": True,
+        "text": True,
+        "timeout": DOCKER_TIMEOUT_S,
+        "check": False,
+    }
+
+
+def test_sglang_runtime_patcher_docker_returns_none_when_the_command_cannot_run(
+    docker_subprocess, monkeypatch
+):
+    def run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert SGLangRuntimePatcher._docker(["docker", "create", "image"]) is None
