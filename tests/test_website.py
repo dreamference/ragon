@@ -122,3 +122,31 @@ def test_language_names_are_unique_and_native() -> None:
     names = [lang["name"] for lang in LANGUAGES]
     assert len(set(names)) == len(names)
     assert json.loads((WEBSITE / "src" / "languages.json").read_text(encoding="utf-8"))
+
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()
+    }
+
+
+def test_new_dir_is_written_only_when_the_switch_is_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("WEBSITE_NEXT", raising=False)
+    off = tmp_path / "off"
+    BUILDER.build(off)
+    assert not (off / "next").exists()
+
+    monkeypatch.setenv("WEBSITE_NEXT", "1")
+    on = tmp_path / "on"
+    BUILDER.build(on)
+    assert (on / "next" / "index.html").is_file()
+    assert all((on / "next" / code / "index.html").is_file() for code in CODES)
+    old_off = _snapshot(off)
+    old_on = {k: v for k, v in _snapshot(on).items() if not k.startswith("next/")}
+    assert old_on == old_off
+    assert old_on["index.html"] == (WEBSITE / "index.html").read_bytes()
+    for code in CODES:
+        assert old_on[f"{code}/index.html"] == (WEBSITE / code / "index.html").read_bytes()
+    assert "/next/" not in old_on["index.html"].decode("utf-8")

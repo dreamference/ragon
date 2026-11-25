@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import shutil
 import sys
@@ -24,6 +25,10 @@ SITE_URL: Final[str] = "https://ragon.dreamference.ai"
 DOCS_PATH: Final[str] = "/docs/"
 DEFAULT_LANGUAGE: Final[str] = "en"
 STRING_PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\{\{([a-z0-9_.]+)\}\}")
+# The new front page is built into ``website/next/`` only when this environment variable is "1" (default off).
+NEXT_SWITCH: Final[str] = "WEBSITE_NEXT"
+NEXT_DIR: Final[str] = "next"
+SWITCH_ON: Final[str] = "1"
 RIGHT_TO_LEFT: Final[str] = "rtl"
 ATTRIBUTE_KEY_PREFIXES: Final[tuple[str, ...]] = ("meta.", "ui.")
 
@@ -193,8 +198,38 @@ class WebsiteBuilder:
         return text
 
     @classmethod
+    def next_enabled(cls) -> bool:
+        """Return True when the new-page switch (``WEBSITE_NEXT=1``) is on; it is off by default."""
+        return os.environ.get(NEXT_SWITCH, "") == SWITCH_ON
+
+    @classmethod
+    def build_next(cls, out_dir: Path = WEBSITE_DIR) -> list[Path]:
+        """Write the new front page beside the old one, under ``<out_dir>/next/``.
+
+        Nothing outside ``next/`` is written, and the old pages do not link to it.
+
+        Args:
+            out_dir: The site directory; defaults to ``website/``.
+
+        Returns:
+            The paths written.
+        """
+        languages = cls.languages()
+        written = []
+        for language in languages:
+            code = language["code"]
+            targets = [(out_dir / NEXT_DIR / code / "index.html", False)]
+            if code == DEFAULT_LANGUAGE:
+                targets.append((out_dir / NEXT_DIR / "index.html", True))
+            for path, is_root in targets:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(cls.render(language, languages, is_root), encoding="utf-8")
+                written.append(path)
+        return written
+
+    @classmethod
     def build(cls, out_dir: Path = WEBSITE_DIR) -> list[Path]:
-        """Write every page.
+        """Write every page; also ``next/`` when the new-page switch is on.
 
         Args:
             out_dir: The directory to write into; defaults to ``website/``.
@@ -215,6 +250,8 @@ class WebsiteBuilder:
                 written.append(path)
         (out_dir / "sitemap.xml").write_text(cls.sitemap(languages), encoding="utf-8")
         (out_dir / "robots.txt").write_text(cls.robots(), encoding="utf-8")
+        if cls.next_enabled():
+            written.extend(cls.build_next(out_dir))
         return [*written, out_dir / "sitemap.xml", out_dir / "robots.txt"]
 
     @classmethod
@@ -262,7 +299,7 @@ class WebsiteBuilder:
             if p.is_dir()
             and (p / "index.html").exists()
             and p.name not in known
-            and p.name not in {"src", "i18n"}
+            and p.name not in {"src", "i18n", NEXT_DIR}
         ]
 
 
