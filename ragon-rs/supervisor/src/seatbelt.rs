@@ -244,9 +244,9 @@ mod tests {
 
     fn sandbox(network: bool) -> JobSandbox {
         JobSandbox {
-            tree: PathBuf::from("/Users/ragonjob/.ragon/jobs/20261125-1200-abc/tree"),
+            tree: PathBuf::from("/Users/user/.ragon/jobs/20261125-1200-abc/tree"),
             tmp: PathBuf::from("/private/var/folders/xy/20261125-1200-abc"),
-            home: PathBuf::from("/Users/ragonjob"),
+            home: PathBuf::from("/Users/user"),
             readable: vec![PathBuf::from("/Volumes/data/corpus")],
             network,
         }
@@ -299,15 +299,15 @@ mod tests {
         let home = index_of(&text, "(subpath \"/Users\"))");
         let tree = index_of(
             &text,
-            "(allow file-read* file-write* (subpath \"/Users/ragonjob/.ragon/jobs/20261125-1200-abc/tree\"))",
+            "(allow file-read* file-write* (subpath \"/Users/user/.ragon/jobs/20261125-1200-abc/tree\"))",
         );
         let git = index_of(
             &text,
-            "(deny file-write* (subpath \"/Users/ragonjob/.ragon/jobs/20261125-1200-abc/tree/.git\"))",
+            "(deny file-write* (subpath \"/Users/user/.ragon/jobs/20261125-1200-abc/tree/.git\"))",
         );
         assert!(home < tree && tree < git);
         // The folders above it are looked up by name, never listed.
-        for anc in ["/Users", "/Users/ragonjob", "/Users/ragonjob/.ragon/jobs/20261125-1200-abc"] {
+        for anc in ["/Users", "/Users/user", "/Users/user/.ragon/jobs/20261125-1200-abc"] {
             assert!(text.contains(&format!("(allow file-read-metadata (literal \"{anc}\"))")), "{anc}");
         }
         assert!(!text.contains("(allow file-read-metadata (literal \"/\"))"));
