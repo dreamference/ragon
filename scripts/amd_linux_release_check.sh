@@ -59,6 +59,11 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+if [ "$mode" = remote ]; then
+  for v in workdir bare rocm expect_ids; do
+    case "${!v:-}" in "~"|"~/"*) printf -v "$v" %s "$HOME${!v#\~}" ;; esac
+  done
+fi
 
 if [ "$mode" = local ]; then
   [ -n "$host" ] && [ -n "$workdir" ] || { echo "AMD_LINUX_RELEASE_CHECK FAIL --host and --workdir are required"; exit 2; }
@@ -122,7 +127,7 @@ if [ "$res_pull" != FAIL ]; then
     LD_LIBRARY_PATH="$rocm" ctest --test-dir "$bare" --output-on-failure "${ctest_x[@]}" > "$log/ctest" 2>&1
   fi
   ctest_rc=$?
-  sumline="$(grep -E 'tests passed' "$log/ctest" | tail -1 | sed 's/^[0-9]*% *//; s/tests passed, */passed /; s/ tests failed out of /\/ /')"
+  sumline="$(grep -E 'tests passed' "$log/ctest" | tail -1 | sed -E 's/.*, ([0-9]+) tests failed out of ([0-9]+).*/\1 \2/' | awk 'NF==2{print "passed " ($2-$1) "/" $2}')"
   [ -n "$sumline" ] || sumline="no summary"
   if [ $ctest_rc -eq 0 ]; then res_ctest="ok($sumline${exclude:+, excluding $exclude})"; else res_ctest="FAIL($sumline)"; fails+=(ctest); fi
 
