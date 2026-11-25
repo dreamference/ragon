@@ -26,8 +26,11 @@
 #            320 MB); and the default model, downloaded and served (`ragon-admin model
 #            download`, `ragon-admin server start`, logged to ~/.local/state/dreamference/
 #            install-<time>.log). It ends with a summary of every step, done or failed. This is
-#            what a GB10 (DGX Spark and its siblings) gets by default; every other machine gets
-#            the client.
+#            what a GB10 (DGX Spark and its siblings) gets by default, and so does an AMD Strix
+#            Halo (Ryzen AI Max, x86-64 Ubuntu; PCI 1002:1586, KFD gfx1151) whose kernel and GPU
+#            memory pass the checks it prints, but there the NVIDIA steps are left out, the host
+#            settings and the model server are not installed yet, and it asks for /dev/kfd,
+#            /dev/dri/renderD* and the groups video and render. Every other machine gets the client.
 #
 # You can run it on a fresh GB10 and leave. A node install changes the machine outside your home
 # folder, so it needs root, asked for once at the very start: nothing at all when sudo needs no
@@ -189,8 +192,83 @@ is_gb10() {
     return 1
 }
 
+# An AMD Strix Halo (Ryzen AI Max, gfx1151) on x86-64 Linux is the second node platform. It is asked
+# the same way, never by vendor string: its GPU on the PCI bus (1002:1586) and the compute driver's
+# own topology naming the chip (gfx_target_version 110501 in a KFD node). Any other AMD APU is not a
+# node: it gets the client, like every machine that is not a GB10.
+is_strix_halo() {
+    [ "$TARGET" = "x86_64-unknown-linux-gnu" ] || return 1
+    local found=0 device node
+    for device in "${RAGON_PCI_DEVICES:-/sys/bus/pci/devices}"/*; do
+        if [ "$(cat "$device/vendor" 2>/dev/null)" = "0x1002" ] \
+            && [ "$(cat "$device/device" 2>/dev/null)" = "0x1586" ]; then found=1; fi
+    done
+    [ "$found" = 1 ] || return 1
+    for node in "${RAGON_KFD_NODES:-/sys/class/kfd/kfd/topology/nodes}"/*; do
+        grep -Eq '^gfx_target_version[[:space:]]+110501[[:space:]]*$' "$node/properties" 2>/dev/null && return 0
+    done
+    return 1
+}
+
+# The Linux kernel a Strix Halo node needs: AMD's two KFD fixes for gfx1151 are in 6.18.4, in the
+# Ubuntu 24.04 HWE kernel 6.17.0-19 and in the OEM kernel 6.14.0-1018 (specs/DREAMFERENCE_RAGON_AMD_NODES.md §7).
+# kernel_meets_floor <uname -r>
+kernel_meets_floor() {
+    local release="$1" base abi major minor patch
+    base="${release%%-*}"
+    abi=0
+    case "$release" in *-*) abi="${release#*-}"; abi="${abi%%[!0-9]*}" ;; esac
+    IFS=. read -r major minor patch <<< "$base"
+    major="${major%%[!0-9]*}"; minor="${minor%%[!0-9]*}"; patch="${patch%%[!0-9]*}"
+    : "${major:=0}" "${minor:=0}" "${patch:=0}" "${abi:=0}"
+    if [ "$major" -gt 6 ]; then return 0; fi
+    [ "$major" -eq 6 ] || return 1
+    if [ "$minor" -gt 18 ]; then return 0; fi
+    if [ "$minor" -eq 18 ]; then [ "$patch" -ge 4 ]; return; fi
+    if [ "$minor" -eq 17 ]; then [ "$abi" -ge 19 ]; return; fi
+    if [ "$minor" -eq 14 ]; then [ "$abi" -ge 1018 ]; return; fi
+    return 1
+}
+
+# Memory thresholds of the Strix Halo node, in GiB of what the GPU can use (the firmware's VRAM
+# carve-out plus the GTT window). TODO(amdlinux-memory-mode): these defaults stand until that job
+# measures them; keep them equal to STRIX_HALO_* in dreamference/hardware/hardware_manager.py.
+STRIX_MIN_USABLE_GIB=43    # one session at 196,608: 24 (model) + 14.4 (KV) + 4 reserve; below it no node
+STRIX_WARN_USABLE_GIB=86   # below it fewer than 4 sessions will run
+
+# Prints what the memory is on a Strix Halo and sets STRIX_USABLE_TENTHS (tenths of a GiB, 0 when
+# the driver does not say). Reads /sys/class/drm/card*/device/mem_info_{vram,gtt}_total,
+# /proc/meminfo and /proc/cmdline; the files can be re-pointed (RAGON_DRM_DIR, RAGON_MEMINFO,
+# RAGON_CMDLINE) for the tests.
+STRIX_USABLE_TENTHS=0
+strix_memory_facts() {
+    local card vram gtt best_vram=0 best_gtt=0 ram_kb options token
+    for card in "${RAGON_DRM_DIR:-/sys/class/drm}"/card*/device; do
+        [ "$(cat "$card/vendor" 2>/dev/null)" = "0x1002" ] || continue
+        vram="$(cat "$card/mem_info_vram_total" 2>/dev/null)" || continue
+        gtt="$(cat "$card/mem_info_gtt_total" 2>/dev/null)" || gtt=0
+        case "$vram$gtt" in *[!0-9]*|"") continue ;; esac
+        if [ "$vram" -gt "$best_vram" ]; then best_vram="$vram"; best_gtt="$gtt"; fi
+    done
+    ram_kb="$(awk '/^MemTotal:/ {print $2; exit}' "${RAGON_MEMINFO:-/proc/meminfo}" 2>/dev/null || true)"
+    options=""
+    for token in $(cat "${RAGON_CMDLINE:-/proc/cmdline}" 2>/dev/null || true); do
+        case "$token" in amdgpu.*|ttm.*|amd_iommu*|iommu*|mem_encrypt*) options="$options $token" ;; esac
+    done
+    if [ "$best_vram" -gt 0 ]; then
+        STRIX_USABLE_TENTHS=$(( (best_vram + best_gtt) * 10 / 1073741824 ))
+        say "   memory: GPU carve-out $(( best_vram * 10 / 1073741824 / 10 )).$(( best_vram * 10 / 1073741824 % 10 )) GiB, GTT $(( best_gtt * 10 / 1073741824 / 10 )).$(( best_gtt * 10 / 1073741824 % 10 )) GiB, usable by the GPU about $(( STRIX_USABLE_TENTHS / 10 )).$(( STRIX_USABLE_TENTHS % 10 )) GiB, system RAM ${ram_kb:-?} kB"
+    else
+        say "   memory: the amdgpu driver reports no VRAM size (mem_info_vram_total), system RAM ${ram_kb:-?} kB"
+    fi
+    say "   kernel $(uname -r), command line options:${options:- none of amdgpu.*, ttm.*, iommu}"
+}
+
+ROLE_DEFAULTED=0
 case "$ROLE" in
-    "")          if is_gb10; then ROLE="node"; else ROLE="client"; fi ;;
+    "")          if is_gb10; then ROLE="node"
+                 elif is_strix_halo; then ROLE="node"; ROLE_DEFAULTED=1
+                 else ROLE="client"; fi ;;
     client)      ;;
     node|both)   ROLE="node" ;;
     *)           fail "--role is client or node, not '$ROLE'." ;;
@@ -199,7 +277,33 @@ esac
 if [ "$ROLE" = "node" ] && [ "$os" = "apple-darwin" ]; then
     fail "macOS cannot be a Ragon node (the node runs the model on a GB10, under Linux). Install the client here (--role client, the default) and point it at your GB10."
 fi
-if [ "$ROLE" = "node" ] && ! is_gb10; then
+# A Strix Halo node is checked before anything is downloaded: the kernel (the KFD fixes) and the
+# memory (the model and one session must fit). Below either, the node is refused: the default
+# role falls back to the client; --role node stops here.
+PLATFORM=""
+if [ "$ROLE" = "node" ] && ! is_gb10 && is_strix_halo; then
+    PLATFORM="strix-halo"
+    say "🔎 AMD Strix Halo (gfx1151) found:"
+    strix_memory_facts
+    STRIX_REFUSAL=""
+    if ! kernel_meets_floor "$(uname -r)"; then
+        STRIX_REFUSAL="kernel $(uname -r) is below the floor of a Strix Halo node (6.18.4, Ubuntu HWE 6.17.0-19 or OEM 6.14.0-1018: AMD's two KFD fixes for gfx1151)"
+    elif [ "$STRIX_USABLE_TENTHS" -gt 0 ] && [ "$STRIX_USABLE_TENTHS" -lt $(( STRIX_MIN_USABLE_GIB * 10 )) ]; then
+        STRIX_REFUSAL="the GPU can use about $(( STRIX_USABLE_TENTHS / 10 )) GiB, less than the $STRIX_MIN_USABLE_GIB GiB one session of the model needs (raise the firmware's VRAM setting)"
+    fi
+    if [ -n "$STRIX_REFUSAL" ]; then
+        if [ "$ROLE_DEFAULTED" = 1 ]; then
+            say "⚠️  Not installing the node: $STRIX_REFUSAL. Installing the client; run this again with --role node when it is fixed."
+            ROLE="client"
+            PLATFORM=""
+        else
+            fail "this Strix Halo cannot be a Ragon node: $STRIX_REFUSAL. Use --role client."
+        fi
+    elif [ "$STRIX_USABLE_TENTHS" -gt 0 ] && [ "$STRIX_USABLE_TENTHS" -lt $(( STRIX_WARN_USABLE_GIB * 10 )) ]; then
+        say "⚠️  Fewer than 4 sessions will run at once with $(( STRIX_USABLE_TENTHS / 10 )) GiB for the GPU (about $STRIX_WARN_USABLE_GIB GiB are needed for 4)."
+    fi
+fi
+if [ "$ROLE" = "node" ] && [ "$PLATFORM" != "strix-halo" ] && ! is_gb10; then
     say "⚠️  This machine is not a GB10. The node's model recipes and host-safety checks are written"
     say "   for one; installing the node anyway because --role node was given."
 fi
@@ -645,7 +749,9 @@ if [ "$ROLE" = "node" ]; then
         # The settings a model load is refused without, applied: each command is printed first,
         # and runs with `sudo -n` on the password given above.
         say ""
-        if admin host setup --yes; then
+        if [ "$PLATFORM" = "strix-halo" ]; then
+            step off "host settings: the GB10's, not applied on a Strix Halo (its memory settings come with the AMD memory mode)"
+        elif admin host setup --yes; then
             step done "host settings applied (swap, sysctls, earlyoom, sysstat, bubblewrap, Wi-Fi power saving off)"
         else
             step failed "host settings: \`ragon-admin host check\` lists what is left, \`ragon-admin host setup\` applies it"
@@ -653,7 +759,11 @@ if [ "$ROLE" = "node" ]; then
 
         # Docker without sudo, which NVIDIA's first-boot wizard does not set up.
         if ! getent group docker > /dev/null 2>&1; then
-            step failed "docker group: there is none, so Docker is not installed (DGX OS ships it); install Docker and the NVIDIA Container Toolkit, then run this again"
+            if [ "$PLATFORM" = "strix-halo" ]; then
+                step failed "docker group: there is none, so Docker is not installed; install Docker, then run this again"
+            else
+                step failed "docker group: there is none, so Docker is not installed (DGX OS ships it); install Docker and the NVIDIA Container Toolkit, then run this again"
+            fi
         elif id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx docker; then
             step done "docker group: $USER_NAME is in it"
         elif $SUDO usermod -aG docker "$USER_NAME" < /dev/null; then
@@ -663,6 +773,33 @@ if [ "$ROLE" = "node" ]; then
             step done "docker group: $USER_NAME added (your next login has it$meanwhile)"
         else
             step failed "docker group: \`sudo usermod -aG docker $USER_NAME\` failed"
+        fi
+
+        # A Strix Halo's GPU is reached through /dev/kfd and /dev/dri/renderD*, which the groups
+        # video and render own; Docker passes both devices to the model server.
+        if [ "$PLATFORM" = "strix-halo" ]; then
+            dev_dir="${RAGON_DEV_DIR:-/dev}"
+            if [ -e "$dev_dir/kfd" ]; then
+                step done "GPU device: $dev_dir/kfd present"
+            else
+                step failed "GPU device: $dev_dir/kfd is missing (the amdgpu driver is not loaded; check \`dmesg | grep amdgpu\`, the kernel and its firmware)"
+            fi
+            if ls "$dev_dir"/dri/renderD* > /dev/null 2>&1; then
+                step done "GPU device: a render node ($dev_dir/dri/renderD*) is present"
+            else
+                step failed "GPU device: no $dev_dir/dri/renderD* (the amdgpu driver is not loaded)"
+            fi
+            for gpu_group in video render; do
+                if ! getent group "$gpu_group" > /dev/null 2>&1; then
+                    step failed "$gpu_group group: there is none on this system; create it (\`sudo groupadd $gpu_group\`), then run this again"
+                elif id -nG "$USER_NAME" | tr ' ' '\n' | grep -qx "$gpu_group"; then
+                    step done "$gpu_group group: $USER_NAME is in it"
+                elif $SUDO usermod -aG "$gpu_group" "$USER_NAME" < /dev/null; then
+                    step done "$gpu_group group: $USER_NAME added (your next login has it)"
+                else
+                    step failed "$gpu_group group: \`sudo usermod -aG $gpu_group $USER_NAME\` failed"
+                fi
+            done
         fi
 
         # Lingering: without it the user's systemd stops at logout, and with it every job sent
@@ -724,7 +861,9 @@ if [ "$ROLE" = "node" ]; then
             ;;
     esac
 
-    if [ "$MODEL" = 1 ]; then
+    if [ "$PLATFORM" = "strix-halo" ]; then
+        step off "model: the model server's recipes are the GB10's; none is installed on a Strix Halo yet (\`ragon-admin server start\` says when one is)"
+    elif [ "$MODEL" = 1 ]; then
         say ""
         say "⬇️  Downloading the default model (tens of GB; this is the long part) ... log: $LOG"
         if with_docker model download >> "$LOG" 2>&1; then
@@ -816,6 +955,6 @@ if [ "$ROLE" = "node" ]; then
         say "🎉 Done. \`ragon\` is the terminal agent."
     fi
 else
-    say "🎉 Done. \`ragon\` needs a Ragon node to talk to: start one on a GB10, then run \`ragon\`."
+    say "🎉 Done. \`ragon\` needs a Ragon node to talk to: start one on a GB10 or an AMD Strix Halo, then run \`ragon\`."
 fi
 exit "$FAILED"
