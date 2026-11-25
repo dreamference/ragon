@@ -118,6 +118,9 @@ windows-sys = { version = "0.52", features = [
 codex-windows-sandbox = { workspace = true }
 # `ragon audit egress`: the ETW real-time trace (src/audit.rs; WINDOWS_ARM §14).
 ferrisetw = "1.2"
+# `ragon server`: the node's model server under a supervisor, as a Windows service with the engine
+# in a Job Object (src/supervisor_windows.rs; the crate's neutral core is shared with the Mac node).
+ragon-supervisor = { path = "supervisor" }
 
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }

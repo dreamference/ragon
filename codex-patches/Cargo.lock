@@ -10279,6 +10279,7 @@ dependencies = [
  "ragon-safegit",
  "ragon-signal",
  "ragon-skills",
+ "ragon-supervisor",
  "ragon-sync",
  "ragon-tools",
  "ragon-web-server",
@@ -10372,6 +10373,13 @@ dependencies = [
  "tar",
  "toml 0.9.11+spec-1.1.0",
  "zip",
+]
+
+[[package]]
+name = "ragon-supervisor"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

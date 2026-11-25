@@ -92,6 +92,7 @@ pub mod update;
 
 /// For the Codex patches that print a version (`update::shown_version`).
 pub use update::shown_version;
+pub mod supervisor_windows;
 pub mod usage;
 pub mod userns;
 pub mod vision;
@@ -142,7 +143,7 @@ const COMMANDS_WITHOUT_MODEL: &[&str] = &[
 pub const LAUNCHER_SUBCOMMANDS: &[&str] = &[
     "app", "night", "airgapped", "node", "apps", "ledger", "notice", "skill", "audit", "docs", "prompt", "web", "chat",
     "signal", "refine", "compat", "loop-guard", "guard", "worktree", "sync", "monitor", "delegate",
-    "uninstall", "doctor", "login", "logout", "sessions", "pair",
+    "uninstall", "doctor", "login", "logout", "sessions", "pair", "server",
 ];
 
 /// Codex subcommands Ragon does not offer, each with the reason it gives. They are refused here,
@@ -415,6 +416,12 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
         && user_args[index] == "uninstall"
     {
         std::process::exit(uninstall::run_cli(&user_args[index + 1..]));
+    }
+    // `server` is the Windows node's model server under its supervisor (supervisor_windows.rs).
+    if let Some(index) = subcommand
+        && user_args[index] == "server"
+    {
+        std::process::exit(supervisor_windows::run_cli(&user_args[index + 1..]));
     }
     // `night` is Night Shift's queue (night.rs): `/night` from a shell, for scripts and cron.
     if let Some(index) = subcommand
