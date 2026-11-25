@@ -126,7 +126,32 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
 }
 
 /// Runs `server <args>` and returns the exit code.
+/// What the launcher adds to `server run` on a Mac node (its src/supervisor_macos.rs): the
+/// processes held beside the engine and what follows a change of the reported state (the Bonjour
+/// registration). The drill binary and the Windows service use [`NoHooks`].
+pub trait NodeHooks {
+    /// `(name, command line)` of each process held beside the engine (`ragon web serve --lan`):
+    /// started with it, under the same guard, restarted with the core's backoff (exit 3 is not
+    /// retried), logging to `<name>.log`. Its state never changes the engine's.
+    fn sidecars(&self) -> Vec<(String, Vec<String>)> {
+        Vec::new()
+    }
+    /// The reported state (`healthy`, `battery`, `starting`, `waiting`, `refused`, `stopped`) and
+    /// whether new sessions are admitted; called once per change, and with `stopped` at the end.
+    fn on_state(&mut self, _state: &str, _admitting: bool) {}
+}
+
+/// No sidecars, nothing on a state change.
+pub struct NoHooks;
+
+impl NodeHooks for NoHooks {}
+
 pub fn run(args: &[String]) -> i32 {
+    run_with(args, &mut NoHooks)
+}
+
+/// [`run`] with the launcher's hooks (used by `run` only; the other commands ignore them).
+pub fn run_with(args: &[String], hooks: &mut dyn NodeHooks) -> i32 {
     let opts = match parse(args) {
         Ok(opts) => opts,
         Err(message) => {
@@ -135,7 +160,7 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
     match opts.command.as_str() {
-        "run" => run_command(&opts),
+        "run" => run_command(&opts, hooks),
         "start" => start(&opts),
         "stop" => stop(&opts),
         "status" => status(&opts),
@@ -167,7 +192,7 @@ pub fn run_args(opts: &Options, service: bool) -> Vec<String> {
     args
 }
 
-fn run_command(opts: &Options) -> i32 {
+fn run_command(opts: &Options, hooks: &mut dyn NodeHooks) -> i32 {
     if opts.service {
         #[cfg(windows)]
         {
@@ -190,10 +215,10 @@ fn run_command(opts: &Options) -> i32 {
     #[cfg(unix)]
     {
         unix_stop::install();
-        supervise(opts, &unix_stop::STOP)
+        supervise_with(opts, &unix_stop::STOP, hooks)
     }
     #[cfg(not(unix))]
-    supervise(opts, &Arc::new(AtomicBool::new(false)))
+    supervise_with(opts, &Arc::new(AtomicBool::new(false)), hooks)
 }
 
 /// SIGTERM (launchd's stop, `kill`) and SIGINT (Ctrl-C) set a flag the supervision loop polls, so
@@ -227,6 +252,20 @@ mod unix_stop {
 /// The supervision loop: tick, write the status file, sleep until the next tick or a stop request
 /// (the flag, set by the service's stop control, or the `stop` file).
 pub fn supervise(opts: &Options, stop: &AtomicBool) -> i32 {
+    supervise_with(opts, stop, &mut NoHooks)
+}
+
+/// A sidecar is up while its process runs: it has no health endpoint the supervisor knows.
+struct Alive;
+
+impl core::Probe for Alive {
+    fn healthy(&mut self) -> bool {
+        true
+    }
+}
+
+/// [`supervise`] with the processes and the state hook of [`NodeHooks`].
+pub fn supervise_with(opts: &Options, stop: &AtomicBool, hooks: &mut dyn NodeHooks) -> i32 {
     if let Err(e) = std::fs::create_dir_all(&opts.state_dir) {
         eprintln!("server run: cannot create {}: {e}", opts.state_dir.display());
         return 1;
@@ -250,16 +289,47 @@ pub fn supervise(opts: &Options, stop: &AtomicBool) -> i32 {
     let mut sup = Supervisor::new(engine, probe, policy);
     let me = std::process::id();
     let mut power = PowerWatch::default();
+    let mut sidecars = Vec::new();
+    for (name, argv) in hooks.sidecars() {
+        let Some((program, args)) = argv.split_first() else { continue };
+        let log = opts.state_dir.join(format!("{name}.log"));
+        match ChildEngine::new(PathBuf::from(program), args.to_vec(), Some(log)) {
+            Ok(child) => sidecars.push((name, Supervisor::new(child, Alive, Policy::default()), String::new())),
+            Err(e) => eprintln!("server run: {name}: {e}"),
+        }
+    }
+    let mut reported = (String::new(), true);
     loop {
         if stop.load(Ordering::SeqCst) || stop_file.exists() {
+            for (_, sidecar, _) in &mut sidecars {
+                sidecar.stop();
+            }
             sup.stop();
             let _ = std::fs::remove_file(&stop_file);
             write_status(opts, &url, &sup.snapshot(Instant::now()), None, None);
+            hooks.on_state("stopped", false);
             return 0;
         }
-        let wait = sup.tick(Instant::now());
+        let mut wait = sup.tick(Instant::now());
+        for (name, sidecar, last) in &mut sidecars {
+            wait = wait.min(sidecar.tick(Instant::now()));
+            let snap = sidecar.snapshot(Instant::now());
+            if snap.state.as_str() != last.as_str() {
+                *last = snap.state.as_str().to_string();
+                eprintln!("server run: {name}: {last} (pid {})", opt(snap.engine_pid));
+            }
+        }
         let battery = power.poll(Instant::now());
-        write_status(opts, &url, &sup.snapshot(Instant::now()), Some(me), battery.as_ref());
+        let snap = sup.snapshot(Instant::now());
+        let now_reported = (
+            crate::macos_power::reported_state(snap.state.as_str(), battery.as_ref()).to_string(),
+            battery.is_none_or(|b| b.admitting),
+        );
+        if now_reported != reported {
+            reported = now_reported;
+            hooks.on_state(&reported.0, reported.1);
+        }
+        write_status(opts, &url, &snap, Some(me), battery.as_ref());
         let due = Instant::now() + wait;
         while Instant::now() < due && !stop.load(Ordering::SeqCst) && !stop_file.exists() {
             std::thread::sleep(due.saturating_duration_since(Instant::now()).min(Duration::from_millis(100)));

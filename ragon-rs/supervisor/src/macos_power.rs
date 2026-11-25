@@ -142,13 +142,22 @@ pub fn battery(batt: &str, min_charge: u8) -> Option<Battery> {
     Some(Battery { charge, admitting: charge.is_none_or(|pct| pct >= min_charge) })
 }
 
+/// The state `server status` and the advertisement report: a serving engine on battery is
+/// `battery`; every other engine state is reported as it is.
+pub fn reported_state<'a>(engine_state: &'a str, battery: Option<&Battery>) -> &'a str {
+    if battery.is_some() && engine_state == "healthy" { "battery" } else { engine_state }
+}
+
 /// The status file on battery: `state: healthy` becomes `state: battery` (the engine still serves,
 /// the node no longer says ready); `charge` and `admission` follow the shared keys. Any other state
 /// (starting, backoff, refused) is left as it is: it says more than the power source.
 pub fn status_on_battery(status: &str, battery: &Battery) -> String {
     let mut out: String = status
         .lines()
-        .map(|line| if line == "state: healthy" { "state: battery".to_string() } else { line.to_string() })
+        .map(|line| match line.strip_prefix("state: ") {
+            Some(state) => format!("state: {}", reported_state(state, Some(battery))),
+            None => line.to_string(),
+        })
         .map(|line| line + "\n")
         .collect();
     out.push_str(&format!("charge: {}\n", battery.charge.map(|c| c.to_string()).unwrap_or_else(|| "none".into())));
@@ -239,6 +248,15 @@ displaysleep         10\n";
         assert_eq!(battery(UPS, MIN_CHARGE_PCT), Some(Battery { charge: None, admitting: true }));
         assert_eq!(battery("", MIN_CHARGE_PCT), None, "an unknown source changes nothing");
         assert_eq!(battery(LOW, 12).map(|b| b.admitting), Some(true), "the threshold itself admits");
+    }
+
+    #[test]
+    fn only_a_serving_engine_on_battery_is_reported_as_battery() {
+        let b = Battery { charge: Some(50), admitting: true };
+        assert_eq!(reported_state("healthy", Some(&b)), "battery");
+        assert_eq!(reported_state("healthy", None), "healthy");
+        assert_eq!(reported_state("starting", Some(&b)), "starting");
+        assert_eq!(reported_state("refused", Some(&b)), "refused");
     }
 
     #[test]

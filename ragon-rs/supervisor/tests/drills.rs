@@ -4,7 +4,9 @@
 //!   the engine dies with it;
 //! - the supervisor sent SIGTERM (Unix, how launchd stops the daemon): it stops the engine and exits 0;
 //! - `server start|status|stop` without a service: a detached supervisor, stable status output;
-//! - an engine that refuses (exit 3) is not restarted.
+//! - an engine that refuses (exit 3) is not restarted;
+//! - the node's hooks (Unix, in process): each state reported once, a killed sidecar restarted
+//!   without touching the engine, both stopped with the supervisor.
 //!
 //! Ports come from the OS (port 0), never the node's.
 
@@ -222,5 +224,80 @@ fn a_terminated_supervisor_stops_the_engine_and_exits_cleanly() {
     assert!(!alive(engine), "the engine outlived a clean stop");
     assert_eq!(field(&dir, "state").as_deref(), Some("stopped"));
     assert_eq!(field(&dir, "supervisor_pid").as_deref(), Some("none"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The node's hooks, recorded: one sidecar (a second stand-in, as `ragon web --lan` on a Mac) and
+/// every state the supervisor reports.
+#[cfg(unix)]
+struct Recorder {
+    sidecar: Vec<String>,
+    states: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>,
+}
+
+#[cfg(unix)]
+impl ragon_supervisor::cli::NodeHooks for Recorder {
+    fn sidecars(&self) -> Vec<(String, Vec<String>)> {
+        vec![("web".to_string(), self.sidecar.clone())]
+    }
+    fn on_state(&mut self, state: &str, admitting: bool) {
+        self.states.lock().unwrap().push((state.to_string(), admitting));
+    }
+}
+
+#[cfg(unix)]
+fn pid_in(path: &Path) -> Option<u32> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+#[cfg(unix)]
+#[test]
+fn the_hooks_see_each_state_and_a_killed_sidecar_is_restarted_without_touching_the_engine() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+    let dir = state_dir("hooks");
+    let port = free_port();
+    let web_port = free_port();
+    let web_pid = dir.join("web.pid");
+    let mut args: Vec<String> = ["run", "--state-dir"].iter().map(|s| s.to_string()).collect();
+    args.push(dir.display().to_string());
+    args.extend(["--port".to_string(), port.to_string()]);
+    args.extend(engine_args(port, &[]));
+    let opts = ragon_supervisor::cli::parse(&args).unwrap();
+    let states = Arc::new(Mutex::new(Vec::new()));
+    let mut hooks = Recorder {
+        sidecar: [STANDIN, "--port", &web_port.to_string(), "--pid-file", &web_pid.display().to_string()]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        states: states.clone(),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let runner = std::thread::spawn(move || ragon_supervisor::cli::supervise_with(&opts, &thread_stop, &mut hooks));
+
+    wait_until(30, "a healthy engine", || healthy_pid(&dir).is_some());
+    let engine = healthy_pid(&dir).unwrap();
+    wait_until(30, "the sidecar's pid file", || pid_in(&web_pid).is_some_and(alive));
+    let first = pid_in(&web_pid).unwrap();
+    wait_until(10, "the healthy state reported", || states.lock().unwrap().iter().any(|(s, _)| s == "healthy"));
+    {
+        let seen = states.lock().unwrap();
+        assert_eq!(seen[0], ("starting".to_string(), true), "{seen:?}");
+        assert!(seen.iter().all(|(_, admitting)| *admitting), "on mains admission stays open: {seen:?}");
+    }
+
+    let _ = std::fs::remove_file(&web_pid);
+    kill_pid(first);
+    wait_until(30, "the sidecar restarted", || pid_in(&web_pid).is_some_and(|p| p != first && alive(p)));
+    let second = pid_in(&web_pid).unwrap();
+    assert_eq!(healthy_pid(&dir), Some(engine), "a sidecar's restart never touches the engine");
+
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(runner.join().unwrap(), 0);
+    assert_eq!(states.lock().unwrap().last().cloned(), Some(("stopped".to_string(), false)));
+    wait_until(10, "the sidecar stopped", || !alive(second));
+    wait_until(10, "the engine stopped", || !alive(engine));
+    assert_eq!(field(&dir, "state").as_deref(), Some("stopped"));
     let _ = std::fs::remove_dir_all(&dir);
 }
