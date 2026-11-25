@@ -31,13 +31,14 @@ INDEX_ARG: Final[str] = "index"
 # `ragon` subcommands that are not an interactive session. Anything else (no subcommand, a
 # prompt, `resume`, `fork`, `agents`) is the TUI. Besides Codex's own, the launcher's (ragon-rs/src/lib.rs):
 # the servers and bridges that run without a person (`apps serve`, the desktop app's Gmail search, lives as
-# long as its window; `web`, `chat`, `signal`), the hooks Codex runs inside a session (`ledger`, `notice`,
-# `refine hook`, `guard`), the delegation plugin's MCP server
-# (`delegate`) and one-shot commands.
+# long as its window; `web`, `chat`, `signal`; `server`, the Windows node's model server supervisor), the
+# hooks Codex runs inside a session (`ledger`, `notice`, `refine hook`, `guard`), the delegation plugin's
+# MCP server (`delegate`) and one-shot commands.
 NON_INTERACTIVE: Final[frozenset] = frozenset(
     {
         "exec",
         "pair",
+        "server",
         "e",
         "app-server",
         "mcp-server",
