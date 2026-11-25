@@ -318,11 +318,25 @@ pub fn node_file() -> Option<PathBuf> {
     Some(codex_home()?.join(NODE_FILE))
 }
 
+/// A Windows node's machine-wide state folder, `%ProgramData%\Ragon`: the node id, the advertisement,
+/// the jobs and the weights live there, readable by the job and sandbox accounts (a per-user home
+/// is not visible to them). `None` when `ProgramData` is unset or empty.
+pub fn windows_state_dir(program_data: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    program_data.filter(|dir| !dir.is_empty()).map(|dir| PathBuf::from(dir).join("Ragon"))
+}
+
 /// The file that marks a machine as a node, and holds its id.
 // One line on purpose: a test checks the path's source text.
 #[rustfmt::skip]
+#[cfg(not(windows))]
 pub fn node_id_file() -> Option<PathBuf> {
     Some(home_dir()?.join(".config").join("dreamference").join("node-id"))
+}
+
+/// The file that marks a machine as a node, and holds its id: `%ProgramData%\Ragon\node-id`.
+#[cfg(windows)]
+pub fn node_id_file() -> Option<PathBuf> {
+    Some(windows_state_dir(std::env::var_os("ProgramData"))?.join("node-id"))
 }
 
 /// Whether this machine is a node: it then uses its own services on loopback and never browses.
@@ -780,6 +794,14 @@ mod tests {
             remote: "ragon-7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001.netbird.selfhosted".to_string(),
             ..node()
         }
+    }
+
+    #[test]
+    fn the_windows_state_folder_is_ragon_under_program_data() {
+        let dir = windows_state_dir(Some("C:\\ProgramData".into())).unwrap();
+        assert_eq!(dir, PathBuf::from("C:\\ProgramData").join("Ragon"));
+        assert!(windows_state_dir(Some("".into())).is_none());
+        assert!(windows_state_dir(None).is_none());
     }
 
     #[test]
