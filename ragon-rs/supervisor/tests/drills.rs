@@ -1,6 +1,8 @@
 //! The kill drills against the real binaries: the supervisor supervising the stand-in engine.
 //! - the stand-in killed: restarted after 1 s, then (killed again) after 2 s;
-//! - the supervisor killed (Windows): the engine dies with it (Job Object);
+//! - the supervisor killed (Windows: Job Object; macOS: the engine's process group and its guard):
+//!   the engine dies with it;
+//! - the supervisor sent SIGTERM (Unix, how launchd stops the daemon): it stops the engine and exits 0;
 //! - `server start|status|stop` without a service: a detached supervisor, stable status output;
 //! - an engine that refuses (exit 3) is not restarted.
 //!
@@ -113,13 +115,16 @@ fn start_status_stop_without_a_service() {
     let text = String::from_utf8(out.stdout).unwrap();
     assert_eq!(out.status.code(), Some(0), "{text}");
     let keys: Vec<String> = ragon_supervisor::core::parse_status(&text).into_iter().map(|(k, _)| k).collect();
-    assert_eq!(
-        keys,
-        [
-            "service", "service_state", "supervisor", "state", "supervisor_pid", "engine_pid", "url", "probe",
-            "restarts", "last_exit", "next_start_s", "last_error", "updated"
-        ]
-    );
+    let mut expected = vec![
+        "service", "service_state", "supervisor", "state", "supervisor_pid", "engine_pid", "url", "probe", "restarts",
+        "last_exit", "next_start_s", "last_error", "updated",
+    ];
+    // macOS: the power source follows the shared keys.
+    if cfg!(target_os = "macos") {
+        expected.push("power");
+        assert!(text.contains("\nservice_state: not installed\n"), "{text}");
+    }
+    assert_eq!(keys, expected);
     assert!(text.contains("\nsupervisor: running\nstate: healthy\n"), "{text}");
     assert!(text.contains(&format!("\nurl: http://127.0.0.1:{port}/v1/models\nprobe: ok\n")), "{text}");
     let engine: u32 = field(&dir, "engine_pid").unwrap().parse().unwrap();
@@ -172,5 +177,50 @@ fn a_killed_supervisor_takes_the_engine_with_it() {
     assert_eq!(waited, WAIT_OBJECT_0, "the engine outlived the supervisor");
     let probe = ragon_supervisor::probe::HttpProbe::models("127.0.0.1", port);
     assert_eq!(probe.status_code(), None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// True while a process with this pid exists (Unix: `kill -0`).
+#[cfg(unix)]
+fn alive(pid: u32) -> bool {
+    Command::new("kill").args(["-0", &pid.to_string()]).output().unwrap().status.success()
+}
+
+/// macOS: the supervisor is killed outright (SIGKILL, no stop request) and the engine, in a
+/// process group of its own, is killed by its guard. Runs as a normal user.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_killed_supervisor_takes_the_engine_with_it() {
+    let dir = state_dir("supkill");
+    let port = free_port();
+    let mut sup = run_supervisor(&dir, port, &[]);
+    wait_until(30, "healthy engine", || healthy_pid(&dir).is_some());
+    let engine = healthy_pid(&dir).unwrap();
+    assert!(alive(engine));
+    kill_pid(sup.id()); // SIGKILL
+    sup.wait().unwrap();
+    wait_until(10, "the engine to die with the supervisor", || !alive(engine));
+    let probe = ragon_supervisor::probe::HttpProbe::models("127.0.0.1", port);
+    assert_eq!(probe.status_code(), None);
+    // The killed supervisor left a status file that says running; `status` calls it stale soon.
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Unix: SIGTERM (launchd's stop) is a clean stop: the engine first, then exit 0.
+#[cfg(unix)]
+#[test]
+fn a_terminated_supervisor_stops_the_engine_and_exits_cleanly() {
+    let dir = state_dir("sigterm");
+    let port = free_port();
+    let mut sup = run_supervisor(&dir, port, &[]);
+    wait_until(30, "healthy engine", || healthy_pid(&dir).is_some());
+    let engine = healthy_pid(&dir).unwrap();
+    let sent = Command::new("kill").args(["-TERM", &sup.id().to_string()]).status().unwrap();
+    assert!(sent.success());
+    let status = sup.wait().unwrap();
+    assert!(status.success(), "the supervisor exited with {status:?}");
+    assert!(!alive(engine), "the engine outlived a clean stop");
+    assert_eq!(field(&dir, "state").as_deref(), Some("stopped"));
+    assert_eq!(field(&dir, "supervisor_pid").as_deref(), Some("none"));
     let _ = std::fs::remove_dir_all(&dir);
 }

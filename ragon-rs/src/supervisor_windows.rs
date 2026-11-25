@@ -4,8 +4,8 @@
 //! the Mac node; the service and the Job Object are its Windows parts. This module only hands the
 //! arguments after `server` to it.
 //!
-//! On Linux and macOS the model server is `ragon-admin server start` (the Python node tooling),
-//! so `ragon server` says so and exits 2.
+//! macOS goes through src/supervisor_macos.rs (same crate). On Linux the model server is
+//! `ragon-admin server start` (the Python node tooling), so `ragon server` says so and exits 2.
 
 /// Runs `ragon server <args>` and returns the process exit code.
 pub fn run_cli(args: &[String]) -> i32 {
@@ -16,7 +16,7 @@ pub fn run_cli(args: &[String]) -> i32 {
     #[cfg(not(windows))]
     {
         let _ = args;
-        eprintln!("`ragon server` is the Windows node's supervisor; on this platform the model server is `ragon-admin server start`.");
+        eprintln!("`ragon server` is the Windows and Mac node's supervisor; on this platform the model server is `ragon-admin server start`.");
         2
     }
 }

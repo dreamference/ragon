@@ -1,6 +1,7 @@
 //! The engine as a child process: started from a program and its arguments, stdout and stderr
-//! appended to `engine.log` in the state directory. On Windows it runs in the supervisor's Job
-//! Object (src/windows_job.rs), so it dies with the supervisor.
+//! appended to `engine.log` in the state directory. It dies with the supervisor: on Windows it runs
+//! in the supervisor's Job Object (src/windows_job.rs); on macOS it leads a process group of its own
+//! that a guard process kills when the supervisor exits (src/macos_guard.rs).
 
 use std::fs::OpenOptions;
 use std::io;
@@ -16,6 +17,8 @@ pub struct ChildEngine {
     child: Option<Child>,
     #[cfg(windows)]
     job: crate::windows_job::Job,
+    #[cfg(target_os = "macos")]
+    guard: Option<i32>,
 }
 
 impl ChildEngine {
@@ -27,6 +30,8 @@ impl ChildEngine {
             child: None,
             #[cfg(windows)]
             job: crate::windows_job::Job::new()?,
+            #[cfg(target_os = "macos")]
+            guard: None,
         })
     }
 
@@ -55,6 +60,11 @@ impl Engine for ChildEngine {
             use std::os::windows::process::CommandExt;
             command.creation_flags(crate::windows_job::ENGINE_CREATION_FLAGS);
         }
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         #[cfg_attr(not(windows), allow(unused_mut))]
         let mut child = command.spawn()?;
         #[cfg(windows)]
@@ -64,6 +74,15 @@ impl Engine for ChildEngine {
             return Err(e);
         }
         let pid = child.id();
+        #[cfg(target_os = "macos")]
+        match crate::macos_guard::spawn(pid) {
+            Ok(guard) => self.guard = Some(guard),
+            Err(e) => {
+                let _ = crate::macos_guard::kill_group(pid);
+                let _ = child.wait();
+                return Err(io::Error::new(e.kind(), format!("cannot fork the engine's guard: {e}")));
+            }
+        }
         self.child = Some(child);
         Ok(pid)
     }
@@ -73,6 +92,7 @@ impl Engine for ChildEngine {
         match child.try_wait()? {
             Some(status) => {
                 self.child = None;
+                self.reap_guard();
                 Ok(Some(status.code().unwrap_or(-1)))
             }
             None => Ok(None),
@@ -83,10 +103,23 @@ impl Engine for ChildEngine {
         let Some(mut child) = self.child.take() else { return Ok(()) };
         #[cfg(windows)]
         let killed = self.job.terminate(1).or_else(|_| child.kill());
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        let killed = crate::macos_guard::kill_group(child.id()).or_else(|_| child.kill());
+        #[cfg(not(any(windows, target_os = "macos")))]
         let killed = child.kill();
         let waited = child.wait().map(|_| ());
+        self.reap_guard();
         killed.or(waited)
+    }
+}
+
+impl ChildEngine {
+    /// macOS: waits for the exited engine's guard (it exits with the engine), so none is left behind.
+    fn reap_guard(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(guard) = self.guard.take() {
+            crate::macos_guard::reap(guard, std::time::Duration::from_secs(2));
+        }
     }
 }
 

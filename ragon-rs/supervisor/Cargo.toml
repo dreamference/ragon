@@ -3,11 +3,13 @@
 # engine, probes `/v1/models`, restarts it with backoff and stops it.
 #
 # src/core.rs is the platform-neutral state machine (no I/O, a caller-supplied clock) that the
-# Mac rows reuse; src/windows_job.rs (the Job Object the engine runs in) and
-# src/windows_service.rs (the `ragon-node` service) are the Windows parts. A crate of its own so
+# Mac node reuses; src/windows_job.rs (the Job Object the engine runs in) and
+# src/windows_service.rs (the `ragon-node` service) are the Windows parts; src/macos_launchd.rs
+# (the LaunchDaemon), src/macos_power.rs (pmset) and src/macos_guard.rs (the engine dies with its
+# supervisor) are the macOS parts. A crate of its own so
 # `cargo test` in a copy of this folder needs no Codex workspace; versions are the Codex
-# workspace's, so building inside it adds no second copy of any crate. The launcher links it on
-# Windows only (src/supervisor_windows.rs, `ragon server ...`).
+# workspace's, so building inside it adds no second copy of any crate. The launcher runs it on
+# Windows and macOS (src/supervisor_windows.rs, src/supervisor_macos.rs, `ragon server ...`).
 [package]
 name = "ragon-supervisor"
 version = "0.1.0"

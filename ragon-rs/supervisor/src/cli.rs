@@ -2,18 +2,23 @@
 //! the launcher (`ragon server ...` on Windows) and the `ragon-supervisor` drill binary.
 //!
 //! - `run [--service] [options] -- <engine> [args]` supervises in the foreground; `--service` is the
-//!   form the Windows service starts (src/windows_service.rs).
-//! - `start` starts the `ragon-node` service when it is installed (Windows), otherwise a detached
-//!   `run` with the same options; `stop` stops the service, otherwise asks the running supervisor
-//!   to stop through a `stop` file in the state directory.
+//!   form the Windows service starts (src/windows_service.rs). On Unix SIGTERM and SIGINT stop it
+//!   cleanly (the engine first), which is how launchd stops the Mac daemon.
+//! - `start` starts the `ragon-node` service when it is installed (the Windows service, the macOS
+//!   LaunchDaemon), otherwise a detached `run` with the same options; `stop` stops the service,
+//!   otherwise asks the running supervisor to stop through a `stop` file in the state directory.
 //! - `status` prints stable `key: value` lines (see [`status_report`]); exit 0 when healthy, 3 not.
-//! - `install` / `uninstall` (Windows, administrator): the service under `NT SERVICE\ragon-node`,
-//!   a virtual account that is not an administrator.
+//!   On macOS one more line follows the shared ones: `power: mains|battery|unknown`.
+//! - `install` / `uninstall` (administrator / root): on Windows the service under
+//!   `NT SERVICE\ragon-node`, a virtual account that is not an administrator; on macOS the
+//!   LaunchDaemon `ai.dreamference.ragon-node` as the role account `_ragon` (src/macos_launchd.rs),
+//!   with the mains power settings (src/macos_power.rs) set at install and restored at uninstall.
 //!
 //! The running supervisor writes `status.txt` in the state directory on every tick; the engine's
 //! output goes to `engine.log` there.
 
 use std::path::{Path, PathBuf};
+#[cfg(not(unix))]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -50,6 +55,11 @@ pub struct Options {
 }
 
 pub fn default_state_dir() -> PathBuf {
+    // macOS: the daemon's directory for root (install) and whenever the daemon is installed.
+    #[cfg(target_os = "macos")]
+    if mac::is_root() || crate::macos_launchd::plist_path(DEFAULT_SERVICE_NAME).exists() {
+        return PathBuf::from(crate::macos_launchd::STATE_DIR);
+    }
     if cfg!(windows) {
         let base = std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
         return base.join("Ragon").join("node");
@@ -170,7 +180,41 @@ fn run_command(opts: &Options) -> i32 {
             return 2;
         }
     }
+    #[cfg(unix)]
+    {
+        unix_stop::install();
+        supervise(opts, &unix_stop::STOP)
+    }
+    #[cfg(not(unix))]
     supervise(opts, &Arc::new(AtomicBool::new(false)))
+}
+
+/// SIGTERM (launchd's stop, `kill`) and SIGINT (Ctrl-C) set a flag the supervision loop polls, so
+/// the supervisor stops the engine before it exits instead of dying with the engine still running.
+#[cfg(unix)]
+mod unix_stop {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    pub static STOP: AtomicBool = AtomicBool::new(false);
+    const SIGINT: i32 = 2;
+    const SIGTERM: i32 = 15;
+
+    unsafe extern "C" {
+        fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
+    }
+
+    extern "C" fn on_stop(_sig: i32) {
+        // An atomic store is async-signal-safe.
+        STOP.store(true, Ordering::SeqCst);
+    }
+
+    pub fn install() {
+        // SAFETY: the handler only stores to an atomic.
+        unsafe {
+            signal(SIGTERM, on_stop);
+            signal(SIGINT, on_stop);
+        }
+    }
 }
 
 /// The supervision loop: tick, write the status file, sleep until the next tick or a stop request
@@ -308,7 +352,17 @@ fn service_state(opts: &Options) -> String {
             Err(e) => format!("unknown ({e})"),
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        if !service_installed(opts) {
+            return "not installed".to_string();
+        }
+        match mac::output("launchctl", &crate::macos_launchd::print_args(&opts.name)) {
+            Some(text) => crate::macos_launchd::parse_print_state(&text).to_string(),
+            None => "unknown".to_string(),
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = opts;
         "n/a".to_string()
@@ -328,16 +382,28 @@ fn status(opts: &Options) -> i32 {
     let (text, code) =
         status_report(&opts.name, &service_state(opts), file.as_deref(), unix_now(), live.status_code(), &probe.url());
     print!("{text}");
+    #[cfg(target_os = "macos")]
+    {
+        let source = mac::output("pmset", &["-g".into(), "batt".into()])
+            .map(|t| crate::macos_power::parse_batt(&t))
+            .unwrap_or(crate::macos_power::PowerSource::Unknown);
+        println!("power: {}", source.as_str());
+    }
     code
 }
 
-/// True when the service is installed (Windows); `start`/`stop` then go through the service manager.
+/// True when the service is installed (the Windows service, the macOS LaunchDaemon's plist);
+/// `start`/`stop` then go through the service manager.
 fn service_installed(opts: &Options) -> bool {
     #[cfg(windows)]
     {
         matches!(crate::windows_service::query(&opts.name), Ok(Some(_)))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_launchd::plist_path(&opts.name).exists()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = opts;
         false
@@ -369,6 +435,10 @@ fn start(opts: &Options) -> i32 {
         if let Err(e) = crate::windows_service::start(&opts.name) {
             eprintln!("server start: {e}");
             return 1;
+        }
+        #[cfg(target_os = "macos")]
+        if let Err(code) = mac::start_daemon(opts) {
+            return code;
         }
     } else {
         if supervisor_running(opts) {
@@ -450,6 +520,10 @@ fn stop(opts: &Options) -> i32 {
             eprintln!("server stop: {e}");
             return 1;
         }
+        #[cfg(target_os = "macos")]
+        if let Err(code) = mac::stop_daemon(opts) {
+            return code;
+        }
     } else {
         if !supervisor_running(opts) {
             println!("server stop: not running");
@@ -495,10 +569,14 @@ fn install(opts: &Options) -> i32 {
             }
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::install(opts)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = opts;
-        eprintln!("server install is Windows only");
+        eprintln!("server install is Windows and macOS only");
         2
     }
 }
@@ -517,11 +595,180 @@ fn uninstall(opts: &Options) -> i32 {
             }
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        mac::uninstall(opts)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = opts;
-        eprintln!("server uninstall is Windows only");
+        eprintln!("server uninstall is Windows and macOS only");
         2
+    }
+}
+
+/// macOS: the LaunchDaemon and the power settings through `launchctl` and `pmset`. Changing either
+/// needs root; reading them (`server status`) does not.
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    use super::{Options, run_args, supervisor_running, wait_for};
+    use crate::{macos_launchd as launchd, macos_power as power};
+
+    unsafe extern "C" {
+        fn geteuid() -> u32;
+    }
+
+    pub fn is_root() -> bool {
+        // SAFETY: a plain system call.
+        unsafe { geteuid() == 0 }
+    }
+
+    /// A command's stdout and stderr together, or `None` when it cannot be run.
+    pub fn output(program: &str, args: &[String]) -> Option<String> {
+        let out = Command::new(program).args(args).output().ok()?;
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        Some(text)
+    }
+
+    fn run(program: &str, args: &[String]) -> Result<(), String> {
+        let out = Command::new(program).args(args).output().map_err(|e| format!("{program}: {e}"))?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        Err(format!("{program} {} failed: {}", args.join(" "), said.trim()))
+    }
+
+    fn loaded(opts: &Options) -> bool {
+        output("launchctl", &launchd::print_args(&opts.name))
+            .is_some_and(|t| launchd::parse_print_state(&t) != "not loaded")
+    }
+
+    fn need_root(opts: &Options, what: &str) -> Result<(), String> {
+        if is_root() {
+            return Ok(());
+        }
+        Err(format!(
+            "the {} daemon is installed and only root can {what} it: sudo ragon server {what}",
+            launchd::label_for(&opts.name)
+        ))
+    }
+
+    /// `server start` with the daemon installed: load it (RunAtLoad starts it), or start a loaded one.
+    pub fn start_daemon(opts: &Options) -> Result<(), i32> {
+        let started = need_root(opts, "start").and_then(|()| {
+            let args = if loaded(opts) { launchd::kickstart_args(&opts.name) } else { launchd::bootstrap_args(&opts.name) };
+            run("launchctl", &args)
+        });
+        started.map_err(|e| {
+            eprintln!("server start: {e}");
+            1
+        })
+    }
+
+    /// `server stop` with the daemon installed: unload it. launchd sends the supervisor SIGTERM and
+    /// it stops the engine; the daemon stays stopped until `server start` or the next boot.
+    pub fn stop_daemon(opts: &Options) -> Result<(), i32> {
+        let stopped = need_root(opts, "stop").and_then(|()| {
+            if loaded(opts) { run("launchctl", &launchd::bootout_args(&opts.name)) } else { Ok(()) }
+        });
+        if let Err(e) = stopped {
+            eprintln!("server stop: {e}");
+            return Err(1);
+        }
+        if !wait_for(opts.wait_s.max(30), || !supervisor_running(opts)) {
+            eprintln!("server stop: the supervisor did not stop");
+            return Err(1);
+        }
+        Ok(())
+    }
+
+    pub fn install(opts: &Options) -> i32 {
+        match install_steps(opts) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("server install: {e}");
+                1
+            }
+        }
+    }
+
+    fn install_steps(opts: &Options) -> Result<(), String> {
+        if !is_root() {
+            return Err("needs root: sudo ragon server install -- <engine> [args...]".into());
+        }
+        // The role account, never a person's: the installer creates it (a hidden system user).
+        let account = opts.account.clone().unwrap_or_else(|| launchd::ROLE_ACCOUNT.to_string());
+        if output("id", &["-u".into(), account.clone()]).is_none_or(|t| t.trim().parse::<u32>().is_err()) {
+            return Err(format!("the role account {account} does not exist; the installer creates it"));
+        }
+        let state = &opts.state_dir;
+        let fail = |what: &str, e: std::io::Error| format!("{what} {}: {e}", state.display());
+        std::fs::create_dir_all(state).map_err(|e| fail("cannot create", e))?;
+        std::fs::set_permissions(state, std::fs::Permissions::from_mode(0o755)).map_err(|e| fail("cannot chmod", e))?;
+        run("chown", &[account.clone(), state.display().to_string()])?;
+        // The mains settings from before the first install, kept (root's file) for the uninstall;
+        // a reinstall keeps the original values.
+        let saved = state.join(power::SAVED_FILE);
+        if !saved.exists() {
+            let current = output("pmset", &["-g".into(), "custom".into()]).ok_or("pmset -g custom failed")?;
+            std::fs::write(&saved, power::saved_text(&power::parse_custom_ac(&current)))
+                .map_err(|e| fail("cannot save the power settings in", e))?;
+        }
+        run("pmset", &power::set_args())?;
+        let exe = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
+        let mut words = vec![exe.display().to_string()];
+        words.extend(run_args(opts, false));
+        let mut daemon = launchd::Daemon::new(&opts.name, words, &state.display().to_string());
+        daemon.user_name = account.clone();
+        if loaded(opts) {
+            run("launchctl", &launchd::bootout_args(&opts.name))?;
+        }
+        let path = launchd::plist_path(&opts.name);
+        std::fs::write(&path, launchd::plist(&daemon)).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .map_err(|e| format!("cannot chmod {}: {e}", path.display()))?;
+        run("launchctl", &launchd::bootstrap_args(&opts.name))?;
+        println!("installed {} as {account}: {}", daemon.label, path.display());
+        println!("power on mains: pmset {}", power::set_args().join(" "));
+        Ok(())
+    }
+
+    pub fn uninstall(opts: &Options) -> i32 {
+        match uninstall_steps(opts) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("server uninstall: {e}");
+                1
+            }
+        }
+    }
+
+    fn uninstall_steps(opts: &Options) -> Result<(), String> {
+        if !is_root() {
+            return Err("needs root: sudo ragon server uninstall".into());
+        }
+        if loaded(opts) {
+            run("launchctl", &launchd::bootout_args(&opts.name))?;
+        }
+        let path = launchd::plist_path(&opts.name);
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| format!("cannot remove {}: {e}", path.display()))?;
+        }
+        let saved = opts.state_dir.join(power::SAVED_FILE);
+        if let Ok(text) = std::fs::read_to_string(&saved) {
+            if let Some(args) = power::restore_args(&power::parse_saved(&text)) {
+                run("pmset", &args)?;
+                println!("power on mains restored: pmset {}", args.join(" "));
+            }
+            let _ = std::fs::remove_file(&saved);
+        }
+        println!("removed {}; the state directory {} is kept", launchd::label_for(&opts.name), opts.state_dir.display());
+        Ok(())
     }
 }
 
