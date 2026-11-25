@@ -33,7 +33,8 @@
 # and /sys and AMD_LINUX_GROUPS the group list, so the tests can stand in for the box.
 set -uo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+self="${BASH_SOURCE[0]:-}"
+here="$(cd "$(dirname "${self:-.}")" && pwd)"
 repo="$(dirname "$here")"
 
 mode=local
@@ -79,7 +80,7 @@ if [ "$mode" = local ]; then
   args="$(q --remote --workdir "$workdir" --image "$image" --test-dir "$testdir" --ctest-exclude "$exclude" \
     --bare "$bare" --rocm "$rocm" --gpu-lock "$lock" --lock-wait "$lock_wait" --expect-ids "$ids")"
   # The script itself is the remote program: no file is copied to the box.
-  $ssh_cmd "$host" "bash -s -- $args" < "${BASH_SOURCE[0]}"
+  $ssh_cmd "$host" "bash -s -- $args" < "$self"
   exit $?
 fi
 
