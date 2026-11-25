@@ -183,6 +183,7 @@
 /ragon-rs/node-monitor/                          @dreamference/nodes
 /ragon-rs/supervisor/                            @dreamference/nodes
 /ragon-rs/src/supervisor_windows.rs              @dreamference/nodes
+/ragon-rs/src/node_job_windows.rs                @dreamference/nodes
 /specs/DREAMFERENCE_MONITORING.md                @dreamference/nodes
 /ragon-web-rs/src/node_locator.rs                @dreamference/nodes
 /ragon-rs/src/node.rs                            @dreamference/nodes

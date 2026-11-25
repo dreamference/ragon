@@ -3,6 +3,11 @@
 
 pub mod cli;
 pub mod core;
+pub mod job_cli;
+pub mod job_exec;
+pub mod job_runner;
+pub mod jobs;
+pub mod json;
 pub mod probe;
 pub mod process;
 #[cfg(windows)]

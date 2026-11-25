@@ -12,6 +12,10 @@
 //!
 //! The running supervisor writes `status.txt` in the state directory on every tick; the engine's
 //! output goes to `engine.log` there.
+//!
+//! - `run --jobs-dir D` (and `start`/`install` with it) also runs the node's job queue in D as a
+//!   thread of the supervisor (src/job_runner.rs): jobs outlive the SSH session that sent them.
+//! - `job <verb> ...` is the node's job commands (src/job_cli.rs).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,7 +37,8 @@ pub const SUPERVISOR_LOG: &str = "supervisor.log";
 pub const STALE_AFTER_S: u64 = 15;
 
 const USAGE: &str = "usage: server <start|stop|status|run|install|uninstall> [--name N] [--state-dir D] \
-[--host H] [--port P] [--wait S] [--start-timeout S] [--account A] [--service] [-- <engine> [args...]]";
+[--host H] [--port P] [--wait S] [--start-timeout S] [--account A] [--service] [--jobs-dir D] \
+[-- <engine> [args...]]\n       server job <verb> ... (server job --help)";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -46,6 +51,8 @@ pub struct Options {
     pub start_timeout_s: Option<u64>,
     pub account: Option<String>,
     pub service: bool,
+    /// The node's jobs folder; when set, `run` runs the job queue there too.
+    pub jobs_dir: Option<PathBuf>,
     pub engine: Vec<String>,
 }
 
@@ -77,6 +84,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         start_timeout_s: None,
         account: None,
         service: false,
+        jobs_dir: None,
         engine: Vec::new(),
     };
     while let Some(arg) = it.next() {
@@ -97,6 +105,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--account" => opts.account = Some(value("--account")?),
             "--service" => opts.service = true,
+            "--jobs-dir" => opts.jobs_dir = Some(PathBuf::from(value("--jobs-dir")?)),
             "-h" | "--help" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown option {other:?}\n{USAGE}")),
         }
@@ -110,6 +119,9 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
 
 /// Runs `server <args>` and returns the exit code.
 pub fn run(args: &[String]) -> i32 {
+    if args.first().map(String::as_str) == Some("job") {
+        return crate::job_cli::run(&args[1..]);
+    }
     let opts = match parse(args) {
         Ok(opts) => opts,
         Err(message) => {
@@ -145,6 +157,9 @@ pub fn run_args(opts: &Options, service: bool) -> Vec<String> {
     if let Some(s) = opts.start_timeout_s {
         args.extend(["--start-timeout".into(), s.to_string()]);
     }
+    if let Some(dir) = &opts.jobs_dir {
+        args.extend(["--jobs-dir".into(), dir.display().to_string()]);
+    }
     args.push("--".into());
     args.extend(opts.engine.iter().cloned());
     args
@@ -176,6 +191,21 @@ fn run_command(opts: &Options) -> i32 {
 /// The supervision loop: tick, write the status file, sleep until the next tick or a stop request
 /// (the flag, set by the service's stop control, or the `stop` file).
 pub fn supervise(opts: &Options, stop: &AtomicBool) -> i32 {
+    let Some(jobs_dir) = opts.jobs_dir.clone() else { return supervise_engine(opts, stop) };
+    // The job runner stops with the supervisor: the service's stop control or the stop file.
+    let runner_stop = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let runner = crate::job_cli::spawn_runner_thread(scope, jobs_dir, &runner_stop);
+        let code = supervise_engine(opts, stop);
+        runner_stop.store(true, Ordering::SeqCst);
+        if let Some(runner) = runner {
+            let _ = runner.join();
+        }
+        code
+    })
+}
+
+fn supervise_engine(opts: &Options, stop: &AtomicBool) -> i32 {
     if let Err(e) = std::fs::create_dir_all(&opts.state_dir) {
         eprintln!("server run: cannot create {}: {e}", opts.state_dir.display());
         return 1;
@@ -602,9 +632,12 @@ mod tests {
 
     #[test]
     fn run_args_round_trip_through_parse() {
-        let o = parse(&args(&["start", "--state-dir", "/x y/s", "--port", "9", "--start-timeout", "20", "--", "e", "a b"]))
-            .unwrap();
+        let o = parse(&args(&[
+            "start", "--state-dir", "/x y/s", "--port", "9", "--start-timeout", "20", "--jobs-dir", "/j d", "--", "e", "a b",
+        ]))
+        .unwrap();
         let again = parse(&run_args(&o, true)[1..]).unwrap();
+        assert_eq!(again.jobs_dir, Some(PathBuf::from("/j d")));
         assert_eq!(again.command, "run");
         assert!(again.service);
         assert_eq!(again.state_dir, o.state_dir);

@@ -29,6 +29,11 @@ path = "src/main.rs"
 name = "ragon-standin-engine"
 path = "src/bin/ragon-standin-engine.rs"
 
+# The fake `ragon` of the job drills: sleeps, allocates, ignores the stop file, prints.
+[[bin]]
+name = "ragon-job-standin"
+path = "src/bin/ragon-job-standin.rs"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
@@ -36,6 +41,7 @@ windows-sys = { version = "0.52", features = [
     "Win32_Security_Authorization",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
     "Win32_System_JobObjects",
     "Win32_System_Services",
     "Win32_System_Threading",
