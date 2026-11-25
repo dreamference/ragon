@@ -20,6 +20,9 @@ from dreamference.accounts.accounts_auth_code import AuthCode
 from dreamference.accounts.accounts_device_entry import DeviceEntry
 from dreamference.accounts.accounts_forgejo_client import AccountsForgejoClient
 
+# The Forgejo client, or the store's lookup of a node's Forgejo client by client id.
+ForgejoClients = AccountsForgejoClient | Callable[[str], AccountsForgejoClient | None]
+
 CODE_LIFETIME_S: Final[int] = 900
 POLL_INTERVAL_S: Final[int] = 5
 USER_CODE_LENGTH: Final[int] = 8
@@ -41,7 +44,7 @@ class AccountsDevice:
         issuer: str,
         verification_uri: str,
         clock: Callable[[], float] = time.time,
-        forgejo: AccountsForgejoClient | None = None,
+        forgejo: ForgejoClients | None = None,
     ) -> None:
         """Binds the table to its issuer and the page that approves codes.
 
@@ -49,7 +52,8 @@ class AccountsDevice:
             issuer: The primary's issuer URL; Codex's callback is `{issuer}/deviceauth/callback`.
             verification_uri: The page where a person enters the code (`.../device`).
             clock: Seconds since the epoch; tests pass their own.
-            forgejo: The Forgejo client registered on the primary, if any.
+            forgejo: The Forgejo client registered on the primary, or a lookup by client id (the
+                store's, one client per node's Forgejo); None when there is none.
         """
         self.issuer = issuer.rstrip("/")
         self.verification_uri = verification_uri
@@ -252,13 +256,20 @@ class AccountsDevice:
 
     # ----- authorization codes ------------------------------------------------------------
 
+    def forgejo_client(self, client_id: str) -> AccountsForgejoClient | None:
+        """The registered Forgejo client with this id, if any."""
+        if self.forgejo is None:
+            return None
+        if isinstance(self.forgejo, AccountsForgejoClient):
+            return self.forgejo if self.forgejo.client_id == client_id else None
+        return self.forgejo(client_id)
+
     def issue_forgejo_code(
         self, user_id: str, client_id: str, redirect_uri: str, challenge: str = ""
     ) -> str | None:
         """A code for the Forgejo client after sign-in; None when the client or URI is not known."""
-        if self.forgejo is None or client_id != self.forgejo.client_id:
-            return None
-        if not self.forgejo.allows(redirect_uri):
+        forgejo = self.forgejo_client(client_id)
+        if forgejo is None or not forgejo.allows(redirect_uri):
             return None
         code = secrets.token_urlsafe(32)
         with self.lock:
@@ -290,12 +301,12 @@ class AccountsDevice:
             return "The authorization code is not valid.", None
         if row.client_id != client_id or row.redirect_uri != redirect_uri:
             return "The client or the redirect URI does not match the code.", None
-        if row.challenge:
-            if not verifier or not secrets.compare_digest(self.s256(verifier), row.challenge):
-                return "The code verifier does not match.", None
-            return None, row
-        forgejo = self.forgejo
-        checked = forgejo is not None and client_id == forgejo.client_id
-        if checked and not (secret and forgejo and forgejo.secret_matches(secret)):
+        # A Forgejo client is confidential: its secret is checked whether or not it sent PKCE.
+        forgejo = self.forgejo_client(client_id)
+        if forgejo is not None and not (secret and forgejo.secret_matches(secret)):
             return "The client secret does not match.", None
+        if row.challenge and (
+            not verifier or not secrets.compare_digest(self.s256(verifier), row.challenge)
+        ):
+            return "The code verifier does not match.", None
         return None, row

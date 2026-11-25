@@ -185,3 +185,22 @@ def test_accounts_store_sessions_open_refresh_list_and_revoke(store):
     assert store.session_for_refresh(bob_token) is not None
     store.remove_user("bob")
     assert store.session_for_refresh(bob_token) is None and store.user_by_id(bob["user_id"]) is None
+
+
+def test_a_forgejo_client_is_kept_once_and_audited(tmp_path):
+    from dreamference.accounts.accounts_forgejo_client import AccountsForgejoClient
+
+    lines = []
+    store = AccountsStore(tmp_path / "a.db", primary_name="box", audit_sink=lines.append)
+    node = "abcdef01-2345-4678-9abc-def012345678"
+    record, secret = AccountsForgejoClient.register(node, ["http://box.local:3100/cb"])
+    assert store.forgejo_client(record.client_id) is None
+    assert store.put_forgejo_client(node, record) is True
+    assert store.put_forgejo_client(node, record) is False
+    kept = store.forgejo_client(record.client_id)
+    assert kept == record and kept.secret_matches(secret)
+    assert sum("forgejo_client" in line for line in lines) == 1
+    assert secret not in "".join(lines)
+    moved = AccountsForgejoClient(record.client_id, record.secret_hash, ("http://b/cb",))
+    assert store.put_forgejo_client(node, moved) is True
+    assert store.forgejo_client(record.client_id).redirect_uris == ("http://b/cb",)

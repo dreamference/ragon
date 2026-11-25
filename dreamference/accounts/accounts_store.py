@@ -25,6 +25,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 
 from dreamference.accounts.accounts_error import AccountsError
+from dreamference.accounts.accounts_forgejo_client import AccountsForgejoClient
 
 ROLE_ADMIN: Final[str] = "admin"
 ROLE_USER: Final[str] = "user"
@@ -73,6 +74,10 @@ CREATE TABLE IF NOT EXISTS usage (
     day TEXT NOT NULL, user_id TEXT NOT NULL, client_kind TEXT NOT NULL,
     requests INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, user_id, client_kind)
+);
+CREATE TABLE IF NOT EXISTS forgejo_clients (
+    client_id TEXT PRIMARY KEY, node_id TEXT NOT NULL, secret_hash TEXT NOT NULL,
+    redirect_uris TEXT NOT NULL, updated REAL NOT NULL
 );
 """
 
@@ -512,11 +517,58 @@ class AccountsStore:
         Returns:
             dict[str, Any]: The account.
         """
-        name = SERVICE_PREFIX + node_id.replace("-", "")[:8].lower()
+        name = self.service_name(node_id)
         try:
             return self._public(self._row(name))
         except AccountsError:
             return self.create_user(name, secrets.token_urlsafe(24), service=True)
+
+    @classmethod
+    def service_name(cls, node_id: str) -> str:
+        """The name of a node's service account, `ragon-node-<first 8 hex of the node id>`."""
+        return SERVICE_PREFIX + node_id.replace("-", "")[:8].lower()
+
+    def put_forgejo_client(self, node_id: str, client: AccountsForgejoClient) -> bool:
+        """Keeps (or replaces) the OAuth client of a node's Forgejo (specs/DREAMFERENCE_AUTH.md §14.2).
+
+        Args:
+            node_id: The node the Forgejo belongs to.
+            client: The record; only the hash of its secret is kept.
+
+        Returns:
+            bool: Whether the stored record changed (False when it was already the same).
+        """
+        uris = json.dumps(list(client.redirect_uris))
+        row = self.db.execute(
+            "SELECT secret_hash, redirect_uris FROM forgejo_clients WHERE client_id = ?",
+            (client.client_id,),
+        ).fetchone()
+        if (
+            row is not None
+            and row["secret_hash"] == client.secret_hash
+            and row["redirect_uris"] == uris
+        ):
+            return False
+        self.db.execute(
+            "INSERT OR REPLACE INTO forgejo_clients"
+            " (client_id, node_id, secret_hash, redirect_uris, updated) VALUES (?, ?, ?, ?, ?)",
+            (client.client_id, node_id, client.secret_hash, uris, time.time()),
+        )
+        self.db.commit()
+        self.audit("forgejo_client", self.service_name(node_id), client.client_id, "ok")
+        return True
+
+    def forgejo_client(self, client_id: str) -> AccountsForgejoClient | None:
+        """The registered Forgejo client with this id, if any."""
+        row = self.db.execute(
+            "SELECT client_id, secret_hash, redirect_uris FROM forgejo_clients WHERE client_id = ?",
+            (client_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return AccountsForgejoClient(
+            row["client_id"], row["secret_hash"], tuple(json.loads(row["redirect_uris"]))
+        )
 
     def record_usage(
         self, name: str, client_kind: str, input_tokens: int, output_tokens: int

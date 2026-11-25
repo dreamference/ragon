@@ -6,6 +6,8 @@ server around it is `AccountsService`. `/oauth/*` errors use RFC 6749's shape (`
 carries a password, a token or a key, and a sign-in failure never says which half was wrong.
 """
 
+import base64
+import binascii
 import json
 import re
 import urllib.parse
@@ -16,11 +18,11 @@ from typing import Any, Final
 from dreamference.accounts.accounts_bindings import AccountsBindings
 from dreamference.accounts.accounts_device import GRANT_AUTH_CODE, GRANT_DEVICE, AccountsDevice
 from dreamference.accounts.accounts_error import AccountsError
+from dreamference.accounts.accounts_forgejo_client import CLIENT_ID_PREFIX, AccountsForgejoClient
 from dreamference.accounts.accounts_jwt import ACCESS_LIFETIME_S, RAGON_AUTH_CLAIM, AccountsJwt
 from dreamference.accounts.accounts_store import (
     KEY_PREFIX,
     ROLE_ADMIN,
-    SERVICE_PREFIX,
     AccountsStore,
 )
 from dreamference.accounts.accounts_usage import AccountsUsage
@@ -35,6 +37,17 @@ BINDINGS_PATH: Final[str] = "/ragon/v1/bindings"
 NODES_PATH: Final[str] = "/ragon/v1/nodes"
 USAGE_PATH: Final[str] = "/ragon/v1/usage"
 SETUP_PATH: Final[str] = "/ragon/v1/setup"
+FORGEJO_CLIENTS_PATH: Final[str] = NODES_PATH + "/forgejo"
+AUTHORIZE_PATH: Final[str] = "/oauth/authorize"
+# The login page on the primary's `ragon web` that serves Forgejo's authorization step (§14.4).
+WEB_PORT_ON_PRIMARY: Final[int] = 3100
+SECRET_HASH: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
+MAX_REDIRECT_URIS: Final[int] = 4
+MAX_URI_LENGTH: Final[int] = 512
+BASIC_SCHEME: Final[str] = "basic"
+RESPONSE_TYPE_CODE: Final[str] = "code"
+CHALLENGE_S256: Final[str] = "S256"
+QUERY_MARK: Final[str] = "?"
 # Set by the gate, and only for a peer on the node's own loopback (it drops any copy a client
 # sends): the first account is made on the node itself (specs/DREAMFERENCE_AUTH.md §8.6).
 LOCAL_HEADER: Final[str] = "x-ragon-local"
@@ -93,7 +106,10 @@ class AccountsOauth:
         self.on_first = on_first or (lambda: None)
         issuer = signer.issuer.rstrip("/")
         web = urllib.parse.urlsplit(issuer)
-        self.device = device or AccountsDevice(issuer, f"{web.scheme}://{web.hostname}:3100/device")
+        self.web_root = f"{web.scheme}://{web.hostname}:{WEB_PORT_ON_PRIMARY}"
+        self.device = device or AccountsDevice(
+            issuer, f"{self.web_root}/device", forgejo=store.forgejo_client
+        )
         self.bindings = AccountsBindings(store)
         self.usage = AccountsUsage(store)
         # The fixed routes: path -> (the methods allowed, the answer).
@@ -104,6 +120,9 @@ class AccountsOauth:
                 lambda _h, _b: (200, {}, self.discovery()),
             ),
             "/oauth/token": ((POST,), self.token),
+            AUTHORIZE_PATH: ((GET,), lambda headers, _b: self.authorize_redirect(headers)),
+            AUTHORIZE_PATH + "/approve": ((POST,), self.authorize_approve),
+            "/oauth/device/approve": ((POST,), self.device_approve),
             "/oauth/revoke": ((POST,), self.revoke),
             "/oauth/userinfo": ((GET, POST), lambda headers, _b: self.userinfo(headers)),
             "/api/accounts/deviceauth/usercode": ((POST,), self.codex_usercode),
@@ -112,6 +131,7 @@ class AccountsOauth:
             USERS_PATH: ((POST,), self.create),
             SETUP_PATH: ((GET,), lambda headers, _b: (200, {}, self.setup(headers))),
             NODES_PATH: ((POST,), self.register_node),
+            FORGEJO_CLIENTS_PATH: ((POST,), self.register_forgejo),
             BINDINGS_PATH: ((GET, POST), self.bindings_root),
             BINDINGS_PATH + "/redeem": ((POST,), self.redeem_binding),
             USAGE_PATH: ((GET,), self.usage_read),
@@ -193,6 +213,8 @@ class AccountsOauth:
     ) -> dict[str, Any]:
         """The answer of every successful grant (§5.4)."""
         claims = self.signer.claims(user, client_id, session_id, machine)
+        if client_id.startswith(CLIENT_ID_PREFIX):
+            claims.update(self.forgejo_claims(user))
         token = self.signer.sign(claims)
         return {
             "id_token": token,
@@ -253,6 +275,7 @@ class AccountsOauth:
         issuer = self.signer.issuer
         return {
             "issuer": issuer,
+            "authorization_endpoint": f"{self.web_root}{AUTHORIZE_PATH}",
             "token_endpoint": f"{issuer}/oauth/token",
             "revocation_endpoint": f"{issuer}/oauth/revoke",
             "userinfo_endpoint": f"{issuer}/oauth/userinfo",
@@ -267,9 +290,13 @@ class AccountsOauth:
             "response_types_supported": ["code"],
             "subject_types_supported": ["public"],
             "id_token_signing_alg_values_supported": ["RS256"],
-            "token_endpoint_auth_methods_supported": ["none"],
+            "token_endpoint_auth_methods_supported": [
+                "none",
+                "client_secret_basic",
+                "client_secret_post",
+            ],
             "scopes_supported": ["openid", "profile", "email", "offline_access"],
-            "claims_supported": ["sub", "email", "name", "preferred_username"],
+            "claims_supported": ["sub", "email", "name", "preferred_username", "nickname"],
         }
 
     # ----- /oauth/token -------------------------------------------------------------------
@@ -279,6 +306,10 @@ class AccountsOauth:
         fields = self.parse_body(headers, body)
         if fields is None:
             return self.oauth_error(400, "invalid_request", "The body is not JSON or a form.")
+        basic = self.basic_client(headers)
+        if basic is not None:  # client_secret_basic (RFC 6749 §2.3.1), as Forgejo sends it
+            fields.setdefault("client_id", basic[0])
+            fields.setdefault("client_secret", basic[1])
         grant = fields.get("grant_type")
         if grant == GRANT_PASSWORD and self.is_true(fields.get("create")):
             refused = self.first_account_refused(headers)
@@ -475,16 +506,104 @@ class AccountsOauth:
         if found is None:
             return self.unauthorized()
         user = found[0]
-        return (
-            200,
-            {},
-            {
-                "sub": user["user_id"],
-                "email": user["username"],
-                "name": user["username"],
-                "preferred_username": user["username"],
-            },
-        )
+        info: dict[str, Any] = {
+            "sub": user["user_id"],
+            "email": user["username"],
+            "name": user["username"],
+            "preferred_username": user["username"],
+        }
+        credential = self.credential(headers) or ""
+        claims = None if credential.startswith(KEY_PREFIX) else self.signer.verify(credential)
+        if claims is not None and str(claims.get("aud", "")).startswith(CLIENT_ID_PREFIX):
+            info.update(self.forgejo_claims(user))
+        return 200, {}, info
+
+    def forgejo_claims(self, user: dict[str, Any]) -> dict[str, Any]:
+        """The claims Forgejo needs to link a user: a mail-shaped email and a nickname.
+
+        Forgejo refuses an account whose email is not an address, and names the account from
+        `nickname` (`[oauth2_client] USERNAME = nickname` in its app.ini).
+        """
+        return {
+            "email": f"{user['username']}@{self.store.primary_name}.local",
+            "nickname": user["username"],
+        }
+
+    @classmethod
+    def basic_client(cls, headers: dict[str, str]) -> tuple[str, str] | None:
+        """The client id and secret of an `Authorization: Basic` header, if it carries one."""
+        value = headers.get("authorization", "")
+        scheme, _, encoded = value.partition(" ")
+        if scheme.lower() != BASIC_SCHEME or not encoded.strip():
+            return None
+        try:
+            decoded = base64.b64decode(encoded.strip(), validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            return None
+        client_id, colon, secret = decoded.partition(":")
+        if not colon:
+            return None
+        return urllib.parse.unquote_plus(client_id), urllib.parse.unquote_plus(secret)
+
+    # ----- the browser steps `ragon web` forwards -----------------------------------------
+
+    def authorize_redirect(self, headers: dict[str, str]) -> Answer:
+        """`GET /oauth/authorize`: sends the browser to the sign-in page on `ragon web`."""
+        query = headers.get(":query", "")
+        target = f"{self.web_root}{AUTHORIZE_PATH}" + (f"?{query}" if query else "")
+        return 302, {"Location": target}, {}
+
+    def signed_in_person(self, headers: dict[str, str]) -> dict[str, Any] | None:
+        """The signed-in person (a session, not an API key or a node's service account)."""
+        found = self.caller(headers)
+        if found is None or found[1] is None or found[0]["service"]:
+            return None
+        return found[0]
+
+    def authorize_approve(self, headers: dict[str, str], body: bytes) -> Answer:
+        """`POST /oauth/authorize/approve`: the signed-in user lets a Forgejo client in.
+
+        `ragon web` forwards the sign-in page's query here as the user and sends the browser
+        to the `redirect_to` of the answer.
+        """
+        user = self.signed_in_person(headers)
+        if user is None:
+            return self.unauthorized()
+        fields = self.parse_body(headers, body) or {}
+        client_id = fields.get("client_id")
+        redirect_uri = fields.get("redirect_uri")
+        if not isinstance(client_id, str) or not isinstance(redirect_uri, str):
+            return self.oauth_error(
+                400, "invalid_request", "client_id and redirect_uri are required."
+            )
+        if fields.get("response_type", RESPONSE_TYPE_CODE) != RESPONSE_TYPE_CODE:
+            return self.oauth_error(400, "unsupported_response_type", "Only code is supported.")
+        challenge = fields.get("code_challenge") or ""
+        method = fields.get("code_challenge_method") or (CHALLENGE_S256 if challenge else "")
+        if not isinstance(challenge, str) or (challenge and method != CHALLENGE_S256):
+            return self.oauth_error(400, "invalid_request", "Only the S256 challenge is supported.")
+        code = self.device.issue_forgejo_code(user["user_id"], client_id, redirect_uri, challenge)
+        if code is None:
+            return self.oauth_error(400, "invalid_client", "Unknown client or redirect URI.")
+        params = {"code": code}
+        state = fields.get("state")
+        if isinstance(state, str) and state:
+            params["state"] = state
+        joiner = "&" if QUERY_MARK in redirect_uri else QUERY_MARK
+        return 200, {}, {"redirect_to": redirect_uri + joiner + urllib.parse.urlencode(params)}
+
+    def device_approve(self, headers: dict[str, str], body: bytes) -> Answer:
+        """`POST /oauth/device/approve`: the signed-in user approves a device code."""
+        user = self.signed_in_person(headers)
+        if user is None:
+            return self.unauthorized()
+        fields = self.parse_body(headers, body) or {}
+        user_code = fields.get("user_code")
+        if not isinstance(user_code, str) or not user_code.strip():
+            return self.api_error(400, "invalid_request", "Send the user_code.")
+        if not self.device.approve(user_code.strip(), user["user_id"]):
+            return self.api_error(400, "invalid_grant", "The code is unknown or has expired.")
+        return 200, {}, {"approved": True}
 
     # ----- /ragon/v1/users ----------------------------------------------------------------
 
@@ -684,13 +803,50 @@ class AccountsOauth:
         node_id = fields.get("node_id") if fields else None
         if not isinstance(node_id, str) or not NODE_ID.match(node_id):
             return self.api_error(400, "invalid_request", "Send the node's node_id.")
-        name = SERVICE_PREFIX + node_id.replace("-", "")[:8].lower()
+        name = self.store.service_name(node_id)
         existed = any(u["username"] == name for u in self.store.list_users())
         account = self.store.ensure_service_account(node_id)
         answer: dict[str, Any] = {"username": account["username"], "created": not existed}
         if not existed:
             answer["key"] = self.store.mint_key(account["username"], "node")
         return (200 if existed else 201), {}, answer
+
+    def register_forgejo(self, headers: dict[str, str], body: bytes) -> Answer:
+        """`POST /ragon/v1/nodes/forgejo`: records a node's Forgejo OAuth client (§14.4).
+
+        Only that node's service key (or an admin) may write the node's client. The body holds
+        the SHA-256 of the secret, never the secret; a repeat with the same record changes
+        nothing.
+        """
+        found = self.caller(headers)
+        if found is None:
+            return self.unauthorized()
+        user = found[0]
+        fields = self.parse_body(headers, body) or {}
+        node_id = fields.get("node_id")
+        if not isinstance(node_id, str) or not NODE_ID.match(node_id):
+            return self.api_error(400, "invalid_request", "Send the node's node_id.")
+        if user["role"] != ROLE_ADMIN and user["username"] != self.store.service_name(node_id):
+            return self.api_error(403, "forbidden", "Only the node's own service key may do this.")
+        secret_hash = fields.get("secret_hash")
+        uris = fields.get("redirect_uris")
+        if not isinstance(secret_hash, str) or not SECRET_HASH.match(secret_hash):
+            return self.api_error(400, "invalid_request", "secret_hash is the SHA-256 in hex.")
+        if (
+            not isinstance(uris, list)
+            or not 0 < len(uris) <= MAX_REDIRECT_URIS
+            or not all(
+                isinstance(uri, str)
+                and len(uri) <= MAX_URI_LENGTH
+                and urllib.parse.urlsplit(uri).scheme in ("http", "https")
+                and urllib.parse.urlsplit(uri).netloc
+                for uri in uris
+            )
+        ):
+            return self.api_error(400, "invalid_request", "redirect_uris are 1-4 http(s) URLs.")
+        client = AccountsForgejoClient(CLIENT_ID_PREFIX + node_id, secret_hash, tuple(uris))
+        changed = self.store.put_forgejo_client(node_id, client)
+        return 200, {}, {"client_id": client.client_id, "changed": changed}
 
     def usage_read(self, headers: dict[str, str], body: bytes) -> Answer:
         """`GET /ragon/v1/usage?days=N`: the caller's own rows; an admin's are every user's."""

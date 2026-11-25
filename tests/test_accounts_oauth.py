@@ -1,6 +1,7 @@
 """The primary's OAuth and account routes (AUTH §5.1-§5.4, §5.6, §9, §10), as Codex calls them."""
 
 import base64
+import hashlib
 import http.client
 import json
 import threading
@@ -739,3 +740,162 @@ def test_right_after_the_first_account_its_user_can_pair_a_phone(store, tmp_path
     assert post_json(oauth, "/ragon/v1/bindings/redeem", fields, bridge)[0] == 200
     bound = call(oauth, "GET", "/ragon/v1/bindings", signed_in)[2]["bindings"]
     assert [binding["chat_kind"] for binding in bound] == ["telegram"]
+
+
+# -- the Forgejo client of a node (§14): registration, sign-in and the code grant
+
+NODE: str = "abcdef01-2345-4678-9abc-def012345678"
+CALLBACK: str = "http://box.local:3100/forge/user/oauth2/ragon/callback"
+FORGE_SECRET: str = "forge-secret-1"
+
+
+def forge_record(uris=(CALLBACK,), secret=FORGE_SECRET):
+    return {
+        "node_id": NODE,
+        "secret_hash": hashlib.sha256(secret.encode()).hexdigest(),
+        "redirect_uris": list(uris),
+    }
+
+
+@pytest.fixture
+def node_key(store):
+    store.ensure_service_account(NODE)
+    return store.mint_key(store.service_name(NODE))
+
+
+def test_a_node_registers_its_forgejo_client_with_its_service_key(oauth, store, node_key, lines):
+    status, _, body = post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), node_key)
+    assert (status, body) == (200, {"client_id": f"forgejo-{NODE}", "changed": True})
+    assert store.forgejo_client(f"forgejo-{NODE}").allows(CALLBACK)
+    assert any("forgejo_client" in line for line in lines)
+    again = post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), node_key)
+    assert again[2]["changed"] is False
+    assert FORGE_SECRET not in json.dumps(lines)
+
+
+def test_only_the_nodes_own_key_or_an_admin_writes_its_client(oauth, store, node_key, users):
+    other = "12345678-0000-4000-8000-000000000000"
+    store.ensure_service_account(other)
+    other_key = store.mint_key(store.service_name(other))
+    status, _, _ = post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), other_key)
+    assert status == 403
+    bob = sign_in(oauth, "t-bob", BOB_PW)["access_token"]
+    assert post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), bob)[0] == 403
+    alice = sign_in(oauth, "t-alice", ALICE_PW)["access_token"]
+    assert post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), alice)[0] == 200
+    assert post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record())[0] == 401
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"secret_hash": "not-a-hash"},
+        {"redirect_uris": []},
+        {"redirect_uris": ["javascript:alert(1)"]},
+        {"redirect_uris": [CALLBACK] * 5},
+        {"redirect_uris": ["http://box.local/" + "x" * 600]},
+        {"node_id": "../etc"},
+    ],
+)
+def test_a_bad_forgejo_record_is_refused(oauth, node_key, change):
+    status, _, _ = post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record() | change, node_key)
+    assert status == 400
+
+
+def test_discovery_names_what_forgejo_needs(oauth):
+    discovery = call(oauth, "GET", "/.well-known/openid-configuration")[2]
+    assert discovery["authorization_endpoint"] == "https://box.local:3100/oauth/authorize"
+    assert "client_secret_basic" in discovery["token_endpoint_auth_methods_supported"]
+    assert "authorization_code" in discovery["grant_types_supported"]
+
+
+def test_the_authorize_url_sends_the_browser_to_the_sign_in_page(oauth):
+    query = "client_id=forgejo-x&state=s1"
+    status, headers, _ = oauth.handle("GET", f"/oauth/authorize?{query}", {}, b"")
+    assert status == 302
+    assert headers["Location"] == f"https://box.local:3100/oauth/authorize?{query}"
+
+
+@pytest.fixture
+def forge_client(oauth, node_key):
+    assert post_json(oauth, "/ragon/v1/nodes/forgejo", forge_record(), node_key)[0] == 200
+    return f"forgejo-{NODE}"
+
+
+def approve(oauth, token, **fields):
+    base = {"client_id": f"forgejo-{NODE}", "redirect_uri": CALLBACK, "response_type": "code"}
+    return post_json(oauth, "/oauth/authorize/approve", base | fields, token)
+
+
+def code_of(redirect_to):
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(redirect_to).query)
+    return query["code"][0], query.get("state", [None])[0]
+
+
+def basic(client_id, secret):
+    pair = f"{urllib.parse.quote_plus(client_id)}:{urllib.parse.quote_plus(secret)}"
+    return "Basic " + base64.b64encode(pair.encode()).decode()
+
+
+def test_forgejo_signs_a_person_in_with_basic_client_auth(oauth, users, forge_client):
+    alice = sign_in(oauth, "t-alice", ALICE_PW)["access_token"]
+    status, _, body = approve(oauth, alice, state="st-1")
+    assert status == 200 and body["redirect_to"].startswith(CALLBACK + "?")
+    code, state = code_of(body["redirect_to"])
+    assert state == "st-1"
+    form = urllib.parse.urlencode(
+        {"grant_type": "authorization_code", "code": code, "redirect_uri": CALLBACK}
+    ).encode()
+    headers = {
+        "content-type": "application/x-www-form-urlencoded",
+        "authorization": basic(forge_client, FORGE_SECRET),
+    }
+    status, _, tokens = oauth.handle("POST", "/oauth/token", headers, form)
+    assert status == 200, tokens
+    claims = codex_claims(tokens["id_token"])
+    assert (claims["email"], claims["nickname"]) == ("t-alice@box.local", "t-alice")
+    info = call(oauth, "GET", "/oauth/userinfo", tokens["access_token"])[2]
+    assert (info["email"], info["nickname"]) == ("t-alice@box.local", "t-alice")
+    status, _, again = oauth.handle("POST", "/oauth/token", headers, form)
+    assert (status, again["error"]) == (400, "invalid_grant")
+
+
+def test_the_forgejo_secret_is_needed_even_with_pkce(oauth, users, forge_client):
+    alice = sign_in(oauth, "t-alice", ALICE_PW)["access_token"]
+    verifier = "v" * 50
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+    challenge = challenge.decode().rstrip("=")
+    body = approve(oauth, alice, code_challenge=challenge, code_challenge_method="S256")[2]
+    code, _ = code_of(body["redirect_to"])
+    fields = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": CALLBACK,
+        "client_id": forge_client,
+        "code_verifier": verifier,
+        "client_secret": "wrong",
+    }
+    status, _, answer = post_form(oauth, "/oauth/token", fields)
+    assert (status, answer["error"]) == (400, "invalid_grant")
+
+
+def test_approval_needs_a_person_a_known_client_and_its_callback(oauth, users, store, forge_client):
+    alice = sign_in(oauth, "t-alice", ALICE_PW)["access_token"]
+    assert approve(oauth, None)[0] == 401
+    assert approve(oauth, store.mint_key("t-alice"))[0] == 401
+    assert approve(oauth, alice, client_id="forgejo-other")[2]["error"] == "invalid_client"
+    assert approve(oauth, alice, redirect_uri="http://evil/cb")[2]["error"] == "invalid_client"
+    assert approve(oauth, alice, response_type="token")[0] == 400
+    assert approve(oauth, alice, code_challenge="x", code_challenge_method="plain")[0] == 400
+
+
+def test_a_signed_in_person_approves_a_device_code(oauth, users):
+    entry = post_form(oauth, "/oauth/device/code", {"client_id": CODEX_CLIENT})[2]
+    alice = sign_in(oauth, "t-alice", ALICE_PW)["access_token"]
+    status, _, body = post_json(
+        oauth, "/oauth/device/approve", {"user_code": entry["user_code"]}, alice
+    )
+    assert (status, body) == (200, {"approved": True})
+    status, _, _ = post_json(oauth, "/oauth/device/approve", {"user_code": "ZZZZ-ZZZZ"}, alice)
+    assert status == 400
+    assert post_json(oauth, "/oauth/device/approve", {"user_code": "x"})[0] == 401
