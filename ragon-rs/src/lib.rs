@@ -96,7 +96,6 @@ pub use update::shown_version;
 pub mod usage;
 pub mod userns;
 pub mod vision;
-#[cfg(unix)]
 pub mod web;
 pub mod windows_tls;
 pub mod winsta;
@@ -492,13 +491,7 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
     if let Some(index) = subcommand
         && user_args[index] == "web"
     {
-        #[cfg(unix)]
         std::process::exit(web::run_cli(&user_args[index + 1..]).await);
-        #[cfg(not(unix))]
-        {
-            eprintln!("`ragon web` is not available on Windows yet: the web server reaches the app-server over a Unix socket.");
-            std::process::exit(2);
-        }
     }
     // `chat` is the messenger bridge: Matrix and Telegram, through `ragon web` (chat.rs;
     // specs/DREAMFERENCE_RAGON_CHAT.md).

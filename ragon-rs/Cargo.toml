@@ -74,6 +74,10 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 toml = { workspace = true }
 toml_edit = { workspace = true }
+# `ragon web`: the web server, a crate of its own so its tests run without the Codex workspace
+# (src/web.rs). On Unix it reaches the app-server over a Unix socket, on Windows over loopback
+# behind a token (web/src/app_server.rs).
+ragon-web-server = { path = "web" }
 
 # Build OpenSSL from source on glibc Linux, as upstream does only for musl, so building ragon needs
 # no libssl-dev. Cargo unifies features across the build, so enabling `vendored` here applies to the
@@ -84,9 +88,6 @@ openssl-sys = { workspace = true, features = ["vendored"] }
 # `/node` ignores Ctrl-C while its child has the terminal (src/node_command.rs).
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
-# `ragon web`: the web server, a crate of its own so its tests run without the Codex workspace
-# (src/web.rs). Unix only: it reaches the app-server over a Unix socket; Windows has no `ragon web` yet.
-ragon-web-server = { path = "web" }
 # `ragon chat`: the messenger bridge, a client of `ragon web` (src/chat.rs). Unix only, for the same reason.
 ragon-chat = { path = "chat" }
 # `ragon sync`: the sync agent and its commands (src/sync.rs); the hub is a module of `ragon web`.
