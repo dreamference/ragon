@@ -139,7 +139,8 @@ pub fn parse_print_state(output: &str) -> &'static str {
             continue;
         }
         return match value.trim() {
-            "running" => "running",
+            // `xpcproxy`: launchd is exec'ing the job (it already has a pid), seen for a moment at start.
+            "running" | "xpcproxy" => "running",
             "not running" | "waiting" | "spawn scheduled" | "exited" => "waiting",
             _ => "unknown",
         };
@@ -232,6 +233,7 @@ mod tests {
         assert_eq!(parse_print_state(running), "running");
         let idle = "system/ai.dreamference.ragon-node = {\n\tendpoints = {\n\t\tstate = active\n\t}\n\tstate = not running\n}\n";
         assert_eq!(parse_print_state(idle), "waiting");
+        assert_eq!(parse_print_state("gui/501/x = {\n\tstate = xpcproxy\n\tpid = 71380\n}\n"), "running");
         assert_eq!(parse_print_state("system/x = {\n\tstate = penalty box\n}\n"), "unknown");
         assert_eq!(parse_print_state(""), "unknown");
     }
