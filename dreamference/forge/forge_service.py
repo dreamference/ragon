@@ -54,6 +54,8 @@ TIMERS: Final[tuple] = (
 GIB_IN_GB: Final[float] = 1024**3 / 1000**3
 # The forge of record hands the mirror plan to its paired nodes at most this often.
 MIRROR_SYNC_INTERVAL_S: Final[int] = 3600
+# `ensure_oauth`: trust the issuer, load the source, then confirm nothing is left to change.
+OAUTH_ROUNDS: Final[int] = 3
 # An IPv6 address has it and an IPv4 one has not.
 IPV6_SEPARATOR: Final[str] = ":"
 
@@ -451,21 +453,25 @@ class ForgeService:
         from dreamference.forge.forge_oauth_client import ForgeOauthClient
 
         forge_url = f"http://{cls.host_name()}.local:{WEB_PORT}{WEB_PATH}"
-        try:
-            lines, changed = ForgeOauthClient.ensure(ForgeBackup.node_id(), forge_url)
-        except (OSError, RuntimeError, ValueError) as error:
-            print(f"⚠️  Ragon sign-in to the forge was not checked: {error}")
-            return False
-        for line in lines:
-            print(line)
-        if not changed:
-            return False
-        if not cls.restart() or not ForgeContainer.wait_until_answering(180):
-            print(
-                f"⚠️  The forge did not come back after loading the sign-in source: `journalctl --user -u {UNIT}`."
-            )
-            return False
-        return True
+        restarted = False
+        # A first source takes two restarts: one to trust the issuer's CA, one to load it.
+        for _ in range(OAUTH_ROUNDS):
+            try:
+                lines, changed = ForgeOauthClient.ensure(ForgeBackup.node_id(), forge_url)
+            except (OSError, RuntimeError, ValueError) as error:
+                print(f"❌ Ragon sign-in to the forge was not checked: {error}")
+                return restarted
+            for line in lines:
+                print(line)
+            if not changed:
+                return restarted
+            if not cls.restart() or not ForgeContainer.wait_until_answering(180):
+                print(
+                    f"❌ The forge did not come back after a sign-in change: `journalctl --user -u {UNIT}`."
+                )
+                return restarted
+            restarted = True
+        return restarted
 
     @classmethod
     def tick(cls) -> int:

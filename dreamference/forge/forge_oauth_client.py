@@ -7,12 +7,19 @@ openid-configuration. A Ragon user then signs in to Forgejo by the authorization
 `ragon web`'s page. Forgejo links the account by the token's `sub` (the user id), so a rename on the
 primary follows the same Forgejo account; the email is `<username>@<primary name>.local`.
 Forgejo's local login stays on for `forge-admin`, `owner` and `mirror`.
+
+Forgejo fetches the discovery document itself, so its container must reach the issuer and trust
+the CA that signs it: the issuer is kept as `oauth_trust_issuer` and the forge restarted with the
+CA mounted and the issuer's address added before the source is added (it can never be added from
+a container that does not trust the gate). In 0.9.9 only the primary's forge takes the source; a
+secondary's Forgejo keeps its local sign-in until 0.9.10 (owner ruling of 2026-11-25).
 """
 
 import hashlib
 import json
 import re
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,9 +51,16 @@ CA_MOUNT_FILE: Final[str] = f"{CA_MOUNT_DIR}/ca.pem"
 CERT_DIRS: Final[str] = f"/etc/ssl/certs:{CA_MOUNT_DIR}"
 STATE_ISSUER: Final[str] = "oauth_issuer"
 STATE_CLIENT: Final[str] = "oauth_client_id"
+# The issuer the container was (re)started to reach: its CA and address are in the container.
+STATE_TRUST: Final[str] = "oauth_trust_issuer"
+SOURCE_ATTEMPTS: Final[int] = 3
+SOURCE_PAUSE_S: Final[float] = 10.0
 IPV6_MARK: Final[str] = ":"
 LOOPBACK: Final[tuple[str, ...]] = ("127.", "::1")
 LOCAL_SIGN_IN: Final[str] = "Forgejo keeps its local sign-in until then."
+RETRIED: Final[str] = (
+    "Forgejo keeps its local sign-in; the forge's timer tries again in ten minutes."
+)
 
 
 class ForgeOauthClient:
@@ -121,19 +135,19 @@ class ForgeOauthClient:
         return None
 
     @classmethod
-    def ensure_source(cls, issuer: str) -> bool:
+    def ensure_source(cls, issuer: str) -> str | None:
         """Add the gate as an authentication source, or update it in place.
 
         Args:
             issuer: The primary gate's issuer URL (its openid-configuration is read from it).
 
         Returns:
-            bool: Whether Forgejo took the source.
+            str | None: None when Forgejo took the source, else why it did not.
         """
         client_id = ForgeSettings.read_secret(ID_SECRET)
         secret = ForgeSettings.read_secret(SECRET_SECRET)
         if not client_id or not secret:
-            return False
+            return "the client id or secret is missing"
         existing = cls.source_id()
         arguments = [
             "admin",
@@ -156,7 +170,32 @@ class ForgeOauthClient:
             "--scopes",
             SCOPES,
         ]
-        return ForgeContainer.forgejo(arguments, timeout=120).returncode == 0
+        result = ForgeContainer.forgejo(arguments, timeout=120)
+        if result.returncode == 0:
+            return None
+        said = [line.strip() for line in (result.stderr or result.stdout or "").splitlines()]
+        said = [line for line in said if line]
+        # Never echo the arguments: they carry the client secret.
+        return (said[-1] if said else f"exit {result.returncode}").replace(secret, "***")
+
+    @classmethod
+    def add_source(cls, issuer: str) -> str | None:
+        """Add or update the source, trying again while the forge settles after a restart.
+
+        Args:
+            issuer: The primary gate's issuer URL.
+
+        Returns:
+            str | None: None when Forgejo took the source, else the last reason it gave.
+        """
+        problem: str | None = None
+        for attempt in range(SOURCE_ATTEMPTS):
+            if attempt:
+                time.sleep(SOURCE_PAUSE_S)
+            problem = cls.ensure_source(issuer)
+            if problem is None:
+                return None
+        return problem
 
     @classmethod
     def local_json(
@@ -244,7 +283,9 @@ class ForgeOauthClient:
         """Register the client on the primary and keep Forgejo's `ragon` source in line.
 
         Safe to run at every start and tick: the client record is written only when it changed,
-        and Forgejo is touched only when the issuer or the client id changed.
+        and Forgejo is touched only when the issuer or the client id changed. When the container
+        does not yet trust the issuer, the issuer is kept and a restart asked for first; the
+        caller restarts and calls again, which then adds the source.
 
         Args:
             node_id: This node's id.
@@ -254,6 +295,11 @@ class ForgeOauthClient:
             tuple[list[str], bool]: Lines to print, and whether the forge must restart to load
             a new or changed source.
         """
+        from dreamference.node.node_settings import NodeSettings
+
+        if NodeSettings.pinned_primary() is not None:
+            # 0.9.9: Ragon sign-in to Forgejo is the primary's; a secondary keeps local sign-in.
+            return [], False
         record, _ = cls.register(node_id, forge_url)
         issuer = cls.issuer()
         if issuer is None:
@@ -269,11 +315,31 @@ class ForgeOauthClient:
         state = ForgeSettings.state()
         if state.get(STATE_ISSUER) == issuer and state.get(STATE_CLIENT) == record.client_id:
             return [], False
-        if not cls.ensure_source(issuer):
+        return cls.load_source(issuer, record.client_id)
+
+    @classmethod
+    def load_source(cls, issuer: str, client_id: str) -> tuple[list[str], bool]:
+        """Make the container trust the issuer, then add the source and keep what was done.
+
+        Args:
+            issuer: The primary gate's issuer URL.
+            client_id: The registered client's id.
+
+        Returns:
+            tuple[list[str], bool]: Lines to print, and whether the forge must restart.
+        """
+        state = ForgeSettings.state()
+        if state.get(STATE_TRUST) != issuer:
+            ForgeSettings.update_state(**{STATE_TRUST: issuer})
+            host = urllib.parse.urlsplit(issuer).hostname or issuer
+            return [f"🔐 Restarting the forge so it trusts the CA of {host}."], True
+        problem = cls.add_source(issuer)
+        if problem is not None:
             return [
-                f"⚠️  Forgejo did not take the `{SOURCE_NAME}` sign-in source. {LOCAL_SIGN_IN}"
+                f"❌ Forgejo did not take the `{SOURCE_NAME}` sign-in source after "
+                f"{SOURCE_ATTEMPTS} tries: {problem}. {RETRIED}"
             ], False
-        ForgeSettings.update_state(**{STATE_ISSUER: issuer, STATE_CLIENT: record.client_id})
+        ForgeSettings.update_state(**{STATE_ISSUER: issuer, STATE_CLIENT: client_id})
         host = urllib.parse.urlsplit(issuer).hostname or issuer
         return [f"🔑 The forge offers sign-in with a Ragon account of {host}."], True
 
@@ -319,7 +385,8 @@ class ForgeOauthClient:
         Returns:
             tuple: (`--add-host` name and address pairs, read-only mounts, environment).
         """
-        issuer = ForgeSettings.state().get(STATE_ISSUER)
+        state = ForgeSettings.state()
+        issuer = state.get(STATE_TRUST) or state.get(STATE_ISSUER)
         if not isinstance(issuer, str) or not issuer:
             return [], [], {}
         hosts: list[tuple[str, str]] = []

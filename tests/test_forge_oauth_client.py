@@ -17,11 +17,12 @@ from dreamference.forge.forge_settings import ForgeSettings
 ISSUER = "https://primary.local:8443"
 
 
-def fake_forgejo(calls, listing=""):
+def fake_forgejo(calls, listing="", code=0, stderr=""):
     def run(arguments, timeout=300):
         calls.append(list(arguments))
-        out = listing if arguments[:3] == ["admin", "auth", "list"] else ""
-        return subprocess.CompletedProcess(arguments, 0, stdout=out, stderr="")
+        if arguments[:3] == ["admin", "auth", "list"]:
+            return subprocess.CompletedProcess(arguments, 0, stdout=listing, stderr="")
+        return subprocess.CompletedProcess(arguments, code, stdout="", stderr=stderr)
 
     return run
 
@@ -45,7 +46,7 @@ def test_ensure_source_adds_then_updates_with_the_discovery_url(monkeypatch):
     monkeypatch.setattr(ForgeSettings, "read_secret", classmethod(lambda c, n: store.get(n)))
     calls = []
     monkeypatch.setattr(module.ForgeContainer, "forgejo", staticmethod(fake_forgejo(calls)))
-    assert ForgeOauthClient.ensure_source(ISSUER)
+    assert ForgeOauthClient.ensure_source(ISSUER) is None
     add = calls[-1]
     assert add[:3] == ["admin", "auth", "add-oauth"]
     assert add[add.index("--provider") + 1] == "openidConnect"
@@ -55,13 +56,25 @@ def test_ensure_source_adds_then_updates_with_the_discovery_url(monkeypatch):
     monkeypatch.setattr(
         module.ForgeContainer, "forgejo", staticmethod(fake_forgejo(calls, listing))
     )
-    assert ForgeOauthClient.ensure_source(ISSUER)
+    assert ForgeOauthClient.ensure_source(ISSUER) is None
     assert calls[-1][:5] == ["admin", "auth", "update-oauth", "--id", "7"]
 
 
 def test_ensure_source_without_a_registered_client_does_nothing(monkeypatch):
     monkeypatch.setattr(ForgeSettings, "read_secret", classmethod(lambda c, n: None))
-    assert ForgeOauthClient.ensure_source(ISSUER) is False
+    assert "missing" in ForgeOauthClient.ensure_source(ISSUER)
+
+
+def test_a_refused_source_says_why_without_the_secret(monkeypatch):
+    store = {module.ID_SECRET: "forgejo-n1", module.SECRET_SECRET: "s3cr3t-value"}
+    monkeypatch.setattr(ForgeSettings, "read_secret", classmethod(lambda c, n: store.get(n)))
+    said = "2026/11/25 ...\nCommand error: Get x509: certificate signed by unknown authority s3cr3t-value\n"
+    calls = []
+    monkeypatch.setattr(
+        module.ForgeContainer, "forgejo", staticmethod(fake_forgejo(calls, code=1, stderr=said))
+    )
+    problem = ForgeOauthClient.ensure_source(ISSUER)
+    assert "unknown authority" in problem and "s3cr3t-value" not in problem
 
 
 def test_the_email_follows_the_username_and_the_primary_name():
@@ -132,7 +145,7 @@ def primary(monkeypatch, kept):
     monkeypatch.setattr(
         ForgeOauthClient,
         "ensure_source",
-        classmethod(lambda c, issuer: seen["sources"].append(issuer) or True),
+        classmethod(lambda c, issuer: seen["sources"].append(issuer)),
     )
 
     class Store:
@@ -149,23 +162,35 @@ def primary(monkeypatch, kept):
     return seen
 
 
-def test_the_primary_stores_the_client_itself_and_adds_the_source_once(primary, kept):
+def test_the_primary_trusts_the_issuer_first_then_adds_the_source_once(primary, kept):
+    lines, changed = ForgeOauthClient.ensure("n1", "http://box.local:3100/forge/")
+    # The container must trust the gate's CA before Forgejo can read its discovery document.
+    assert changed and "trusts the CA of primary.local" in lines[0]
+    assert primary["sources"] == [] and kept.state == {module.STATE_TRUST: ISSUER}
     lines, changed = ForgeOauthClient.ensure("n1", "http://box.local:3100/forge/")
     assert changed and "box" not in lines[0] and "primary.local" in lines[0]
-    ((node_id, record),) = primary["stored"]
+    node_id, record = primary["stored"][-1]
     assert node_id == "n1" and record.client_id == "forgejo-n1"
     assert record.secret_matches(kept.secrets[module.SECRET_SECRET])
     assert primary["sources"] == [ISSUER] and primary["posts"] == []
     assert ForgeOauthClient.ensure("n1", "http://box.local:3100/forge/") == ([], False)
-    assert primary["sources"] == [ISSUER] and len(primary["stored"]) == 2
+    assert primary["sources"] == [ISSUER] and len(primary["stored"]) == 3
+
+
+def test_a_secondary_keeps_local_sign_in_in_0_9_9(primary, kept):
+    primary["pinned"] = "p-1"
+    primary["key"] = "sk-ragon-node"
+    assert ForgeOauthClient.ensure("n1", "http://box.local:3100/forge/") == ([], False)
+    assert primary["posts"] == [] and primary["sources"] == [] and kept.state == {}
 
 
 def test_a_secondary_posts_the_hash_with_its_service_key(primary, kept):
     primary["pinned"] = "p-1"
     primary["key"] = "sk-ragon-node"
-    _, changed = ForgeOauthClient.ensure("n1", "http://box.local:3100/forge/")
+    record, _ = ForgeOauthClient.register("n1", "http://box.local:3100/forge/")
+    assert ForgeOauthClient.put_client("n1", record) is None
     ((path, payload, key),) = primary["posts"]
-    assert changed and path == "/ragon/v1/nodes/forgejo" and key == "sk-ragon-node"
+    assert path == "/ragon/v1/nodes/forgejo" and key == "sk-ragon-node"
     assert payload["redirect_uris"] == ["http://box.local:3100/forge/user/oauth2/ragon/callback"]
     assert kept.secrets[module.SECRET_SECRET] not in json.dumps(payload)
     assert primary["stored"] == []
@@ -173,13 +198,12 @@ def test_a_secondary_posts_the_hash_with_its_service_key(primary, kept):
 
 def test_a_secondary_without_a_service_key_says_so_and_changes_nothing(primary, kept):
     primary["pinned"] = "p-1"
-    lines, changed = ForgeOauthClient.ensure("n1", "http://box.local:3100/forge/")
-    assert not changed and "no service key" in lines[0] and "local sign-in" in lines[0]
-    assert primary["sources"] == [] and kept.state == {}
+    record, _ = ForgeOauthClient.register("n1", "http://box.local:3100/forge/")
+    assert "no service key" in ForgeOauthClient.put_client("n1", record)
+    assert primary["posts"] == [] and kept.state == {}
 
 
 def test_a_refusing_or_unreachable_primary_leaves_local_sign_in(primary, kept, monkeypatch):
-    primary["pinned"] = "p-1"
     primary["key"] = "sk-ragon-node"
 
     def refused(cls, path, payload=None, key=None):
@@ -188,8 +212,11 @@ def test_a_refusing_or_unreachable_primary_leaves_local_sign_in(primary, kept, m
         raise urllib.error.HTTPError(path, 403, "forbidden", {}, None)
 
     monkeypatch.setattr(ForgeOauthClient, "local_json", classmethod(refused))
-    lines, changed = ForgeOauthClient.ensure("n1", "http://box.local:3100/forge/")
-    assert not changed and "HTTP 403" in lines[0] and "an admin registers it" in lines[0]
+    record, _ = ForgeOauthClient.register("n1", "http://box.local:3100/forge/")
+    primary["pinned"] = "p-1"
+    problem = ForgeOauthClient.put_client("n1", record)
+    assert "HTTP 403" in problem and "an admin registers it" in problem
+    primary["pinned"] = None
 
     def down(cls, path, payload=None, key=None):
         raise OSError("connection refused")
@@ -200,17 +227,41 @@ def test_a_refusing_or_unreachable_primary_leaves_local_sign_in(primary, kept, m
     assert primary["sources"] == []
 
 
-def test_a_source_forgejo_refuses_is_tried_again_next_time(primary, kept, monkeypatch):
-    monkeypatch.setattr(ForgeOauthClient, "ensure_source", classmethod(lambda c, issuer: False))
+def test_a_source_forgejo_refuses_is_retried_loudly_and_again_next_time(primary, kept, monkeypatch):
+    tries = []
+    monkeypatch.setattr(
+        ForgeOauthClient,
+        "ensure_source",
+        classmethod(lambda c, issuer: tries.append(issuer) or "x509: unknown authority"),
+    )
+    monkeypatch.setattr(module.time, "sleep", lambda s: None)
+    kept.state[module.STATE_TRUST] = ISSUER
     lines, changed = ForgeOauthClient.ensure("n1", "http://box.local:3100/forge/")
-    assert not changed and "did not take" in lines[0] and kept.state == {}
+    assert not changed and lines[0].startswith("❌") and "did not take" in lines[0]
+    assert "x509: unknown authority" in lines[0] and "tries again" in lines[0]
+    assert len(tries) == module.SOURCE_ATTEMPTS
+    assert module.STATE_ISSUER not in kept.state
+    ForgeOauthClient.ensure("n1", "http://box.local:3100/forge/")
+    assert len(tries) == 2 * module.SOURCE_ATTEMPTS
+
+
+def test_a_source_taken_on_a_later_try_counts(primary, kept, monkeypatch):
+    answers = ["not answering yet", None]
+    monkeypatch.setattr(
+        ForgeOauthClient, "ensure_source", classmethod(lambda c, issuer: answers.pop(0))
+    )
+    monkeypatch.setattr(module.time, "sleep", lambda s: None)
+    kept.state[module.STATE_TRUST] = ISSUER
+    _, changed = ForgeOauthClient.ensure("n1", "http://box.local:3100/forge/")
+    assert changed and kept.state[module.STATE_ISSUER] == ISSUER
 
 
 def test_the_container_reaches_the_issuer_by_its_address_and_trusts_its_ca(
     kept, monkeypatch, tmp_path
 ):
     assert ForgeOauthClient.container_arguments() == ([], [], {})
-    kept.state[module.STATE_ISSUER] = ISSUER
+    # The issuer to trust is known before the source is added: that start must have the CA.
+    kept.state[module.STATE_TRUST] = ISSUER
     monkeypatch.setattr(
         module.socket,
         "getaddrinfo",

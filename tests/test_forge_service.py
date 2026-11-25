@@ -308,14 +308,26 @@ def oauth_step(monkeypatch):
 def test_a_changed_source_restarts_the_forge_with_the_browser_url(oauth_step, monkeypatch):
     from dreamference.forge.forge_oauth_client import ForgeOauthClient
 
+    answers = [(["🔐 trust"], True), (["🔑 ok"], True), ([], False)]
+
     def ensure(cls, node_id, forge_url):
         oauth_step["ensure"].append((node_id, forge_url))
-        return ["🔑 ok"], True
+        return answers.pop(0)
 
     monkeypatch.setattr(ForgeOauthClient, "ensure", classmethod(ensure))
     assert ForgeService.ensure_oauth() is True
-    assert oauth_step["ensure"] == [("n-1", "http://node-a.local:3100/forge/")]
-    assert oauth_step["restarts"] == 1
+    assert oauth_step["ensure"] == [("n-1", "http://node-a.local:3100/forge/")] * 3
+    # One restart to trust the issuer's CA, one to load the source.
+    assert oauth_step["restarts"] == 2
+
+
+def test_a_source_that_keeps_changing_stops_after_the_rounds(oauth_step, monkeypatch):
+    from dreamference.forge import forge_service
+    from dreamference.forge.forge_oauth_client import ForgeOauthClient
+
+    monkeypatch.setattr(ForgeOauthClient, "ensure", classmethod(lambda cls, n, u: (["x"], True)))
+    assert ForgeService.ensure_oauth() is True
+    assert oauth_step["restarts"] == forge_service.OAUTH_ROUNDS
 
 
 def test_an_unchanged_or_failing_source_never_restarts_or_raises(oauth_step, monkeypatch, capsys):
