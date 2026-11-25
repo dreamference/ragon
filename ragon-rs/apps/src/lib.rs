@@ -210,7 +210,7 @@ pub fn is_node() -> bool {
 }
 
 fn node_id_file() -> Option<PathBuf> {
-    Some(ragon_node_locator::home_dir()?.join(".config/dreamference/node-id"))
+    ragon_node_locator::node_id_file()
 }
 
 /// Whether Ragon offers apps here. Cheap and without network: the TUI asks it on every gate check.
