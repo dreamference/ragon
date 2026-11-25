@@ -207,6 +207,7 @@
 /ragon-web-rs/src/airgapped.rs                   @dreamference/security
 /ragon-rs/src/airgapped.rs                       @dreamference/security
 /ragon-rs/src/audit.rs                           @dreamference/security
+/ragon-rs/src/audit/trace.rs                     @dreamference/security
 /ragon-rs/src/auth/                              @dreamference/security
 /ragon-rs/tests/auth_provider.rs                  @dreamference/security
 /ragon-rs/tests/auth_screen.rs                    @dreamference/security

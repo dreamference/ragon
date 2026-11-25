@@ -104,11 +104,12 @@ ragon-signal = { path = "signal" }
 # release the Codex workspace already builds.
 [target.'cfg(windows)'.dependencies]
 # `ragon uninstall` (src/uninstall.rs) takes its folder out of the user's Path in the registry and
-# tells running programs.
+# tells running programs. `ragon audit egress` snapshots the running node's processes (ToolHelp).
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Registry",
     "Win32_System_StationsAndDesktops",
     "Win32_System_Threading",
@@ -116,7 +117,7 @@ windows-sys = { version = "0.52", features = [
 ] }
 # Whether the elevated sandbox is set up, asked exactly as Codex asks it (src/airgapped.rs).
 codex-windows-sandbox = { workspace = true }
-# `ragon audit egress`: the ETW real-time trace (src/audit.rs; WINDOWS_ARM §14).
+# `ragon audit egress`: the ETW real-time trace (src/audit/trace.rs; WINDOWS_ARM §14).
 ferrisetw = "1.2"
 # `ragon server`: the node's model server under a supervisor, as a Windows service with the engine
 # in a Job Object (src/supervisor_windows.rs; the crate's neutral core is shared with the Mac node).
@@ -135,6 +136,9 @@ codex-agent-roles = { workspace = true }
 # A custom profile's sandbox, decided exactly as Codex decides it (src/airgapped.rs's tests, patch 0019).
 codex-protocol = { workspace = true }
 codex-sandboxing = { workspace = true }
+# The node supervisor's status file, read by `ragon audit egress` exactly as it is written
+# (src/audit/trace.rs's tests, on every platform).
+ragon-supervisor = { path = "supervisor" }
 tar = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 zip = { workspace = true }
