@@ -1754,6 +1754,63 @@ def test_eval_without_cycling_grades_everything_in_one_call(bench):
     assert len(calls) == 1 and len(bench["docker"].present) == 3
 
 
+# -- grading numbers ----------------------------------------------------------------------------
+
+
+def test_swe_bench_evaluator_grading_number_reuses_and_starts_gradings(bench):
+    """A run starts at 1; a changed grader or a swapped image starts the next one."""
+    instance = "acme__widget-1"
+    image = f"{REPOSITORY}:acme-widget-1"
+    store = SweBenchRunStore("gn1")
+    store.write_manifest(
+        {
+            "name": "gn1",
+            "model_name_or_path": "model",
+            "created": 0,
+            "images": {instance: {"image": image}},
+        }
+    )
+    bench["docker"].present.add(image)
+    assert SweBenchEvaluator.grading_number(store, {"harness": "5.0.2"}) == 1
+    store.write_grading(1, {"grader": {"harness": "5.0.2"}, "results": {}})
+    assert SweBenchEvaluator.grading_number(store, {"harness": "5.0.2"}) == 1
+    # A different grader does not reuse the recorded grading.
+    assert SweBenchEvaluator.grading_number(store, {"harness": "5.0.3"}) == 2
+    store.write_grading(2, {"grader": {"harness": "5.0.3"}, "results": {}})
+    assert SweBenchEvaluator.grading_number(store, {"harness": "5.0.3"}) == 2
+    # An instance graded with an image that is now different re-grades.
+    store.write_grading(
+        2, {"grader": {"harness": "5.0.3"}, "results": {instance: {"digest": "sha256:old"}}}
+    )
+    assert SweBenchEvaluator.grading_number(store, {"harness": "5.0.3"}) == 3
+    # The same image, or no digest recorded, stays on the latest grading.
+    digest = SweBenchDocker.image_digest(image)
+    store.write_grading(
+        3, {"grader": {"harness": "5.0.3"}, "results": {instance: {"digest": digest}}}
+    )
+    assert SweBenchEvaluator.grading_number(store, {"harness": "5.0.3"}) == 3
+    store.write_grading(3, {"grader": {"harness": "5.0.3"}, "results": {instance: {}}})
+    assert SweBenchEvaluator.grading_number(store, {"harness": "5.0.3"}) == 3
+    # An image the harness has not pulled yet (or no image at all) never bumps the number.
+    unpulled_store = SweBenchRunStore("gn2")
+    unpulled_store.write_manifest(
+        {
+            "name": "gn2",
+            "model_name_or_path": "model",
+            "created": 0,
+            "images": {instance: {"image": f"{REPOSITORY}:acme-widget-2"}},
+        }
+    )
+    unpulled_store.write_grading(
+        1, {"grader": {"harness": "5.0.3"}, "results": {instance: {"digest": "sha256:old"}}}
+    )
+    assert SweBenchEvaluator.grading_number(unpulled_store, {"harness": "5.0.3"}) == 1
+    # Each series numbers itself on its own.
+    assert SweBenchEvaluator.grading_number(store, {"harness": "5.0.3"}, "drop-test-hunks") == 1
+    store.write_grading(1, {"grader": {"harness": "5.0.3"}, "results": {}}, "drop-test-hunks")
+    assert SweBenchEvaluator.grading_number(store, {"harness": "5.0.3"}, "drop-test-hunks") == 1
+
+
 # -- admission ------------------------------------------------------------------------------------
 
 
