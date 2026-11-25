@@ -1,0 +1,210 @@
+{
+  "default_model": "qwen3.8-27b-nvfp4-dflash2",
+  "model": {
+    "compatible_gb10": true,
+    "default_engine": "ragon",
+    "engines": {
+      "ragon": {
+        "batch": 4,
+        "container_headroom_gb": 24.0,
+        "docker_image": "ghcr.io/dreamference/ragon-serve@sha256:f4391e2e189b24574e71a93db07bcefe1e96d9cce9f65adb00db8d933dc57dff",
+        "engine": "ragon",
+        "engine_assets": [
+          {
+            "engine": "ragon",
+            "feature": "sparse-head",
+            "flag": "--sparse-head-dir",
+            "repo": "dreamference/qwen3.8-27b-sparse-head",
+            "revision": "models-2026-11-01"
+          }
+        ],
+        "engine_commit": "46ab425967e755cc4b71a117a2e7e16b9ee16fbc",
+        "engine_features": [
+          "kv-pages",
+          "sparse-head",
+          "paging-switch",
+          "fair-pairing",
+          "lora-adapters"
+        ],
+        "extra_args": [
+          "--graphs",
+          "--pdl"
+        ],
+        "fair_pairing": false,
+        "gpu_memory_utilization": 0.5,
+        "kv_pages": false,
+        "max_model_len": 196608,
+        "reasoning_parser": "qwen3",
+        "revision": "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854",
+        "sessions": 4,
+        "speculative_config": {
+          "method": "DFLASH",
+          "model": "dreamference/qwen3.8-27b-dflash2-nvfp4-scalesearch",
+          "num_speculative_tokens": 12,
+          "revision": "models-2026-11-01"
+        },
+        "tool_call_parser": "qwen3_coder",
+        "vision": true
+      },
+      "sglang": {
+        "chat_template_patches": [
+          [
+            "    {%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}\n    {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}",
+            "    {%- set resolved_reasoning_effort = reasoning_effort|default('medium') %}\n    {%- if resolved_reasoning_effort in ('max', 'high') %}\n        {%- set resolved_reasoning_effort = 'xhigh' %}\n    {%- elif resolved_reasoning_effort == 'minimal' %}\n        {%- set resolved_reasoning_effort = 'low' %}\n    {%- endif %}\n    {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}"
+          ],
+          [
+            "        {%- if not loop.first %}\n            {{- raise_exception('System message must be at the beginning.') }}\n        {%- endif %}",
+            "        {%- if not loop.first %}\n            {{- '<|im_start|>user\\n<system-reminder>\\n' + content + '\\n</system-reminder><|im_end|>\\n' }}\n        {%- endif %}"
+          ]
+        ],
+        "container_headroom_gb": 24.0,
+        "docker_image": "lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469",
+        "engine": "sglang",
+        "extra_args": [
+          "--attention-backend",
+          "flashinfer",
+          "--sampling-backend",
+          "pytorch",
+          "--chunked-prefill-size",
+          "8192",
+          "--disable-prefill-cuda-graph",
+          "--cuda-graph-max-bs-decode",
+          "8",
+          "--disable-flashinfer-autotune",
+          "--mamba-radix-cache-strategy",
+          "extra_buffer",
+          "--mamba-ssm-dtype",
+          "bfloat16",
+          "--max-mamba-cache-size",
+          "96",
+          "--max-running-requests",
+          "8",
+          "--enable-torch-compile",
+          "--torch-compile-max-bs",
+          "4",
+          "--num-continuous-decode-steps",
+          "2",
+          "--sleep-on-idle",
+          "--enable-metrics"
+        ],
+        "gpu_memory_utilization": 0.5,
+        "lora": {
+          "max_loaded_loras": 8,
+          "max_lora_rank": 16,
+          "max_loras_per_batch": 4,
+          "runtime_patches": [
+            {
+              "image": "lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469",
+              "path": "/sgl-workspace/sglang/python/sglang/srt/entrypoints/openai/serving_responses.py",
+              "sha256": "ed490a69c960cafa7fc97129e585d176993fb63dbda66468ac9b86770813a00d",
+              "substitutions": [
+                [
+                  "                        require_reasoning=require_reasoning,\n                    )\n\n                    generator = self._generate_with_builtin_tools(",
+                  "                        require_reasoning=require_reasoning,\n                        lora_path=self._resolve_lora_path(request.model, None),\n                    )\n\n                    generator = self._generate_with_builtin_tools("
+                ],
+                [
+                  "                require_reasoning=adapted_request.require_reasoning,\n            )\n",
+                  "                require_reasoning=adapted_request.require_reasoning,\n                lora_path=adapted_request.lora_path,\n            )\n"
+                ]
+              ]
+            }
+          ],
+          "target_modules": [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "in_proj_qkvz",
+            "out_proj"
+          ],
+          "weight_modules": [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "in_proj_q",
+            "in_proj_k",
+            "in_proj_v",
+            "in_proj_z",
+            "out_proj"
+          ]
+        },
+        "max_model_len": 262144,
+        "reasoning_parser": "qwen3",
+        "revision": "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854",
+        "runtime_patches": [
+          {
+            "image": "lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469",
+            "path": "/sgl-workspace/sglang/python/sglang/srt/entrypoints/openai/serving_responses.py",
+            "sha256": "ed490a69c960cafa7fc97129e585d176993fb63dbda66468ac9b86770813a00d",
+            "substitutions": [
+              [
+                "                and merged[-1].get(\"role\") == \"assistant\"\n                and merged[-1].get(\"phase\") == msg.get(\"phase\")\n            ):\n",
+                "                and merged[-1].get(\"role\") == \"assistant\"\n            ):\n"
+              ]
+            ]
+          },
+          {
+            "image": "lmsysorg/sglang@sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469",
+            "path": "/sgl-workspace/sglang/python/sglang/srt/entrypoints/openai/serving_responses.py",
+            "sha256": "ed490a69c960cafa7fc97129e585d176993fb63dbda66468ac9b86770813a00d",
+            "substitutions": [
+              [
+                "            payload = orjson.loads(event.split(\"data: \", 1)[1])\n            event_type = payload[\"type\"]\n            item_type = payload.get(\"item\", {}).get(\"type\")\n            opens_item = event_type == \"response.output_item.added\"\n            if pending or (opens_item and item_type == \"message\"):\n                pending.append(payload)\n                tool_follows = opens_item and item_type in (\n                    \"function_call\",\n                    \"custom_tool_call\",\n                )\n                terminal = event_type in (\n                    \"response.completed\",\n                    \"response.incomplete\",\n                    \"response.failed\",\n                )\n                if tool_follows or terminal:\n                    phase = \"commentary\" if tool_follows else \"final_answer\"\n                    for buffered in pending:\n                        if buffered.get(\"item\", {}).get(\"type\") == \"message\":\n                            buffered[\"item\"][\"phase\"] = phase\n                        yield f\"event: {buffered['type']}\\ndata: {orjson.dumps(buffered).decode()}\\n\\n\"\n                    pending.clear()\n            else:\n                yield event\n",
+                "            # Ragon: hold only a message's closing events, for one event of lookahead.\n            payload = orjson.loads(event.split(\"data: \", 1)[1])\n            event_type = payload[\"type\"]\n            item_type = payload.get(\"item\", {}).get(\"type\")\n            if event_type in (\n                \"response.output_text.done\",\n                \"response.content_part.done\",\n            ) or (event_type == \"response.output_item.done\" and item_type == \"message\"):\n                pending.append(payload)\n                continue\n            if pending:\n                tool_follows = event_type == \"response.output_item.added\" and item_type in (\n                    \"function_call\",\n                    \"custom_tool_call\",\n                )\n                phase = \"commentary\" if tool_follows else \"final_answer\"\n                for buffered in pending:\n                    if buffered.get(\"item\", {}).get(\"type\") == \"message\":\n                        buffered[\"item\"][\"phase\"] = phase\n                    yield f\"event: {buffered['type']}\\ndata: {orjson.dumps(buffered).decode()}\\n\\n\"\n                pending.clear()\n            yield event\n        for buffered in pending:\n            if buffered.get(\"item\", {}).get(\"type\") == \"message\":\n                buffered[\"item\"][\"phase\"] = \"final_answer\"\n            yield f\"event: {buffered['type']}\\ndata: {orjson.dumps(buffered).decode()}\\n\\n\"\n"
+              ]
+            ]
+          }
+        ],
+        "speculative_config": {
+          "method": "DFLASH",
+          "model": "dreamference/qwen3.8-27b-dflash2-nvfp4-scalesearch",
+          "num_speculative_tokens": 12,
+          "quantization": "modelopt_fp4",
+          "revision": "models-2026-11-01"
+        },
+        "tool_call_parser": "qwen3_coder"
+      }
+    },
+    "hf_repo_id": "RadixArk/Qwen3.8-27B-NVFP4",
+    "max_memory_gb": 70.0,
+    "min_memory_gb": 20.0,
+    "name": "Qwen 3.8 27B (NVFP4 + DFlash2, ragon-serve)",
+    "params_b": 27.0,
+    "pinned_revision": "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854",
+    "release_sources": {
+      "dreamference/qwen3.8-27b-dflash2-nvfp4-scalesearch": {
+        "files": {
+          "config.json": {
+            "sha256": "6bf5936c68d432db3c8408d5836dc32e05dc3c4be538eb3e576439186262b186",
+            "url": "https://github.com/dreamference/ragon/releases/download/models-2026-11-01/qwen3.8-27b-dflash2-nvfp4-scalesearch.config.json"
+          },
+          "hf_quant_config.json": {
+            "sha256": "7aa6b31ef6cde1cf7c5489f3a4920be2f5ff1cd2a56e9c5ae1096ae7c94a58bb",
+            "url": "https://github.com/dreamference/ragon/releases/download/models-2026-11-01/qwen3.8-27b-dflash2-nvfp4-scalesearch.hf_quant_config.json"
+          },
+          "model.safetensors": {
+            "sha256": "5ec78f26b5254d46bd376b2127ce87d6dfb0b6653e01d6f36983cfd3fdc35f4b",
+            "url": "https://github.com/dreamference/ragon/releases/download/models-2026-11-01/qwen3.8-27b-dflash2-nvfp4-scalesearch.safetensors"
+          }
+        },
+        "revision": "models-2026-11-01"
+      },
+      "dreamference/qwen3.8-27b-sparse-head": {
+        "files": {
+          "model.safetensors": {
+            "sha256": "4dda4169bfbefc62082bd46ba21fa90579dd6bd763b92570a52b016b92d1e83a",
+            "url": "https://github.com/dreamference/ragon/releases/download/models-2026-11-01/qwen3.8-27b-sparse-head.safetensors"
+          }
+        },
+        "revision": "models-2026-11-01"
+      }
+    },
+    "supported_precisions": [
+      "NVFP4"
+    ],
+    "supports_vision": true
+  },
+  "models_release_tag": "models-2026-11-01",
+  "schema_version": 1
+}
