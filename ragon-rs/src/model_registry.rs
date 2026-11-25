@@ -57,6 +57,31 @@ pub struct Recipe {
     pub speculative_config: Option<SpeculativeConfig>,
 }
 
+/// One Metal (Mac) recipe (`metal.<memory class>` in the export).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct MetalRecipe {
+    pub tier: String,
+    pub memory_class: u32,
+    pub sessions: u32,
+    pub max_model_len: u32,
+    pub prefill_chunk: u32,
+    pub vision: bool,
+    pub drafter: String,
+    pub prefix_store_gb: u32,
+    #[serde(default)]
+    pub gpu_cap_gb: Option<u32>,
+    #[serde(default)]
+    pub os_floor_gb: Option<u32>,
+    #[serde(default)]
+    pub sparse_head_dir: Option<String>,
+    #[serde(default)]
+    pub converted_weights_sha256: Option<String>,
+}
+
+/// Memory (GB, as sold) from which a Mac is the full tier; below it and from 60 the entry tier.
+const METAL_FULL_MIN_GB: u32 = 100;
+const METAL_ENTRY_MIN_GB: u32 = 60;
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ReleaseFile {
     pub url: String,
@@ -80,6 +105,9 @@ pub struct Model {
     pub default_engine: String,
     pub engines: BTreeMap<String, Recipe>,
     pub release_sources: BTreeMap<String, ReleaseSource>,
+    /// Metal recipes keyed by memory class ("64", "128"); absent in an older export.
+    #[serde(default)]
+    pub metal: BTreeMap<String, MetalRecipe>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -106,6 +134,19 @@ impl ModelRegistry {
     /// The default model's launch recipe for its default engine.
     pub fn default_recipe(&self) -> Option<&Recipe> {
         self.model.engines.get(&self.model.default_engine)
+    }
+
+    /// The Metal recipe for a Mac with `memory_gb` of memory: the 128 class from 100 GB, the 64
+    /// class from 60 GB, none below (no node role).
+    pub fn metal_recipe(&self, memory_gb: u32) -> Option<&MetalRecipe> {
+        let key = if memory_gb >= METAL_FULL_MIN_GB {
+            "128"
+        } else if memory_gb >= METAL_ENTRY_MIN_GB {
+            "64"
+        } else {
+            return None;
+        };
+        self.model.metal.get(key)
     }
 
     /// The SHA-256 of a file of a release-hosted repository (the drafter, the sparse head).
@@ -144,6 +185,20 @@ mod tests {
         let drafter = &r.default_recipe().unwrap().speculative_config.as_ref().unwrap().model;
         assert!(r.release_sha256(drafter, "model.safetensors").is_some());
         assert!(r.release_sha256("nobody/nothing", "x").is_none());
+    }
+
+    #[test]
+    fn picks_the_metal_recipe_by_memory() {
+        let r = fixture();
+        let entry = r.metal_recipe(64).unwrap();
+        assert_eq!((entry.tier.as_str(), entry.sessions, entry.max_model_len), ("entry", 2, 98304));
+        assert!(entry.vision && entry.prefix_store_gb == 2 && entry.sparse_head_dir.is_none());
+        assert_eq!(entry.prefill_chunk, 2048);
+        let full = r.metal_recipe(128).unwrap();
+        assert_eq!((full.tier.as_str(), full.sessions, full.max_model_len), ("full", 4, 262144));
+        assert!(full.sparse_head_dir.is_some() && full.converted_weights_sha256.is_none());
+        assert_eq!(r.metal_recipe(96).unwrap().tier, "entry");
+        assert!(r.metal_recipe(32).is_none());
     }
 
     #[test]

@@ -168,6 +168,36 @@
     },
     "hf_repo_id": "RadixArk/Qwen3.8-27B-NVFP4",
     "max_memory_gb": 70.0,
+    "metal": {
+      "128": {
+        "converted_weights_sha256": null,
+        "drafter": "sparse-head",
+        "gpu_cap_gb": null,
+        "max_model_len": 262144,
+        "memory_class": 128,
+        "os_floor_gb": null,
+        "prefill_chunk": 2048,
+        "prefix_store_gb": 4,
+        "sessions": 4,
+        "sparse_head_dir": "dreamference/qwen3.8-27b-sparse-head",
+        "tier": "full",
+        "vision": true
+      },
+      "64": {
+        "converted_weights_sha256": null,
+        "drafter": "general",
+        "gpu_cap_gb": 48,
+        "max_model_len": 98304,
+        "memory_class": 64,
+        "os_floor_gb": 16,
+        "prefill_chunk": 2048,
+        "prefix_store_gb": 2,
+        "sessions": 2,
+        "sparse_head_dir": null,
+        "tier": "entry",
+        "vision": true
+      }
+    },
     "min_memory_gb": 20.0,
     "name": "Qwen 3.8 27B (NVFP4 + DFlash2, ragon-serve)",
     "params_b": 27.0,

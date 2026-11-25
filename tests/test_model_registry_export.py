@@ -32,3 +32,15 @@ def test_the_default_recipe_and_hashes_are_the_registrys():
     assert model["release_sources"]
     for repo, source in model["release_sources"].items():
         assert source == ModelMatrixRegistry.get_release_source(repo)
+
+
+def test_the_metal_recipes_are_the_tiers_with_the_measured_entry_context():
+    metal = json.loads(RegistryExport.export_json())["model"]["metal"]
+    assert set(metal) == {"64", "128"}
+    entry, full = metal["64"], metal["128"]
+    assert (entry["tier"], entry["sessions"], entry["max_model_len"]) == ("entry", 2, 98_304)
+    assert entry["vision"] and entry["prefix_store_gb"] == 2 and entry["prefill_chunk"] == 2048
+    assert entry["sparse_head_dir"] is None
+    assert (full["tier"], full["sessions"], full["max_model_len"]) == ("full", 4, 262_144)
+    assert full["sparse_head_dir"] == "dreamference/qwen3.8-27b-sparse-head"
+    assert entry["converted_weights_sha256"] is None is full["converted_weights_sha256"]

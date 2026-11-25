@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from dreamference.hardware.memory_tier import TIER_ENTRY, MemoryTier, classify_memory
 from dreamference.hardware.model_matrix_registry import (
     DEFAULT_MODEL_ALIAS,
     MODELS_RELEASE_TAG,
@@ -18,6 +19,46 @@ from dreamference.hardware.model_matrix_registry import (
 )
 
 SCHEMA_VERSION = 1
+
+# Metal (Mac) recipes, one per memory class. The entry numbers are the ones measured on a 64 GB
+# Mac (entry-03 probe): with the drafter, vision and the 2 GB prefix store, two windows of 98,304
+# tokens keep 16 GiB for the OS; 2 x 131,072 only fits with vision off.
+METAL_ENTRY_MAX_CONTEXT = 98_304
+METAL_PREFILL_CHUNK = 2048  # the measured prefill chunk
+SPARSE_HEAD_REPO = "dreamference/qwen3.8-27b-sparse-head"
+SPARSE_HEAD_DRAFTER = "sparse-head"
+# Mac classification readings (GiB): a 64 GB and a 128 GB machine as hw.memsize reports them.
+_METAL_MEMORY_GIB = {"64": 64.0, "128": 128.0}
+
+
+def _metal_recipe(tier: MemoryTier) -> dict[str, Any]:
+    """One Metal recipe from the shared tier classification (entry context from the probe)."""
+    recipe = tier.recipe
+    if recipe is None:
+        raise ValueError(f"no node recipe for tier {tier.tier}")
+    entry = tier.tier == TIER_ENTRY
+    return {
+        "tier": tier.tier,
+        "memory_class": tier.memory_class,
+        "sessions": recipe.sessions,
+        "max_model_len": METAL_ENTRY_MAX_CONTEXT if entry else recipe.max_model_len,
+        "prefill_chunk": METAL_PREFILL_CHUNK,
+        "vision": recipe.vision,
+        "drafter": recipe.drafter,
+        "prefix_store_gb": recipe.prefix_store_gb,
+        "gpu_cap_gb": recipe.gpu_cap_gb,
+        "os_floor_gb": recipe.os_floor_gb,
+        "sparse_head_dir": SPARSE_HEAD_REPO if recipe.drafter == SPARSE_HEAD_DRAFTER else None,
+        # SHA-256 of the converted (Metal) weights; null until the conversion is published.
+        "converted_weights_sha256": None,
+    }
+
+
+def _metal_recipes() -> dict[str, dict[str, Any]]:
+    return {
+        key: _metal_recipe(classify_memory(gib, platform="mac"))
+        for key, gib in _METAL_MEMORY_GIB.items()
+    }
 
 
 def _release_repos(recipes: dict[str, dict[str, Any]]) -> list[str]:
@@ -41,8 +82,9 @@ class RegistryExport:
         Returns:
             dict: ``schema_version``, the release ``models_release_tag``, ``default_model`` and its
                 ``model`` entry: the ModelSpec fields, ``pinned_revision``, ``default_engine``,
-                ``engines`` (each engine's launch recipe) and ``release_sources`` (each
-                release-hosted repository's revision and files with ``url`` and ``sha256``).
+                ``engines`` (each engine's launch recipe) ``release_sources`` (each
+                release-hosted repository's revision and files with ``url`` and ``sha256``) and
+                ``metal`` (the Mac recipes keyed by memory class ``"64"`` and ``"128"``).
         """
         spec = ModelMatrixRegistry.get_spec(model_key)
         if spec is None:
@@ -64,6 +106,7 @@ class RegistryExport:
             "release_sources": {
                 r: ModelMatrixRegistry.get_release_source(r) for r in _release_repos(recipes)
             },
+            "metal": _metal_recipes(),
         }
         return {
             "schema_version": SCHEMA_VERSION,
