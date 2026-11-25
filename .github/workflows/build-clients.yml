@@ -257,6 +257,30 @@ jobs:
           name: ragon-client-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
+      # Node jobs on a Mac (specs/DREAMFERENCE_MAC_NODE.md §4.5), last so the package is uploaded
+      # whatever they say. The supervisor's job runner (own process group, footprint cap, time
+      # limit, cancel, fetched, the Command Line Tools refusal) and the per-job Seatbelt profile on
+      # the real thing, in a copy outside /Users: the profile hides every home, so a stand-in built
+      # under one could not start.
+      - name: Node job runner and its Seatbelt profile
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: |
+          work="/private/tmp/ragon-node-jobs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -rf "$work" && mkdir -p "$work"
+          cp -R ragon-rs/supervisor "$work/supervisor"
+          code=0
+          (cd "$work/supervisor" && CARGO_TARGET_DIR="$work/target" cargo test --release) || code=$?
+          rm -rf "$work"
+          exit "$code"
+      # The launcher's serve-job glue (src/node_job_macos.rs), in the export, V8 and target
+      # directory the build used, so the tests reuse its crates.
+      - name: Launcher node job tests
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: |
+          python -c "import os, shlex; from dreamference.runner.codex_branded_builder import BUILD_CACHE_DIR as C, CodexBrandedBuilder as B; src = os.path.join(C, 'src'); env = dict(B.fetch_rusty_v8(src), RAGON_EXPORT=os.path.join(src, 'codex-rs'), CARGO_TARGET_DIR=os.path.join(C, 'target'), CARGO_PROFILE_RELEASE_DEBUG='none', CARGO_PROFILE_RELEASE_STRIP='debuginfo'); print(''.join(f'export {k}={shlex.quote(str(v))}\n' for k, v in env.items()))" > "$RUNNER_TEMP/launcher-test-env"
+          . "$RUNNER_TEMP/launcher-test-env"
+          cd "$RAGON_EXPORT"
+          cargo test --release -p ragon-launcher node_job_macos
       - name: Remove the Developer ID
         if: ${{ always() && steps.apple.outputs.sign == 'true' }}
         run: scripts/macos/remove_identity.sh
