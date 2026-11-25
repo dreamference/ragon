@@ -150,9 +150,23 @@ fn path_str(path: &Path) -> String {
 pub fn admin_dir(tree: &Path, repo: &Path) -> Option<PathBuf> {
     let line = std::fs::read_to_string(tree.join(".git")).ok()?;
     let target = line.trim().strip_prefix("gitdir: ")?;
-    let admin = std::fs::canonicalize(tree.join(target)).ok()?;
-    let worktrees = std::fs::canonicalize(repo).ok()?.join("worktrees");
+    let admin = plain(std::fs::canonicalize(tree.join(target)).ok()?);
+    let worktrees = plain(std::fs::canonicalize(repo).ok()?).join("worktrees");
     (admin.parent() == Some(worktrees.as_path()) && admin.is_dir()).then_some(admin)
+}
+
+/// `canonicalize` on Windows returns a verbatim path (`\\?\C:\...`, `\\?\UNC\host\share\...`),
+/// which git refuses as `--git-dir` ("not a git repository"); this is the same path without the
+/// prefix. Other paths are returned as they are.
+fn plain(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy().into_owned();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => path,
+    }
 }
 
 /// Removes a job's worktree, also when the job replaced its `.git`.
@@ -173,7 +187,11 @@ pub fn commit(record: &mut Value, tree: &Path, admin: &Path) -> Option<String> {
     let location = ["--git-dir", a.as_str(), "--work-tree", t.as_str()];
     let run = |rest: &[&str]| git(&[&location[..], rest].concat());
     let status = run(&["status", "--porcelain"]);
-    if status.code != 0 || status.stdout.trim().is_empty() {
+    if status.code != 0 {
+        record.set("note", Value::str(format!("git status failed: {}", tail(&status.stderr, 200))));
+        return None;
+    }
+    if status.stdout.trim().is_empty() {
         return None;
     }
     let id = jobs::id_of(record).to_string();
@@ -553,6 +571,13 @@ mod tests {
     fn shlex_join_quotes_like_python() {
         let words: Vec<String> = ["python", "-c", "print('hi')", "a b", ""].iter().map(|s| s.to_string()).collect();
         assert_eq!(shlex_join(&words), r#"python -c 'print('"'"'hi'"'"')' 'a b' ''"#);
+    }
+
+    #[test]
+    fn verbatim_paths_become_plain_for_git() {
+        assert_eq!(plain(PathBuf::from(r"\\?\C:\jobs\repos\d.git")), PathBuf::from(r"C:\jobs\repos\d.git"));
+        assert_eq!(plain(PathBuf::from(r"\\?\UNC\host\share\d.git")), PathBuf::from(r"\\host\share\d.git"));
+        assert_eq!(plain(PathBuf::from("/srv/jobs/d.git")), PathBuf::from("/srv/jobs/d.git"));
     }
 
     #[test]

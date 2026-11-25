@@ -270,8 +270,10 @@ fn the_memory_cap_stops_the_job_then_kills_what_does_not_stop() {
     let peak = rec.get("peak_memory_bytes").and_then(Value::as_u64).unwrap_or(0);
     assert!(peak >= 200 << 20, "peak {peak}");
     if cfg!(windows) {
-        // The Job Object refuses the allocation at the cap: the job never had more.
-        assert!(peak <= 256 << 20, "peak {peak} over the cap");
+        // The Job Object refuses the allocations past the cap. Its peak can still pass the cap by
+        // a few MiB (260.2 MiB at 256M on the drill box, two processes in nested jobs), never by
+        // another 16 MiB chunk of the stand-in's.
+        assert!(peak < (256 + 16) << 20, "peak {peak} over the cap");
     }
 
     let hung = submit(&jobs, &request(&commit, &["hog"], &[("memory", "128M"), ("lane", "hard")]));
