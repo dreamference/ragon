@@ -70,6 +70,8 @@ pub mod night;
 pub mod node;
 pub mod metal_recipe;
 pub mod node_advertise_macos;
+#[cfg(target_os = "macos")]
+pub mod node_job_macos;
 pub mod node_command;
 pub mod notice;
 pub mod plugins;
@@ -440,6 +442,12 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
     if let Some(index) = subcommand
         && user_args[index] == "node"
     {
+        // A Mac node's forced command: the job operations, handed to the node supervisor
+        // (node_job_macos.rs; specs/DREAMFERENCE_MAC_NODE.md §4.5).
+        #[cfg(target_os = "macos")]
+        if user_args.get(index + 1).map(String::as_str) == Some("serve-job") {
+            std::process::exit(node_job_macos::run_serve_job());
+        }
         std::process::exit(node::run_cli(&user_args[index + 1..]).await);
     }
     // `apps` serves one of Ragon's apps as an MCP server, or lists them (apps.rs;
