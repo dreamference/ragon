@@ -103,7 +103,7 @@ Two further owner answers (2026-11-06): the install takes **one UAC elevation**,
 | Forge | Forgejo rootless container, 1 GiB cap, timers, second Avahi service | §4.3 | Open (WN2) |
 | Web UI | `ragon web --lan` on 3100 | The same crate, ported: Unix-only code appears in nine files under `ragon-rs/web/src` | To port |
 | Tool-call canary | Python | Rust, in the supervisor | To build |
-| Egress audit | strace | `ragon audit egress` (ETW, built) extended to the engine's tree, the supervisor, and the distribution by the existing strace audit, merged (RAGON_WINDOWS_ARM §14) | Partly built |
+| Egress audit | strace | `ragon audit egress` (ETW, built) extended to the engine's tree, the supervisor, and the distribution by the existing strace audit, merged (RAGON_WINDOWS_ARM §14) | Partly built: the supervisor's tree (engine, sidecars) is judged, `--node` alone; the distribution's verdict waits for WN2 (`distribution_verdict` in `ragon-rs/src/audit/trace.rs`) |
 | Power | `node_power_settings` | `powercfg`: no sleep on mains; Modern Standby is on this box **[M]** | To build |
 
 ### 4.2 Unattended lifecycle
