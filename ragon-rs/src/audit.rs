@@ -55,12 +55,12 @@ fn parse(args: &[String]) -> Option<Options> {
 }
 
 /// What one trace recorded: the events (the node's snapshot included), the session's process id
-/// and whether it replied, and whether the status file's supervisor pid named a running ragon
+/// and, when it did not reply, why, and whether the status file's supervisor pid named a running ragon
 /// process when the trace began.
 #[cfg_attr(not(windows), allow(dead_code))]
 struct Recording {
     events: Vec<Event>,
-    session: Option<(u32, bool)>,
+    session: Option<(u32, Option<String>)>,
     supervisor_running: bool,
 }
 
@@ -153,6 +153,26 @@ fn not_answering(host: &str, is_node: bool) -> String {
     }
 }
 
+/// Why a session gave no reply, from what it printed: its last error line (a model server that
+/// refuses requests, for example while it runs a benchmark), else that it timed out or ended.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn no_reply_reason(printed: &str, timed_out: Option<std::time::Duration>) -> String {
+    const LIMIT: usize = 300;
+    let error = printed.lines().rev().map(str::trim).find(|line| line.contains("ERROR") || line.contains("unexpected status"));
+    match (error, timed_out) {
+        (Some(line), _) => {
+            let line = line.split_once("ERROR").map_or(line, |(_, rest)| rest.trim_start_matches(':').trim());
+            if line.chars().count() > LIMIT {
+                format!("{}…", line.chars().take(LIMIT).collect::<String>())
+            } else {
+                line.to_string()
+            }
+        }
+        (None, Some(after)) => format!("it timed out after {} s", after.as_secs()),
+        (None, None) => "it ended without one".to_string(),
+    }
+}
+
 fn word(status: Status) -> &'static str {
     match status {
         Status::Pass => "pass",
@@ -170,9 +190,9 @@ fn verdict(
     node: Option<&NodeStatus>,
     not_run: &[String],
 ) -> (Status, Vec<String>) {
-    let judged_session = target.zip(recording.session).map(|((host, model), (root, replied))| {
-        let session = session(&recording.events, root);
-        let (status, problems) = judge(&session, *model, replied);
+    let judged_session = target.zip(recording.session.as_ref()).map(|((host, model), (root, no_reply))| {
+        let session = session(&recording.events, *root);
+        let (status, problems) = judge(&session, *model, no_reply.as_deref());
         (host, *model, session, status, problems)
     });
     let Some(node) = node else {
@@ -332,10 +352,13 @@ mod windows {
         Ok(Recording { events, session, supervisor_running })
     }
 
-    /// Runs one `ragon exec` session; returns its process id and whether it replied.
-    fn session(host: &str, work: &std::path::Path) -> Result<(u32, bool), String> {
+    /// Runs one `ragon exec` session; returns its process id and, when it did not reply, why
+    /// (the last error it printed, or that it timed out).
+    fn session(host: &str, work: &std::path::Path) -> Result<(u32, Option<String>), String> {
         let exe = std::env::current_exe().map_err(|err| format!("could not find ragon.exe: {err}"))?;
         let reply = work.join("reply.txt");
+        let log = std::fs::File::create(work.join("session.log"))
+            .map_err(|err| format!("could not create the session log: {err}"))?;
         let mut child = std::process::Command::new(&exe)
             .args(["exec", "--skip-git-repo-check", "-o"])
             .arg(&reply)
@@ -347,21 +370,26 @@ mod windows {
             .env_remove("RAGON_NODE")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(log)
             .spawn()
             .map_err(|err| format!("could not start {}: {err}", exe.display()))?;
         let root = child.id();
         let started = Instant::now();
+        let mut timed_out = false;
         while matches!(child.try_wait(), Ok(None)) {
             if started.elapsed() > SESSION_TIMEOUT {
                 let _ = child.kill();
                 let _ = child.wait();
+                timed_out = true;
                 break;
             }
             std::thread::sleep(Duration::from_millis(250));
         }
-        let replied = std::fs::read_to_string(&reply).is_ok_and(|text| !text.trim().is_empty());
-        Ok((root, replied))
+        if std::fs::read_to_string(&reply).is_ok_and(|text| !text.trim().is_empty()) {
+            return Ok((root, None));
+        }
+        let printed = std::fs::read_to_string(work.join("session.log")).unwrap_or_default();
+        Ok((root, Some(super::no_reply_reason(&printed, timed_out.then_some(SESSION_TIMEOUT)))))
     }
 
     /// One plain HTTP GET of `url`, its answer read and dropped.
@@ -454,7 +482,7 @@ mod tests {
     fn a_session_alone_reads_as_before() {
         let recording = Recording {
             events: vec![start(ROOT, 1, "ragon.exe"), connect(ROOT, "127.0.0.1", 8000, 50_001)],
-            session: Some((ROOT, true)),
+            session: Some((ROOT, None)),
             supervisor_running: false,
         };
         let target = ("http://127.0.0.1:8000".to_string(), MODEL);
@@ -467,7 +495,7 @@ mod tests {
 
     #[test]
     fn a_session_and_the_node_are_judged_from_one_trace() {
-        let recording = Recording { events: node_events(), session: Some((ROOT, true)), supervisor_running: true };
+        let recording = Recording { events: node_events(), session: Some((ROOT, None)), supervisor_running: true };
         let target = ("http://localhost:8000".to_string(), MODEL);
         let (status, lines) = verdict(&recording, Some(&target), Some(&node()), &[]);
         assert_eq!(status, Status::Pass, "{lines:#?}");
@@ -477,7 +505,7 @@ mod tests {
         // The engine reaching out fails the whole audit, though the session was clean.
         let mut events = node_events();
         events.push(connect(501, "192.0.2.1", 443, 50_002));
-        let recording = Recording { events, session: Some((ROOT, true)), supervisor_running: true };
+        let recording = Recording { events, session: Some((ROOT, None)), supervisor_running: true };
         let (status, lines) = verdict(&recording, Some(&target), Some(&node()), &[]);
         assert_eq!(status, Status::Fail);
         assert!(lines.iter().any(|line| line.contains("192.0.2.1:443") && line.contains("not on this machine")));
@@ -498,5 +526,21 @@ mod tests {
         // A status file whose supervisor pid names no running ragon process: nothing was seen.
         let recording = Recording { events, session: None, supervisor_running: false };
         assert_eq!(verdict(&recording, None, Some(&node()), &[]).0, Status::TraceFailed);
+    }
+
+    #[test]
+    fn a_session_without_a_reply_says_why_and_is_not_run() {
+        let printed = "2026-11-25T20:01:00Z ERROR codex_core: unexpected status 503 Service Unavailable: The model is running a benchmark\n";
+        let why = no_reply_reason(printed, None);
+        assert_eq!(why, "codex_core: unexpected status 503 Service Unavailable: The model is running a benchmark");
+        assert_eq!(no_reply_reason("", Some(std::time::Duration::from_secs(180))), "it timed out after 180 s");
+        assert_eq!(no_reply_reason("", None), "it ended without one");
+        assert!(no_reply_reason(&format!("ERROR: {}", "x".repeat(400)), None).chars().count() <= 301);
+        let target = ("http://127.0.0.1:8000".to_string(), MODEL);
+        let events = vec![start(ROOT, 1, "ragon.exe"), connect(ROOT, "127.0.0.1", 8000, 50_001)];
+        let recording = Recording { events, session: Some((ROOT, Some(why))), supervisor_running: false };
+        let (status, lines) = verdict(&recording, Some(&target), None, &[]);
+        assert_eq!(status, Status::NotRun, "{lines:#?}");
+        assert!(lines.iter().any(|line| line.contains("503 Service Unavailable")), "{lines:#?}");
     }
 }

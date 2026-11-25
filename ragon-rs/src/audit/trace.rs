@@ -247,15 +247,19 @@ fn problems(session: &Session, model: (Option<IpAddr>, u16)) -> (Vec<String>, us
     (problems, model_events)
 }
 
-/// The session's verdict and its reasons. `model` is the model server's endpoint; `replied`
-/// whether the session answered, without which nothing was shown.
-pub fn judge(session: &Session, model: (Option<IpAddr>, u16), replied: bool) -> (Status, Vec<String>) {
+/// The session's verdict and its reasons. `model` is the model server's endpoint; `no_reply` is
+/// `None` when the session answered and otherwise why it did not. A session without a reply did
+/// not exercise ragon, so it is not run rather than a failed trace: the model server refused it
+/// (a benchmark night answers 503) or was too slow. A forbidden connection fails it all the same.
+pub fn judge(session: &Session, model: (Option<IpAddr>, u16), no_reply: Option<&str>) -> (Status, Vec<String>) {
     let (problems, model_events) = problems(session, model);
     if !problems.is_empty() {
         return (Status::Fail, problems);
     }
-    if !replied {
-        return (Status::TraceFailed, vec!["the session produced no reply, so the trace shows nothing".to_string()]);
+    if let Some(why) = no_reply {
+        return (Status::NotRun, vec![format!(
+            "the session got no reply ({why}), so it did not exercise ragon: run the audit again when the model server takes requests"
+        )]);
     }
     if model_events == 0 {
         return (Status::TraceFailed, vec![
@@ -432,7 +436,6 @@ pub mod etw {
     use ferrisetw::UserTrace;
     use ferrisetw::parser::Parser;
     use ferrisetw::provider::Provider;
-    use ferrisetw::trace::TraceTrait;
 
     use super::Event;
 
@@ -618,7 +621,7 @@ pub mod etw {
                 let pid = entry.th32ProcessID;
                 let mut started = None;
                 let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-                if !handle.is_null() {
+                if handle != 0 {
                     let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
                     let (mut creation, mut exit, mut kernel, mut user) = (zero, zero, zero, zero);
                     if GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) != 0 {
@@ -704,7 +707,7 @@ mod tests {
         ];
         let session = session(&events, ROOT);
         assert_eq!(process_tree(&events, &[ROOT]), HashSet::from([ROOT, 101, 102]));
-        assert_eq!(judge(&session, MODEL, true), (Status::Pass, Vec::new()));
+        assert_eq!(judge(&session, MODEL, None), (Status::Pass, Vec::new()));
     }
 
     #[test]
@@ -719,7 +722,7 @@ mod tests {
             Event::Lookup { pid: ROOT, name: "ab.chatgpt.com.".to_string() },
             Event::Lookup { pid: ROOT, name: "localhost".to_string() },
         ];
-        let (status, problems) = judge(&session(&events, ROOT), MODEL, true);
+        let (status, problems) = judge(&session(&events, ROOT), MODEL, None);
         assert_eq!(status, Status::Fail);
         assert_eq!(problems.len(), 5, "{problems:#?}");
         assert!(problems[0].starts_with("connected to 104.18.1.1:443 (1x): not on this machine"));
@@ -733,22 +736,32 @@ mod tests {
     fn a_node_on_the_network_is_allowed_by_its_address_and_port() {
         let node = (Some(IpAddr::from([192, 168, 1, 20])), 8000);
         let events = [start(ROOT, 1, "ragon.exe"), connect(ROOT, "192.168.1.20", 8000)];
-        assert_eq!(judge(&session(&events, ROOT), node, true).0, Status::Pass);
+        assert_eq!(judge(&session(&events, ROOT), node, None).0, Status::Pass);
         let events = [start(ROOT, 1, "ragon.exe"), connect(ROOT, "192.168.1.20", 8000), connect(ROOT, "192.168.1.20", 22)];
-        assert_eq!(judge(&session(&events, ROOT), node, true).0, Status::Fail);
+        assert_eq!(judge(&session(&events, ROOT), node, None).0, Status::Fail);
         // A loopback model port is not allowed for a session whose model is elsewhere.
         let events = [start(ROOT, 1, "ragon.exe"), connect(ROOT, "192.168.1.20", 8000), connect(ROOT, "127.0.0.1", 8000)];
-        assert_eq!(judge(&session(&events, ROOT), node, true).0, Status::Fail);
+        assert_eq!(judge(&session(&events, ROOT), node, None).0, Status::Fail);
     }
 
     #[test]
     fn a_trace_that_showed_nothing_is_never_a_pass() {
-        let events = [start(ROOT, 1, "ragon.exe"), connect(ROOT, "127.0.0.1", 8000)];
-        assert_eq!(judge(&session(&events, ROOT), MODEL, false).0, Status::TraceFailed);
         // Replied, yet no connection to the model server seen: the network events were not read.
         let events = [start(ROOT, 1, "ragon.exe")];
-        assert_eq!(judge(&session(&events, ROOT), MODEL, true).0, Status::TraceFailed);
+        assert_eq!(judge(&session(&events, ROOT), MODEL, None).0, Status::TraceFailed);
         assert_eq!(Status::TraceFailed.exit_code(), 2);
+    }
+
+    #[test]
+    fn a_session_the_model_server_refused_is_not_run_unless_it_connected_out() {
+        let refused = "unexpected status 503 Service Unavailable: the model is running a benchmark";
+        let events = [start(ROOT, 1, "ragon.exe"), connect(ROOT, "127.0.0.1", 8000)];
+        let (status, problems) = judge(&session(&events, ROOT), MODEL, Some(refused));
+        assert_eq!(status, Status::NotRun);
+        assert!(problems[0].contains(refused), "{problems:?}");
+        // No reply does not excuse a forbidden connection.
+        let events = [start(ROOT, 1, "ragon.exe"), connect(ROOT, "127.0.0.1", 8000), connect(ROOT, "203.0.113.7", 443)];
+        assert_eq!(judge(&session(&events, ROOT), MODEL, Some(refused)).0, Status::Fail);
     }
 
     #[test]
@@ -791,7 +804,7 @@ mod tests {
             Event::Lookup { pid: ROOT, name: "example.com".to_string() },
             Event::Lookup { pid: ROOT, name: "localhost".to_string() },
         ];
-        let (status, problems) = judge(&session(&events, ROOT), MODEL, true);
+        let (status, problems) = judge(&session(&events, ROOT), MODEL, None);
         assert_eq!(status, Status::Fail);
         assert!(problems.iter().any(|p| p.contains("example.com")));
         assert!(!problems.iter().any(|p| p.contains("localhost")));
@@ -800,7 +813,7 @@ mod tests {
     #[test]
     fn a_networked_git_helper_fails_the_audit() {
         let events = [start(ROOT, 1, "ragon.exe"), start(101, ROOT, "Git-Remote-HTTPS.exe"), connect(ROOT, "127.0.0.1", 8000)];
-        let (status, problems) = judge(&session(&events, ROOT), MODEL, true);
+        let (status, problems) = judge(&session(&events, ROOT), MODEL, None);
         assert_eq!(status, Status::Fail);
         assert!(problems.iter().any(|p| p.contains("reach a remote")));
     }
@@ -808,7 +821,7 @@ mod tests {
     #[test]
     fn the_vendor_blackhole_port_is_named_in_its_problem() {
         let events = [start(ROOT, 1, "ragon.exe"), connect(ROOT, "127.0.0.1", 8000), connect(ROOT, "127.0.0.1", BLACKHOLE_PORT)];
-        let (status, problems) = judge(&session(&events, ROOT), MODEL, true);
+        let (status, problems) = judge(&session(&events, ROOT), MODEL, None);
         assert_eq!(status, Status::Fail);
         assert!(problems.iter().any(|p| p.contains("upstream vendor")));
     }
