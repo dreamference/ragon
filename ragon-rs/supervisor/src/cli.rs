@@ -139,6 +139,11 @@ pub trait NodeHooks {
     /// The reported state (`healthy`, `battery`, `starting`, `waiting`, `refused`, `stopped`) and
     /// whether new sessions are admitted; called once per change, and with `stopped` at the end.
     fn on_state(&mut self, _state: &str, _admitting: bool) {}
+    /// Whether to run the tool-call canary ([`crate::canary`]) after each start of the engine: in a
+    /// thread, never gating it; the verdict is logged (`server run: canary: ...`).
+    fn canary(&self) -> bool {
+        false
+    }
 }
 
 /// No sidecars, nothing on a state change.
@@ -299,6 +304,8 @@ pub fn supervise_with(opts: &Options, stop: &AtomicBool, hooks: &mut dyn NodeHoo
         }
     }
     let mut reported = (String::new(), true);
+    let mut engine_was_healthy = false;
+    let mut canary: Option<std::sync::mpsc::Receiver<Result<Duration, String>>> = None;
     loop {
         if stop.load(Ordering::SeqCst) || stop_file.exists() {
             for (_, sidecar, _) in &mut sidecars {
@@ -321,6 +328,23 @@ pub fn supervise_with(opts: &Options, stop: &AtomicBool, hooks: &mut dyn NodeHoo
         }
         let battery = power.poll(Instant::now());
         let snap = sup.snapshot(Instant::now());
+        let healthy = snap.state.as_str() == "healthy";
+        if healthy && !engine_was_healthy && hooks.canary() && canary.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (host, port) = (opts.host.clone(), opts.port);
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::canary::run(&host, port, Duration::from_secs(crate::canary::TIMEOUT_S)));
+            });
+            canary = Some(rx);
+        }
+        engine_was_healthy = healthy;
+        if let Some(verdict) = canary.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            canary = None;
+            match verdict {
+                Ok(took) => eprintln!("server run: canary: ok ({} ms)", took.as_millis()),
+                Err(e) => eprintln!("server run: canary: failed: {e}"),
+            }
+        }
         let now_reported = (
             crate::macos_power::reported_state(snap.state.as_str(), battery.as_ref()).to_string(),
             battery.is_none_or(|b| b.admitting),

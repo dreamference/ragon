@@ -103,6 +103,10 @@ mod mac {
     }
 
     impl ragon_supervisor::cli::NodeHooks for MacNode {
+        fn canary(&self) -> bool {
+            true
+        }
+
         fn sidecars(&self) -> Vec<(String, Vec<String>)> {
             match std::env::current_exe() {
                 Ok(ragon) => super::sidecars(&ragon, self.web),

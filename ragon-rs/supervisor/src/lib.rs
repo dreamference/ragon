@@ -3,6 +3,7 @@
 //! macOS only. `macos_launchd` and `macos_power` are pure (the LaunchDaemon plist, the `launchctl`
 //! and `pmset` arguments) and compile everywhere, so their tests run on Linux.
 
+pub mod canary;
 pub mod cli;
 pub mod core;
 #[cfg(target_os = "macos")]

@@ -6,7 +6,8 @@
 //! - `server start|status|stop` without a service: a detached supervisor, stable status output;
 //! - an engine that refuses (exit 3) is not restarted;
 //! - the node's hooks (Unix, in process): each state reported once, a killed sidecar restarted
-//!   without touching the engine, both stopped with the supervisor.
+//!   without touching the engine, both stopped with the supervisor;
+//! - the tool-call canary passes against the stand-in's streamed call.
 //!
 //! Ports come from the OS (port 0), never the node's.
 
@@ -300,4 +301,17 @@ fn the_hooks_see_each_state_and_a_killed_sidecar_is_restarted_without_touching_t
     wait_until(10, "the engine stopped", || !alive(engine));
     assert_eq!(field(&dir, "state").as_deref(), Some("stopped"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_canary_passes_against_the_stand_in_and_fails_where_nothing_answers() {
+    use ragon_supervisor::canary;
+    let port = free_port();
+    let mut standin = Command::new(STANDIN).args(["--port", &port.to_string()]).spawn().unwrap();
+    wait_until(10, "the stand-in to listen", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
+    let verdict = canary::run("127.0.0.1", port, Duration::from_secs(10));
+    let _ = standin.kill();
+    let _ = standin.wait();
+    assert!(verdict.is_ok(), "{verdict:?}");
+    assert!(canary::run("127.0.0.1", free_port(), Duration::from_secs(5)).is_err());
 }
