@@ -2091,6 +2091,54 @@ def test_renewal_restarts_only_for_a_new_certificate(monkeypatch):
     assert RemoteAccess.certificate_renew() == 0 and installs == [BOX]
 
 
+def test_remote_access_renew_control_plane_stops_at_the_first_failure(monkeypatch):
+    _public_set_up()
+    calls = []
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "obtain",
+        classmethod(lambda cls, d, staging=False: calls.append(("obtain", d)) or False),
+    )
+    assert not RemoteAccess._renew_control_plane(BOX) and calls == [("obtain", BOX)]
+    calls.clear()
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "obtain",
+        classmethod(lambda cls, d, staging=False: calls.append(("obtain", d)) or True),
+    )
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "due",
+        classmethod(lambda cls, d: calls.append(("due", d)) or False),
+    )
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "describe",
+        classmethod(lambda cls, c: calls.append(("describe", c)) or {"issuer": "x", "days": 50}),
+    )
+    assert RemoteAccess._renew_control_plane(BOX) and calls == [
+        ("obtain", BOX),
+        ("due", BOX),
+        ("describe", RemotePublicCertificate.files(BOX)[0]),
+    ]
+    calls.clear()
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "due",
+        classmethod(lambda cls, d: calls.append(("due", d)) or True),
+    )
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "install",
+        classmethod(lambda cls, d: calls.append(("install", d)) or False),
+    )
+    assert not RemoteAccess._renew_control_plane(BOX) and calls == [
+        ("obtain", BOX),
+        ("due", BOX),
+        ("install", BOX),
+    ]
+
+
 def test_off_serves_the_node_ca_again_and_stops_renewing(monkeypatch):
     _public_set_up()
     RemoteSettings.write_private("certs/control-plane.crt", "node-crt")
