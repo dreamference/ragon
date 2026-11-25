@@ -4093,6 +4093,24 @@ def test_a_hold_on_a_run_without_a_manifest_writes_nothing_to_disk(hold):
     assert not SweBenchRunStore("refused").directory.exists()
 
 
+def test_swe_bench_gate_hold_read_parses_the_run_record_and_falls_back_to_empty_lists(bench):
+    from dreamference.swe_bench.swe_bench_gate_hold import SweBenchGateHold
+
+    store = SweBenchRunStore("r1")
+    store.write_manifest({"run": "r1"})
+    earlier = {
+        "sessions": [{"start": 1_000, "end": 2_000, "gate": "in force", "ended": True}],
+        "pauses": [{"start": 1_100, "end": 1_200}],
+    }
+    (store.directory / "gate.json").write_text(json.dumps(earlier))
+    assert SweBenchGateHold.read(store) == earlier
+    # Malformed records, or a list where the dictionary stands, fall back to no sessions or pauses.
+    (store.directory / "gate.json").write_text("[1, 2]")
+    assert SweBenchGateHold.read(store) == {"sessions": [], "pauses": []}
+    (store.directory / "gate.json").write_text("{not json")
+    assert SweBenchGateHold.read(store) == {"sessions": [], "pauses": []}
+
+
 def test_every_tick_gives_the_run_record_a_fresh_heartbeat(hold):
     hold.started = time.time() - 1_000
     before = time.time()
