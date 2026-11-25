@@ -246,7 +246,12 @@ class ForgeService:
             ForgeSettings.update_state(record_address_at_start=record_address or "")
         addresses = ForgeBind.advertised_addresses()
         ForgeSettings.update_state(addresses_at_start=sorted(addresses))
-        return ForgeContainer.run_arguments(data, addresses, record_address)
+        from dreamference.forge.forge_oauth_client import ForgeOauthClient
+
+        hosts, mounts, environment = ForgeOauthClient.container_arguments()
+        return ForgeContainer.run_arguments(
+            data, addresses, record_address, mounts, hosts, environment
+        )
 
     @classmethod
     def run(cls) -> int:
@@ -340,6 +345,7 @@ class ForgeService:
             return False
         if ForgeAccounts.owner_is_admin():
             print("⚠️  The forge's owner account is an administrator; it should not be.")
+        cls.ensure_oauth()
         cls.systemctl("start", *TIMERS)
         cls.advertise(role)
         addresses = ForgeBind.advertised_addresses()
@@ -433,6 +439,35 @@ class ForgeService:
             print(f"⚠️  The phone account was not checked: {error}")
 
     @classmethod
+    def ensure_oauth(cls) -> bool:
+        """Keep the Ragon sign-in source in line (§14.2); restart the forge when it changed.
+
+        Never fails the caller: without the primary, Forgejo keeps its local sign-in.
+
+        Returns:
+            bool: Whether the forge was restarted.
+        """
+        from dreamference.forge.forge_backup import ForgeBackup
+        from dreamference.forge.forge_oauth_client import ForgeOauthClient
+
+        forge_url = f"http://{cls.host_name()}.local:{WEB_PORT}{WEB_PATH}"
+        try:
+            lines, changed = ForgeOauthClient.ensure(ForgeBackup.node_id(), forge_url)
+        except (OSError, RuntimeError, ValueError) as error:
+            print(f"⚠️  Ragon sign-in to the forge was not checked: {error}")
+            return False
+        for line in lines:
+            print(line)
+        if not changed:
+            return False
+        if not cls.restart() or not ForgeContainer.wait_until_answering(180):
+            print(
+                f"⚠️  The forge did not come back after loading the sign-in source: `journalctl --user -u {UNIT}`."
+            )
+            return False
+        return True
+
+    @classmethod
     def tick(cls) -> int:
         """Do the ten-minute timer's work.
 
@@ -450,6 +485,8 @@ class ForgeService:
             except RuntimeError as error:
                 print(f"⚠️  Push mirrors not checked: {error}")
         restarted = cls.rebind()
+        if role in ROLES and not restarted and ForgeContainer.running():
+            restarted = cls.ensure_oauth()
         if role == ROLE_MIRROR:
             address = cls.record_address()
             if (

@@ -26,6 +26,7 @@ from dreamference.chat.google_service import GoogleService  # noqa: E402
 # `server start` starts the Google service on a node, and `google start` creates its container.
 REAL_GOOGLE_SERVICE_START = GoogleService.start
 # `node enable` sets up the node's forge (FORGEJO O1): docker, user units, accounts.
+from dreamference.forge.forge_oauth_client import ForgeOauthClient  # noqa: E402
 from dreamference.forge.forge_service import ForgeService  # noqa: E402
 
 REAL_FORGE_SETUP = ForgeService.setup
@@ -127,6 +128,13 @@ def _isolate_services(monkeypatch):
     monkeypatch.setattr(ImageSearchSidecar, "start", classmethod(lambda cls, *a, **k: True))
     monkeypatch.setattr(SpeechSidecar, "start", classmethod(lambda cls, *a, **k: True))
     monkeypatch.setattr(ForgeService, "setup", classmethod(lambda cls, show_password=True: True))
+
+    # The forge's sign-in step asks the node's own accounts service on loopback; a test never
+    # reaches a real one.
+    def no_accounts_service(cls, path, payload=None, key=None):
+        raise OSError("no accounts service in tests")
+
+    monkeypatch.setattr(ForgeOauthClient, "local_json", classmethod(no_accounts_service))
 
 
 @pytest.fixture(autouse=True)

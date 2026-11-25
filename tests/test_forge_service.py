@@ -126,6 +126,9 @@ def finished_setup(monkeypatch):
     monkeypatch.setattr(
         ForgeService, "ensure_phone", classmethod(lambda cls: seen.__setitem__("phone", 1))
     )
+    monkeypatch.setattr(
+        ForgeService, "ensure_oauth", classmethod(lambda cls: seen.__setitem__("oauth", 1))
+    )
     monkeypatch.setattr(ForgeAccounts, "ensure", classmethod(lambda cls: (True, "pw-new")))
     monkeypatch.setattr(ForgeAccounts, "owner_is_admin", classmethod(lambda cls: False))
     monkeypatch.setattr(
@@ -197,6 +200,12 @@ def tick(monkeypatch):
     monkeypatch.setattr(ForgeRepositories, "install_hooks", count("hooks"))
     monkeypatch.setattr(ForgeGithubMirror, "run", count("github"))
     monkeypatch.setattr(ForgeService, "ensure_phone", count("phone"))
+    seen["oauth"] = 0
+    monkeypatch.setattr(
+        ForgeService,
+        "ensure_oauth",
+        classmethod(lambda cls: seen.__setitem__("oauth", seen["oauth"] + 1) or False),
+    )
     monkeypatch.setattr(
         ForgeMirrors, "sync", classmethod(lambda cls, quiet=False: seen["syncs"].append(quiet))
     )
@@ -257,3 +266,82 @@ def test_the_record_syncs_its_mirrors_once_an_hour(tick, monkeypatch):
     assert ForgeSettings.state()["mirrors_synced_at"] == int(now[0])
     ForgeService.tick()
     assert tick["syncs"] == [True]
+
+
+# -- the Ragon sign-in source (AUTH §14.2)
+
+
+def test_setup_keeps_the_sign_in_source(finished_setup, monkeypatch):
+    monkeypatch.setattr(ForgeService, "decide_role", classmethod(lambda cls: "record"))
+    assert ForgeService.setup()
+    assert finished_setup.get("oauth") == 1
+
+
+def test_a_tick_keeps_the_sign_in_source(tick, monkeypatch):
+    monkeypatch.setattr(ForgeSettings, "role", classmethod(lambda cls: "record"))
+    ForgeService.tick()
+    assert tick["oauth"] == 1
+
+
+def test_a_tick_that_restarted_for_the_source_does_no_more_work(tick, monkeypatch):
+    monkeypatch.setattr(ForgeSettings, "role", classmethod(lambda cls: "record"))
+    monkeypatch.setattr(ForgeService, "ensure_oauth", classmethod(lambda cls: True))
+    assert ForgeService.tick() == 0
+    assert tick["github"] == 0 and tick["hooks"] == 0
+
+
+@pytest.fixture
+def oauth_step(monkeypatch):
+    seen = {"restarts": 0, "ensure": []}
+    monkeypatch.setattr(ForgeService, "host_name", classmethod(lambda cls: "node-a"))
+    monkeypatch.setattr(NodeIdentity, "ensure", classmethod(lambda cls: "n-1"))
+
+    def restart(cls):
+        seen["restarts"] += 1
+        return True
+
+    monkeypatch.setattr(ForgeService, "restart", classmethod(restart))
+    monkeypatch.setattr(ForgeContainer, "wait_until_answering", classmethod(lambda cls, s=0: True))
+    return seen
+
+
+def test_a_changed_source_restarts_the_forge_with_the_browser_url(oauth_step, monkeypatch):
+    from dreamference.forge.forge_oauth_client import ForgeOauthClient
+
+    def ensure(cls, node_id, forge_url):
+        oauth_step["ensure"].append((node_id, forge_url))
+        return ["🔑 ok"], True
+
+    monkeypatch.setattr(ForgeOauthClient, "ensure", classmethod(ensure))
+    assert ForgeService.ensure_oauth() is True
+    assert oauth_step["ensure"] == [("n-1", "http://node-a.local:3100/forge/")]
+    assert oauth_step["restarts"] == 1
+
+
+def test_an_unchanged_or_failing_source_never_restarts_or_raises(oauth_step, monkeypatch, capsys):
+    from dreamference.forge.forge_oauth_client import ForgeOauthClient
+
+    monkeypatch.setattr(ForgeOauthClient, "ensure", classmethod(lambda cls, n, u: ([], False)))
+    assert ForgeService.ensure_oauth() is False
+
+    def broken(cls, node_id, forge_url):
+        raise RuntimeError("docker is gone")
+
+    monkeypatch.setattr(ForgeOauthClient, "ensure", classmethod(broken))
+    assert ForgeService.ensure_oauth() is False
+    assert "not checked: docker is gone" in capsys.readouterr().out
+    assert oauth_step["restarts"] == 0
+
+
+def test_without_an_accounts_service_the_forge_keeps_local_sign_in(oauth_step, monkeypatch, capsys):
+    from dreamference.forge.forge_oauth_client import ID_SECRET, SECRET_SECRET
+
+    kept = {}
+    monkeypatch.setattr(ForgeSettings, "read_secret", classmethod(lambda c, n: kept.get(n)))
+    monkeypatch.setattr(
+        ForgeSettings, "write_secret", classmethod(lambda c, n, v: kept.update({n: v}))
+    )
+    assert ForgeService.ensure_oauth() is False
+    out = capsys.readouterr().out
+    assert "primary could not be reached" in out and "keeps its local sign-in" in out
+    assert set(kept) == {ID_SECRET, SECRET_SECRET} and oauth_step["restarts"] == 0

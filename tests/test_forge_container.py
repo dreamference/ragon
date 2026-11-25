@@ -276,3 +276,15 @@ def test_forge_service_memory_allowance_gb_is_zero_without_a_role_or_when_docker
 
     monkeypatch.setattr(forge_service.subprocess, "run", no_docker)
     assert ForgeService.memory_allowance_gb() == 0.0
+
+
+def test_extra_hosts_and_environment_come_before_the_image():
+    argv = ForgeContainer.run_arguments(
+        Path("/data"),
+        [],
+        extra_hosts=[("primary.local", "192.168.1.5")],
+        environment={"SSL_CERT_DIR": "/etc/ssl/certs:/etc/ragon-ca"},
+    )
+    assert argv[argv.index("primary.local:192.168.1.5") - 1] == "--add-host"
+    assert argv[argv.index("SSL_CERT_DIR=/etc/ssl/certs:/etc/ragon-ca") - 1] == "-e"
+    assert argv[-1] == ForgeContainer.image

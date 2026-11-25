@@ -84,6 +84,8 @@ class ForgeContainer:
         addresses: list[str],
         record_address: str | None = None,
         extra_mounts: list[tuple[str, str]] | None = None,
+        extra_hosts: list[tuple[str, str]] | None = None,
+        environment: dict[str, str] | None = None,
     ) -> list[str]:
         """Build the `docker run` command line of the forge's container.
 
@@ -92,6 +94,9 @@ class ForgeContainer:
             addresses: The advertised LAN addresses (`ForgeBind.lan_addresses`).
             record_address: The forge of record's address, for a mirror; None on the record.
             extra_mounts: Read-only (host, container) mounts, such as the anonymity patterns.
+            extra_hosts: (name, address) pairs the container resolves, such as the primary's
+                `.local` name for the Ragon sign-in source.
+            environment: Variables set in the container.
 
         Returns:
             list[str]: `docker run` and its arguments, in the foreground with `--rm`: the user
@@ -127,6 +132,10 @@ class ForgeContainer:
             argv += ["-v", f"{host_path}:{container_path}:ro"]
         if record_address:
             argv += ["--add-host", f"{RECORD_ALIAS}:{record_address}"]
+        for name, address in extra_hosts or []:
+            argv += ["--add-host", f"{name}:{address}"]
+        for variable, value in (environment or {}).items():
+            argv += ["-e", f"{variable}={value}"]
         argv += ForgeBind.publish_arguments(addresses, cls.http_port, CONTAINER_HTTP_PORT)
         argv += ForgeBind.publish_arguments(addresses, cls.ssh_port, CONTAINER_SSH_PORT)
         return [*argv, cls.image]
