@@ -1183,3 +1183,32 @@ def test_night_shift_task_run_result_reports_a_timed_out_test_in_whole_minutes(b
     assert result["test_result"] == "timed out after 10 min"
     assert result["test_tail"] == "half of the run"
     assert result["test_sandbox"] == ""
+
+
+def test_night_shift_best_of_n_timing_sums_the_nudges_and_keeps_the_node(bon, monkeypatch):
+    started = 1000.0
+    monkeypatch.setattr(time, "time", lambda: started)
+    run = NightShiftBestOfN.task_run(
+        bon["night"],
+        queue(bon["night"], bon["repo"], test=TEST),
+        NightShiftSettings({"best_of": 3}),
+        bon["ragon"],
+        time.time() + 60,
+        model_node="paired-node",
+    )
+    assert isinstance(run, NightShiftBestOfN)
+    monkeypatch.setattr(time, "time", lambda: started + 123)
+    outcomes = [
+        {"result": {"nudges": 2}},
+        {"result": {"nudges": None}},
+        {"result": {}},
+        {"result": {"nudges": 3}},
+    ]
+    assert run._timing(outcomes) == {
+        "attempts": run.attempts,
+        "nudges": 5,
+        "wall_s": 123,
+        "model_node": "paired-node",
+    }
+    run.model_node = None
+    assert "model_node" not in run._timing(outcomes)
