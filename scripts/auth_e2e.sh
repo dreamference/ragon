@@ -27,7 +27,7 @@
 # gate pass. A real run refuses outside the GPU window 08:00-20:00 UTC, and stops with exit 3
 # (blocked) when a node is unreachable or its install lacks the accounts commands. --any-time
 # skips the window check on purpose (a run outside the window is not the owner's gate); the
-# summary records that it was used. Steps that run `ragon whoami` get a pty (ssh -tt).
+# summary records that it was used. The steps that need a terminal get a pty (ssh -tt).
 #
 # Exit: 0 every step passed (or was planned, in a dry run); 1 a step failed; 2 usage;
 #       3 blocked (window, install or reachability).
@@ -36,6 +36,7 @@ set -u
 PRIMARY=""; SECONDARY=""; DRY=0; EVIDENCE=""; NOW=""; ANY_TIME=0
 WINDOW_START_H=8; WINDOW_END_H=20      # the GPU window of nights and days (UTC)
 REVOKE_REFUSAL_SECONDS_MAX=60          # a revoked token is refused within the gate's cache TTL
+STEP_TIMEOUT_S=${AUTH_E2E_STEP_TIMEOUT_S:-600}   # one node command may run this long (seconds) before it is killed
 REFUSALS_MIN=2                         # E14: the refusal count rises by this much over both nodes
 HERE=$(cd "$(dirname "$0")" && pwd)
 HELPER_SRC="$HERE/auth_e2e_node.py"
@@ -72,9 +73,10 @@ record() { # id status text
   case "$2" in pass) PASS=$((PASS+1));; plan) PLAN=$((PLAN+1));; *) FAIL=$((FAIL+1));; esac
   echo "[$2] $1: $3"
 }
-# on HOST CMD: ssh. ON_TTY=1 (set for one step) gives the command a pty: `ragon whoami` refuses
-# to run without a terminal ("stdin is not a terminal").
-on() { ssh ${ON_TTY:+-tt} -o BatchMode=yes -o ConnectTimeout=10 "$1" "bash -lc '$2'"; }
+# on HOST CMD: ssh, under a step timeout: a hung node command is killed (exit 124) and its step fails,
+# so no step can hang the run. ON_TTY=1 (set for one step) gives the command a pty. --foreground keeps
+# the tty reachable for ssh -tt; only ssh itself is timed.
+on() { timeout --foreground -k 15 "$STEP_TIMEOUT_S" ssh ${ON_TTY:+-tt} -o BatchMode=yes -o ConnectTimeout=10 "$1" "bash -lc '$2'"; }
 # mask: replaces anything that looks like a bearer token, an API key or a JWT.
 mask() {
   sed -E -e 's/([Bb]earer[[:space:]]+)[^[:space:]"]+/\1***/g' \
@@ -179,7 +181,7 @@ step E0c "the secondary points at the primary" "$SECONDARY" "ragon-admin node pr
 ON_TTY=1 step E0d "the test user is created and signs in (ragon login --password-stdin)" "$PRIMARY" \
   "{ cat $RUN/pass; cat $RUN/pass; } | setsid -w ragon-admin node user add $TEST_USER && $H ca $RUN && $H signin $RUN"
 driven E1 "first-run screen through a pty: sign in, and create an account with an empty password" "$PRIMARY" "$H pty $RUN"
-ON_TTY=1 step E2 "login status shows the user and the issuer" "$PRIMARY" "$SESSION ragon whoami | grep -qF $TEST_USER"
+step E2 "login status shows the user and the issuer" "$PRIMARY" "$SESSION ragon login status | grep -qF $TEST_USER"
 step E3 "sessions lists this device" "$PRIMARY" "$SESSION ragon sessions"
 step E5 "device auth in both shapes (user code; verification_uri_complete) completes; the tokens name the user" "$PRIMARY" "$H device $RUN"
 step E6 "an API key works with the vendor's SDK: list, respond, stream, error; then revoked" "$PRIMARY" \

@@ -13,6 +13,7 @@ Subcommands: `ca`, `signin`, `device`, `key`, `revoke-key`, `sdk`, `forgejo`, `n
 
 from __future__ import annotations
 
+import base64
 import http.cookiejar
 import json
 import os
@@ -100,8 +101,24 @@ def unauth_rows(text: str) -> int:
 
 
 def tampered(token: str) -> str:
-    """The token with its signature's last character changed."""
-    return token[:-1] + ("A" if token[-1] != "A" else "B")
+    """The token with one bit of its JWT signature flipped, same length and same shape.
+
+    Spec §7 (specs/DREAMFERENCE_AUTH.md): a secondary verifies JWT signatures locally, and the
+    signature alone never admits a request. Flipping the last character would not always change the
+    signature: at a base64url padding boundary the last character carries unused bits. So the bit is
+    flipped in the decoded bytes and encoded again. A token without a signature segment (not a JWT)
+    gets its last character changed instead.
+    """
+    head, _, signature = token.rpartition(".")
+    try:
+        raw = bytearray(base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4)))
+    except ValueError:
+        raw = bytearray()
+    if not head or not raw:
+        return token[:-1] + ("A" if token[-1] != "A" else "B")
+    raw[-1] ^= 0x01
+    flipped = base64.urlsafe_b64encode(bytes(raw)).decode("ascii").rstrip("=")
+    return f"{head}.{flipped}"
 
 
 class Run:
@@ -264,7 +281,7 @@ def cmd_signin(run: Run) -> None:
         (run.dir / "home" / "auth.json").exists(), "the session is written to the run's auth.json"
     )
     out = subprocess.run(
-        ["ragon", "whoami"],
+        ["ragon", "login", "status"],
         capture_output=True,
         text=True,
         env=run.env("home"),
@@ -272,7 +289,7 @@ def cmd_signin(run: Run) -> None:
         check=False,
     )
     say(out.stdout + out.stderr)
-    check(out.returncode == 0 and run.user in out.stdout, "ragon whoami names the test user")
+    check(out.returncode == 0 and run.user in out.stdout, "ragon login status names the test user")
 
 
 def cmd_logout(run: Run) -> None:
@@ -487,14 +504,16 @@ def cmd_sdk(run: Run) -> None:
     )
     models = [m.id for m in client.models.list()]
     check(bool(models), f"models.list answers {len(models)} model(s)")
+    # 256, not 16: this model spends its output budget on reasoning first, so 16 tokens came back
+    # empty (E6 try 2: "responses.create answers text" failed); 256 leaves room for the answer.
     reply = client.responses.create(
-        model=models[0], input="Answer with the word ok.", max_output_tokens=16
+        model=models[0], input="Answer with the word ok.", max_output_tokens=256
     )
     check(bool(reply.output_text.strip()), "responses.create answers text")
     kinds = [
         event.type
         for event in client.responses.create(
-            model=models[0], input="Answer with the word ok.", max_output_tokens=16, stream=True
+            model=models[0], input="Answer with the word ok.", max_output_tokens=256, stream=True
         )
     ]
     check(
