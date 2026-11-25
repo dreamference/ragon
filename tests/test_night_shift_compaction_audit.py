@@ -332,6 +332,14 @@ def test_the_report_says_how_to_bring_a_branch_into_the_checkout():
     )
 
 
+def test_night_shift_compaction_audit_text_joins_list_items_and_dumps_a_scalar_or_dict():
+    text = NightShiftCompactionAudit._text
+    assert text("plain") == "plain"
+    assert text([{"text": "a"}, {"text": "b"}, "not a dict"]) == "a\nb"
+    assert text(None) == "null"
+    assert text({"a": 1}) == json.dumps({"a": 1})
+
+
 def test_night_shift_compaction_audit_parse_returns_none_for_invalid_or_non_dict_lines():
     parse = NightShiftCompactionAudit._parse
     assert parse("{not json") is None
