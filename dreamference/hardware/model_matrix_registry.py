@@ -7,6 +7,11 @@ for supported LLMs, speculative decoding draft models, and short alias resolutio
 import copy
 from typing import Any, Final
 
+from dreamference.hardware.gpu_platform import (
+    PLATFORM_GB10,
+    PLATFORM_STRIX_HALO_LINUX,
+    current_platform,
+)
 from dreamference.hardware.model_spec import ModelSpec
 
 # Quantization formats that a checkpoint declares in its own config.json. vLLM auto-detects these,
@@ -476,6 +481,49 @@ QWEN38_RAGON_IMAGE: Final[str] = (
     "ghcr.io/dreamference/ragon-serve@sha256:f4391e2e189b24574e71a93db07bcefe1e96d9cce9f65adb00db8d933dc57dff"
 )
 
+# The same recipe's image on strix-halo-linux: a separate repository (ragon-serve-hip), never a
+# multi-arch tag that mixes CUDA and HIP. Not built yet: the all-zero digest is the placeholder
+# amdlinux-engine-image replaces with `scripts/pin_ragon_serve_image.py --platform strix-halo-linux`;
+# `image_for_platform` refuses to start on it.
+QWEN38_RAGON_HIP_IMAGE: Final[str] = (
+    "ghcr.io/dreamference/ragon-serve-hip@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+)
+UNPINNED_DIGEST: Final[str] = "sha256:" + "0" * 64
+
+# The image per platform. `docker_image` stays the GB10's (never renamed or changed); `images`
+# is what a node on another platform resolves it from (`ModelMatrixRegistry.get_launch_overrides`).
+QWEN38_RAGON_IMAGES: Final[dict[str, str]] = {
+    PLATFORM_GB10: QWEN38_RAGON_IMAGE,
+    PLATFORM_STRIX_HALO_LINUX: QWEN38_RAGON_HIP_IMAGE,
+}
+
+
+def image_for_platform(images: dict[str, str], platform: str) -> str:
+    """Resolves a recipe's `images` to the platform's image (a placeholder when not pinned yet).
+
+    Raises:
+        ValueError: When the recipe has no image for the platform.
+    """
+    image = images.get(platform)
+    if not image:
+        raise ValueError(f"this model has no ragon-serve image for platform '{platform}'")
+    return image
+
+
+def require_pinned_image(image: str) -> str:
+    """Returns the image, or refuses the placeholder digest of an image not built yet.
+
+    Raises:
+        ValueError: When the image's digest is the all-zero placeholder.
+    """
+    if image.endswith(UNPINNED_DIGEST):
+        raise ValueError(
+            f"the ragon-serve image {image.split('@')[0]} is not pinned yet; "
+            "it is built and pinned by amdlinux-engine-image"
+        )
+    return image
+
+
 # The DFlash2 drafters ragon-serve can run, pinned. Speculation is exact, so the drafter moves
 # acceptance and speed, never the output. The ScaleSearch re-quantization of the RTN-calibrated one
 # (ragon-engine BACKLOG §19 item 22) is served,
@@ -506,6 +554,7 @@ QWEN38_RAGON_DRAFTER: Final[dict[str, Any]] = QWEN38_SCALESEARCH_DRAFTER
 QWEN38_RAGON_RECIPE: Final[dict[str, Any]] = {
     "engine": ENGINE_RAGON,
     "docker_image": QWEN38_RAGON_IMAGE,
+    "images": QWEN38_RAGON_IMAGES,
     "engine_commit": QWEN38_RAGON_ENGINE_COMMIT,
     "engine_features": list(QWEN38_RAGON_ENGINE_FEATURES),
     # Files a particular engine reads beside the checkpoint and the drafter (get_engine_assets):
@@ -598,6 +647,7 @@ class ModelMatrixRegistry:
             min_memory_gb=20.0,
             max_memory_gb=70.0,
             compatible_gb10=True,
+            compatible_platforms=frozenset({PLATFORM_GB10, PLATFORM_STRIX_HALO_LINUX}),
             notes=(
                 "Served by ragon-engine's ragon-serve since 0.9.0 (QWEN38_RAGON_RECIPE, four sessions "
                 "at the full context), with SGLang one flag away (`server start --engine sglang`), "
@@ -926,14 +976,34 @@ class ModelMatrixRegistry:
         if not spec:
             return {}
         if not engine or engine.lower() == cls.engine_of(spec.launch_overrides):
-            return copy.deepcopy(dict(spec.launch_overrides))
+            return cls.for_platform(copy.deepcopy(dict(spec.launch_overrides)))
         recipe = spec.engine_recipes.get(engine.lower())
         if recipe is None:
             raise ValueError(
                 f"{model_key} has no recipe for the engine '{engine}'; its engines: "
                 f"{', '.join(cls.engines(model_key))}."
             )
-        return copy.deepcopy(dict(recipe))
+        return cls.for_platform(copy.deepcopy(dict(recipe)))
+
+    @classmethod
+    def for_platform(cls, recipe: dict[str, Any], platform: str | None = None) -> dict[str, Any]:
+        """Resolves a recipe's per-platform `images` into its `docker_image`.
+
+        A recipe without `images` (every other engine's) and the GB10 are returned unchanged:
+        `docker_image` is the GB10's image and is never renamed.
+
+        Args:
+            recipe: A copy of a launch recipe, changed in place.
+            platform: One of PLATFORMS; None is the current one.
+
+        Returns:
+            dict[str, Any]: The same dict.
+        """
+        images = recipe.get("images")
+        platform = platform or current_platform()
+        if images and platform != PLATFORM_GB10:
+            recipe["docker_image"] = image_for_platform(images, platform)
+        return recipe
 
     @classmethod
     def engine_of(cls, recipe: dict[str, Any]) -> str:
