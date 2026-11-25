@@ -281,6 +281,9 @@ pub fn run_cli(args: &[String]) -> i32 {
         eprintln!("Night Shift: could not resolve CODEX_HOME");
         return 1;
     };
+    if args.first().is_some_and(|verb| verb == "run") {
+        return crate::night_run::run_cli(&dir, &args[1..]);
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let request = Request::from_args(args);
     if let Some(refusal) = client_refusal(&request, runner_present()) {
@@ -850,7 +853,7 @@ pub fn update_task<T>(
     Ok(outcome)
 }
 
-fn set_status(task: &mut Value, status: &str, note: Option<&str>) {
+pub(crate) fn set_status(task: &mut Value, status: &str, note: Option<&str>) {
     task["status"] = json!(status);
     let mut entry = json!({
         "at": chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
@@ -891,7 +894,7 @@ fn find(dir: &Path, repo: &Path, id: &str) -> Option<Value> {
     (matches.len() == 1).then(|| matches[0].clone())
 }
 
-fn read_task(path: &Path) -> Option<Value> {
+pub(crate) fn read_task(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
@@ -1003,7 +1006,7 @@ fn first_line(text: &str, width: usize) -> String {
     }
 }
 
-fn text(value: &Value, key: &str) -> String {
+pub(crate) fn text(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_string()
 }
 

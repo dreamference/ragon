@@ -154,6 +154,8 @@
 # Night Shift
 /dreamference/night_shift/                      @dreamference/night-shift
 /ragon-rs/src/night.rs                           @dreamference/night-shift
+/ragon-rs/src/night_run.rs                       @dreamference/night-shift
+/ragon-rs/src/night_run_tests.rs                 @dreamference/night-shift
 
 # Benchmarks
 /dreamference/swe_bench/                        @dreamference/benchmarks
