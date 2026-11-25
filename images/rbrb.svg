@@ -5,22 +5,20 @@
 <text class="hd" x="56" y="30" font-size="14" font-weight="bold">RBRB: Ragon-Builds-Ragon share (%)</text>
 <line class="gr" x1="56" y1="204.0" x2="616" y2="204.0"/>
 <text class="tx" x="50" y="208.0" text-anchor="end">0</text>
-<line class="gr" x1="56" y1="172.0" x2="616" y2="172.0"/>
-<text class="tx" x="50" y="176.0" text-anchor="end">5</text>
-<line class="gr" x1="56" y1="140.0" x2="616" y2="140.0"/>
-<text class="tx" x="50" y="144.0" text-anchor="end">10</text>
-<line class="gr" x1="56" y1="108.0" x2="616" y2="108.0"/>
-<text class="tx" x="50" y="112.0" text-anchor="end">15</text>
-<line class="gr" x1="56" y1="76.0" x2="616" y2="76.0"/>
-<text class="tx" x="50" y="80.0" text-anchor="end">20</text>
+<line class="gr" x1="56" y1="164.0" x2="616" y2="164.0"/>
+<text class="tx" x="50" y="168.0" text-anchor="end">5</text>
+<line class="gr" x1="56" y1="124.0" x2="616" y2="124.0"/>
+<text class="tx" x="50" y="128.0" text-anchor="end">10</text>
+<line class="gr" x1="56" y1="84.0" x2="616" y2="84.0"/>
+<text class="tx" x="50" y="88.0" text-anchor="end">15</text>
 <line class="gr" x1="56" y1="44.0" x2="616" y2="44.0"/>
-<text class="tx" x="50" y="48.0" text-anchor="end">25</text>
-<polyline class="ln" points="112.0,204.0 261.3,129.0 410.7,139.1" fill="none" stroke-width="2"/>
+<text class="tx" x="50" y="48.0" text-anchor="end">20</text>
+<polyline class="ln" points="112.0,204.0 261.3,110.3 410.7,122.8" fill="none" stroke-width="2"/>
 <circle class="dot" cx="112.0" cy="204.0" r="4"/>
-<circle class="dot" cx="261.3" cy="129.0" r="4"/>
-<circle class="dot" cx="410.7" cy="139.1" r="4"/>
-<line class="ln" x1="410.7" y1="139.1" x2="560.0" y2="101.3" stroke-width="1.5" stroke-dasharray="4 3"/>
-<circle class="hollow" cx="560.0" cy="101.3" r="5"/>
+<circle class="dot" cx="261.3" cy="110.3" r="4"/>
+<circle class="dot" cx="410.7" cy="122.8" r="4"/>
+<line class="ln" x1="410.7" y1="122.8" x2="560.0" y2="103.2" stroke-width="1.5" stroke-dasharray="4 3"/>
+<circle class="hollow" cx="560.0" cy="103.2" r="5"/>
 <text class="hd" x="56" y="246" font-size="14" font-weight="bold">Ragon tasks landed per week</text>
 <line class="gr" x1="56" y1="340.0" x2="616" y2="340.0"/>
 <text class="tx" x="50" y="344.0" text-anchor="end">0</text>
@@ -38,16 +36,16 @@
 <text class="hd" x="261.3" y="334.6" text-anchor="middle" font-weight="bold">1</text>
 <rect class="bar" x="398.7" y="277.6" width="24" height="62.4"/>
 <text class="hd" x="410.7" y="272.6" text-anchor="middle" font-weight="bold">156</text>
-<rect class="barh" x="548.0" y="309.6" width="24" height="30.4"/>
-<text class="hd" x="560.0" y="304.6" text-anchor="middle" font-weight="bold">76</text>
+<rect class="barh" x="548.0" y="299.6" width="24" height="40.4"/>
+<text class="hd" x="560.0" y="294.6" text-anchor="middle" font-weight="bold">101</text>
 <text class="tx" x="112.0" y="222" text-anchor="middle">2026-W45</text>
 <text class="tx" x="261.3" y="222" text-anchor="middle">2026-W46</text>
 <text class="tx" x="410.7" y="222" text-anchor="middle">2026-W47</text>
 <text class="tx" x="560.0" y="222" text-anchor="middle">2026-W48</text>
 <text class="hd" x="112.0" y="193.0" text-anchor="middle" font-size="12" font-weight="bold">0.00 %</text>
-<text class="hd" x="261.3" y="118.0" text-anchor="middle" font-size="12" font-weight="bold">11.72 %</text>
-<text class="hd" x="410.7" y="128.1" text-anchor="middle" font-size="12" font-weight="bold">10.15 %</text>
-<text class="hd" x="560.0" y="123.3" text-anchor="end" font-size="12" font-weight="bold">2026-W48 so far 16.05 %</text>
+<text class="hd" x="261.3" y="99.3" text-anchor="middle" font-size="12" font-weight="bold">11.72 %</text>
+<text class="hd" x="410.7" y="111.8" text-anchor="middle" font-size="12" font-weight="bold">10.15 %</text>
+<text class="hd" x="560.0" y="125.2" text-anchor="end" font-size="12" font-weight="bold">2026-W48 so far 12.60 %</text>
 <text class="hd" x="56" y="386" font-size="14" font-weight="bold">Quality band: revert rate (%), Ragon vs others</text>
 <line class="gr" x1="56" y1="560.0" x2="616" y2="560.0"/>
 <text class="tx" x="50" y="564.0" text-anchor="end">0</text>
