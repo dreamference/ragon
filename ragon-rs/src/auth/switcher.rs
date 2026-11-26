@@ -110,6 +110,43 @@ pub fn remove_entry(codex_home: &Path, primary_id: &str) -> anyhow::Result<()> {
     write_state(codex_home, &state)
 }
 
+/// Gives every entry that has no `account_id` the one in its id token, offline. Sign-ins of
+/// 0.9.9-rc.1 to rc.3 stored `null`, and Codex never refreshes such an entry (G3). Only a version 2
+/// file is touched, only those fields change, and nothing is written when nothing is missing;
+/// whether the file changed.
+///
+/// # Errors
+/// The lock is not taken, or the file cannot be read, parsed or written.
+pub fn fill_account_ids(codex_home: &Path) -> anyhow::Result<bool> {
+    fn fill(doc: &mut Value) -> bool {
+        if doc.get("version").and_then(Value::as_u64) != Some(2) {
+            return false;
+        }
+        let Some(entries) = doc.get_mut("entries").and_then(Value::as_object_mut) else { return false };
+        entries.values_mut().fold(false, |changed, entry| super::fill_account_id(entry) | changed)
+    }
+    let file = codex_home.join("auth.json");
+    let read = || -> anyhow::Result<Option<Value>> {
+        match std::fs::read_to_string(&file) {
+            Ok(text) => Ok(Some(serde_json::from_str(&text).context("auth.json is not valid JSON")?)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error).with_context(|| format!("could not read {}", file.display())),
+        }
+    };
+    // The common case, nothing missing, takes no lock and writes nothing.
+    let Some(mut doc) = read()? else { return Ok(false) };
+    if !fill(&mut doc) {
+        return Ok(false);
+    }
+    let _lock = Lock::take(&codex_home.join("auth.json.lock"))?;
+    let Some(mut doc) = read()? else { return Ok(false) };
+    if !fill(&mut doc) {
+        return Ok(false);
+    }
+    super::pin::write_private(&file, (serde_json::to_string_pretty(&doc)? + "\n").as_bytes())?;
+    Ok(true)
+}
+
 fn write_state(codex_home: &Path, state: &State) -> anyhow::Result<()> {
     let doc = json!({ "version": 2, "active": state.active, "entries": state.entries });
     super::pin::write_private(&codex_home.join("auth.json"), (serde_json::to_string_pretty(&doc)? + "\n").as_bytes())

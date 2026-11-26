@@ -256,18 +256,7 @@ pub fn role(id_token: &str) -> String {
 
 /// `auth.json`'s entry for the tokens, as Codex's own browser login writes it.
 pub fn auth_entry(tokens: &Tokens) -> anyhow::Result<AuthDotJson> {
-    let account = claims(&tokens.id_token)["https://api.openai.com/auth"]["chatgpt_account_id"].clone();
-    Ok(serde_json::from_value(serde_json::json!({
-        "auth_mode": "chatgpt",
-        "OPENAI_API_KEY": null,
-        "tokens": {
-            "id_token": tokens.id_token,
-            "access_token": tokens.access_token,
-            "refresh_token": tokens.refresh_token,
-            "account_id": account,
-        },
-        "last_refresh": chrono::Utc::now().to_rfc3339(),
-    }))?)
+    Ok(serde_json::from_value(super::token_entry(&tokens.id_token, &tokens.access_token, &tokens.refresh_token))?)
 }
 
 /// Whether a password may go to this gate: HTTPS, or plain HTTP to this machine.
