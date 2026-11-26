@@ -71,6 +71,10 @@ MAX_PORT: Final[int] = 65535
 GATE_NAME: Final[str] = "ragon"
 # `state()`'s record when a pause is in force.
 STATE_PAUSED: Final[str] = "paused"
+# `ragon web`'s user unit and the record its running server keeps under `$CODEX_HOME/web`
+# (ragon-rs/web/src/cli.rs UNIT_NAME, server_file).
+WEB_UNIT: Final[str] = "ragon-web.service"
+WEB_SERVER_FILE: Final[tuple[str, str]] = ("web", "server.json")
 
 
 class ModelGate:
@@ -259,7 +263,74 @@ class ModelGate:
             )
             shutil.rmtree(GATE_DIR / TLS_STAGED_DIR, ignore_errors=True)
             return False
-        return ModelGateTls.stage(folder, GATE_DIR)
+        staged = ModelGateTls.stage(folder, GATE_DIR)
+        if staged:
+            cls.restart_plain_web()
+        return staged
+
+    @classmethod
+    def web_server_file(cls) -> Path:
+        """Where a running `ragon web` records its pid and addresses.
+
+        Returns:
+            Path: `$CODEX_HOME/web/server.json`, `~/.ragon` when the variable is unset.
+        """
+        return Path(os.environ.get("CODEX_HOME") or Path.home() / ".ragon").joinpath(
+            *WEB_SERVER_FILE
+        )
+
+    @classmethod
+    def systemctl(cls, *args: str) -> int:
+        """Runs `systemctl --user` with `args`, a seam for the tests.
+
+        Args:
+            *args: The verb and the unit.
+
+        Returns:
+            int: The exit code; -1 when systemctl could not be run.
+        """
+        try:
+            return subprocess.run(
+                ["systemctl", "--user", *args], capture_output=True, timeout=60, check=False
+            ).returncode
+        except (OSError, subprocess.TimeoutExpired):
+            return -1
+
+    @classmethod
+    def restart_plain_web(cls) -> bool:
+        """Restarts `ragon web`'s unit when it runs on plain HTTP although the certificate exists.
+
+        `ragon web` reads the node's certificate once, when it starts. One started before the first
+        `server start` made the certificate (`node enable` in the installer, an upgrade that
+        restarted the unit first) would otherwise stay on plain HTTP, and every client expecting
+        HTTPS on port 3100 would fail. Nothing happens when web is not running, already lists
+        HTTPS addresses, or does not run under its systemd user unit.
+
+        Returns:
+            bool: True when the unit was restarted.
+        """
+        try:
+            record = json.loads(cls.web_server_file().read_text())
+            pid = int(record["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        if record.get("https_urls"):
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass  # running under another user id: still running
+        if cls.systemctl("is-active", "--quiet", WEB_UNIT) != 0:
+            return False
+        if cls.systemctl("try-restart", WEB_UNIT) != 0:
+            print(  # noqa: T201 - console output of server start
+                f"⚠️  ragon web serves plain HTTP; `systemctl --user restart {WEB_UNIT}` turns on HTTPS."
+            )
+            return False
+        print("🔒 ragon web restarted to serve HTTPS with the node's certificate.")  # noqa: T201 - console output of server start
+        return True
 
     @classmethod
     def node_info(cls) -> dict[str, Any]:

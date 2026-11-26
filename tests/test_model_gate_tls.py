@@ -10,6 +10,7 @@ import contextlib
 import hashlib
 import http.client
 import json
+import os
 import socket
 import ssl
 import subprocess
@@ -328,6 +329,59 @@ def test_a_node_that_cannot_make_its_certificate_serves_plain_http(monkeypatch, 
     assert ModelGate.start(8000, "image")
     assert not stale.exists()
     assert "serves plain HTTP" in capsys.readouterr().out
+
+
+def web_record(monkeypatch, tmp_path, pid, https_urls):
+    """A `ragon web` server.json under a scratch CODEX_HOME, and a recording systemctl stand-in."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    record = model_gate.ModelGate.web_server_file()
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps({"pid": pid, "port": 3100, "https_urls": https_urls}))
+    calls = []
+
+    def systemctl(cls, *args):
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(ModelGate, "systemctl", classmethod(systemctl))
+    return calls
+
+
+def test_a_web_server_started_before_the_certificate_is_restarted_once_on_https(
+    monkeypatch, tmp_path, capsys
+):
+    """The upgrade order of the 0.9.9 rehearsal: web up on plain HTTP, then `server start`."""
+    fake_docker(monkeypatch)
+    calls = web_record(monkeypatch, tmp_path, os.getpid(), [])
+    assert ModelGate.start(8000, "image")
+    assert calls == [
+        ("is-active", "--quiet", "ragon-web.service"),
+        ("try-restart", "ragon-web.service"),
+    ]
+    assert "restarted to serve HTTPS" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("case", ["https", "dead", "inactive", "missing"])
+def test_web_is_left_alone_when_it_serves_https_or_does_not_run_under_its_unit(
+    monkeypatch, tmp_path, case
+):
+    fake_docker(monkeypatch)
+    pid = os.getpid()
+    if case == "dead":
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait()
+        pid = child.pid
+    calls = web_record(
+        monkeypatch, tmp_path, pid, ["https://localhost:3100/"] if case == "https" else []
+    )
+    if case == "inactive":
+        monkeypatch.setattr(
+            ModelGate, "systemctl", classmethod(lambda cls, *args: calls.append(args) or 3)
+        )
+    if case == "missing":
+        ModelGate.web_server_file().unlink()
+    assert ModelGate.start(8000, "image")
+    assert ("try-restart", "ragon-web.service") not in calls
 
 
 def test_the_copied_service_serves_https_on_its_own_as_the_container_runs_it(tmp_path):
