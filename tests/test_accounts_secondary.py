@@ -73,8 +73,13 @@ def test_routes_are_forwarded(secondary, primary, route):
 
 def test_a_secondary_never_mints_a_key_but_lists_and_revokes_on_the_primary(secondary, primary):
     """As `ragon-admin node user key` refuses on a pinned node."""
-    status, _headers, body = secondary.handle("POST", "/ragon/v1/users/me/keys/", BEARER, b"{}")
-    assert status == 403 and body["error"]["code"] == "secondary_node"
+    for path in (
+        "/ragon/v1/users/me/keys",
+        "/ragon/v1/users/me/keys/",
+        "/ragon/v1/users/me/keys?x=1",
+    ):
+        status, _headers, body = secondary.handle("POST", path, BEARER, b"{}")
+        assert status == 403 and body["error"]["code"] == "secondary_node"
     assert "secondary" in body["error"]["message"] and "primary" in body["error"]["message"]
     assert primary.calls == []
     for method, route in (

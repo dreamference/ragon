@@ -425,6 +425,12 @@ def test_own_api_keys_list_mint_and_revoke_with_a_token_or_a_key(oauth, users, l
     assert call(oauth, "DELETE", KEYS + "/ci", token)[2]["error"]["code"] == "key_not_found"
     assert [k["name"] for k in call(oauth, "GET", KEYS, token)[2]["keys"]] == ["default"]
     assert call(oauth, "GET", KEYS)[0] == 401
+    # Rotation, as the page does it: revoke "default", mint a new one under the same name.
+    assert call(oauth, "DELETE", KEYS + "/default", token)[0] == 200
+    status, _, rotated = call(oauth, "POST", KEYS, token, {})
+    assert status == 200 and rotated["name"] == "default" and rotated["key"] != minted["key"]
+    assert oauth.handle("GET", "/ragon/v1/users/me", {"api-key": minted["key"]}, b"")[0] == 401
+    assert oauth.handle("GET", "/ragon/v1/users/me", {"api-key": rotated["key"]}, b"")[0] == 200
     assert "user=t-alice event=key client=ragon result=ok" in lines
     assert "user=t-alice event=revoke client=ragon result=ok" in lines
 
