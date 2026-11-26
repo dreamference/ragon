@@ -33,6 +33,46 @@ pub const CA_ENV: &str = "CODEX_CA_CERTIFICATE";
 /// Codex's own API key variable; it overrides the stored entry.
 pub const API_KEY_ENV: &str = "CODEX_API_KEY";
 
+/// The account id of a token entry: the id token's `chatgpt_account_id` claim, `null` when it has
+/// none. Codex refreshes an entry only when its `tokens.account_id` is set (its guarded reload
+/// compares it), so every writer of a token entry takes it from here.
+pub fn account_id(id_token: &str) -> serde_json::Value {
+    screen::claims(id_token)["https://api.openai.com/auth"]["chatgpt_account_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map_or(serde_json::Value::Null, |id| serde_json::Value::String(id.to_string()))
+}
+
+/// A token entry of `auth.json`, as Codex's own browser login writes one.
+pub fn token_entry(id_token: &str, access_token: &str, refresh_token: &str) -> serde_json::Value {
+    serde_json::json!({
+        "auth_mode": "chatgpt",
+        "OPENAI_API_KEY": null,
+        "tokens": {
+            "id_token": id_token,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "account_id": account_id(id_token),
+        },
+        "last_refresh": chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+/// Fills a token entry's missing `account_id` from its id token (entries written by 0.9.9-rc.1 to
+/// rc.3 have `null`); whether it changed.
+pub fn fill_account_id(entry: &mut serde_json::Value) -> bool {
+    let Some(tokens) = entry.get_mut("tokens").and_then(serde_json::Value::as_object_mut) else { return false };
+    if tokens.get("account_id").and_then(serde_json::Value::as_str).is_some_and(|id| !id.is_empty()) {
+        return false;
+    }
+    let id = account_id(tokens.get("id_token").and_then(serde_json::Value::as_str).unwrap_or_default());
+    if id.is_null() {
+        return false;
+    }
+    tokens.insert("account_id".into(), id);
+    true
+}
+
 /// What `GET /ragon/v1/info` says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Info {
@@ -451,6 +491,9 @@ async fn answers_by_name(gate: &str, pem: &str) -> bool {
 /// # Errors
 /// A CA that changed for a known node id (spec §6) stops the launcher.
 pub async fn start(gate: &str, codex_home: &Path, interactive: bool) -> anyhow::Result<bool> {
+    // Before Codex loads the file: an entry without its account id is never refreshed (G3). Best
+    // effort and offline; a file that cannot be repaired is Codex's to report.
+    let _ = switcher::fill_account_ids(codex_home);
     let gate = gate.trim_end_matches('/');
     let mut ca: Option<PathBuf> = None;
     let mut known: Option<Info> = None;

@@ -21,7 +21,7 @@ fn tempdir(name: &str) -> PathBuf {
 
 fn jwt(user: &str, role: &str) -> String {
     let enc = |v: Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string());
-    format!("{}.{}.sig", enc(json!({"alg": "none"})), enc(json!({"preferred_username": user, "role": role})))
+    format!("{}.{}.sig", enc(json!({"alg": "none"})), enc(json!({"preferred_username": user, "role": role, "https://api.openai.com/auth": {"chatgpt_account_id": format!("uid-{user}")}})))
 }
 
 /// A stub primary: answers the routes the commands use and records `METHOD path body`.
@@ -71,6 +71,9 @@ fn stub(taken: &'static [&'static str]) -> Stub {
             let user = parsed.get("username").and_then(Value::as_str).unwrap_or("");
             let (status, answer) = match (method.as_str(), path.as_str()) {
                 ("GET", "/ragon/v1/info") => (200, json!({"node_id": "n1", "node_name": "box", "primary_id": "p1", "primary_name": "main-box", "accounts": true})),
+                ("POST", "/oauth/token") if parsed["grant_type"] == "refresh_token" && parsed["refresh_token"] == "rt" => {
+                    (200, json!({"id_token": jwt("ann", "user"), "access_token": "at", "refresh_token": "rt"}))
+                }
                 ("POST", "/oauth/token") if parsed["password"] == "right" => {
                     (200, json!({"id_token": jwt(user, "user"), "access_token": "at", "refresh_token": "rt", "expires_in": 3600, "token_type": "Bearer"}))
                 }
@@ -81,6 +84,7 @@ fn stub(taken: &'static [&'static str]) -> Stub {
                     (200, json!({"id_token": jwt(user, "admin"), "access_token": "at", "refresh_token": "rt"}))
                 }
                 ("GET", "/ragon/v1/setup") => (200, json!({"setup": first_open, "local": true, "node": "main-box"})),
+                ("GET", me) if me.starts_with("/ragon/v1/users/me") && auth.ends_with("dead") => (401, json!({"error": "invalid_token"})),
                 ("GET", "/ragon/v1/users/me") if auth.ends_with("at") => (200, json!({"username": "ann", "role": "user"})),
                 ("GET", "/ragon/v1/users/me") => (200, json!({"username": "bot", "role": "user"})),
                 ("GET", "/ragon/v1/users/me/sessions") => (
@@ -142,6 +146,7 @@ async fn password_stdin_signs_in_and_status_names_the_user() {
     let state = switcher::read_state(&home).unwrap();
     assert_eq!(state.active.as_deref(), Some("p1"));
     assert_eq!(state.entries["p1"]["tokens"]["refresh_token"], "rt");
+    assert_eq!(state.entries["p1"]["tokens"]["account_id"], "uid-ann", "Codex refreshes only an entry with its account id");
     let seen = stub.seen.lock().unwrap().join("\n");
     assert!(seen.contains("\"password\":\"right\""), "the password reaches the gate in the body only");
     let (status, line) = run("login", &["status"], &stub, &home, "").await;
@@ -149,6 +154,53 @@ async fn password_stdin_signs_in_and_status_names_the_user() {
     let (_, all) = run("login", &["status", "--all"], &stub, &home, "").await;
     assert_eq!(all.trim(), "* p1: ann (user)");
     assert_eq!(doctor(&home), "signed in as ann (user)");
+}
+
+/// Sets fields of the stored entry's tokens, as an older launcher or a revoked session left them.
+fn edit_tokens(home: &PathBuf, fields: Value) {
+    let mut entry = switcher::read_state(home).unwrap().entries["p1"].clone();
+    for (key, value) in fields.as_object().unwrap() {
+        entry["tokens"][key] = value.clone();
+    }
+    switcher::save_entry(home, "p1", entry).unwrap();
+}
+
+#[tokio::test]
+async fn an_rc_entry_without_account_id_is_repaired_and_a_refresh_keeps_it() {
+    let (stub, home) = (stub(&[]), tempdir("repair"));
+    run("login", &["--username", "ann", "--password-stdin"], &stub, &home, "right\n").await;
+    // 0.9.9-rc.1 to rc.3 stored `null`.
+    edit_tokens(&home, json!({"account_id": null}));
+    let (status, line) = run("login", &["status"], &stub, &home, "").await;
+    assert_eq!((status.code, line.trim()), (0, "Signed in as ann (user) at box (accounts kept by main-box)"));
+    assert_eq!(switcher::read_state(&home).unwrap().entries["p1"]["tokens"]["account_id"], "uid-ann");
+    assert!(!switcher::fill_account_ids(&home).unwrap(), "nothing left to repair");
+    // The launcher's own refresh after a 401 keeps it.
+    edit_tokens(&home, json!({"account_id": "", "access_token": "dead"}));
+    let (status, line) = run("sessions", &[], &stub, &home, "").await;
+    assert_eq!(status.code, 0, "{line}");
+    let tokens = switcher::read_state(&home).unwrap().entries["p1"]["tokens"].clone();
+    assert_eq!((tokens["access_token"].as_str(), tokens["account_id"].as_str()), (Some("at"), Some("uid-ann")));
+    // An entry whose id token has no account id stays as it is; the old layout is Codex's.
+    edit_tokens(&home, json!({"account_id": null, "id_token": "x.e30.y"}));
+    assert!(!switcher::fill_account_ids(&home).unwrap());
+    let old = r#"{"auth_mode":"chatgpt","tokens":{"id_token":"x","account_id":null}}"#;
+    std::fs::write(home.join("auth.json"), old).unwrap();
+    assert!(!switcher::fill_account_ids(&home).unwrap());
+    assert_eq!(std::fs::read_to_string(home.join("auth.json")).unwrap(), old);
+}
+
+#[tokio::test]
+async fn status_of_a_session_that_cannot_be_refreshed_says_it_expired() {
+    let (stub, home) = (stub(&[]), tempdir("expired"));
+    run("login", &["--username", "ann", "--password-stdin"], &stub, &home, "right\n").await;
+    edit_tokens(&home, json!({"access_token": "dead", "refresh_token": "revoked"}));
+    let (status, line) = run("login", &["status"], &stub, &home, "").await;
+    assert_eq!((status.code, line.trim()), (1, "Session expired at box (accounts kept by main-box). Run ragon login."));
+    // A refusal the refresh cures is a good session.
+    edit_tokens(&home, json!({"refresh_token": "rt"}));
+    let (status, line) = run("login", &["status"], &stub, &home, "").await;
+    assert_eq!((status.code, line.trim()), (0, "Signed in as ann (user) at box (accounts kept by main-box)"));
 }
 
 fn doctor(home: &PathBuf) -> String {
@@ -174,6 +226,7 @@ async fn create_names_the_first_admin_and_a_taken_name_is_refused() {
     let (outcome, out) = run("login", &["--create", "--username", "ann", "--password-stdin"], &stub, &home, "pw\n").await;
     assert_eq!(outcome.code, 0, "{out}");
     assert!(out.contains("You are the first user of main-box and its admin."), "{out}");
+    assert_eq!(switcher::read_state(&home).unwrap().entries["p1"]["tokens"]["account_id"], "uid-ann");
     let (outcome, out) = run("login", &["--create", "--username", "bob", "--password-stdin"], &stub, &tempdir("taken"), "pw\n").await;
     assert_eq!(outcome.code, 1);
     assert!(out.contains("That username is taken."), "{out}");

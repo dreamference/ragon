@@ -294,6 +294,7 @@ impl Primary {
                 entry["tokens"][key] = value;
             }
         }
+        super::fill_account_id(&mut entry);
         entry["last_refresh"] = Value::String(chrono::Utc::now().to_rfc3339());
         switcher::save_entry(&self.home, &self.primary_id(), entry).is_ok()
     }
@@ -372,18 +373,8 @@ impl Primary {
             Ok(tokens) => tokens,
             Err(text) => return Ok(Err(text)),
         };
-        let text = |key: &str| tokens.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
-        let entry = json!({
-            "auth_mode": "chatgpt",
-            "OPENAI_API_KEY": null,
-            "tokens": {
-                "id_token": text("id_token"),
-                "access_token": text("access_token"),
-                "refresh_token": text("refresh_token"),
-                "account_id": null,
-            },
-            "last_refresh": chrono::Utc::now().to_rfc3339(),
-        });
+        let text = |key: &str| tokens.get(key).and_then(Value::as_str).unwrap_or_default();
+        let entry = super::token_entry(text("id_token"), text("access_token"), text("refresh_token"));
         switcher::save_entry(&self.home, &self.primary_id(), entry)?;
         Ok(Ok(()))
     }
@@ -400,15 +391,29 @@ impl Primary {
         claims_of(&self.entry()?)
     }
 
-    async fn me(&self) -> Option<(String, String)> {
-        let response = self.authed(reqwest::Method::GET, "/ragon/v1/users/me").await.ok()?;
-        if !response.status().is_success() {
-            return None;
+    /// What the gate says of this machine's bearer, after one refresh when it was refused.
+    async fn me(&self) -> Me {
+        let Ok(response) = self.authed(reqwest::Method::GET, "/ragon/v1/users/me").await else { return Me::Unreachable };
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Me::Refused;
         }
-        let json: Value = response.json().await.ok()?;
+        if !response.status().is_success() {
+            return Me::Unreachable;
+        }
+        let Ok(json) = response.json::<Value>().await else { return Me::Unreachable };
         let field = |key: &str| json.get(key).and_then(Value::as_str).map(str::to_string);
-        Some((field("username")?, field("role").unwrap_or_else(|| "user".to_string())))
+        field("username").map_or(Me::Unreachable, |user| Me::Known(user, field("role").unwrap_or_else(|| "user".to_string())))
     }
+}
+
+/// [`Primary::me`]'s answer.
+enum Me {
+    /// The bearer is good: the username and role.
+    Known(String, String),
+    /// The bearer was refused and could not be refreshed: the session is over.
+    Refused,
+    /// No answer.
+    Unreachable,
 }
 
 fn machine_name() -> String {
@@ -439,13 +444,21 @@ pub async fn status_line(primary: &Primary) -> (String, i32) {
     if entry.is_none() && primary.bearer().is_none() {
         return ("Not signed in. Run ragon login.".to_string(), 1);
     }
-    let live = primary.me().await;
+    let me = primary.me().await;
     let offline = entry.as_ref().and_then(claims_of);
     let node = primary.node_name();
     let mut suffix = String::new();
     if primary.primary_name() != node {
         suffix = format!(" (accounts kept by {})", primary.primary_name());
     }
+    if matches!(me, Me::Refused) && !key_only {
+        // Neither the launcher nor Codex can refresh it: saying "signed in" would be wrong (G3).
+        return (format!("Session expired at {node}{suffix}. Run ragon login."), 1);
+    }
+    let live = match me {
+        Me::Known(user, role) => Some((user, role)),
+        Me::Refused | Me::Unreachable => None,
+    };
     let reachable = live.is_some();
     let who = live.or(offline);
     let line = match (who, key_only) {
@@ -731,6 +744,8 @@ pub async fn run(which: &str, args: &[String], gate: &str, codex_home: &Path, io
         writeln!(io.out, "{}", status_json(gate, codex_home, Lang::detect()).await)?;
         return Ok(Outcome::done(0));
     }
+    // A sign-in of 0.9.9-rc.1 to rc.3 is repaired before it is shown or used (G3).
+    let _ = switcher::fill_account_ids(codex_home);
     let primary = connect(gate, codex_home).await?;
     if let Cmd::LogoutAll = cmd {
         let code = logout_all(&primary, io).await?;
