@@ -395,6 +395,65 @@ def test_sessions_list_and_delete_one_or_all(oauth, users):
     assert call(oauth, "GET", "/ragon/v1/users/me", bob["access_token"])[0] == 200
 
 
+KEYS: str = "/ragon/v1/users/me/keys"
+
+
+def test_own_api_keys_list_mint_and_revoke_with_a_token_or_a_key(oauth, users, lines):
+    """`/apikey` and the Account page: GET lists, POST mints once, DELETE revokes at once."""
+    token = sign_in(oauth, "t-alice", ALICE_PW)["access_token"]
+    assert call(oauth, "GET", KEYS, token) == (200, {}, {"keys": []})
+    status, _, minted = call(oauth, "POST", KEYS, token, {})
+    assert status == 200 and minted["name"] == "default"
+    assert minted["key"].startswith("sk-ragon-")
+    # The page sends an empty name for the default; a key may mint and list too.
+    as_key = {"api-key": minted["key"], "content-type": "application/json"}
+    status, _, ci = oauth.handle("POST", KEYS, as_key, json.dumps({"name": "ci"}).encode())
+    assert status == 200 and ci["name"] == "ci"
+    assert call(oauth, "POST", KEYS, token, {"name": ""})[2]["error"]["code"] == "key_exists"
+    status, _, listed = call(oauth, "GET", KEYS, token)
+    assert status == 200 and [k["name"] for k in listed["keys"]] == ["default", "ci"]
+    assert all(set(k) == {"name", "created", "last_use"} for k in listed["keys"])
+    assert minted["key"] not in json.dumps(listed) and ci["key"] not in json.dumps(listed)
+    for bad in ("a b", "../x", "x" * 65, 7):
+        assert call(oauth, "POST", KEYS, token, {"name": bad})[0] == 400
+    assert call(oauth, "PUT", KEYS, token)[0] == 405
+    assert call(oauth, "GET", KEYS + "/ci", token)[0] == 405
+    assert call(oauth, "DELETE", KEYS + "/ci", token) == (200, {}, {"revoked": 1})
+    ci_bearer = {"authorization": f"Bearer {ci['key']}"}
+    assert oauth.handle("GET", "/ragon/v1/users/me", ci_bearer, b"")[0] == 401
+    assert oauth.handle("GET", "/oauth/userinfo", ci_bearer, b"")[0] == 401
+    assert call(oauth, "DELETE", KEYS + "/ci", token)[2]["error"]["code"] == "key_not_found"
+    assert [k["name"] for k in call(oauth, "GET", KEYS, token)[2]["keys"]] == ["default"]
+    assert call(oauth, "GET", KEYS)[0] == 401
+    assert "user=t-alice event=key client=ragon result=ok" in lines
+    assert "user=t-alice event=revoke client=ragon result=ok" in lines
+
+
+def test_a_user_sees_and_revokes_only_their_own_keys(oauth, users, store):
+    alice = sign_in(oauth, "t-alice", ALICE_PW)["access_token"]
+    bob = sign_in(oauth, "t-bob", BOB_PW)["access_token"]
+    alice_key = call(oauth, "POST", KEYS, alice, {"name": "shared"})[2]["key"]
+    assert call(oauth, "GET", KEYS, bob) == (200, {}, {"keys": []})
+    assert call(oauth, "DELETE", KEYS + "/shared", bob)[0] == 404
+    assert oauth.handle("GET", "/ragon/v1/users/me", {"api-key": alice_key}, b"")[0] == 200
+    # Bob's own key of the same name is his: revoking it leaves Alice's alone.
+    assert call(oauth, "POST", KEYS, bob, {"name": "shared"})[0] == 200
+    assert call(oauth, "DELETE", KEYS + "/shared", bob)[0] == 200
+    assert oauth.handle("GET", "/ragon/v1/users/me", {"api-key": alice_key}, b"")[0] == 200
+    # A name the admin command minted with other characters is revoked through its escape.
+    store.mint_key("t-alice", "old key")
+    assert call(oauth, "DELETE", KEYS + "/old%20key", alice) == (200, {}, {"revoked": 1})
+
+
+def test_a_service_account_cannot_mint_itself_a_key(oauth, store):
+    service = store.ensure_service_account("0123abcd")
+    key = store.mint_key(service["username"], "node")
+    headers = {"api-key": key, "content-type": "application/json"}
+    status, _, body = oauth.handle("POST", KEYS, headers, b"{}")
+    assert status == 403 and body["error"]["code"] == "forbidden"
+    assert [k["name"] for k in store.keys(service["user_id"])] == ["node"]
+
+
 def test_delete_account_and_the_last_admin(oauth, users, store):
     alice = sign_in(oauth, "t-alice", ALICE_PW)["access_token"]
     bob = sign_in(oauth, "t-bob", BOB_PW)
