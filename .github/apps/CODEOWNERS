@@ -211,6 +211,7 @@
 /ragon-rs/tests/auth_provider.rs                  @dreamference/security
 /ragon-rs/tests/auth_screen.rs                    @dreamference/security
 /ragon-rs/tests/auth_commands.rs                  @dreamference/security
+/ragon-rs/tests/auth_refresh.rs                   @dreamference/security
 /ragon-rs/tests/auth_https_discovery.rs           @dreamference/security
 /ragon-rs/tests/auth_slash.rs                     @dreamference/security
 /ragon-rs/tests/auth_strings.rs                   @dreamference/security
