@@ -123,6 +123,7 @@ async fn the_account_page_and_its_script_need_the_device_sign_in_and_carry_every
     for path in ["/ragon/v1/users/me/sessions", "/ragon/v1/users/me/keys", "/ragon/v1/bindings", "/ragon/v1/usage", "/ragon/v1/users", "/reset", "/promote", "/demote"] {
         assert!(script.contains(path), "the script never calls {path}");
     }
+    assert!(!script.contains("optional(\"/ragon/v1/users/me/keys\""), "a 404 on the keys must show");
     assert!(!script.contains("innerHTML"));
 }
 

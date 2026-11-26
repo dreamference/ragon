@@ -175,7 +175,7 @@
       say("");
       var jobs = [
         optional("/ragon/v1/users/me/sessions", showSessions),
-        optional("/ragon/v1/users/me/keys", showKeys),
+        api("GET", "/ragon/v1/users/me/keys").then(showKeys),
         optional("/ragon/v1/bindings", showBindings),
         optional(me.role === "admin" ? "/ragon/v1/usage" : "/ragon/v1/users/me/usage", showUsage)
       ];
