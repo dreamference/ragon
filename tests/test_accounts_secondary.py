@@ -71,6 +71,24 @@ def test_routes_are_forwarded(secondary, primary, route):
     assert primary.calls[-1][1] == route and primary.calls[-1][3] == b"x"
 
 
+def test_a_secondary_never_mints_a_key_but_lists_and_revokes_on_the_primary(secondary, primary):
+    """As `ragon-admin node user key` refuses on a pinned node."""
+    status, _headers, body = secondary.handle("POST", "/ragon/v1/users/me/keys/", BEARER, b"{}")
+    assert status == 403 and body["error"]["code"] == "secondary_node"
+    assert "secondary" in body["error"]["message"] and "primary" in body["error"]["message"]
+    assert primary.calls == []
+    for method, route in (
+        ("GET", "/ragon/v1/users/me/keys"),
+        ("DELETE", "/ragon/v1/users/me/keys/ci"),
+    ):
+        status, _headers, body = secondary.handle(method, route, BEARER, b"")
+        assert status == 200 and body == {"ok": route.lstrip("/")}
+    assert [call[:2] for call in primary.calls] == [
+        ("GET", "/ragon/v1/users/me/keys"),
+        ("DELETE", "/ragon/v1/users/me/keys/ci"),
+    ]
+
+
 def test_unknown_route_is_not_forwarded(secondary, primary):
     assert secondary.handle("GET", "/nope", {}, b"")[0] == 404
     assert primary.calls == []
