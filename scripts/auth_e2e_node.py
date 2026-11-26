@@ -157,8 +157,8 @@ class Run:
         form: bool = False,
         headers: dict[str, str] | None = None,
         opener: urllib.request.OpenerDirector | None = None,
-    ) -> tuple[int, Any, dict[str, str]]:
-        """One request; answers status, parsed JSON (or text) and headers. Never raises on 4xx."""
+    ) -> tuple[int, Any, Any]:
+        """One request (headers: a case-insensitive HTTPMessage); answers status, parsed JSON (or text) and headers. Never raises on 4xx."""
         data = None
         hdrs = dict(headers or {})
         if body is not None:
@@ -182,9 +182,9 @@ class Run:
                     timeout=HTTP_TIMEOUT_S,
                     context=self.ctx if url.startswith("https") else None,
                 )
-            status, raw, rh = resp.status, resp.read(), dict(resp.headers)
+            status, raw, rh = resp.status, resp.read(), resp.headers
         except urllib.error.HTTPError as err:
-            status, raw, rh = err.code, err.read(), dict(err.headers)
+            status, raw, rh = err.code, err.read(), err.headers
         text = raw.decode("utf-8", "replace")
         try:
             return status, json.loads(text), rh
@@ -468,9 +468,20 @@ def cmd_revoke_fresh(run: Run) -> None:
     )
 
 
+def keyed_request(run: Run) -> tuple[int, Any]:
+    """One 1-token chat completion with the fresh key: a route that checks the key (/v1/models is open)."""
+    _, models, _ = run.http("GET", f"{GATE}/v1/models")
+    model = models["data"][0]["id"]
+    body = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}
+    status, answer, _ = run.http(
+        "POST", f"{GATE}/v1/chat/completions", body, bearer=run.secret("revoke-key")
+    )
+    return status, answer
+
+
 def cmd_key_accepted(run: Run) -> None:
     """E13 on the secondary: the fresh key is accepted before its revocation (200 on the gate)."""
-    status, _, _ = run.http("GET", f"{GATE}/v1/models", bearer=run.secret("revoke-key"))
+    status, _ = keyed_request(run)
     check(
         status == 200,  # noqa: PLR2004
         f"the fresh key is accepted through this node before revocation ({status})",
@@ -479,7 +490,7 @@ def cmd_key_accepted(run: Run) -> None:
 
 def cmd_key_refused(run: Run) -> None:
     """E13 on the secondary, after the revocation and one cache TTL: the key gets 401."""
-    status, answer, _ = run.http("GET", f"{GATE}/v1/models", bearer=run.secret("revoke-key"))
+    status, answer = keyed_request(run)
     code = (
         answer.get("error", {}).get("code")
         if isinstance(answer, dict) and isinstance(answer.get("error"), dict)
@@ -570,11 +581,15 @@ def cmd_forgejo(run: Run) -> None:
         status in (302, 303) and "/user/login" not in headers.get("Location", ""),
         f"Forgejo accepts the callback and opens a session ({status})",
     )
-    status, user, _ = run.http("GET", f"{FORGEJO}/api/v1/user", opener=opener)
-    login = user.get("login", "") if isinstance(user, dict) else ""
+    # Forgejo's API refuses a web session cookie ("Only signed in user is allowed to call APIs"),
+    # so the signed-in dashboard, whose title names the user, is the check.
+    status, page, _ = run.http("GET", f"{FORGEJO}/", opener=opener)
+    title = (
+        str(page).split("<title>", 1)[-1].split("</title>", 1)[0] if "<title>" in str(page) else ""
+    )
     check(
-        status == 200 and login.lower() == run.user.lower(),
-        f"Forgejo's /api/v1/user, with the session, names the test user ({status})",
+        status == 200 and title.lower().startswith(f"{run.user.lower()} - dashboard"),
+        f"Forgejo's dashboard, with the session, names the test user ({status})",
     )
 
 
@@ -828,12 +843,16 @@ def cmd_web(run: Run) -> None:
     )
     token = body.get("access_token") if isinstance(body, dict) else None
     check(status == 200 and bool(token), f"the login form signs the test user in ({status})")
-    status, me, _ = run.http("GET", f"{WEB}/ragon/v1/users/me", bearer=str(token))
+    status, me, _ = run.http(
+        "GET", f"{WEB}/ragon/v1/users/me", bearer=str(token), headers={"Cookie": cookie}
+    )
     check(
         status == 200 and isinstance(me, dict) and me.get("username") == run.user,
         "the Account page's /ragon/v1/users/me names the test user",
     )
-    status, _, _ = run.http("GET", f"{WEB}/ragon/v1/users/me/keys", bearer=str(token))
+    status, _, _ = run.http(
+        "GET", f"{WEB}/ragon/v1/users/me/keys", bearer=str(token), headers={"Cookie": cookie}
+    )
     check(status == 200, "the Account page's key list answers 200")
     status, _, _ = run.http("GET", f"{WEB}/ragon/v1/users/me", bearer=tampered(str(token)))
     check(status == 401, f"the Account API refuses a tampered token ({status})")

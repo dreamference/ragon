@@ -10,9 +10,12 @@ import os
 import py_compile
 import subprocess
 import sys
+import threading
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import ModuleType
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 
@@ -411,3 +414,180 @@ def test_every_node_command_goes_through_the_step_timeout() -> None:
     assert [
         line for line in text.splitlines() if "ssh " in line and not line.startswith(("on()", "#"))
     ] == []
+
+
+class _FakeRun:
+    """Stands in for the helper's Run: every request goes through `responder`, and is recorded."""
+
+    user = "e2e-user"
+    ctx = None
+
+    def __init__(self, responder: Any) -> None:
+        self.responder = responder
+        self.calls: list[dict[str, Any]] = []
+
+    def secret(self, name: str) -> str:
+        return "pw" if name == "pass" else "sk-fresh"
+
+    def password_token(self) -> str:
+        return "tok"
+
+    def http(  # noqa: PLR0913
+        self,
+        method: str,
+        url: str,
+        body: Any = None,
+        bearer: str | None = None,
+        form: bool = False,
+        headers: dict[str, str] | None = None,
+        opener: Any = None,
+    ) -> tuple[int, Any, Any]:
+        call = {
+            "method": method,
+            "url": url,
+            "body": body,
+            "bearer": bearer,
+            "headers": headers or {},
+        }
+        self.calls.append(call)
+        return self.responder(call)
+
+
+def _keys_responder(chat_status: int, chat_answer: Any) -> Any:
+    def respond(call: dict[str, Any]) -> tuple[int, Any, Any]:
+        if call["url"].endswith("/v1/models"):
+            return 200, {"data": [{"id": "qwen"}]}, {}
+        if call["url"].endswith("/v1/chat/completions"):
+            return chat_status, chat_answer, {}
+        return 404, None, {}
+
+    return respond
+
+
+INVALID_KEY = {
+    "error": {
+        "message": "bad key",
+        "type": "invalid_request_error",
+        "param": None,
+        "code": "invalid_api_key",
+    }
+}
+
+
+def test_run_http_answers_headers_whatever_their_case(tmp_path: Path) -> None:
+    # The gate sends `set-cookie` in lower case; a plain dict lookup for "Set-Cookie" missed it (E8).
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(401 if self.path == "/refused" else 200)
+            self.send_header("set-cookie", "ragon_session=abc; Path=/")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        helper = _helper()
+        run = helper.Run(str(tmp_path))
+        # No proxy: the test talks to its own loopback server only.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        for path, status in (("/", 200), ("/refused", 401)):
+            got, _, headers = run.http("GET", base + path, opener=opener)
+            assert got == status
+            assert headers.get("Set-Cookie") == "ragon_session=abc; Path=/"
+            assert headers.get("SET-COOKIE") == "ragon_session=abc; Path=/"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e13_keyed_request_posts_a_one_token_chat_with_the_fresh_key() -> None:
+    # GET /v1/models is open by spec, so the key check goes through a keyed chat completion.
+    helper = _helper()
+    fake = _FakeRun(_keys_responder(200, {"id": "x"}))
+    status, _ = helper.keyed_request(fake)
+    assert status == 200
+    assert fake.calls[0]["method"] == "GET" and fake.calls[0]["bearer"] is None
+    chat = fake.calls[1]
+    assert chat["method"] == "POST" and chat["url"].endswith("/v1/chat/completions")
+    assert chat["bearer"] == "sk-fresh"
+    assert chat["body"] == {
+        "model": "qwen",
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+
+def test_e13_accepted_needs_a_200_and_refused_needs_the_keyed_401() -> None:
+    helper = _helper()
+    helper.cmd_key_accepted(_FakeRun(_keys_responder(200, {"id": "x"})))
+    with pytest.raises(helper.Failed):
+        helper.cmd_key_accepted(_FakeRun(_keys_responder(401, INVALID_KEY)))
+    helper.cmd_key_refused(_FakeRun(_keys_responder(401, INVALID_KEY)))
+    # A bogus key that the open /v1/models route would answer 200 to must not pass as refused.
+    with pytest.raises(helper.Failed):
+        helper.cmd_key_refused(_FakeRun(_keys_responder(200, {"id": "x"})))
+
+
+def _forgejo_responder(page: str) -> Any:
+    def respond(call: dict[str, Any]) -> tuple[int, Any, Any]:
+        url = call["url"]
+        if url.endswith("/user/oauth2/ragon/callback?code=1"):
+            return 302, None, {"Location": "/forge/"}
+        if url.endswith("/user/oauth2/ragon"):
+            return 302, None, {"Location": "https://localhost:3100/oauth/authorize?client_id=c"}
+        if url.endswith("/api/auth/authorize"):
+            return 200, {"redirect_to": "/forge/user/oauth2/ragon/callback?code=1"}, {}
+        if url == "http://127.0.0.1:3200/":
+            return 200, page, {}
+        if url.endswith("/api/v1/user"):
+            return 403, {"message": "Only signed in user is allowed to call APIs."}, {}
+        return 404, None, {}
+
+    return respond
+
+
+def test_e9_checks_the_signed_in_dashboard_not_the_api() -> None:
+    helper = _helper()
+    dashboard = "<html><head><title>e2e-user - Dashboard - Forgejo</title></head></html>"
+    fake = _FakeRun(_forgejo_responder(dashboard))
+    helper.cmd_forgejo(fake)
+    assert not any(call["url"].endswith("/api/v1/user") for call in fake.calls)
+    # A page without the user's dashboard title fails the step.
+    with pytest.raises(helper.Failed):
+        helper.cmd_forgejo(_FakeRun(_forgejo_responder('{"message": "Only signed in user"}')))
+
+
+def test_e8_sends_the_session_cookie_with_the_bearer_on_ragon_web(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = _helper()
+    monkeypatch.setattr(helper, "session_cookie", lambda run: "ragon_session=abc")
+
+    def respond(call: dict[str, Any]) -> tuple[int, Any, Any]:
+        url, has_cookie = call["url"], call["headers"].get("Cookie") == "ragon_session=abc"
+        signed_in = has_cookie and call["bearer"] == "tok"
+        answer: tuple[int, Any] = (200, None)
+        if url.endswith("/account"):
+            answer = (200 if has_cookie else 401, None)
+        elif url.endswith("/api/auth/login"):
+            good = isinstance(call["body"], dict) and call["body"].get("password") == "pw"
+            answer = (200, {"access_token": "tok"}) if good else (401, None)
+        elif url.endswith("/ragon/v1/users/me/keys"):
+            answer = (200 if signed_in else 401, None)
+        elif url.endswith("/ragon/v1/users/me"):
+            answer = (200, {"username": "e2e-user"}) if signed_in else (401, None)
+        return answer[0], answer[1], {}
+
+    fake = _FakeRun(respond)
+    helper.cmd_web(fake)
+    api = [call for call in fake.calls if "/ragon/v1/users/me" in call["url"]]
+    assert [call["headers"].get("Cookie") for call in api[:2]] == [
+        "ragon_session=abc",
+        "ragon_session=abc",
+    ]
+    assert api[0]["bearer"] == "tok" and api[1]["bearer"] == "tok"
