@@ -71,6 +71,8 @@ MAX_PORT: Final[int] = 65535
 GATE_NAME: Final[str] = "ragon"
 # `state()`'s record when a pause is in force.
 STATE_PAUSED: Final[str] = "paused"
+# `os.name` on the systems that have user units (and a harmless pid probe).
+POSIX_OS: Final[str] = "posix"
 # `ragon web`'s user unit and the record its running server keeps under `$CODEX_HOME/web`
 # (ragon-rs/web/src/cli.rs UNIT_NAME, server_file).
 WEB_UNIT: Final[str] = "ragon-web.service"
@@ -309,19 +311,15 @@ class ModelGate:
         Returns:
             bool: True when the unit was restarted.
         """
+        if os.name != POSIX_OS:
+            return False  # no user unit to restart, and a pid probe is not harmless there
         try:
             record = json.loads(cls.web_server_file().read_text())
             pid = int(record["pid"])
         except (OSError, ValueError, KeyError, TypeError):
             return False
-        if record.get("https_urls"):
+        if record.get("https_urls") or not cls.pid_alive(pid):
             return False
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            pass  # running under another user id: still running
         if cls.systemctl("is-active", "--quiet", WEB_UNIT) != 0:
             return False
         if cls.systemctl("try-restart", WEB_UNIT) != 0:
@@ -330,6 +328,24 @@ class ModelGate:
             )
             return False
         print("🔒 ragon web restarted to serve HTTPS with the node's certificate.")  # noqa: T201 - console output of server start
+        return True
+
+    @staticmethod
+    def pid_alive(pid: int) -> bool:
+        """Says whether a process with this id exists (POSIX only: signal 0 probes, it does not kill).
+
+        Args:
+            pid (int): The process id.
+
+        Returns:
+            bool: True when the process exists, also under another user id.
+        """
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
         return True
 
     @classmethod
