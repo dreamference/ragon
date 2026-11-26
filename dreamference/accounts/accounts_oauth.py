@@ -60,6 +60,10 @@ LOCAL_MARK: Final[str] = "1"
 MAX_DAYS: Final[int] = 366
 NODE_ID: Final[re.Pattern[str]] = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 SESSION_PATH: Final[re.Pattern[str]] = re.compile(r"^/ragon/v1/users/me/sessions/(\d+)$")
+KEY_PATH: Final[re.Pattern[str]] = re.compile(r"^/ragon/v1/users/me/keys/([^/]+)$")
+# A self-minted key's name: the characters `/apikey` sends (slash.rs `name_ok`), no escaping.
+KEY_NAME: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+DEFAULT_KEY_NAME: Final[str] = "default"
 # Parameter names that carry a credential: never accepted in a URL (§10).
 SECRET_PARAMS: Final[frozenset[str]] = frozenset(
     {
@@ -681,6 +685,10 @@ class AccountsOauth:
         match = SESSION_PATH.match(route)
         if match:
             return self.only(method, DELETE) or self.end_session(user, int(match.group(1)))
+        match = KEY_PATH.match(route)
+        if match:
+            name = urllib.parse.unquote(match.group(1))
+            return self.only(method, DELETE) or self.revoke_own_key(user, name)
         actions: dict[str, dict[str, Callable[[], Answer]]] = {
             ME_PATH: {
                 GET: lambda: (200, {}, self.profile(user)),
@@ -691,12 +699,44 @@ class AccountsOauth:
                 GET: lambda: (200, {}, {"sessions": self.session_list(user, sid)}),
                 DELETE: lambda: self.end_all_sessions(user),
             },
+            ME_PATH + "/keys": {
+                GET: lambda: (200, {}, {"keys": self.store.keys(user["user_id"])}),
+                POST: lambda: self.mint_own_key(user, headers, body),
+            },
         }
         methods = actions.get(route)
         if methods is None:
             return self.api_error(404, "unknown_url", f"Unknown path {route}.")
         action = methods.get(method)
         return action() if action else (self.only(method, *methods) or self.unauthorized())
+
+    def mint_own_key(self, user: dict[str, Any], headers: dict[str, str], body: bytes) -> Answer:
+        """`POST /ragon/v1/users/me/keys` (`/apikey new [name]`): a key of the caller's, shown once.
+
+        A node's service account gets its key at pin time only. A missing or empty name is
+        `default`, as `ragon-admin node user key` has it.
+        """
+        if user["service"]:
+            return self.api_error(403, "forbidden", "A node's service account cannot mint keys.")
+        fields = self.parse_body(headers, body)
+        name = (fields or {}).get("name") or DEFAULT_KEY_NAME
+        if fields is None or not isinstance(name, str) or not KEY_NAME.match(name):
+            return self.api_error(
+                400, "invalid_request", "A key name is 1 to 64 letters, digits, '.', '_' or '-'."
+            )
+        try:
+            key = self.store.mint_key(user["username"], name, client="ragon")
+        except AccountsError as error:
+            return self.api_error(409, "key_exists", str(error))
+        return 200, {}, {"name": name, "key": key}
+
+    def revoke_own_key(self, user: dict[str, Any], name: str) -> Answer:
+        """`DELETE /ragon/v1/users/me/keys/<name>`: one of the caller's own live keys."""
+        try:
+            self.store.revoke_key(user["username"], name, client="ragon")
+        except AccountsError:
+            return self.api_error(404, "key_not_found", "No such key.")
+        return 200, {}, {"revoked": 1}
 
     def end_session(self, user: dict[str, Any], session_id: int) -> Answer:
         """`DELETE /ragon/v1/users/me/sessions/<id>`: one of the caller's own sessions."""
