@@ -395,7 +395,10 @@ impl Primary {
     async fn me(&self) -> Me {
         let Ok(response) = self.authed(reqwest::Method::GET, "/ragon/v1/users/me").await else { return Me::Unreachable };
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Me::Refused;
+            // A secondary whose primary is down answers 401 "authentication server unreachable".
+            let body = response.json::<Value>().await.unwrap_or(Value::Null);
+            let down = body.pointer("/error/message").and_then(Value::as_str) == Some("authentication server unreachable");
+            return if down { Me::Unreachable } else { Me::Refused };
         }
         if !response.status().is_success() {
             return Me::Unreachable;
@@ -439,7 +442,7 @@ pub fn claims_of(entry: &Value) -> Option<(String, String)> {
 /// `ragon login status`: the line and the exit status.
 pub async fn status_line(primary: &Primary) -> (String, i32) {
     let entry = primary.entry();
-    let key_only = entry.as_ref().is_some_and(|e| e.pointer("/tokens/access_token").and_then(Value::as_str).is_none_or(str::is_empty))
+    let key_only = entry.as_ref().map_or(true, |e| e.pointer("/tokens/access_token").and_then(Value::as_str).is_none_or(str::is_empty))
         && primary.bearer().is_some();
     if entry.is_none() && primary.bearer().is_none() {
         return ("Not signed in. Run ragon login.".to_string(), 1);

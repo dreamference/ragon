@@ -71,6 +71,7 @@ fn stub(taken: &'static [&'static str]) -> Stub {
             let user = parsed.get("username").and_then(Value::as_str).unwrap_or("");
             let (status, answer) = match (method.as_str(), path.as_str()) {
                 ("GET", "/ragon/v1/info") => (200, json!({"node_id": "n1", "node_name": "box", "primary_id": "p1", "primary_name": "main-box", "accounts": true})),
+                ("POST", "/oauth/token") if parsed["refresh_token"] == "down" => (503, json!({"error": {"message": "authentication server unreachable", "type": "invalid_request_error", "param": null, "code": "accounts_unavailable"}})),
                 ("POST", "/oauth/token") if parsed["grant_type"] == "refresh_token" && parsed["refresh_token"] == "rt" => {
                     (200, json!({"id_token": jwt("ann", "user"), "access_token": "at", "refresh_token": "rt"}))
                 }
@@ -84,6 +85,7 @@ fn stub(taken: &'static [&'static str]) -> Stub {
                     (200, json!({"id_token": jwt(user, "admin"), "access_token": "at", "refresh_token": "rt"}))
                 }
                 ("GET", "/ragon/v1/setup") => (200, json!({"setup": first_open, "local": true, "node": "main-box"})),
+                ("GET", "/ragon/v1/users/me") if auth.ends_with("down") => (401, json!({"error": {"message": "authentication server unreachable", "type": "invalid_request_error", "param": null, "code": "accounts_unavailable"}})),
                 ("GET", me) if me.starts_with("/ragon/v1/users/me") && auth.ends_with("dead") => (401, json!({"error": "invalid_token"})),
                 ("GET", "/ragon/v1/users/me") if auth.ends_with("at") => (200, json!({"username": "ann", "role": "user"})),
                 ("GET", "/ragon/v1/users/me") => (200, json!({"username": "bot", "role": "user"})),
@@ -201,6 +203,16 @@ async fn status_of_a_session_that_cannot_be_refreshed_says_it_expired() {
     edit_tokens(&home, json!({"refresh_token": "rt"}));
     let (status, line) = run("login", &["status"], &stub, &home, "").await;
     assert_eq!((status.code, line.trim()), (0, "Signed in as ann (user) at box (accounts kept by main-box)"));
+}
+
+#[tokio::test]
+async fn status_on_a_secondary_with_the_primary_down_is_signed_in_and_unreachable() {
+    let (stub, home) = (stub(&[]), tempdir("down"));
+    run("login", &["--username", "ann", "--password-stdin"], &stub, &home, "right\n").await;
+    edit_tokens(&home, json!({"access_token": "down", "refresh_token": "down"}));
+    let (status, line) = run("login", &["status"], &stub, &home, "").await;
+    assert_eq!(status.code, 0, "{line}");
+    assert!(line.contains("(authentication server unreachable)"), "{line}");
 }
 
 fn doctor(home: &PathBuf) -> String {
