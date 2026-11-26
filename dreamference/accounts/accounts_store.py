@@ -424,6 +424,15 @@ class AccountsStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def keys(self, user_id: str) -> list[dict[str, Any]]:
+        """Lists the user's live API keys: name, creation and last use (never the hash)."""
+        rows = self.db.execute(
+            "SELECT key_name AS name, created, last_use FROM keys"
+            " WHERE user_id = ? AND revoked IS NULL ORDER BY created",
+            (user_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def revoke_refresh_token(self, token: str) -> bool:
         """Revokes the session of a refresh token.
 
@@ -456,7 +465,7 @@ class AccountsStore:
         self.db.commit()
         return cursor.rowcount
 
-    def mint_key(self, name: str, key_name: str = "default") -> str:
+    def mint_key(self, name: str, key_name: str = "default", client: str = "admin") -> str:
         """Mints an API key `sk-ragon-<32 random bytes, base64url>`; only its SHA-256 is stored.
 
         Raises:
@@ -474,10 +483,10 @@ class AccountsStore:
             (self._hash(key), row["user_id"], key_name, time.time()),
         )
         self.db.commit()
-        self.audit("key", row["username"], "admin", "ok")
+        self.audit("key", row["username"], client, "ok")
         return key
 
-    def revoke_key(self, name: str, key_name: str) -> None:
+    def revoke_key(self, name: str, key_name: str, client: str = "admin") -> None:
         """Revokes the user's key of that name.
 
         Raises:
@@ -491,7 +500,7 @@ class AccountsStore:
         self.db.commit()
         if cursor.rowcount == 0:
             raise AccountsError(f"{row['username']} has no key named {key_name}.")
-        self.audit("revoke", row["username"], "admin", "ok")
+        self.audit("revoke", row["username"], client, "ok")
 
     def verify_key(self, key: str) -> dict[str, Any] | None:
         """Returns the key's user when the key is live and its user exists, else None."""

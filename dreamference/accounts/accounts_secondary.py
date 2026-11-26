@@ -249,6 +249,8 @@ class AccountsSecondary:
             return self.live_check(headers)
         if route == USERINFO_PATH and method in ("GET", "POST"):
             return self.userinfo(headers)
+        if route == ME_PATH + "/keys" and method == "POST":  # noqa: PLR2004
+            return self.no_minting()
         if not self.forwarded(route):
             return AccountsOauth.api_error(404, "unknown_url", f"Unknown path {route}.")
         target = route + (f"?{split.query}" if split.query else "")
@@ -257,6 +259,15 @@ class AccountsSecondary:
         except OSError:
             return self.unreachable()
         return self.relay(status, document)
+
+    def no_minting(self) -> Answer:
+        """The 403 for a key minted here: a secondary never mints (as `ragon-admin node user key`)."""
+        primary = urllib.parse.urlsplit(self.primary_url).hostname or self.primary_url
+        return AccountsOauth.api_error(
+            403,
+            "secondary_node",
+            f"This node is a secondary of {primary}: it keeps no accounts. Mint keys on the primary.",
+        )
 
     @classmethod
     def relay(cls, status: int, document: Any) -> Answer:  # noqa: ANN401
