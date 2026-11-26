@@ -2,6 +2,8 @@
 
 import contextlib
 import itertools
+import sys
+import threading
 from unittest.mock import MagicMock
 
 import requests
@@ -11,6 +13,24 @@ from dreamference.node import NodeAdvertiser
 from dreamference.vllm_server import VLLMServerManager
 
 C = ctl.DreamferenceCLIController
+
+
+def _own_thread_sleeps(slept):
+    """A `time.sleep` stand-in that records only this test's own sleeps.
+
+    `time.sleep` is patched on the module, so two other callers would otherwise land in the
+    test's list: a background thread another test left behind, and `subprocess`, whose
+    `wait(timeout=...)` backs off through `time.sleep` (0.001 s doubling to 0.05 s) for as long
+    as a child process runs.
+    """
+    owner = threading.get_ident()
+
+    def sleep(seconds):
+        caller = sys._getframe(1).f_globals.get("__name__")
+        if threading.get_ident() == owner and caller != "subprocess":
+            slept.append(seconds)
+
+    return sleep
 
 
 class _Monitor:
@@ -94,7 +114,7 @@ def test_dreamference_cli_controller_after_server_ready_reports_a_ready_diffusio
     ticks = itertools.count(1.0, 1.0)
     monkeypatch.setattr(time_mod, "time", lambda: next(ticks))
     slept = []
-    monkeypatch.setattr(time_mod, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(time_mod, "sleep", _own_thread_sleeps(slept))
 
     _start(monkeypatch, _Monitor(ready=True))
 
@@ -182,7 +202,7 @@ def test_dreamference_cli_controller_start_diffusion_sidecar_nulls_the_manager_o
     ticks = itertools.count(1.0, 1.0)
     monkeypatch.setattr(time_mod, "time", lambda: next(ticks))
     slept = []
-    monkeypatch.setattr(time_mod, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(time_mod, "sleep", _own_thread_sleeps(slept))
 
     # A False return (the docker failure the manager already reported) drops the handle,
     # so the ready path polls nothing: no sidecar line, no sleeping.
@@ -231,7 +251,7 @@ def test_dreamference_cli_controller_report_diffusion_state_polls_until_healthy(
     ticks = itertools.count(1.0, 1.0)
     monkeypatch.setattr(time_mod, "time", lambda: next(ticks))
     slept = []
-    monkeypatch.setattr(time_mod, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(time_mod, "sleep", _own_thread_sleeps(slept))
 
     _start(monkeypatch, _Monitor(ready=True))
 
@@ -262,7 +282,7 @@ def test_dreamference_cli_controller_report_diffusion_state_reports_load_failure
     ticks = itertools.count(1.0, 1.0)
     monkeypatch.setattr(time_mod, "time", lambda: next(ticks))
     slept = []
-    monkeypatch.setattr(time_mod, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(time_mod, "sleep", _own_thread_sleeps(slept))
 
     _start(monkeypatch, _Monitor(ready=True))
 
@@ -293,7 +313,7 @@ def test_dreamference_cli_controller_report_diffusion_state_reports_still_loadin
     ticks = itertools.count(1.0, 1.0)
     monkeypatch.setattr(time_mod, "time", lambda: next(ticks))
     slept = []
-    monkeypatch.setattr(time_mod, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(time_mod, "sleep", _own_thread_sleeps(slept))
 
     _start(monkeypatch, _Monitor(ready=True))
 
