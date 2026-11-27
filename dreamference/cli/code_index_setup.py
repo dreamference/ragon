@@ -60,6 +60,10 @@ BUILD_TOOLS: Final[dict[str, str]] = {"maven": "mvn", "gradle": "gradle"}
 MIN_JAVA: Final[int] = 17
 MIN_DOTNET: Final[int] = 8
 DOTNET_TOOL_DIR: Final[str] = "scip-dotnet"
+# The pin file name that identifies scip-dotnet in PinnedTool.name comparisons.
+SCIP_DOTNET_PIN: Final[str] = "scip-dotnet"
+# The sentinel value in PinnedTool.member indicating the archive IS the program.
+RAW_BUNDLE_MEMBER: Final[str] = "-"
 
 
 class PinnedTool(NamedTuple):
@@ -126,7 +130,7 @@ class CodeIndexSetup:
         Returns:
             bool: True when the binary exists and its stamp names the pinned archive.
         """
-        if tool.name == "scip-dotnet":
+        if tool.name == SCIP_DOTNET_PIN:
             installed = (Path(INDEXERS_DIR) / DOTNET_TOOL_DIR / "scip-dotnet.dll").is_file()
         else:
             installed = os.access(Path(cls.bin_dir()) / tool.name, os.X_OK)
@@ -161,9 +165,9 @@ class CodeIndexSetup:
                 f"❌ {tool.name}: checksum {digest} does not match the pinned {tool.sha256}; not installed"
             )
             return False
-        if tool.name == "scip-dotnet":
+        if tool.name == SCIP_DOTNET_PIN:
             return cls._install_dotnet_tool(tool, archive)
-        if tool.member == "-":
+        if tool.member == RAW_BUNDLE_MEMBER:
             # The download is the program itself (scip-java's launcher, a script with its jars
             # appended).
             content = archive

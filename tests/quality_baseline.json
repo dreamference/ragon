@@ -25,7 +25,6 @@
   "dreamference/cli/code_index_setup.py": {
    "PLR0911": 1,
    "PLR1702": 2,
-   "PLR2004": 3,
    "PQ001": 1
   },
   "dreamference/cli/dreamference_cli_controller.py": {
@@ -177,5 +176,5 @@
   }
  },
  "ruff": "0.16.10",
- "total": 198
+ "total": 195
 }
