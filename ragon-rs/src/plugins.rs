@@ -37,10 +37,13 @@ pub const VENDOR_FEATURES: [&str; 2] = ["remote_plugin", "plugin_sharing"];
 /// The `-c` settings every session gets. The launcher closes the vendor's channels in the user's
 /// `config.toml`, but Codex reads a trusted folder's `.codex/config.toml` above that file, and its
 /// list of keys a project may not set leaves these out: the update check (api.github.com), a
-/// terminal pet (art from OpenAI's CDN) and [`VENDOR_FEATURES`]. A setting on the command line
-/// sits above the project's file. `chatgpt_base_url` needs none: Codex refuses it from a project.
+/// terminal pet (art from OpenAI's CDN), feedback (`feedback/upload` posts an envelope to the
+/// vendor's Sentry) and [`VENDOR_FEATURES`]. A setting on the command line sits above the
+/// project's file. `chatgpt_base_url` and the realtime sideband URL need none: Codex refuses them
+/// from a project, and `config.toml` points them at the gate.
 pub fn vendor_settings() -> Vec<String> {
-    ["check_for_update_on_startup=false".to_string(), "tui.pet=\"disabled\"".to_string()]
+    ["check_for_update_on_startup=false", "tui.pet=\"disabled\"", "feedback.enabled=false"]
+        .map(String::from)
         .into_iter()
         .chain(VENDOR_FEATURES.iter().map(|feature| format!("features.{feature}=false")))
         .collect()
@@ -171,6 +174,7 @@ mod tests {
         }
         assert_eq!(merged["check_for_update_on_startup"].as_bool(), Some(false));
         assert_eq!(merged["tui"]["pet"].as_str(), Some("disabled"));
+        assert_eq!(merged["feedback"]["enabled"].as_bool(), Some(false));
         for feature in VENDOR_FEATURES {
             assert_eq!(merged["features"][feature].as_bool(), Some(false), "{feature}");
         }

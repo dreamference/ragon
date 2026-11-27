@@ -1628,6 +1628,9 @@ pub fn updated_config_for(existing: &str, catalog_path: &Path, host: &str, accou
     doc["model_provider"] = value(PROVIDER);
     doc["chatgpt_base_url"] = value(format!("{gate}/backend-api/"));
     doc.remove("ragon_issuer");
+    // `thread/realtime/start` with an existing call opens its sideband at api.openai.com/v1 by
+    // default and sends the session's bearer there (rel-099 vendor-paths check): the gate instead.
+    doc["experimental_realtime_ws_base_url"] = value(format!("{gate}/v1"));
     // A chosen terminal pet downloads its art from OpenAI's CDN (persistent.oaistatic.com) at
     // startup; /pets is hidden (patch 0010), and a pet left in the file is dropped for the same
     // reason.
@@ -2306,7 +2309,7 @@ mod tests {
 
     #[test]
     fn settings_that_reach_openai_are_overridden_not_just_defaulted() {
-        let existing = "check_for_update_on_startup = true\nchatgpt_base_url = \"https://chatgpt.com/\"\n[tui]\npet = \"otter\"\ntheme = \"x\"\n";
+        let existing = "check_for_update_on_startup = true\nchatgpt_base_url = \"https://chatgpt.com/\"\nexperimental_realtime_ws_base_url = \"https://api.openai.com/v1\"\n[tui]\npet = \"otter\"\ntheme = \"x\"\n";
         let text = updated_config(existing, Path::new("/h/c.json"), "http://x:8000")
             .unwrap_or_default();
         let parsed: toml::Table = toml::from_str(&text).unwrap_or_default();
@@ -2315,6 +2318,10 @@ mod tests {
             Some(false)
         );
         assert_eq!(parsed.get("chatgpt_base_url").and_then(toml::Value::as_str), Some("http://x:8000/backend-api/"));
+        assert_eq!(
+            parsed.get("experimental_realtime_ws_base_url").and_then(toml::Value::as_str),
+            Some("http://x:8000/v1")
+        );
         let tui = parsed.get("tui").and_then(toml::Value::as_table);
         assert!(tui.is_some_and(|tui| !tui.contains_key("pet") && tui.contains_key("theme")));
     }
