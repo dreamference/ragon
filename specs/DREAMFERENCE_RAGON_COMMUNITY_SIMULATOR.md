@@ -1,6 +1,6 @@
 # The Ragon community simulator: simulated users who install Ragon, use it, talk about it and file bugs
 
-**Status:** proposed, 2026-11-27, rewritten the same day with the owner's 103 answers and the later ruling on static pages. This is a spec only: nothing is built yet. The repository `dreamference/ragon-community` exists (public, AGPL-3.0, holding only its licence). The owner's words: "It needs to run entirely on ragon and simulate ragon community installing ragon testing and filing bugs. Community code needs to go into a separate ragon-community repo on github." One decision is still open: the site's notice (§1, §20, question 1). Nothing is published until the owner answers it.
+**Status:** proposed, 2026-11-27, rewritten the same day with the owner's 103 answers and the later ruling on static pages. This is a spec only: nothing is built yet. The repository `dreamference/ragon-community` exists (public, AGPL-3.0, holding only its licence). The owner's words: "It needs to run entirely on ragon and simulate ragon community installing ragon testing and filing bugs. Community code needs to go into a separate ragon-community repo on github." One decision is still open: the site's notice (§1, §20, question 1). Nothing is published until the owner answers it: no content commit to the public repository, no deploy (§10.4).
 **Target:**
 
 | Phase | What | Due |
@@ -29,7 +29,7 @@ In December the simulator gives way to the 1.0 gate whenever the two compete.
 | 3 | **It finds defects before users do.** Its targets are install, upgrade, docs and first-use defects. Each user installs Ragon and then does one real task | Q1, Q4 | §4 |
 | 4 | **It is a community, not a script.** Users have invented handles and drawn icons. Each keeps a diary between runs, and they ask and answer each other in forum threads | Q7, Q11, Q15, Q87 | §3, §9 |
 | 5 | **Its pages are static and read-only.** Simulated users write threads and reports as files in `dreamference/ragon-community`. A page builder turns the files into a site at `community.ragon.ai` on GitHub Pages. There is no server, no sign-up, no e-mail address, no admin account and no moderator bot. Real people do not post there: they ask on the main repository's GitHub Discussions, which open at 1.0 | later ruling | §10 |
-| 6 | **The results are public from the first run.** This is an exception to "no community posts until 1.0", and it holds only once the notice question (§1) is answered | Q2, Q37 | §10.6 |
+| 6 | **The results are public from the first run.** This is an exception to "no community posts until 1.0", and it holds only once the notice question (§1) is answered. Until then the content stays on the community GB10 | Q2, Q37 | §10.4 |
 | 7 | **The users never count as community.** Simulated users and posts never count in any public figure about users or the community. The 1.0 announcement may name the simulator as a testing method, never as community size | Q98, Q99 | §16.2 |
 | 8 | **Bug reports go to GitHub issues of `dreamference/ragon`.** They carry the `simulated` label and are filed by the community GitHub App. At most 10 new issues are opened a day, and a match gets a comment instead. Filing stays off until fewer than 30 % of confirmed reports are false | Q46–Q51, Q83 | §8 |
 | 9 | **A report is a defect once reproduced.** It counts as a real defect when a second simulated user reproduces it on a clean machine. It then becomes a work row, fixed by Ragon rows first, and the user who found it re-checks the fix on the next candidate | Q48, Q55, Q56 | §8.4 |
@@ -54,7 +54,8 @@ With no notice at all, a visitor or a search result cannot tell these users from
 
 **Rules until the owner answers:**
 - The page builder carries the choice as one setting, `notice = "A" | "B"`, with no default. The build refuses to run without it, except in CI's preview mode, which builds an artifact that is never deployed (test).
-- The DNS record, the Pages switch and the first deploy (§19) wait for the answer. Phase 0 and Phase 1 build and test the site in preview mode, so no build row waits for the decision.
+- The content (users, threads, reports, results) stays in a local repository on the community GB10 until the answer (§10.4). A commit to the public `ragon-community` repository is publication, even with no site deployed.
+- The DNS record, the Pages switch and the first deploy (§19) wait for the answer. CI builds the site in preview mode from test fixtures only, and the real preview is built on the community GB10 and read there, so no build row waits for the decision.
 - Everything that leaves the site is labelled whatever the answer is. A GitHub issue carries the `simulated` label, and its first line says it was written by a simulated user run by Ragon (§8.1), as the coordinator's note on Q17 requires.
 
 ---
@@ -298,14 +299,17 @@ Users have the network a normal user has (Q27). Three rules hold on top of that:
 
 | Step | What | Check |
 |---|---|---|
-| Lend | the fleet's scheduler grants one secondary for a day lane window (08:00–20:00 UTC), with its GPU lock. Benchmark nights keep priority (Q69). The fleet's primary is never lent | the runner refuses a box that is not granted, and refuses the primary by its machine id (test) |
-| Stop | the box's own Ragon node is stopped through its documented stop command, so the GPU and the ports are free | its gate stops answering |
+| Enrol (once) | the owner runs `enrol-lent-secondary.sh` (§19.2) on the one secondary the coordinator names. It creates the account `community` with no password login and the coordinator's key, installs the wipe helper with this box's machine id and one sudoers line limited to the helper, and installs the lend rules below, switched off. It does not touch the box's own Ragon | the script's last line `ENROLLED lent-secondary <machine id>` |
+| Lend | the fleet's scheduler grants the enrolled secondary for a day lane window (08:00–20:00 UTC), with its GPU lock. Benchmark nights keep priority (Q69). The fleet's primary is never lent | the runner refuses a box that is not granted, and refuses the primary by its machine id (test) |
+| Stop | the helper's `lend-begin` stops the box's own Ragon node through its documented stop command, so the GPU and the ports are free, and switches the lend rules on: box-wide outbound rules, for every user including root, that block the fleet's primary, the other nodes, the forge and the coordinator's machine | its gate stops answering; a connection to each blocked address fails |
 | Model | the model is already downloaded (Q22). The helper gives `sim-NN` a hard-linked copy of the box's model cache at the path the docs name, and the install's download step finds the files and checks their hashes | each report from such a run says "model files present before install" |
 | Run | the team's node user installs the candidate, with `sudo` by its own password | — |
 | Wipe | `delete sim-NN` and `check sim-NN` (§6.2) | `check` exits 0 |
-| Restore | the box's own node is started again | the fleet's usual health check passes, and the fleet primary's member list is the same as before the lend; if not, the box stays out of the fleet and the coordinator gets one inbox line |
+| Restore | the helper's `lend-end` checks that the lend rules are as `lend-begin` left them, switches them off and starts the box's own node again. Rules changed during the lend are an S1 finding | the fleet's usual health check passes, and the fleet primary's member list is the same as before the lend; if not, the box stays out of the fleet and the coordinator gets one inbox line |
 
-What a run on a lent secondary does not cover: host settings, the docker group and lingering are already present on a fleet box, so the install's host-setup step runs as a no-op there. The first real host setup on a GB10 is therefore checked only on the community GB10's own enrolment and by the person checks.
+What a run on a lent secondary does not cover:
+- The node user has `sudo` there, so root can change the lend rules while the run lasts. `lend-end` finds such a change afterwards but cannot prevent it.
+- Host settings, the docker group and lingering are already present on a fleet box, so the install's host-setup step runs as a no-op there. The first real host setup on a GB10 is therefore checked only on the community GB10's own enrolment and by the person checks.
 
 ---
 
@@ -377,7 +381,7 @@ A model-judged finding quotes the doc text or the output it judges, word for wor
 
 | Place | When | By whom |
 |---|---|---|
-| `reports/` in `ragon-community`, shown on the site | always, after the filter (§11) | the community GitHub App, as content (§12.3) |
+| `reports/` in the content repository, shown on the site | always, after the filter (§11). The content repository is local on the community GB10 until §1 is answered (§10.4) | the runner, as content (§12.3) |
 | GitHub issues of `dreamference/ragon`, label `simulated` | only while the filing switch is on, and only for reports with `reproduced_by` not empty | the community GitHub App, which carries GitHub's bot badge (Q49) |
 | the owner, privately | security-looking finds (§11.2) | the runner, through one `SECURITY:` line to the coordinator's inbox. Never a file in the repository |
 
@@ -477,7 +481,13 @@ A post that claims an outcome ("the install failed at step 3", "it worked on 0.9
 
 ### 10.4 Going public
 
-Phase 0 and Phase 1 deploy nothing: CI builds the site as a preview artifact. The first deploy waits for the owner's notice answer (§1), the DNS record and the Pages switch (§19.1). From then on, every content commit deploys.
+Until the owner answers the notice question (§1), nothing reaches GitHub:
+- **The content** lives in a local git repository, `content/`, in the runner's data on the community GB10. The runner commits to it after the filter, exactly as it later commits to the public repository (§12.3).
+- **The preview** is built from that repository on the community GB10 and read there by the coordinator. CI in `ragon-community` builds previews from test fixtures only.
+
+Once the owner has answered:
+- **Option A:** the whole local history is filtered once more, from its first commit, and pushed to `main` of `ragon-community`. The DNS record and the Pages switch follow (§19.1), and from then on every content commit deploys.
+- **Option B:** the content never enters the public repository, since a public repository is indexed whatever its pages say. It stays on the community GB10 and is served on the LAN only, and steps 4 and 5 of §19.1 are dropped. Only the code lives in `ragon-community`.
 
 ---
 
@@ -550,7 +560,7 @@ This repository never imports from `ragon-community`, and nothing in its suite r
 | Path | What | How it lands |
 |---|---|---|
 | Code | crates, glue, site, briefs, data lists | the same landing rules as `dreamference/ragon` (Q66): a branch, a pull request, CI green, then the merge job's fast-forward. Commits are made by the community team bot, carry `Ragon-Tokens: N` and, where Ragon made the change, `Made-with: ragon` |
-| Content | `users/`, `threads/`, `reports/`, `results/` | the runner commits straight to `main` as the community GitHub App, at most one commit per finished run and one per round summary, after the filter. CI refuses a content commit that touches any other path, and refuses one that the filter holds |
+| Content | `users/`, `threads/`, `reports/`, `results/` | until §1 is answered, the local content repository only (§10.4). After option A, the runner commits straight to `main` as the community GitHub App, at most one commit per finished run and one per round summary, after the filter. CI refuses a content commit that touches any other path, and refuses one that the filter holds |
 
 ### 12.4 How it is tested
 
@@ -592,7 +602,7 @@ Following the rule that tests never touch the real machine, every test runs offl
 | Tests never touch the real machine, and the fleet's primary is never a target, a brain or a lent box | the denylist by machine id, checked at `prepare` and before every `run` (test with planted ids) |
 | Community machines never join the fleet's primary or its accounts (Q78) | at `prepare`, the community GB10's node lists no fleet node as a member |
 | A lent secondary is the only fleet box a run touches, only while granted, and it is restored and checked (§6.5) | the restore check |
-| Throwaway accounts never reach the fleet (§6.3) | the `prepare` connection test |
+| Throwaway accounts never reach the fleet (§6.3). A node user's root on a lent secondary is held by the box-wide lend rules, checked afterwards rather than prevented (§6.5) | the `prepare` connection test; `lend-end`'s rule check |
 | No key of ours on a target. The brain's service key lives only in the runner account on the community GB10 | a test checks that no stage brief, journal or diary contains it |
 | Nothing is committed or filed unfiltered (§11) | the filter's tests and the CI re-check |
 | No person, host name or IP address in anything published | the filter, plus the main repository's anonymity denylist in `ragon-community`'s pre-push hook and CI |
@@ -661,11 +671,11 @@ Agent-days count building work only. **L** rows go to Ragon first, through the `
 
 ### Phase 0: the core, the machines, one live run (by 4 December, 5 agent-days)
 
-**Outcome:** the offline core passes its tests and the three community machines are enrolled. The stable brain runs on the community GB10. One Linux client user (`moss_lantern`, beginner, English) runs `discover`, `install`, `first_use` and a task against the latest stable from a fresh `sim-01` account, and the account is then wiped and checked. Its report files and diary are written in the preview site. The rows are in §18.
+**Outcome:** the offline core passes its tests and the three community machines are enrolled. The stable brain runs on the community GB10. One Linux client user (`moss_lantern`, beginner, English) runs `discover`, `install`, `first_use` and a task against the latest stable from a fresh `sim-01` account, and the account is then wiped and checked. Its report files and diary are committed to the local content repository and shown in the preview built on the community GB10. Nothing is pushed to GitHub. The rows are in §18.
 
 ### Phase 1: ten users, Linux and node, terminal only (by 12 December, 6 agent-days)
 
-**Outcome:** the core set of ten (Q94) runs on every 0.9.10 candidate. The set is six Linux client users and four node users, one team of four on a lent secondary, beginners weighted, with two careless users, two Codex switchers and one upgrade user. They have diaries, post English threads, write reports and are reproduced by a second user. Ready to go live once §1 is answered.
+**Outcome:** the core set of ten (Q94) runs on every 0.9.10 candidate. The set is six Linux client users and four node users, one team of four on a lent secondary, beginners weighted, with two careless users, two Codex switchers and one upgrade user. They have diaries, post English threads, write reports and are reproduced by a second user. The content stays local until §1 is answered, and is published as §10.4 says once it is.
 
 | Row | What | Check | Who |
 |---|---|---|---|
@@ -709,7 +719,7 @@ Agent-days count building work only. **L** rows go to Ragon first, through the `
 | 3.4 | outside runs: the results format and the CI checks for hand-made pull requests (§12.5) | `python -m pytest tests/test_outside_results.py` | L |
 | 3.5 | the quarterly task refresh | `ragon-community tasks check` on the new list | C |
 
-**Total: 24 agent-days** (5 + 6 + 7 + 6). Roughly 21 of the 44 build rows are L. A row split between L and C counts as half, and the owner's steps are left out. Each phase is useful without the next.
+**Total: 24 agent-days** (5 + 6 + 7 + 6). Roughly 23 of the 48 build rows are L. A row split between L and C counts as half, and the owner's steps are left out. Each phase is useful without the next.
 
 ---
 
@@ -731,7 +741,7 @@ Every row is sized for Ragon's `task` tool unless it is marked C: one bounded ch
 | W1.10 | `rc-machine`: the allowlist and the denylist by machine id | `cargo test -p rc-machine denylist` | L | Mon |
 | W1.11 | `rc-tool`: `run`, `term_*`, `fetch_doc` with its allowlist, `post`, `note`, and the output cap | `cargo test -p rc-tool` | C | Tue |
 | W1.12 | the Linux wipe helper (`create`, `delete`, `check`, a root prefix for tests, the refusals) and the Linux footprint list | `python -m pytest glue/tests/test_wipe_linux.py` | C | Tue |
-| W1.13 | **the three enrolment scripts** (§19.2): templates in `glue/enrol/`, a `--dry-run` that prints every action, and shellcheck and PowerShell parse checks. The owner's copies, with the names filled in, go to the coordinator's scratch directory and never into a repository | `python -m pytest glue/tests/test_enrol.py` | C | **Sat, for Monday** |
+| W1.13 | **the enrolment scripts** (§19.2): the three for the community machines and the one for a lendable fleet secondary, as templates in `glue/enrol/`, plus the DNS script `glue/owner/dns-community.sh` (§19.3); a `--dry-run` that prints every action, and shellcheck and PowerShell parse checks. The owner's copies, with the names filled in, go to the coordinator's scratch directory and never into a repository | `python -m pytest glue/tests/test_enrol.py` | C | **Sat, for Monday** |
 | W1.14 | `site/build.py`: forum layout, user, thread and report pages, the `notice` setting, preview mode, the no-script and no-form scan | `python -m pytest site/tests` | C (build), L (scan test) | Tue |
 | W1.15 | **this repository:** doc-step ids on the install, first-use, client and upgrade pages, and their test. This row lands after the release freeze | `.venv/bin/python -m pytest tests/test_doc_step_ids.py` | L | Wed |
 | W1.16 | **this repository:** the team `community` in `scripts/as_team.py`'s table, for the app of §19.1 step 3 | `.venv/bin/python -m pytest tests/test_as_team.py` | L | Wed |
@@ -749,6 +759,7 @@ Every row is sized for Ragon's `task` tool unless it is marked C: one bounded ch
 |---|---|---|---|
 | 1 | Answer the notice question (§1, §20 question 1) | before step 5 | option A or option B |
 | 2 | Enrol the three community machines | Monday 30 November, as each one is on the LAN | run the box's script (§19.2), one per box, then reply "done" with the script's last line |
+| 2b | Enrol the fleet secondary that may be lent | before Phase 1's first team round | run `enrol-lent-secondary.sh` (§19.2) with `sudo` on the one secondary the coordinator names, then reply with its last line |
 | 3 | Create the community GitHub App | this week | in the organisation's settings: an App named `dreamference-community`, with no webhook. Permissions: Contents read and write, Pull requests read and write, and Workflows on `dreamference/ragon-community`; Issues read and write on `dreamference/ragon`, and nothing else there. Install it on those two repositories only, and hand its key to the coordinator by the same route as the other team apps |
 | 4 | Add the DNS record for `community.ragon.ai` | after step 1 | run `glue/owner/dns-community.sh`, written in W1.13 (§19.3) |
 | 5 | Turn on GitHub Pages for `dreamference/ragon-community` | after steps 1 and 4 | Settings, then Pages: source "GitHub Actions"; custom domain `community.ragon.ai`; "Enforce HTTPS" on once the certificate is issued |
@@ -769,7 +780,9 @@ The scripts are written in row W1.13. The machine names and the coordinator's pu
 | 6. Power | no sleep | `pmset` sleep off on power | sleep off on mains power |
 | 7. Leaves alone | GPU driver, operating-system updates | **no** developer tools or package managers system-wide, so users meet the docs' prerequisites as a stranger would | Smart App Control and SmartScreen as shipped, so users meet them as a stranger would; then a restart, needed for the ssh server |
 
-None of the scripts joins the machine to the fleet, installs Ragon, or stores a password.
+**The lendable fleet secondary** (`enrol-lent-secondary.sh`, run with `sudo` on the one secondary the coordinator names) does steps 2, 4 and 5 only. It creates `community` with the coordinator's key, installs the wipe helper with `lend-begin` and `lend-end`, and installs the lend rules of §6.5, switched off. It leaves the box's name, power settings, its own Ragon and its fleet membership as they are.
+
+None of the scripts joins a machine to the fleet or takes one out of it, installs Ragon, or stores a password.
 
 ### 19.3 The DNS script
 
