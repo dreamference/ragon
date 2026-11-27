@@ -21,7 +21,7 @@
 
 **The owner's goal**, verbatim: "We need to support all codex remote session functionality as close and compatible to codex as possible. Run agent to write a spec. The goal is to be absolutely compatible".
 
-**The governing ruling** (owner, 2026-11-27 12:35), verbatim: "Everything that goes to openai in codex needs to go through our primary node. In this way we can achieve 100 percent compatibility".
+**The governing ruling** (owner, 2026-11-27 12:35), verbatim: "Everything that goes to [the vendor] in codex needs to go through our primary node. In this way we can achieve 100 percent compatibility".
 - The primary stands in for the vendor's servers. The client keeps the same code path, the same requests and the same protocol. Only the destination changes.
 - Client patches stay as few as possible: ideally only base addresses and trust roots.
 
@@ -105,7 +105,7 @@ Literal vendor hosts appear only in code font, as the source writes them.
 | V9 | Cloud environments: `wham/environments`, `environments/by-repo/github/{owner}/{repo}` | `cloud-tasks/src/env_detect.rs:50-92`, `:289` | JSON list | as V8 | missing |
 | V10 | `codex apply TASK_ID` | `chatgpt/src/get_task.rs:38`; `chatgpt/src/chatgpt_client.rs:18`, `:53-97` | `GET {base}/wham/tasks/{id}` with `OAI-Product-Sku: codex` | config key: `chatgpt_base_url` | 404 shape on the gate |
 | V11 | Cloud-config bundle | `cloud-config/src/service.rs:35-57`, `:486-540` | `GET /wham/config/bundle` every 15 min, only for business, education and enterprise plans | config key: `chatgpt_base_url` | 404 shape; never asked, because the `accounts/check` stub reports no such plan |
-| V12 | Daemon updater | `app-server-daemon/src/update_loop.rs:63`, `:532-625` | downloads `https://chatgpt.com/codex/install.sh` (`install.ps1` on Windows) and runs it | **hard-coded** | **open, conditional.** Not patched (0008 patches only `codex update`). It runs only for a managed daemon with `autoUpdateEnabled` (default true, `app-server-daemon/src/settings.rs:14-35`) and only where the daemon finds the standalone install layout; whether a Ragon install has that layout was not checked (Appendix C, G3) |
+| V12 | Daemon updater | `app-server-daemon/src/update_loop.rs:66-68`, `:380`, `:532-625` | downloads `https://chatgpt.com/codex/install.sh` (`install.ps1` on Windows) and pipes it to `/bin/sh -s` (`:380`, `:532-545`; read, not run) | **hard-coded** | **open, conditional.** Not patched (0008 patches only `codex update`). It runs only for a managed daemon with `autoUpdateEnabled` (default true, `app-server-daemon/src/settings.rs:14-35`) and only where the daemon finds the standalone install layout; whether a Ragon install has that layout was not checked (Appendix C, G3) |
 | V13 | TUI update check | the TUI's update module; forced off at `ragon-rs/src/lib.rs:1619` | asks the vendor's public release feed about new releases | config key: `check_for_update_on_startup` | closed: forced `false` by the launcher |
 | V14 | Desktop app download (`codex app`) | `cli/src/desktop_app/mac.rs:10-12`, `:237`; `cli/src/desktop_app/windows.rs:7-8` | `persistent.oaistatic.com/codex-app-prod/Codex.dmg`; a store page on Windows | flag `--download-url`; otherwise hard-coded | open when run; it installs the vendor's app |
 | V15 | Usage analytics | `analytics/src/client.rs:142` | event batches | config key `[analytics] enabled` | closed: patch `0013` never builds the queue |
@@ -197,9 +197,9 @@ Each item has a recommended default and a question in §12. None is decided here
 
 ### 4.1 Rules (each one is a test in §10)
 
-- **R1 Same flags.** Every flag in §5 is accepted by `ragon` with Codex's name, value syntax, default and meaning. The value check is part of this: for example `--remote` needs an explicit port and path `/`, and a token is refused over non-loopback `ws://`. A flag Ragon hides stays accepted.
-- **R2 Same config keys.** Every key in §5 is read from `config.toml` with Codex's name, type, default and effect. The launcher's forced values (§3.3) are the only exceptions, and each is listed there.
-- **R3 Same environment variables**, with Codex's names (§5).
+- **R1 Same flags.** Every flag that Appendix B lists (§1-§8, per subcommand) is accepted by `ragon` with Codex's name, value syntax, default and meaning. The value check is part of this: for example `--remote` needs an explicit port and path `/`, and a token is refused over non-loopback `ws://`. A flag Ragon hides stays accepted.
+- **R2 Same config keys.** Every key that Appendix B lists (§9, and the key rows of §1-§8) is read from `config.toml` with Codex's name, type, default and effect. The launcher's forced values (§3.3) are the only exceptions, and each is listed there.
+- **R3 Same environment variables**: every variable in Appendix B §9 and in the address column of Appendix C, with Codex's names and effects.
 - **R4 Unmodified Codex client to a Ragon server.** An unmodified `codex` at the pinned tag, given only the primary's address, a token variable and the CA, runs every client-side function in §5 against a Ragon primary. It sees the same results, errors and notifications as against a Codex app-server, apart from the named differences (§4.2).
 - **R5 Ragon client to an unmodified Codex server.** `ragon --remote …` attaches to an unmodified `codex app-server` (behind any TLS terminator for `wss://`, or on loopback `ws://`). Every function then works as with `codex --remote`.
 - **R6 Same wire format.** JSON-RPC without the `jsonrpc` field (`app-server-protocol/src/jsonrpc_lite.rs`); the same method names, params, results, error codes (including `-32001` and `-32600`) and notification order. Between the client and the host, the primary never rewrites a frame, with one exception: the 1.0 router remaps server-request ids per upstream and maps them back (§7.3). A test checks that the client sees ids unchanged.
@@ -219,6 +219,12 @@ Each item has a recommended default and a question in §12. None is decided here
 | D5 | Telemetry, feedback and update paths are answered by the primary and lead nowhere (§3.3) | standing privacy rules; default only, Q1-Q3 |
 | D6 | The relay's controller side is defined by Ragon (§7.4) | Codex's source contains only the host side. The vendor's controller is closed, so no unmodified controller exists to test against |
 | D7 | Cloud tasks run as node jobs on the user's nodes, not in the vendor's containers (§7.5) | owner answer 2. The commands, flags and answer shapes stay the same; the environment model is simpler (§7.5) |
+| D8 | Realtime and feedback upload are off on the shared server (`-c features.realtime_conversation=false`, `-c feedback.enabled=false`, A7). `thread/realtime/*` and `feedback/upload` give Codex's own feature-off answers | the realtime sideband sends the bearer to a hard-coded vendor host (V3), and feedback goes to a hard-coded vendor service (V17). No node has a realtime model. Feedback comes back when the primary stores it (§7.6, Q2) |
+| D9 | In 0.9.10, `thread/list`, `thread/loaded/list` and search show only the threads of the node the connection was placed on (§7.2) | the router that merges nodes is 1.0 (§7.3). The placement rule keeps one user on one node, so this is rare |
+| D10 | Through the 1.0 router, `initialize` returns a fixed `codexHome`; server-request ids are renumbered per node and mapped back; requests without a `threadId` (`fs/*`, `command/exec`, `config/*`) go to the connection's home node (§7.3) | one connection spans several nodes, and the host path is not given out (§9 item 5). The client sees its own ids unchanged (R6) |
+| D11 | Files and sockets live under `~/.ragon`, not `~/.codex` (R8, patch `0014`). The formats are Codex's | a Ragon install and a Codex install on one machine do not share state |
+| D12 | `ragon --remote` with no address goes to the primary (A5). Codex refuses a bare `--remote` | one address for the user (§3.4). Every form Codex accepts behaves as in Codex |
+| D13 | `ragon cloud` and `ragon remote-control` are hidden from help (patches `0006`, `0007`) but still run | they reach nothing useful until 1.0 (§7.4, §7.5), which removes the hiding |
 
 ## 5. Inventory and status today
 
@@ -271,7 +277,7 @@ One row per function family (F1-F33). Every flag, method and path in a family is
 | F | Function | Source | What it does | Vendor? | Docs | Today |
 |---|---|---|---|---|---|---|
 | F21 | daemon life cycle: `app-server daemon bootstrap/start/restart/stop/version`, TUI auto-start | `cli/src/main.rs:637-675`; `app-server-daemon/src/lib.rs:436-494`, `:790-834`; `tui/src/daemon_startup.rs:25-50` | a managed app-server on the control socket, started by the TUI when `daemon_auto_start` is on | no | the in-tree README: for "Codex instances launched over SSH" | works when run by hand. The launcher's `-c` overrides skip auto-start (`tui/src/daemon_startup.rs:25-50`) |
-| F22 | daemon updater | `app-server-daemon/src/update_loop.rs:63`, `:532-625`; `app-server-daemon/src/settings.rs:14-35` | after 5 min, then hourly: downloads the vendor's install script and runs it | **yes** (V12) | README: "check for updates after five minutes, then hourly" | **unsafe**: open where the install layout matches (not checked for a Ragon install); a run would replace Ragon with the vendor's build |
+| F22 | daemon updater | `app-server-daemon/src/update_loop.rs:63`, `:66-68`, `:380`, `:532-625`; `app-server-daemon/src/settings.rs:14-35` | after 5 min, then hourly: downloads the vendor's install script and pipes it to `/bin/sh -s` (read) | **yes** (V12) | README: "check for updates after five minutes, then hourly" | **unsafe**: open where the install layout matches (not checked for a Ragon install); a run would replace Ragon with the vendor's build |
 | F23 | daemon remote-control toggles | `cli/src/main.rs:655-659`; `app-server-daemon/src/lib.rs:248`, `:269` | persisted remote-control preference | yes (V7) | README | missing (no relay to reach) |
 
 ### 5.5 Remote control (relay)
@@ -300,6 +306,30 @@ One row per function family (F1-F33). Every flag, method and path in a family is
 | F33 | relay-free mobile and web view | `ragon web` (RAGON_ASK) and Ragon's live hub (RAGON_SYNC §18) | Ragon's own page and hub; not a Codex function | no | — | works on the LAN; only two approvals are answerable through the hub (RAGON_SYNC §18) |
 
 **Count:** 33 families. Works today: 21 (F1-F4, F6-F15, F19-F21, F29, F30, F32, F33; F6 on loopback only). Unsafe: 6 (F16, F17, F18, F22, F26, F31). Closed in name: 1 (F24). Missing: 5 (F5, F23, F25, F27, F28). "Works" means that it works on one machine or over SSH; across machines every family also needs the front door (§6, §7).
+
+### 5.8 What each family needs built
+
+| F | 0.9.10 (§7.1, §7.2) | 1.0 (§7.3-§7.6) | Later |
+|---|---|---|---|
+| F1-F4, F7, F8 | nothing; tests only (A10) | — | — |
+| F5 | A1, A2: the front door terminates TLS | — | — |
+| F6 | A5 (default address), A6 (trust root) | Windows and macOS clients (§7.6) | — |
+| F9-F15 | A3, A4 (one shared server); placement (§7.2) | the router (§7.3), so one connection sees every node | — |
+| F16 | nothing. **Through the front door, every signed-in account gets this with no sandbox, over the network** | — | §9 items 1, 2 (3.0) |
+| F17 | nothing. **The same: every signed-in account can run commands with the sandbox it picks**; `/airgapped on` keeps patch `0023` | — | §9 items 1, 3 (3.0) |
+| F18 | nothing; Ragon does not start an exec-server | — | §9 item 7 (3.0) |
+| F19, F20 | nothing; they work as in Codex | — | — |
+| F21 | nothing (its updater is F22) | — | — |
+| F22 | A9: close it | the primary's `install.sh` (§7.6, V12) | — |
+| F23, F24 | — | the relay host side and the host-check patch (§7.4) | — |
+| F25 | — | the controller side (§7.4); the phone page (§7.6) | a native app (§9 item 9) |
+| F26 | A8: close the token leak | cloud tasks as node jobs (§7.5) | — |
+| F27, F28 | — | §7.5 | — |
+| F29 | nothing; it stays "none" | — | — |
+| F30 | nothing (AUTH) | — | — |
+| F31 | — | the Ragon desktop installer at Codex's path (§7.6, V14) | — |
+| F32 | nothing | the router (§7.3) | — |
+| F33 | nothing | the phone page drives every session (§7.6) | a native app |
 
 ## 6. The front door
 
@@ -344,7 +374,7 @@ The front door is the session WebSocket on the gate's TLS port `:8000`, at path 
 | A6 | The trust-root patch: the `--remote` dial also trusts `CODEX_CA_CERTIFICATE` (D4) | Codex ignores that variable on this path, so the patch adds trust and changes nothing else | 1 day |
 | A7 | Server config: `-c feedback.enabled=false`, `-c features.realtime_conversation=false` on the shared server (§6.4) | `-c` overrides that Codex itself accepts | ½ day |
 | A8 | Close the `ragon cloud` leak now: the launcher sets `CODEX_CLOUD_TASKS_BASE_URL={gate}/backend-api`. The host check (`cloud-tasks/src/util.rs:47-80`) then keeps the token from going out, and the gate answers the 404 shape | the same command, now failing like a Codex backend with no task service | ½ day |
-| A9 | Close the daemon updater now: patch `app-server-daemon/src/update_loop.rs:63` to the primary's `install.sh` (Q3), or refuse `ragon app-server daemon` until it is | same commands; the update goes to `ragon update` | ½ day |
+| A9 | Close the daemon updater now: patch `INSTALL_URL` (`app-server-daemon/src/update_loop.rs:66-68`) to the primary's `install.sh` (Q3), or refuse `ragon app-server daemon` until it is | same commands; the update goes to `ragon update` | ½ day |
 | A10 | Tests T1-T14 (§10) | — | 2 days |
 
 Total: about 9 agent-days. One lane can finish by 12-14 if it starts by 12-01; two lanes give a margin.
@@ -468,7 +498,7 @@ With the router, one client connection sees every node. The primary keeps the cl
 |---|---|---|---|---|
 | T1 | an unmodified `codex --remote wss://…` with `SSL_CERT_FILE` set to the test CA attaches on Linux (not observed yet; decides Q9) | R4, D4 | yes | — |
 | T2 | the flag and value checks of `--remote`, `--remote-auth-token-env`, `--listen`, `--ws-auth` and its sub-flags, in `ragon` and `codex`: same accept and refuse cases, same messages | R1 | yes | — |
-| T3 | the config keys and env vars in §5 have the same defaults and effects (a table test over `config.toml`) | R2, R3 | yes | — |
+| T3 | the config keys and env vars of Appendix B §9 and the key rows of Appendix B §1-§8 have the same defaults and effects (a table test over `config.toml`) | R2, R3 | yes | — |
 | T4 | unmodified `codex` TUI and `codex exec` against the Ragon front door: start, resume, fork, list, archive; compared transcript | R4, R6 | yes | — |
 | T5 | `ragon --remote` against an unmodified `codex app-server --listen ws://127.0.0.1:P --ws-auth capability-token`; the same script as T4 | R5, R7 | yes | — |
 | T6 | three clients on one thread: fan-out, an approval answered by the second, `serverRequest/resolved` to all, the first answer wins | R9 | yes | — |
@@ -540,7 +570,7 @@ Each question has its recommended answer first. The spec uses the recommended an
 
 ## 13. Sources
 
-- Codex at `rust-v0.158.0`; every path without a prefix is under `codex/codex-rs/`. The citations were checked with a script against the tree at that tag (`ok` for every line range in this file, §1).
+- Codex at `rust-v0.158.0`; every path without a prefix is under `codex/codex-rs/`. A script checked that every cited file exists at that tag and that every cited line range lies inside it (§1). It checks where a citation points, not what the line says.
 - Vendor docs, read on 2026-11-27:
   - the app-server page (`developers.openai.com/codex/app-server`);
   - remote connections (`developers.openai.com/codex/remote-connections`);
@@ -834,7 +864,7 @@ Only cells that cite a file:line were traced in code. Cells marked `(inferred)`,
 | mcpServer/elicitation/request | server request | common.rs:1784 | an MCP server elicits input | no | no |
 | item/permissions/requestApproval | server request | common.rs:1790 | approves a permission escalation | no | no |
 | item/tool/call | server request | common.rs:1796 | executes a client-provided dynamic tool | no | no |
-| account/chatgptAuthTokens/refresh | server request | common.rs:1801 | asks the client for fresh vendor-account tokens (externally managed auth) | no | account (tokens are used against the backend) |
+| `account/chatgptAuthTokens/refresh` | server request | common.rs:1801 | asks the client for fresh vendor-account tokens (externally managed auth) | no | account (tokens are used against the backend) |
 | attestation/generate | server request | common.rs:1807 | asks the client for a device attestation; only sent if `capabilities.requestAttestation` is set | no | account/backend (the attestation is forwarded to the vendor; inferred) |
 | currentTime/read | server request | common.rs:1814 | asks the client for its current time | gated | no |
 | applyPatchApproval | server request | common.rs:1822 | v1 patch approval (legacy turns) | deprecated | no |
@@ -1012,7 +1042,7 @@ Only cells that cite a file:line were traced in code. Cells marked `(inferred)`,
 | capabilities.explicitGatewayOauth | handshake | v1.rs:50 | opts into explicit gateway OAuth; **sticky** for later connections | no | account |
 | capabilities.experimentalApi | handshake | v1.rs:53 | unlocks `gated` methods, fields and notifications for this connection only | no | no |
 | capabilities.requestAttestation | handshake | v1.rs:56 | allows the server to send `attestation/generate` | no | account (inferred) |
-| capabilities.mcpServerOpenaiFormElicitation | handshake | v1.rs:61 | legacy flag for form-style MCP elicitation | no | no |
+| `capabilities.mcpServerOpenaiFormElicitation` | handshake | v1.rs:61 | legacy flag for form-style MCP elicitation | no | no |
 | capabilities.optOutNotificationMethods | handshake | v1.rs:65 | exact method names to suppress for this connection | no | no |
 | capabilities.extensions | handshake | v1.rs:69 | client MCP extensions | no | no |
 | response.userAgent | handshake | v1.rs:74; initialize_processor.rs:212-217 | server UA (the client parses the version from it, remote.rs:~852) | no | no |
@@ -1312,8 +1342,8 @@ The "Vendor?" column says whether the function needs the vendor's servers to wor
 | cloud auth | auth mode | cloud-tasks/src/util.rs:83-100 | AuthManager with `chatgpt_base_url`: vendor-account login plus account id | yes, vendor account |
 | environment discovery | crate behaviour | cloud-tasks/src/env_detect.rs:50-92, :289 | `/wham/environments/by-repo/github/{owner}/{repo}` from the code host's origins, then `/wham/environments` | yes |
 | backend-client paths | crate behaviour | backend-client/src/client.rs:145, :402-737 | `/wham/{accounts/check, profiles/me, tasks/list, tasks/{id}, tasks/{id}/turns/{t}/sibling_turns, tasks, config/bundle, settings/user, workspace-messages}` (or `/api/codex/...` for CodexApi hosts) | yes |
-| `codex apply TASK_ID` | command | chatgpt/src/apply_command.rs:16-22; get_task.rs:38; cli/src/main.rs:1767 | Fetches `/wham/tasks/{id}` and applies the diff | yes, `chatgpt.com` |
-| chatgpt client | crate behaviour | chatgpt/src/chatgpt_client.rs:18, :53-97 | GET against `chatgpt_base_url` with vendor-account tokens and `OAI-Product-Sku: codex` | yes |
+| `codex apply TASK_ID` | command | `chatgpt/src/apply_command.rs:16-22`; get_task.rs:38; cli/src/main.rs:1767 | Fetches `/wham/tasks/{id}` and applies the diff | yes, `chatgpt.com` |
+| `chatgpt` client | crate behaviour | `chatgpt/src/chatgpt_client.rs:18`, :53-97 | GET against `chatgpt_base_url` with vendor-account tokens and `OAI-Product-Sku: codex` | yes |
 | cloud-config bundle | crate behaviour | cloud-config/src/service.rs:35-57, :486-540; cli/src/cloud_config.rs:16-70 | `GET /wham/config/bundle` for business, education and enterprise vendor plans. Refreshed every 15 min | yes, `chatgpt.com` |
 | cloud-config cache | file/socket path | cloud-config/src/cache.rs:24 | `cloud-config-bundle-cache.json`, signed and scoped to the user and account | no |
 | `chatgpt_base_url` | config key | config/src/config_toml.rs:409; profile_toml.rs:44; core/src/config/mod.rs:4394; config_requirements.rs:167 | Default `https://chatgpt.com/backend-api/`. Drives cloud, apply, remote control and cloud-config. Can be pinned by requirements | yes |
@@ -1326,7 +1356,7 @@ The "Vendor?" column says whether the function needs the vendor's servers to wor
 | `[features] tui_app_server` | config key | features/src/lib.rs:1780-1784 | Removed (always on) | no |
 | `[analytics] enabled` | config key | config/src/types.rs:225-228 | Turns analytics off | yes when on |
 | `[cloud] skills.enabled` | config key | config/src/config_toml.rs:150-153, :421 | Cloud skills (the host must supply a provider) | yes |
-| `openai_base_url` | config key | config/src/config_toml.rs:424 | Overrides the built-in openai provider base URL | yes by default |
+| `openai_base_url` | config key | config/src/config_toml.rs:424 | Overrides the built-in `openai` provider base URL | yes by default |
 | `CODEX_HOME` | env var | app-server-transport/src/transport/mod.rs:58-78 | Root of the control socket, the daemon state and the packages | no |
 | `CODEX_CA_CERTIFICATE`, `SSL_CERT_FILE` | env var | http-client/src/custom_ca.rs:61-62 | Custom CA for http-client and websocket-client. Not used by the app-server `--remote` wss dial | no |
 | `CODEX_APP_SERVER_LOGIN_ISSUER` | env var | app-server/src/request_processors/account_processor.rs:28 | Overrides the login issuer for app-server login | yes by default (`auth.openai.com`) |
@@ -1350,10 +1380,10 @@ The "Vendor?" column says whether the function needs the vendor's servers to wor
 
 ### Appendix C. Vendor surface map: Codex CLI rust-v0.158.0 (064c6b8) under Ragon
 
-**Source tree.** `codex/codex-rs`, abbreviated ``. Every `` reference is a line that was opened at this tag.
+**Source tree.** `codex/codex-rs`, which is the root of every Codex path in this appendix. Every such reference is a line that was opened at this tag.
 
 **Ragon trees.**
-- `ragon-rs/`, `codex-patches/` and `dreamference/` are under ``.
+- `ragon-rs/`, `codex-patches/` and `dreamference/` are relative to the Ragon repository root.
 - Lines marked "(per Appendix B §N)" were carried over from `transports.md` and not re-opened here.
 
 **Exceptions to "every line opened".**
@@ -1406,7 +1436,7 @@ The bridge does not cover a client that talks to `ragon app-server` over stdio d
 | B6 | {PROV}/alpha/search | standalone web search | codex-api/src/endpoint/search.rs:15 | SearchClient (same file) | SearchRequest → SearchResponse | PROV | per feature | Goes to the gate (PROV), not the vendor. |
 | B7 | {PROV}/realtime/calls | WebRTC call creation (SDP) | codex-api/src/endpoint/realtime_call.rs:62-63 | core/src/realtime_conversation.rs:700-708 | SDP + session config → {call_id, sdp, sideband headers} | PROV, or `experimental_realtime_webrtc_call_base_url` (realtime_conversation.rs:1354-1358) | realtime feature | Goes to the gate. A grep of svc found no realtime route, so the WebRTC path should stop here and not reach B9 from this side. |
 | B8 | {PROV}/realtime (WS transport) | realtime voice over WS | codex-api/src/endpoint/realtime_websocket/methods.rs | realtime_conversation.rs:691-694 | realtime events | PROV, or `experimental_realtime_ws_base_url` (realtime_conversation.rs:1341-1352) | realtime feature | Goes to the gate (PROV), not the vendor. |
-| B9 | **`wss://api.openai.com/v1/realtime?call_id=…**` (sideband) | attach to an existing realtime call | codex-api/src/endpoint/realtime_websocket/methods.rs:62 `OPENAI_REALTIME_API_BASE_URL`, default at :849, override :854-856, URL built at :993-1005 | core/src/realtime_conversation.rs:726 → realtime_conversation/existing_call.rs:56-64 | WS. Headers from core/src/client.rs:715-728: the **configured provider's auth**, i.e. the Ragon key or gate token, plus an attestation header | per-request `sideband_base_url`, else `experimental_realtime_ws_base_url` (realtime_conversation.rs:1341-1350); unset means `api.openai.com` | feature `realtime_conversation` Stable, default_enabled true (features/src/lib.rs:1762-1765) | **OPEN, LOUD.** Reachable through the app-server RPC `thread/realtime/start` with an `ExistingCall` transport. The client supplies `call_id`; the dial needs no prior gate call and carries the Ragon credential to the vendor. Patch 0010 hides only the TUI /voice. The bridge refuses the RPC (policy.rs:820), but a direct `ragon app-server` client still reaches it. |
+| B9 | **`wss://api.openai.com/v1/realtime`?call_id=…** (sideband) | attach to an existing realtime call | codex-api/src/endpoint/realtime_websocket/methods.rs:62 `OPENAI_REALTIME_API_BASE_URL`, default at :849, override :854-856, URL built at :993-1005 | core/src/realtime_conversation.rs:726 → realtime_conversation/existing_call.rs:56-64 | WS. Headers from core/src/client.rs:715-728: the **configured provider's auth**, i.e. the Ragon key or gate token, plus an attestation header | per-request `sideband_base_url`, else `experimental_realtime_ws_base_url` (realtime_conversation.rs:1341-1350); unset means `api.openai.com` | feature `realtime_conversation` Stable, default_enabled true (features/src/lib.rs:1762-1765) | **OPEN, LOUD.** Reachable through the app-server RPC `thread/realtime/start` with an `ExistingCall` transport. The client supplies `call_id`; the dial needs no prior gate call and carries the Ragon credential to the vendor. Patch 0010 hides only the TUI /voice. The bridge refuses the RPC (policy.rs:820), but a direct `ragon app-server` client still reaches it. |
 | B10 | embeddings | n/a | n/a | n/a | n/a | n/a | n/a | No embeddings endpoint found in non-test .rs at this tag (grep for `embeddings`). |
 | B11 | `api.openai.com/v1` or `chatgpt.com/backend-api/codex` (built-in `openai` provider) | the vendor model API | model-provider-info/src/lib.rs:77, :415-428 | B1 | B1 | `-c model_provider="openai"` | **off** in ragon: the launcher injects `model_provider="ragon"` (ragon-rs/src/lib.rs:1754-1762) | **OPEN (opt-in by flag).** A user's own `-c model_provider=…` is left alone (lib.rs:1738-1740; test :1974). The launcher sets neither `OPENAI_BASE_URL` nor `openai_base_url` (config/src/config_toml.rs:424), so the built-in provider keeps its vendor default. |
 | B12 | `api.openai.com/v1/responses` (`responses-api-proxy` default upstream) | local forwarding proxy | responses-api-proxy/src/lib.rs:52-53 (`--upstream-url` default) | cli/src/main.rs:227-229 (hidden subcommand), :1778 | reads an API key on stdin, forwards /v1/responses | `--upstream-url` | off (the user runs it) | **OPEN (opt-in by command).** Not in REMOVED_COMMANDS (ragon-rs/src/lib.rs:158-163). |
@@ -1425,8 +1455,8 @@ PathStyle: when BASE contains /backend-api, paths are `/wham/...`; otherwise `/a
 | C5 | {BASE}/wham/accounts/send_add_credits_nudge_email | billing nudge | client.rs:714-720 | BackendClient | POST | BASE | user action | Gate unknown_url 404. |
 | C6 | {BASE}/wham/usage | rate limits and usage | backend-client/src/client/rate_limit_resets.rs:126-127 | /status, rateLimits (AUTH §5.8 l.267) | GET → RateLimitStatus | BASE | vendor-account auth | **Gate stub** (compat:66). |
 | C7 | {BASE}/wham/usage/rate-limit-reset-credits (+ consume) | reset credits | rate_limit_resets.rs:134-137, :151 | same | GET/POST | BASE | user action | Gate unknown_url 404 (the suffix does not match `wham/usage`). |
-| C8 | {BASE}/wham/usage/thread_usage/query, …/query_v2, …/plan_limit_history, …/thread-estimates/query, analytics `{prefix}/{route}` | usage analytics | thread_usage.rs:115-118, task_usage.rs:99, plan_history.rs:68, chatgpt_turn_cost.rs:52-55, analytics.rs:56 | BackendClient | POST query JSON | BASE | on in the usage views | Gate unknown_url 404. |
-| C9 | {BASE}/files, {BASE}/files/{id}/uploaded | file upload for MCP/apps | codex-api/src/files.rs:127, :149, :354-355 | core/src/mcp_openai_file.rs:247-248 (`turn_context.config.chatgpt_base_url`) | POST {file_name, file_size, use_case} → upload URL | BASE | when a tool asks for a vendor file | Gate unknown_url 404. |
+| C8 | {BASE}/wham/usage/thread_usage/query, …/query_v2, …/plan_limit_history, …/thread-estimates/query, analytics `{prefix}/{route}` | usage analytics | thread_usage.rs:115-118, task_usage.rs:99, plan_history.rs:68, `chatgpt_turn_cost.rs:52-55`, analytics.rs:56 | BackendClient | POST query JSON | BASE | on in the usage views | Gate unknown_url 404. |
+| C9 | {BASE}/files, {BASE}/files/{id}/uploaded | file upload for MCP/apps | codex-api/src/files.rs:127, :149, :354-355 | `core/src/mcp_openai_file.rs:247-248` (`turn_context.config.chatgpt_base_url`) | POST {file_name, file_size, use_case} → upload URL | BASE | when a tool asks for a vendor file | Gate unknown_url 404. |
 | C10 | {BASE}/accounts/verified_access | cyber-policy notice prefetch | tui/src/daybreak.rs:78-81 | daybreak.rs:82-86 with the auth headers; prefetched from tui/src/app/app_server_events.rs:331, tui/src/app/reconnect.rs:481 | GET → notice | BASE | condition not checked | Gate unknown_url 404. |
 | C11 | workspace routing: the provider origin is rewritten to `workspace_backend_origin` | account-owned routing | model-provider/src/workspace_routing.rs:39-75 (https only, path "/"); origin chosen at app-server/src/request_processors/account_processor/workspace_routing.rs:427-468; field backend-client/src/types.rs:142 | app-server's WorkspaceRoutingResolver (same file :107) reads C1 | `workspace_backend_origin` and `account_routing_override` from the C1 response | C1's answer | vendor-account auth | **Closed by the gate.** The C1 stub returns `"NO_CONSTRAINT"` for both fields (compat:380-397), so the origin stays the configured base (workspace_routing.rs:444-461). It is no new host. A vendor-served C1 could point the origin anywhere https. |
 
@@ -1435,7 +1465,7 @@ PathStyle: when BASE contains /backend-api, paths are `/wham/...`; otherwise `/a
 | # | host/path | purpose | defined at | called at | shape | address key | default on? | Ragon today |
 |---|---|---|---|---|---|---|---|---|
 | D1 | {BASE}/wham/tasks/list, /wham/tasks/{id}, …/sibling_turns, POST /wham/tasks | Codex Cloud tasks | client.rs:459-460, :495-496, :510-515, :582-583; fallback base cloud-tasks/src/lib.rs:55 | `cloud` TUI (cloud-tasks) | task list/detail/diff JSON | BASE | on `cloud` | **Refused by the launcher**: `cloud`, `cloud-tasks` (ragon-rs/src/lib.rs:158-165). Patch 0006 hides it. The gate answers 404-shape (compat:80-85). |
-| D2 | {BASE}/wham/tasks/{id} (`apply`) | apply a cloud task diff | chatgpt/src/get_task.rs:37-39 `/wham/tasks/{task_id}` | chatgpt/src/apply_command.rs:34 | task detail JSON | BASE | on `apply` | `apply` is NOT refused (REMOVED_COMMANDS is only cloud). The gate answers 404-shape (wham/tasks). Closed by BASE. |
+| D2 | {BASE}/wham/tasks/{id} (`apply`) | apply a cloud task diff | `chatgpt/src/get_task.rs:37-39` `/wham/tasks/{task_id}` | `chatgpt/src/apply_command.rs:34` | task detail JSON | BASE | on `apply` | `apply` is NOT refused (REMOVED_COMMANDS is only cloud). The gate answers 404-shape (wham/tasks). Closed by BASE. |
 | D3 | {BASE}/wham/environments, {BASE}/wham/environments/by-repo/{provider}/{owner}/{repo} | pick a cloud environment | cloud-tasks/src/env_detect.rs:57, :90, :330, :373 | cloud-tasks/src/lib.rs:2034 (`cloud` TUI) | GET → environment rows | BASE | on `cloud` | Only reachable through `cloud`, which is refused. The gate would answer unknown_url: `wham/environments` is not a 404-shape tail. |
 | D4 | {BASE}/wham/config/bundle | enterprise cloud-config bundle | client.rs:540-541; cloud-config/src/bundle_loader.rs:27, :34, :106-107 | cloud-config/src/service.rs:50-58 (needs `uses_codex_backend` and a business, edu or enterprise plan) | GET → TOML bundle | BASE | plan-gated | Gate 404-shape (wham/config). Closed by BASE. |
 | D5 | {remote}/cloud/environment/{id}/register, /connect, /validate + Noise relay | exec-server environment registry | exec-server/src/remote.rs:131-155, :237, :341; relay remote.rs:59, :711-745 (per Appendix B §6) | cli/src/exec_server_command.rs:70-78 `--remote URL`; auth :345-424, `--use-agent-identity-auth` :99-106 (per Appendix B §6) | JSON {executor_public_key} → registration | `--remote` (no default) | off | **OPEN (opt-in by flag)**: only if the user passes `--remote` at a vendor registry. There is no built-in vendor default. |
@@ -1451,7 +1481,7 @@ PathStyle: when BASE contains /backend-api, paths are `/wham/...`; otherwise `/a
 
 | # | host/path | purpose | defined at | called at | shape | address key | default on? | Ragon today |
 |---|---|---|---|---|---|---|---|---|
-| F1 | {BASE}/ps/plugins/suggested/codex?scope=GLOBAL | recommended plugins | core-plugins/src/remote.rs:1032-1039 | remote catalogue; ensure_chatgpt_auth at :2347-2355 | GET → plugin list | BASE | feature remote_plugin default true (features/src/lib.rs:1517-1519) | **-c `features.remote_plugin=false`** (ragon-rs/src/plugins.rs:35, :42-47) plus config (:104-108). The gate answers unknown_url. |
+| F1 | {BASE}/ps/plugins/suggested/codex?scope=GLOBAL | recommended plugins | core-plugins/src/remote.rs:1032-1039 | remote catalogue; `ensure_chatgpt_auth` at :2347-2355 | GET → plugin list | BASE | feature remote_plugin default true (features/src/lib.rs:1517-1519) | **-c `features.remote_plugin=false`** (ragon-rs/src/plugins.rs:35, :42-47) plus config (:104-108). The gate answers unknown_url. |
 | F2 | {BASE}/ps/plugins/installed | installed remote plugins | remote.rs:2257-2258 | same | GET → list | BASE | remote_plugin | **Gate stub**, empty list (suffix `plugins/installed`, compat:67-75). Also -c off. |
 | F3 | {BASE}/ps/plugins/search | catalogue search | core-plugins/src/remote/search.rs:42-44 | same | GET → list | BASE | remote_plugin | -c off. The gate answers unknown_url. |
 | F4 | {BASE}/plugins/featured?platform= | featured list | core-plugins/src/remote_legacy.rs:123-130 | plugins manager | GET → ids | BASE | plugins default true (features lib.rs:1439-1441) | **Patch 0015** (remote_legacy.rs @@-127 returns an empty list). Also a gate stub. |
@@ -1459,10 +1489,10 @@ PathStyle: when BASE contains /backend-api, paths are `/wham/...`; otherwise `/a
 | F6 | sharing a plugin through the vendor's accounts; link `chatgpt.com/codex/plugins/share/{name}` | plugin sharing | features lib.rs:1523-1525; link at tui/src/app/plugin_mentions.rs:158 | n/a | n/a | BASE | default true | **-c `features.plugin_sharing=false`** (plugins.rs:35). |
 | F7 | {BASE}/connectors/directory/list?token=…&external_logos=true | app (connector) directory | connectors/src/lib.rs:267-273 | core/src/connectors.rs:141 (gated on Feature::Apps, default true, features lib.rs:1349-1351) | GET → connectors page | BASE | on | **Gate stub**, empty list. Patch 0022 replaces the app list with ragon_launcher::apps::list() (apps_processor.rs @@-72, tui connectors.rs @@-150). |
 | F8 | {BASE}/connectors/directory/list_workspace?external_logos=true | workspace connectors | connectors/src/lib.rs:190-191 | same | GET | BASE | on (Apps) | Gate unknown_url 404 (no stub). 0022 as F7. |
-| F9 | {BASE}/ps/apps/batch | app metadata batch | chatgpt/src/connectors.rs:172-175 | same | POST ids → apps | BASE | Apps | Gate unknown_url 404. 0022. |
-| F10 | {BASE}/ps/mcp (`/api/codex` added if BASE has neither form) | the "codex_apps" MCP server | codex-mcp/src/mcp/mod.rs:600-607, config :610-620 (McpServerAuth::ChatGpt, header X-the vendor-Product-Sku) | core/src/mcp.rs:350-358 when `mcp_config.apps_enabled` | streamable-HTTP MCP | BASE | `enable_mcp_apps` default false (features lib.rs:1361-1363); the launcher also writes false if absent (lib.rs:1656-1657) | Off. If enabled, the gate answers unknown_url 404. |
+| F9 | {BASE}/ps/apps/batch | app metadata batch | `chatgpt/src/connectors.rs:172-175` | same | POST ids → apps | BASE | Apps | Gate unknown_url 404. 0022. |
+| F10 | {BASE}/ps/mcp (`/api/codex` added if BASE has neither form) | the "codex_apps" MCP server | codex-mcp/src/mcp/mod.rs:600-607, config :610-620 (`McpServerAuth::ChatGpt`, header `X-OpenAI-Product-Sku`) | core/src/mcp.rs:350-358 when `mcp_config.apps_enabled` | streamable-HTTP MCP | BASE | `enable_mcp_apps` default false (features lib.rs:1361-1363); the launcher also writes false if absent (lib.rs:1656-1657) | Off. If enabled, the gate answers unknown_url 404. |
 | F11 | `chatgpt.com/oauth/codex/client.json`, …/{callback_id}/client.json | MCP OAuth CIMD client id | rmcp-client/src/oauth_client_registration.rs:116-124 | same; only when CIMD registration is offered (:100-108) | URL sent as client_id to a third-party MCP authorization server | const | only for OAuth MCP servers that use CIMD | **Not a Codex call.** The third-party server may fetch `chatgpt.com`, which identifies the client as Codex. Indirect; noted, not closed. |
-| F12 | `developers.openai.com/mcp` | docs-MCP attribution tag | codex-mcp/src/openai_docs_source_attribution.rs:10-11 | n/a | string tag | const | n/a | Link or tag only, no call. |
+| F12 | `developers.openai.com/mcp` | docs-MCP attribution tag | `codex-mcp/src/openai_docs_source_attribution.rs:10-11` | n/a | string tag | const | n/a | Link or tag only, no call. |
 | F13 | skill catalogue, MCP directory | n/a | n/a | n/a | n/a | n/a | n/a | **Searched, absent.** No remote skill catalogue or MCP directory URL exists beyond F7/F8. The search covered `format!`/`const` URL literals with `skills` or `directory`, every `https://` constant (74 hits), and the readers of `chatgpt_base_url`. That sweep added C10, C11 and F14 and re-cited D2. A final deduplicated list of vendor-host literals in non-test .rs (section I) found no further request target. |
 | F14 | {BASE}/public/plugins/workspace/{id}, {BASE}/ps/plugins/{id}/shares, {BASE}/ps/plugins/workspace/created, {BASE}/public/plugins/workspace/upload-url | plugin sharing (F6) | core-plugins/src/remote/share.rs:287, :324, :392, :416 | plugin share flow | GET/POST share JSON, upload URL | BASE | plugin_sharing default true | **-c `features.plugin_sharing=false`** (plugins.rs:35). If enabled, the gate answers unknown_url 404. |
 
@@ -1472,19 +1502,19 @@ PathStyle: when BASE contains /backend-api, paths are `/wham/...`; otherwise `/a
 |---|---|---|---|---|---|---|---|---|
 | G1 | `api.github.com/repos/openai/codex/releases/latest`; a package manager; `registry.npmjs.org/@openai%2fcodex` | TUI update check | tui/src/updates.rs:61-62, :102-103; tui/src/npm_registry.rs:5, :79 | updates.rs:28, :153 (gate `check_for_update_on_startup`) | GET → latest version | `check_for_update_on_startup` | default true | **Closed**: -c `check_for_update_on_startup=false` (plugins.rs:43) and config.toml (lib.rs:1621). |
 | G2 | `codex update` | self-update | n/a | cli main.rs (patch 0008 @@-1626) | n/a | n/a | on demand | **Patch 0008** routes it to `ragon_launcher::update::run` (Ragon's own releases via `api.github.com`, ragon-rs/src/update.rs:216; not the vendor). |
-| G3 | **`https://chatgpt.com/codex/install.sh**` (Windows: install.ps1) | daemon auto-updater: fetch the vendor installer (executing it not verified here) | app-server-daemon/src/update_loop.rs:66, :68; INITIAL_UPDATE_DELAY 5 min :63 | update_loop.rs:651 `http.get(INSTALL_URL)` | GET → shell script | const (no key) | `auto_update_enabled: true` (app-server-daemon/src/settings.rs:32), hourly (:14). A scheduled run fetches only when `is_stable_standalone_release` holds (update_loop.rs:477-488; app-server-daemon/src/managed_install.rs:74-86): `{CODEX_HOME}/packages/app-server-daemon/current` must point into `releases/`. Bootstrap builds that only from a complete Codex package layout (prepare_install.rs:28-41, :145-147) | **OPEN, LOUD, conditional.** No patch touches it. Whether a ragon install has a Codex package layout was not checked; without one, bootstrap fails ("this CLI has no complete local package") and the loop never fetches. `ragon app-server daemon start/bootstrap` is not refused (REMOVED_COMMANDS lib.rs:158-163). The TUI auto-start is skipped under the launcher's -c and --oss (tui/src/daemon_startup.rs:25-50; notes.md). |
+| G3 | **`https://chatgpt.com/codex/install.sh`** (Windows: install.ps1) | daemon auto-updater: fetch the vendor installer and pipe it to `/bin/sh -s` (update_loop.rs:380, :532-545; read, not run) | app-server-daemon/src/update_loop.rs:66, :68; INITIAL_UPDATE_DELAY 5 min :63 | update_loop.rs:651 `http.get(INSTALL_URL)` | GET → shell script | const (no key) | `auto_update_enabled: true` (app-server-daemon/src/settings.rs:32), hourly (:14). A scheduled run fetches only when `is_stable_standalone_release` holds (update_loop.rs:477-488; app-server-daemon/src/managed_install.rs:74-86): `{CODEX_HOME}/packages/app-server-daemon/current` must point into `releases/`. Bootstrap builds that only from a complete Codex package layout (prepare_install.rs:28-41, :145-147) | **OPEN, LOUD, conditional.** No patch touches it. Whether a ragon install has a Codex package layout was not checked; without one, bootstrap fails ("this CLI has no complete local package") and the loop never fetches. `ragon app-server daemon start/bootstrap` is not refused (REMOVED_COMMANDS lib.rs:158-163). The TUI auto-start is skipped under the launcher's -c and --oss (tui/src/daemon_startup.rs:25-50; notes.md). |
 | G4 | `persistent.oaistatic.com/codex-app-prod/Codex.dmg`, …-x64.dmg | desktop app download | cli/src/desktop_app/mac.rs:10-12, download :235-240 (curl) | cli main.rs:177, :1429 Subcommand::App | DMG | const | on `codex app` | **Closed by the launcher**: `app` is intercepted (ragon-rs/src/lib.rs:409-413) and never reaches Codex. |
-| G5 | oaistatic appcast(-x64).xml, windows-store-update.json, `chatgpt.com/backend-api/wham/app/appcast`, `api.github.com` releases, `formulae.brew.sh` | `doctor` update row | cli/src/doctor/updates.rs:36-46 | updates_check (:53+) | GET → feeds | consts | on `doctor` | **Patch 0016** (updates.rs @@-53 RAGON_DOCTOR_OFFLINE). |
+| G5 | vendor appcast(-x64).xml, windows-store-update.json, `chatgpt.com/backend-api/wham/app/appcast`, `api.github.com` releases, `formulae.brew.sh` | `doctor` update row | cli/src/doctor/updates.rs:36-46 | updates_check (:53+) | GET → feeds | consts | on `doctor` | **Patch 0016** (updates.rs @@-53 RAGON_DOCTOR_OFFLINE). |
 | G6 | `chatgpt.com/backend-api/`, `api.openai.com/v1` reachability | `doctor` network rows | cli/src/doctor/network.rs:30; doctor.rs:2582, :2632 | doctor | HEAD/GET | consts and config | on `doctor` | **Patch 0016** (doctor.rs @@-1202, @@-2278, @@-2698). |
-| G7 | `persistent.oaistatic.com/codex/pets/v1/…` | terminal pet art | tui/src/pets/asset_pack.rs:29, :100 | pets | GET webp | const | if a pet is chosen | **Closed**: -c `tui.pet="disabled"` (plugins.rs:43) and patch 0010 (hides /pets). |
+| G7 | `persistent.oaistatic.com/codex/pets/v1/`… | terminal pet art | tui/src/pets/asset_pack.rs:29, :100 | pets | GET webp | const | if a pet is chosen | **Closed**: -c `tui.pet="disabled"` (plugins.rs:43) and patch 0010 (hides /pets). |
 
 #### H. Feedback, analytics, telemetry, announcements
 
 | # | host/path | purpose | defined at | called at | shape | address key | default on? | Ragon today |
 |---|---|---|---|---|---|---|---|---|
-| H1 | **`o33249.ingest.us.sentry.io`** (SENTRY_DSN) | feedback and bug upload | feedback/src/lib.rs:57-58, upload_feedback :593-601 | app-server/src/request_processors/feedback_processor.rs:49-55 (RPC `feedback/upload`), :276 `snapshot.upload_feedback(...)` | error-report envelope from FeedbackUploadParams and the session snapshot | `feedback.enabled`, default **true** (core/src/config/mod.rs:4454-4458); the guard is feedback_processor.rs:62-66 | on | **OPEN, LOUD.** Patch 0009 hides only the TUI /feedback. The launcher sets no `feedback.enabled` (grep of ragon-rs/src). The bridge refuses `feedback/upload` (policy.rs:820), but a direct `ragon app-server` client still uploads to the vendor's error-report service. |
+| H1 | **`o33249.ingest.us.sentry.io`** (`SENTRY_DSN`) | feedback and bug upload | feedback/src/lib.rs:57-58, upload_feedback :593-601 | app-server/src/request_processors/feedback_processor.rs:49-55 (RPC `feedback/upload`), :276 `snapshot.upload_feedback(...)` | error-report envelope from FeedbackUploadParams and the session snapshot | `feedback.enabled`, default **true** (core/src/config/mod.rs:4454-4458); the guard is feedback_processor.rs:62-66 | on | **OPEN, LOUD.** Patch 0009 hides only the TUI /feedback. The launcher sets no `feedback.enabled` (grep of ragon-rs/src). The bridge refuses `feedback/upload` (policy.rs:820), but a direct `ragon app-server` client still uploads to the vendor's error-report service. |
 | H2 | {BASE}/codex/analytics-events/events | usage analytics | analytics/src/client.rs:140-142 | queue built at client.rs:241-251 | batched events JSON | BASE, `analytics.enabled` | on | **Patch 0013** (`queue: false && …`). The gate would answer unknown_url anyway: the tail starts with `codex/`, so it misses the `analytics-events` 404 shape. |
-| H3 | `ab.chatgpt.com/otlp/v1/metrics` (vendor metrics OTLP, statsig-api-key) | metrics | otel/src/config.rs:9-11, resolve_exporter :13-30 | otel exporter | OTLP-HTTP JSON | `otel.exporter` (vendor default) | on in release builds | **Patch 0015** (otel/src/config.rs @@-19 `if true` → None in every build). |
+| H3 | `ab.chatgpt.com/otlp/v1/metrics` (vendor metrics OTLP, `statsig-api-key`) | metrics | otel/src/config.rs:9-11, resolve_exporter :13-30 | otel exporter | OTLP-HTTP JSON | `otel.exporter` (vendor default) | on in release builds | **Patch 0015** (otel/src/config.rs @@-19 `if true` → None in every build). |
 | H4 | `raw.githubusercontent.com/openai/codex/main/announcement_tip.toml` | announcement tip | tui/src/tooltips.rs:19 | tooltips | GET TOML | const | on | **Patch 0015** (tooltips.rs @@-76, @@-214, @@-248). |
 
 #### I. Links only (no request is made)
@@ -1498,14 +1528,14 @@ PathStyle: when BASE contains /backend-api, paths are `/wham/...`; otherwise `/a
 - These are URLs printed to the user. They become a contact only if the user opens them.
 - **Final sweep.** Every distinct vendor-host literal in non-test .rs was listed and deduplicated by host and first two path segments. The ones not in a row above are:
   - JWT claim and issuer names, never fetched: `https://api.openai.com/auth` (login/src/token_data.rs:77) and `https://chatgpt.com/codex-backend/agent-identity` (agent-identity/src/lib.rs:41).
-  - Inline test literals: app_link_view.rs:936 google-calendar, enroll.rs:525 remote/control, realtime_call.rs:579 and methods.rs:2335 `v1/live`, chatgpt_cloudflare_cookies.rs:228-253, cli main.rs:2808-2830 `service.openai.com`, onboarding/auth.rs:1420 `chatgpt.com/device`.
+  - Inline test literals: app_link_view.rs:936 google-calendar, enroll.rs:525 remote/control, realtime_call.rs:579 and methods.rs:2335 `v1/live`, `chatgpt_cloudflare_cookies.rs:228-253`, cli main.rs:2808-2830 `service.openai.com`, onboarding/auth.rs:1420 `chatgpt.com/device`.
   - one other cloud, staging and example hosts.
   - Docs links: platform, help, developers and `learn.chatgpt.com`.
 
 #### Still open in shipped `ragon`
 
 **1. Default-on once a reachable command runs, if the install has a Codex package layout**
-- **G3: daemon updater, GET `https://chatgpt.com/codex/install.sh.**` It fetches the installer; executing it was not verified here. A scheduled fetch needs a stable standalone release under `{CODEX_HOME}/packages/app-server-daemon` (managed_install.rs:74-86), which bootstrap builds only from a Codex package layout (prepare_install.rs:145-147). Whether a ragon install has one was not checked. It is started by `ragon app-server daemon start|bootstrap`, which is not refused. auto_update_enabled defaults to true. No patch touches it.
+- **G3: daemon updater, GET `https://chatgpt.com/codex/install.sh`.** It fetches the installer and pipes it to `/bin/sh -s` (update_loop.rs:380, :532-545; read, not run). A scheduled fetch needs a stable standalone release under `{CODEX_HOME}/packages/app-server-daemon` (managed_install.rs:74-86), which bootstrap builds only from a Codex package layout (prepare_install.rs:145-147). Whether a ragon install has one was not checked. It is started by `ragon app-server daemon start|bootstrap`, which is not refused. auto_update_enabled defaults to true. No patch touches it.
 
 **2. Needs a client speaking to `ragon app-server` directly** (the bridge refuses these for `ragon web` and the desktop app):
 - **H1: Feedback upload via `feedback/upload`.** `feedback.enabled` defaults to true and the launcher does not set it.
