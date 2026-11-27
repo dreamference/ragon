@@ -32,6 +32,7 @@ from typing import Final, List, Optional
 
 ROOT: Final[Path] = Path(__file__).resolve().parent.parent
 RULE: Final[str] = "---"
+RULES_REQUIRED: Final[int] = 2
 UNFINISHED_MARKERS: Final[tuple] = ("{{TBD", "VARIANT")
 FENCE: Final[re.Pattern] = re.compile(r"^\s*(```|~~~)")
 LIST_ITEM: Final[re.Pattern] = re.compile(r"^\s*([-*+]|(\d+)[.)])\s+")
@@ -75,9 +76,9 @@ def extract(text: str) -> List[str]:
             in_fence = not in_fence
         elif not in_fence and line.rstrip() == RULE:
             rules.append(number)
-            if len(rules) == 2:
+            if len(rules) == RULES_REQUIRED:
                 break
-    if len(rules) < 2:
+    if len(rules) < RULES_REQUIRED:
         raise ReleaseNotesError(
             f"found {len(rules)} line(s) consisting of '---' alone; the description is the text "
             "between the first two"
