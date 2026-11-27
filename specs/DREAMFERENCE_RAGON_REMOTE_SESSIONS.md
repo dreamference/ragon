@@ -1,6 +1,6 @@
 # Codex remote sessions in Ragon
 
-**Status:** draft for the owner (2026-11-27), written on branch `spec/remote-sessions`; not landed (release freeze until 0.9.9). The owner's answers of 12:25 and the ruling of 12:35 are in §0. Nothing here is built yet.
+**Status:** draft for the owner (2026-11-27), written on branch `spec/remote-sessions`; not landed (release freeze until 0.9.9). The owner's answers of 12:25, the ruling of 12:35 and the answers to Q1-Q10 of 22:11 (with the 1.0 date and lanes of 22:07) are in §0. Nothing here is built yet.
 
 **Names:** post-rename (`ragon`, `ragon-admin`, `~/.ragon`, `ragon web` on port 3100, the gate on port 8000).
 
@@ -46,10 +46,28 @@
 - An unmodified Codex client must work while knowing only the primary's address.
 - With the primary down, secondaries use their cached keys, and a secondary with nothing cached refuses (AUTH §7).
 
+**The owner's answers to Q1-Q10** (2026-11-27 22:11, from DECISIONS.md; where they differ from the earlier recommendation, it says so):
+
+| # | Topic | Answer | Sections changed |
+|---|---|---|---|
+| Q1 | Telemetry | The primary answers analytics and metrics with success and **stores nothing** | §3.3, §7.6 |
+| Q2 | Feedback | Kept **30 days on the primary** for the admin, never forwarded; the TUI's `/feedback` **stays removed** | §3.3, §7.6 |
+| Q3 | Updater | The daemon fetches **the primary's install script, which runs `ragon update`** | §3.3, A9, §7.6 |
+| Q4 | Plugins | **Differs from the recommendation.** The vendor's catalogue is **mirrored at build time on our build machines and shipped inside Ragon**. Users' nodes never contact the vendor; the primary serves the shipped copy (the owner resolved the conflict with the no-vendor rule this way) | §3.2, §3.3, §7.6, §8, T11, T18 |
+| Q5 | Re-point versus close | **Differs from the recommendation.** Re-point **everything** through the primary, data-only paths included; what the primary does with the data is Q1 and Q2 | §3.2, §3.3, D5, D8, §6.4, §7.6, T11 |
+| Q6 | Placement in 0.9.10 | The node this account used last, then the primary, then the least-loaded secondary | §7.2 |
+| Q7 | Relay controllers | Controllers speak the standard app-server protocol | §7.4 |
+| Q8 | Cloud code | The node forge, plus other git URLs the node can reach | §7.5 |
+| Q9 | Linux trust | **Differs from the recommendation.** The installer **adds the node CA to the system store** on Linux (chosen over documenting `SSL_CERT_FILE`); Ragon's own client keeps the trust-root patch (A6) | §3.4, D4, A11, §8, T1 |
+| Q10 | Ragon's own clients | The same route through the primary as an unmodified client; no redirect | §6.3, §8 |
+
+**The 1.0 date** (owner, 22:07): 1.0 stays **Sun 2026-12-27**, with **four lanes on remote sessions from Tue 2026-12-01** (§11).
+
 **What this spec decides on its own** (each one is open to the owner):
-- An unmodified Codex client follows no WebSocket redirect (§6.3). So "routes or redirects" means the primary **proxies** for Codex clients. A redirect is at most an extra for Ragon's own clients.
+- An unmodified Codex client follows no WebSocket redirect (§6.3). So "routes or redirects" means the primary **proxies** for Codex clients. Ragon's own clients take the same route (owner Q10).
 - The primary carries one WebSocket per client. In 0.9.10 it places a whole connection on one node. In 1.0 it routes per thread (§7.3).
-- Telemetry, feedback, update checks, the plugin catalogue and re-pointing versus closing patches each get a default here and a question in §12. None of them is decided.
+- The build-time plugin mirror (Q4) includes the plugin sources the catalogue points at, not only the list, because a node that never contacts the vendor could not install from a list. A plugin whose licence does not allow redistribution is left out of the mirror and logged by the build (§7.6).
+- "Re-point everything" (Q5) covers every vendor constant in Appendix C, also rows with no Ragon function: those go to the primary, which answers Codex's own not-found or feature-off shape (§7.6).
 
 ## 1. Observed versus only read
 
@@ -138,29 +156,29 @@ The survey of every vendor URL constant in the tree is in Appendix C. Rows found
 | V8-V10 | large: the task store, the environment list, the node job and the diff (§7.5) | forwards | `ragon cloud` fails with the Codex error for an unreachable backend |
 | V11 | exists (404 shape) | answers itself | unchanged |
 | V12 | small: an install script on the primary that runs `ragon update` (§3.3) | forwards | the updater logs and retries; nothing installs |
-| V13 | small, if re-pointed (§3.3) | forwards | no notice |
+| V13 | small: the primary answers the release-feed request with Ragon's current release (Q5, §3.3) | forwards | no notice |
 | V14 | small: the primary serves the Ragon desktop installer | forwards | the command fails |
 | V15, V16 | small: accept and drop (§3.3) | forwards | nothing is lost |
 | V17 | small (§3.3) | forwards | the upload fails, as at the vendor |
-| V18 | small for the node's own index (AUTH §5.9); the vendor's catalogue is never mirrored | forwards | an empty list |
-| V19 | none: stays closed | — | — |
+| V18 | small: the vendor's catalogue as mirrored at build time and shipped inside Ragon, plus the node's own index (AUTH §5.9); the git repo is served by the primary from the shipped mirror (Q4, §7.6) | forwards | an empty list |
+| V19 | small: the tips file shipped inside Ragon (Q5) | forwards | no tip |
 | V20 | exists (stub) | answers itself | unchanged |
 | V21 | small: re-point the checks at the primary | — | doctor reports the primary unreachable |
-| V22, V23, V24 | none: stay unused or closed; V23 comes back only with a Ragon environment registry after 1.0 | — | — |
+| V22, V23, V24, V27, V28 and the remaining Appendix C rows | small: each constant re-pointed at the primary (Q5), which answers Codex's not-found shape (V22, V23 until a Ragon environment registry after 1.0, V24), checks a token against Ragon accounts (V27), or is the upstream (V28) | forwards | the same failure as an unreachable vendor |
 | V25, V26 | small: the node's own apps (patch `0022`) at the same paths; files kept on the node that runs the thread | forwards | the app call fails |
 | V27, V28 | none: the launcher clears `CODEX_ACCESS_TOKEN`; the proxy's default becomes the primary's `/v1` | — | — |
 
 ### 3.3 C: rows that touch a standing rule
 
-Each item has a recommended default and a question in §12. None is decided here.
+Each item was a question in §12; all of them are answered (owner, 2026-11-27 22:11) and the table says what is built.
 
-| Item | Rows | Standing rule today | Recommended default | Question |
+| Item | Rows | Standing rule today | Decided | Owner |
 |---|---|---|---|---|
-| Telemetry | V15, V16 | patches `0013` and `0015` stop it at the client | keep both patches. The primary also answers the analytics and metrics paths with success and **stores nothing**, so an unmodified Codex pointed at it sends nothing anywhere else | Q1 |
-| Feedback upload | V17 | patch `0009` removes `/feedback` from the TUI | the primary accepts the upload and keeps it **on the primary only**, readable by an admin (`ragon-admin feedback list`), deleted after 30 days. Never forwarded. The TUI command stays removed until the owner says otherwise | Q2 |
-| Update checks | V12, V13, V19 | `check_for_update_on_startup` forced false; patch `0008` makes `codex update` run `ragon update`; the daemon updater is open | patch V12's constant to `{primary}/ragon/v1/install.sh`, which runs `ragon update`, the one Ragon route. V13 stays off (`ragon update` already tells the user). V19 stays closed | Q3 |
-| Plugin catalogue | V18 | patch `0015` and two forced feature flags | the primary serves the node's own index at the path Codex asks (AUTH §5.9). The vendor's catalogue is never fetched or mirrored | Q4 |
-| Re-point versus close | all | each closing patch was written before the ruling | **re-point** where a user-visible function needs the vendor: remote control (`0007`), cloud (`0006`), `codex apply`, the daemon updater, `codex app`. **Keep closed** where the only effect is data leaving the box: `0013`, `0015`, `0009`, and the forced `-c` settings; add `-c feedback.enabled=false` for the server side of V17 until the primary takes uploads, and close the V3 sideband (it has no Ragon target). Doctor (`0016`) is re-pointed at the primary. The audit allowlist gains one destination, the primary (§3.4) | Q5 |
+| Telemetry | V15, V16 | patches `0013` and `0015` stop it at the client | re-point both (Q5): patches `0013` and `0015` are rewritten so the queue and the exporter send to the primary instead of being off. The primary answers the analytics and metrics paths with success and **stores nothing** (Q1), so no client sends anything anywhere else | Q1, Q5 |
+| Feedback upload | V17 | patch `0009` removes `/feedback` from the TUI | the primary accepts the upload and keeps it **on the primary only**, readable by an admin (`ragon-admin feedback list`), deleted after 30 days. Never forwarded. The upload constant points at the primary (Q5). The TUI's `/feedback` **stays removed** (patch `0009` kept); uploads come from the app-server's `feedback/upload` | Q2, Q5 |
+| Update checks | V12, V13, V19 | `check_for_update_on_startup` forced false; patch `0008` makes `codex update` run `ragon update`; the daemon updater is open | patch V12's constant to `{primary}/ragon/v1/install.sh`, which runs `ragon update`, the one Ragon route (Q3). V13 is re-pointed at the primary and the forced `check_for_update_on_startup=false` is lifted (Q5). V19 is re-pointed at the primary | Q3, Q5 |
+| Plugin catalogue | V18 | patch `0015` and two forced feature flags | the vendor's catalogue is **mirrored at build time on our build machines and shipped inside Ragon** (§7.6). The primary serves the shipped copy, merged with the node's own index (AUTH §5.9), at the paths Codex asks; the plugin git repo is served by the primary from the same copy. Users' nodes never contact the vendor. `features.remote_plugin` is no longer forced off; `features.plugin_sharing` stays off (sharing would publish to the vendor) | Q4 |
+| Re-point versus close | all | each closing patch was written before the ruling | **re-point everything** at the primary, data-only paths included: remote control (`0007`), cloud (`0006`), `codex apply`, the daemon updater, `codex app`, doctor (`0016`), analytics and metrics (`0013`, `0015`), tips, the update check, pet art, the V3 sideband and every other constant of Appendix C. What the primary keeps is Q1 and Q2. `-c feedback.enabled=false` stays on the server side of V17 only until the primary's store exists (A7). The audit allowlist gains one destination, the primary (§3.4) | Q5 |
 
 **The closures the ruling reverses** (from `docs/dev/launcher.md:53-60` and §10 of Appendix B):
 
@@ -168,11 +186,11 @@ Each item has a recommended default and a question in §12. None is decided here
 |---|---|---|
 | `0006-hide-cloud` | hides `codex cloud` (still runnable) | re-point: `ragon cloud` shown, backed by the primary (§7.5) |
 | `0007-hide-remote-control` | hides `codex remote-control` (still runnable) | re-point: shown, backed by the primary's relay (§7.4) |
-| `0009-remove-feedback` | `/feedback` in the TUI | keep closed (Q2) |
-| `0013-disable-usage-analytics` | the analytics queue | keep closed (Q1) |
-| `0015-no-vendor-network` | metrics, plugin catalogue, tips | keep closed; the node's own plugin index is served (Q4) |
+| `0009-remove-feedback` | `/feedback` in the TUI | keep: the TUI command stays removed (Q2); the upload path itself is re-pointed (Q5) |
+| `0013-disable-usage-analytics` | the analytics queue | rewritten: the queue sends to the primary, which stores nothing (Q1, Q5) |
+| `0015-no-vendor-network` | metrics, plugin catalogue, tips | rewritten: every URL it closes points at the primary (Q5); the catalogue is the shipped mirror (Q4) |
 | `0016-doctor-offline` | doctor's vendor probes | re-point the probes at the primary (small) |
-| forced `check_for_update_on_startup=false`, `tui.pet="disabled"`, `features.remote_plugin=false`, `features.plugin_sharing=false` | update notice, pet art, plugin sharing | keep |
+| forced `check_for_update_on_startup=false`, `tui.pet="disabled"`, `features.remote_plugin=false`, `features.plugin_sharing=false` | update notice, pet art, plugin sharing | lift the first three, re-pointed at the primary (Q4, Q5; pet art gets the primary's not-found answer, so no pet shows); keep `plugin_sharing` off, it has no target but the vendor |
 | the egress allowlist (model server, 8767, 8888, 8768) | every other destination | add the primary's gate (§3.4) |
 
 ### 3.4 D: how a client finds and trusts the primary
@@ -187,8 +205,8 @@ Each item has a recommended default and a question in §12. None is decided here
 **Trust.**
 - Each node has its own CA (AUTH §6). The client pins the primary's CA at `~/.ragon/nodes/<primary id>/ca.pem`, and the launcher points Codex's HTTP and relay clients at it with `CODEX_CA_CERTIFICATE` (`http-client/src/custom_ca.rs:61-62`; `remote_control/websocket.rs:1392-1401`).
 - The `--remote` WebSocket does **not** read `CODEX_CA_CERTIFICATE`. It uses the OS roots through tokio-tungstenite with `rustls-tls-native-roots` (`Cargo.toml:512-515`; `app-server-client/src/remote.rs:738`).
-  - For Ragon's build, the default is a small trust-root patch: the `--remote` dial uses the same CA loader as the HTTP client (Q9).
-  - For an unmodified Codex: on macOS and Windows the installers already add the primary's CA to the user's store (AUTH §6). On Linux the native-roots loader reads the system store, not `~/.pki/nssdb`, so the user sets `SSL_CERT_FILE` to the CA file. That `SSL_CERT_FILE` works here is read in the loader's documentation, **not observed**. It is conformance test T1.
+  - For Ragon's build, a small trust-root patch: the `--remote` dial uses the same CA loader as the HTTP client (A6, Q9).
+  - For an unmodified Codex: on macOS and Windows the installers already add the primary's CA to the user's store (AUTH §6). On Linux the native-roots loader reads the system store, not `~/.pki/nssdb`, so **the installer adds the primary's CA to the system store** (owner Q9; A11): `/usr/local/share/ca-certificates/ragon-<primary id>.crt` and `update-ca-certificates` on Debian and Ubuntu, `/etc/pki/ca-trust/source/anchors/` and `update-ca-trust` on Fedora; removed by the uninstaller, replaced when the primary's CA changes. That the native-roots loader then trusts it is conformance test T1. `SSL_CERT_FILE` is not the documented route.
 - When the primary proxies to a secondary, the client sees only the primary's certificate. The hop from the primary to the secondary uses that secondary's pinned CA (AUTH §6).
 
 **The egress audit** sees one more allowlisted destination, the primary's gate on port 8000, and nothing else (RAGON_EGRESS). A client that reaches any vendor host is a failed audit, as today.
@@ -215,11 +233,11 @@ Each item has a recommended default and a question in §12. None is decided here
 | D1 | Across machines only `wss://` with the node certificate; `ws://` only on loopback. The front door has no plain `ws://` on the network | owner answer 5. Codex's client already refuses to send a token over non-loopback `ws://` (`app-server-client/src/remote.rs:119-127`), and Codex's server refuses a non-loopback `ws://` listener without auth (`app-server-transport/src/transport/websocket.rs:129-141`). So the difference affects only unauthenticated loopback-free setups, which Codex itself does not allow |
 | D2 | Destinations: every vendor address becomes the primary | owner ruling 12:35 |
 | D3 | Host-allowlist patches: the relay (`remote_control/protocol.rs:193-212`) and cloud (`cloud-tasks/src/util.rs:47-80`) accept the primary's host | these two checks are hard-coded. Without a patch, Ragon's build cannot point them at the primary. An unmodified Codex can still use the relay through a loopback forwarder on its own machine (§7.4) |
-| D4 | Trust-root patch: the `--remote` dial reads `CODEX_CA_CERTIFICATE` | the node CA is not in the OS store on Linux (§3.4). An unmodified Codex uses `SSL_CERT_FILE` instead |
-| D5 | Telemetry, feedback and update paths are answered by the primary and lead nowhere (§3.3) | standing privacy rules; default only, Q1-Q3 |
+| D4 | Trust-root patch: the `--remote` dial reads `CODEX_CA_CERTIFICATE` | Ragon's client pins the primary's CA by node id. An unmodified Codex on Linux uses the system store, to which the installer adds the CA (Q9, A11) |
+| D5 | Telemetry, feedback and update paths go to the primary like everything else (Q5); analytics and metrics are answered and dropped (Q1), feedback is kept 30 days on the primary and never forwarded (Q2), the updater runs `ragon update` (Q3). The TUI's `/feedback` stays removed (Q2) | standing privacy rules; owner Q1-Q3, Q5 |
 | D6 | The relay's controller side is defined by Ragon (§7.4) | Codex's source contains only the host side. The vendor's controller is closed, so no unmodified controller exists to test against |
 | D7 | Cloud tasks run as node jobs on the user's nodes, not in the vendor's containers (§7.5) | owner answer 2. The commands, flags and answer shapes stay the same; the environment model is simpler (§7.5) |
-| D8 | Realtime and feedback upload are off on the shared server (`-c features.realtime_conversation=false`, `-c feedback.enabled=false`, A7). `thread/realtime/*` and `feedback/upload` give Codex's own feature-off answers | the realtime sideband sends the bearer to a hard-coded vendor host (V3), and feedback goes to a hard-coded vendor service (V17). No node has a realtime model. Feedback comes back when the primary stores it (§7.6, Q2) |
+| D8 | Realtime and feedback upload are off on the shared server (`-c features.realtime_conversation=false`, `-c feedback.enabled=false`, A7). `thread/realtime/*` and `feedback/upload` give Codex's own feature-off answers | the realtime sideband sends the bearer to a hard-coded vendor host (V3), and feedback goes to a hard-coded vendor service (V17). No node has a realtime model; the sideband constant is re-pointed at the primary (Q5), which answers feature-off. Feedback upload comes back when the primary stores it (§7.6, Q2) |
 | D9 | In 0.9.10, `thread/list`, `thread/loaded/list` and search show only the threads of the node the connection was placed on (§7.2) | the router that merges nodes is 1.0 (§7.3). The placement rule keeps one user on one node, so this is rare |
 | D10 | Through the 1.0 router, `initialize` returns a fixed `codexHome`; server-request ids are renumbered per node and mapped back; requests without a `threadId` (`fs/*`, `command/exec`, `config/*`) go to the connection's home node (§7.3) | one connection spans several nodes, and the host path is not given out (§9 item 5). The client sees its own ids unchanged (R6) |
 | D11 | Files and sockets live under `~/.ragon`, not `~/.codex` (R8, patch `0014`). The formats are Codex's | a Ragon install and a Codex install on one machine do not share state |
@@ -352,12 +370,12 @@ The front door is the session WebSocket on the gate's TLS port `:8000`, at path 
 - The Codex client follows no redirect: it dials the URL it was given and fails on any non-101 answer (`app-server-client/src/remote.rs:738`).
 - Its URL check allows only path `/` and no query (`remote.rs:119-127`, Appendix B §1), so the client cannot name a node or a thread in the URL either.
 - An unmodified client that knows only the primary's address therefore needs the primary to carry its frames.
-- Ragon's own client could follow a redirect, but that is a second behaviour with no gain in 0.9.10. It stays a question (Q10).
+- Ragon's own clients take the same route through the primary and follow no redirect (owner Q10).
 
 ### 6.4 What the front door does not do
 
 - It does not filter or rewrite frames (R6). The bridge's `allowedRequests` (`ragon-rs/web/policy.json:2-3`) is for `ragon web` and the desktop app only. A front-door client gets the full app-server surface, as a Codex client does from `codex app-server --listen ws://`.
-- The two requests that would reach the vendor from the server side are closed by server config, not by a frame filter. The node's shared app-server starts with `-c feedback.enabled=false` (until Q2's store exists) and `-c features.realtime_conversation=false` (V3, V17).
+- The two requests that would reach the vendor from the server side are closed by server config, not by a frame filter. The node's shared app-server starts with `-c feedback.enabled=false` (until the primary's feedback store exists, Q2) and `-c features.realtime_conversation=false` (V3, V17).
 - It does not check the bearer again during a live connection. Codex checks only at the upgrade too (§9).
 
 ## 7. What must be built
@@ -374,15 +392,16 @@ The front door is the session WebSocket on the gate's TLS port `:8000`, at path 
 | A6 | The trust-root patch: the `--remote` dial also trusts `CODEX_CA_CERTIFICATE` (D4) | Codex ignores that variable on this path, so the patch adds trust and changes nothing else | 1 day |
 | A7 | Server config: `-c feedback.enabled=false`, `-c features.realtime_conversation=false` on the shared server (§6.4) | `-c` overrides that Codex itself accepts | ½ day |
 | A8 | Close the `ragon cloud` leak now: the launcher sets `CODEX_CLOUD_TASKS_BASE_URL={gate}/backend-api`. The host check (`cloud-tasks/src/util.rs:47-80`) then keeps the token from going out, and the gate answers the 404 shape | the same command, now failing like a Codex backend with no task service | ½ day |
-| A9 | Close the daemon updater now: patch `INSTALL_URL` (`app-server-daemon/src/update_loop.rs:66-68`) to the primary's `install.sh` (Q3), or refuse `ragon app-server daemon` until it is | same commands; the update goes to `ragon update` | ½ day |
+| A9 | Close the daemon updater now: patch `INSTALL_URL` (`app-server-daemon/src/update_loop.rs:66-68`) to the primary's `install.sh` (owner Q3) | same commands; the update goes to `ragon update` | ½ day |
 | A10 | Tests T1-T14 (§10) | — | 2 days |
+| A11 | The Linux installer adds the primary's CA to the system store, removes it on uninstall and replaces it when the CA changes (§3.4, owner Q9). `ragon remote join` already does this on Debian (`ragon-rs/src/remote_join.rs:361-363`, `dreamference/remote/remote_join_script.py:118-121`); A11 moves it into the node and client installer and adds Fedora | an unmodified Codex trusts the primary through the OS roots, as it does on macOS and Windows | 1 day |
 
-Total: about 9 agent-days. One lane can finish by 12-14 if it starts by 12-01; two lanes give a margin.
+Total: about 10 agent-days. One lane can finish by 12-14 if it starts by 12-01; two lanes give a margin.
 
 ### 7.2 Placement and secondaries (0.9.10)
 
 - **Who decides.** Every attach is placed by the primary (owner answer 3), through a small call: `POST {primary}/ragon/v1/sessions/place` with the account and a hint gives back a node id and a short-lived ticket signed by the primary.
-- **The default rule (Q6).** In order:
+- **The rule (owner Q6).** In order:
   1. the node where this account last attached, if it is up;
   2. otherwise the primary, if it has room;
   3. otherwise the least-loaded secondary that serves the account's model.
@@ -412,7 +431,7 @@ With the router, one client connection sees every node. The primary keeps the cl
 
 - **The host side, exactly as Codex.** The primary serves `/backend-api/wham/remote/control/server/enroll`, `/refresh`, `/pair` and `/pair/status`, and the WSS `/server`. Their shapes, headers and envelopes are those of `app-server-transport/src/transport/remote_control/protocol.rs:106-312`: `client_id`, `stream_id`, `seq_id`, acks, chunks, and the `x-codex-installation-id`, `x-codex-host-device-kind` and `x-codex-subscribe-cursor` headers.
 - **The host-check patch (D3).** Ragon's build accepts the primary's host in `protocol.rs:193-212` and `:283-285`. An unmodified Codex host can reach the primary only through a loopback forwarder on its own machine, because that check allows only the vendor's hosts and loopback. `ragon relay-forward` is a small listener on 127.0.0.1 that copies to the primary.
-- **The controller side (D6).** Codex's source has none. A relayed host is one more place target. A controller is any session client attached at the front door, which places the connection on that host. The primary turns the client's frames into the host's envelopes and back.
+- **The controller side (D6).** Codex's source has none. Controllers speak the standard app-server protocol (owner Q7). A relayed host is one more place target. A controller is any session client attached at the front door, which places the connection on that host. The primary turns the client's frames into the host's envelopes and back.
   - So `ragon --remote`, an unmodified `codex --remote`, `ragon web` on the primary and the phone page all control a relayed host the same way.
   - The host is chosen by pairing: a paired host becomes the account's first placement choice while it is linked. `remoteControl/*` RPCs list and revoke paired clients, as in Codex.
 - **Reconnect.** Hosts use Codex's backoff and the subscribe cursor. The primary keeps unacked envelopes per stream, so a controller that reconnects within Codex's window resumes.
@@ -424,7 +443,7 @@ With the router, one client connection sees every node. The primary keeps the cl
 - **A task.** A task is a node job (owner answer 2). The primary places it, the node clones the environment's repository into a fresh worktree, and the node runs the prompt with `ragon exec` under the normal sandbox. The node stores the turns and the diff on the primary.
   - `codex cloud`'s list, status and diff then read these.
   - `codex apply TASK_ID` (V10) gets the same diff and applies it locally.
-- **Environments.** An environment is a named repository URL plus a setup script, kept on the primary. Where the repository comes from is Q8.
+- **Environments.** An environment is a named repository URL plus a setup script, kept on the primary. The repository comes from the node forge (RAGON_SYNC), or from any other git URL the node can reach (owner Q8).
 - **Patches.** `cloud-tasks/src/util.rs:47-80` accepts the primary's host (D3), and the launcher sets `CODEX_CLOUD_TASKS_BASE_URL` (A8). Patch `0006` is then removed and `ragon cloud` is shown.
 - **What differs (D7).** Internet settings and the vendor's container images do not exist. The fields are accepted and listed as "node default".
 - **Size.** About 11 agent-days.
@@ -433,11 +452,15 @@ With the router, one client connection sees every node. The primary keeps the cl
 
 | Row | Build | Size |
 |---|---|---|
-| V12 | `{primary}/ragon/v1/install.sh` (and `.ps1`) that runs `ragon update` (A9 lands the constant) | 1 day |
+| V12 | `{primary}/ragon/v1/install.sh` (and `.ps1`) that runs `ragon update` (A9 lands the constant, Q3) | 1 day |
+| V13 | the release-feed path on the primary answers with Ragon's current release; the forced `check_for_update_on_startup=false` is lifted (Q5) | ½ day |
 | V14 | the primary serves the Ragon desktop installer at the path `codex app` asks; patch the constant | 1 day |
-| V15, V16 | accept-and-drop routes for the analytics and metrics paths (Q1) | ½ day |
-| V17 | the feedback store on the primary (Q2), then `feedback.enabled` back to true on the server | 1½ days |
-| V18, V25, V26 | the node's own plugin index (AUTH §5.9) and apps at Codex's paths | 2 days, shared with AUTH's plan |
+| V15, V16 | patches `0013` and `0015` rewritten to send to the primary (Q5); accept-and-drop routes there, nothing stored (Q1) | 1 day |
+| V17 | the upload constant at the primary; the feedback store on the primary, 30 days, admin-readable, never forwarded (Q2); then `feedback.enabled` back to true on the server; the TUI's `/feedback` stays removed | 1½ days |
+| V18 build | the **plugin mirror at build time** (Q4): a release-build step on our build machines fetches the vendor's catalogue and the plugin sources it lists at a pinned date, drops plugins whose licence forbids redistribution (logged), writes `plugins-mirror.tar.zst` with a manifest and checksums, and ships it inside every Ragon release. Only the build machines contact the vendor; the step's destination is recorded in the release build's egress notes, never on a user's node | 2 days |
+| V18 serve, V25, V26 | the primary serves the shipped catalogue merged with the node's own index (AUTH §5.9), the plugin git repo from the mirror, and apps at Codex's paths; `features.remote_plugin` lifted | 2 days, shared with AUTH's plan |
+| V19, V24 | tips from a file shipped inside Ragon; pet art answered not-found; forced `tui.pet` lifted (Q5) | ½ day |
+| V3, V22, V23, V27, V28, rest of Appendix C | every remaining vendor constant re-pointed at the primary (Q5), with Codex's not-found or feature-off answer there; T11 extended to every constant | 2 days |
 | V21 | doctor's probes re-pointed at the primary (patch `0016` rewritten) | ½ day |
 | Phone | the node's web page drives every remote session through the primary (§8) | 4 days |
 | Win/Mac | trust and attach on Windows and macOS clients (§8) | 3 days |
@@ -447,6 +470,7 @@ With the router, one client connection sees every node. The primary keeps the cl
 - **TLS and the node CA.**
   - The front door uses the gate's node certificate, the one AUTH §6 already issues; there is no new certificate.
   - Ragon clients pin `~/.ragon/nodes/<id>/ca.pem` and pass it with `CODEX_CA_CERTIFICATE`; A6 extends that to `--remote`.
+  - On Linux the installer also adds the primary's CA to the system store (owner Q9, A11), so an unmodified Codex trusts it as on macOS and Windows.
   - Node-to-node forwarding (§7.2) uses the same CA.
   - Plain `ws://` stays on loopback (D1).
 - **Accounts.** The bearer is the Ragon account access token. Every signed-in user may attach to every session (owner answer 3, the coordinator's reading). A per-owner rule is a 3.0 item (§9). Codex's own token modes stay for `ragon app-server --listen ws://… --ws-auth …` exactly as in Codex (R7).
@@ -454,12 +478,12 @@ With the router, one client connection sees every node. The primary keeps the cl
 - **The desktop single-instance lock.**
   - The desktop app keeps its lock (`desktop/electron/src/bootstrap.ts:14`), but it starts its own stdio app-server (`desktop/electron/src/server.ts:64`).
   - Two app-servers on one `~/.ragon` can load the same rollout and write it twice. This was **not traced** and is a risk.
-  - Recommended: the desktop attaches to the node's shared server over the socket, like `ragon web` (Q10).
+  - Decided: the desktop attaches to the node's shared server over the socket, like `ragon web`, and every Ragon client goes through the primary (owner Q10).
 - **`/airgapped on`.**
   - Attach over the LAN or the overlay is a declared local-only exception (owner answer 10): one `declared_exceptions` entry for the primary's `:8000` (`dreamference/audit/egress_audit.py:811`).
   - The relay and cloud stay inside the node set, so no vendor destination appears.
   - A9 and A8 remove the two vendor destinations that a run could reach today.
-- **The egress audit.** It sees one destination, the primary (§3.4). A Ragon run that contacts any vendor host is a failure, as today.
+- **The egress audit.** It sees one destination, the primary (§3.4). A Ragon run that contacts any vendor host is a failure, as today. Since every vendor constant points at the primary (Q5), this holds for data-only paths too. The plugin mirror's fetch happens on our build machines only (Q4) and never appears in a user's audit.
 - **Secondaries and the primary.** Placement and forwarding are in §7.2, and the primary-down behaviour is AUTH §7's. Windows and macOS nodes are secondaries only (AUTH §7). They serve the front door the same way and are placed like Linux secondaries.
 - **Windows and macOS clients.**
   - An unmodified Codex trusts the user store, which AUTH's installer fills (AUTH §6).
@@ -496,7 +520,7 @@ With the router, one client connection sees every node. The primary keeps the cl
 
 | T | What | Rules | Runs in CI without a GPU | Needs a node |
 |---|---|---|---|---|
-| T1 | an unmodified `codex --remote wss://…` with `SSL_CERT_FILE` set to the test CA attaches on Linux (not observed yet; decides Q9) | R4, D4 | yes | — |
+| T1 | Linux trust (Q9): in a Debian and a Fedora container, the installer's CA step adds the test CA to the system store; an unmodified `codex --remote wss://…` then attaches with no variable set; uninstall removes it and the attach fails | R4, D4, A11 | yes | — |
 | T2 | the flag and value checks of `--remote`, `--remote-auth-token-env`, `--listen`, `--ws-auth` and its sub-flags, in `ragon` and `codex`: same accept and refuse cases, same messages | R1 | yes | — |
 | T3 | the config keys and env vars of Appendix B §9 and the key rows of Appendix B §1-§8 have the same defaults and effects (a table test over `config.toml`) | R2, R3 | yes | — |
 | T4 | unmodified `codex` TUI and `codex exec` against the Ragon front door: start, resume, fork, list, archive; compared transcript | R4, R6 | yes | — |
@@ -506,67 +530,67 @@ With the router, one client connection sees every node. The primary keeps the cl
 | T8 | slow consumer and overload: a client that stops reading is disconnected; a flood gets `-32001`. Same as on loopback | R6, R9 | yes | — |
 | T9 | file transfer and remote exec (`fs/*`, `command/exec`, `process/spawn`): same answers through the front door | R6 | yes | — |
 | T10 | Origin 403, bad bearer 401, `/readyz` and `/healthz` | R4 | yes | — |
-| T11 | vendor requests: every row of §3.1 served by the primary gets the same method, path, headers and body that Codex sends (recorded at a fake vendor host) | R10 | yes | — |
+| T11 | vendor requests: every row of §3.1 and every constant of Appendix C reaches the primary with the same method, path, headers and body that Codex sends to the vendor; a fake vendor host on the test network sees nothing (Q5) | R10 | yes | — |
 | T12 | the egress audit during T4-T9 sees only the primary | §3.4 | yes | — |
 | T13 | placement and forwarding: two gates on loopback with test certs act as primary and secondary; attach at either one; the primary is down with and without a cached bearer | §7.2 | yes | — |
 | T14 | a real node set: attach from another machine over the LAN and the overlay, with `/airgapped on`; Windows and macOS clients | §8 | — | yes |
 | T15 | relay: an unmodified Codex host through `ragon relay-forward`, a Ragon host direct, a controller reconnect (1.0) | R4, D3, D6 | yes | — |
 | T16 | cloud: `codex cloud exec`, `list`, `status`, `diff` and `codex apply` against the primary, where a task runs as a node job (1.0) | R4, D7 | with the mock model | the real run |
 | T17 | router: T4-T9 again with threads on two nodes; merged `thread/list` (1.0) | R6, R9 | yes | — |
+| T18 | plugins (Q4): a release build contains the mirror and its manifest; an unmodified Codex lists the catalogue and installs a plugin from the primary with the fake vendor host unreachable (1.0) | R10, Q4 | yes | — |
 
 ## 11. Phases
 
+The owner's date and lanes (2026-11-27 22:07): **1.0 on Sun 2026-12-27, four lanes on remote sessions from Tue 2026-12-01.** 0.9.10 stays Mon 2026-12-14.
+
+### 11.1 Size after the answers
+
 | Phase | Date | Scope | Agent-days |
 |---|---|---|---|
-| 0.9.10 | Mon 2026-12-14 | §7.1 A1-A10 and §7.2: direct attach through the primary, secondaries, the trust-root patch, closing the two open vendor paths (A8, A9), T1-T14 | about 12 |
-| 1.0 | plan Sun 2026-12-27 | §7.3 router (8), §7.4 relay (10), §7.5 cloud (11), §7.6 re-points (about 6) and phone page (4), Win/Mac (3), T15-T17 (3) | about 45 |
+| 0.9.10 | Mon 2026-12-14 | §7.1 A1-A11 and §7.2: direct attach through the primary, placement (Q6), secondaries, the trust-root patch, the Linux system-store CA (Q9), closing A8 and A9, T1-T14 | about 13 |
+| 1.0 | **Sun 2026-12-27** | §7.3 router (8), §7.4 relay (10), §7.5 cloud (11), §7.6 re-points of everything (about 12, Q4 and Q5 included), phone page (4), Win/Mac (3), T15-T18 (3½) | about 51½ |
 | later | — | the native phone app; a Ragon environment registry for `exec-server --remote` (V23); everything in §9 (3.0) | — |
 
-**An honest date for 1.0.**
-- 0.9.10 is reachable with one lane from 12-01 and two lanes for the margin.
-- 1.0 is about 45 agent-days after 0.9.10's 12, and only some of it can start before 12-14: the relay and cloud do not depend on the router.
-  - With four lanes from 12-01, 12-27 can be met, and it is tight.
-  - With three lanes, the earliest realistic date is about **Fri 2027-01-08**.
-- The relay's controller side (D6) has no upstream test peer, so it carries the most risk.
-- Recommended: plan 1.0 for 2027-01-08 and call 12-27 a stretch.
+The answers added about 7½ agent-days to the earlier 57: the build-time plugin mirror (Q4, 2 + its test), re-pointing every data-only path and every Appendix C constant (Q5, about 4), and the Linux system-store step (Q9, 1). Total: **about 64½ agent-days**.
+
+**Capacity.** Four lanes on the weekdays from Tue 12-01 to Thu 12-24 give 18 × 4 = **72 lane-days**, so about 7½ lane-days of margin. Code stops on Thu 12-24; Fri 12-25 to Sun 12-27 are the release candidate, the live run on the fleet (T14, T16 real run) and the release. Weekends are not counted; they are the margin's margin.
+
+**The messenger bridges get what is left, and that is nothing from these four lanes.** The 7½ lane-days of margin are the remote sessions' only buffer and are not given away before Mon 12-21. If they are still unused then, the lanes take messenger docs and egress lines (2 days) in the last week. The messenger 1.0 scope (spec `DREAMFERENCE_RAGON_MESSENGERS_KAKAO_WECHAT.md` §12.2 with the owner's answers: WeChat iLink 4, the hooks listener 5, the KakaoTalk adapter 5, the WeChat add-on page for the user-installed unofficial client 1, docs and egress 2, about 17 days) therefore needs **a fifth lane from 12-01**, outside the four; without one it misses 12-27. **WeCom team mode goes to 1.0.1** (owner: in 1.0 only if a lane is free, and none is). Kakao push notifications are not in 1.0 either way (owner).
+
+### 11.2 The lane plan, week by week
+
+| Week | L1 front door and router | L2 client, trust, re-points | L3 relay and phone | L4 cloud and plugins |
+|---|---|---|---|---|
+| W1 Tue 12-01 - Fri 12-04 | A1 session WebSocket in the gate, A2, A3, A4, A7 | A5, A6, A11, A8, A9 | §7.4 host side: enrol, refresh, pair, `/server` WSS on the primary | §7.5 task store, `/wham/tasks*` routes and their shapes |
+| W2 Mon 12-07 - Fri 12-11 | §7.2 placement, ticket, node-to-node forwarding; T13 | A10 tests T1-T12, T14 dry run; 0.9.10 rc on Thu 12-10; then V12, V13 | §7.4 controller side (D6), reconnect and the subscribe cursor, `ragon relay-forward` | environments (Q8: forge and reachable git URLs), the node job, the diff, `codex apply` |
+| W3 Mon 12-14 - Fri 12-18 | **0.9.10 out Mon 12-14**; §7.3 router: initialize replay, thread map, id renumbering | V14, V15-V17 (feedback store), V19, V24, V21 | T15; phone page (§8) | patch `0006` removed, T16 on the mock; V18 build: the plugin mirror step |
+| W4 Mon 12-21 - Thu 12-24 | router: merged lists, global notifications; T17 | V3, V22, V23, V27, V28 and the rest of Appendix C; T11 over every constant; Win/Mac (§8) | phone page done; T14 on the real node set | V18 serve, V25, V26; T18; T16 real run |
+| Fri 12-25 - Sun 12-27 | 1.0 rc, fleet run, release | fix lane | fix lane | fix lane |
+
+Per lane: L1 about 17, L2 about 16½, L3 about 15, L4 about 16 agent-days, against 18 each.
+
+### 11.3 The two biggest risks to 12-27
+
+1. **The router is on the critical path with about one day to spare.** It cannot start before placement lands (W2) and takes about 8 days, so it ends on Wed 12-23 at the earliest. A slip of 0.9.10 past 12-14 moves it one for one. If it is not done on 12-24, 1.0 ships with D9 (one node per connection) as a named difference, and that is the owner's call on 12-24, not before.
+2. **The relay's controller side (D6) has no upstream peer to test against.** Codex's source contains only the host side, so the only proof is our own T15, and a mistake in the envelope handling shows up only against a real host. L3 has no slack before the phone page; if the relay runs over by more than two days, the phone page takes margin from L2.
+
+### 11.4 First week, ready for dispatch on Mon 2026-11-30 (work from Tue 12-01)
+
+| id | files | test command | one line |
+|---|---|---|---|
+| rs-w1-front-door | `dreamference/vllm_server/model_gate_service.py`, `dreamference/vllm_server/model_gate_tls.py` (if the upgrade needs it), new `tests/test_model_gate_session_ws.py` | `python -m pytest -q tests/test_model_gate_session_ws.py tests/test_model_gate_tls.py tests/test_model_gate_auth.py` | A1, A2: the session WebSocket on `/` of port 8000 (Upgrade header, Origin 403, bearer 401, frame copy to the local app-server socket) and Codex's `/readyz` and `/healthz` answers |
+| rs-w1-shared-server | `ragon-rs/web/src/app_server.rs`, `ragon-rs/src/plugins.rs` (`vendor_settings`), the gate's start unit | `cargo test --release -p ragon-web-server app_server` and `cargo test --release -p ragon-launcher plugins` | A3, A4, A7: the shared app-server starts with the gate, one per node and OS user, same user as the gate, with `feedback.enabled=false` and `features.realtime_conversation=false` |
+| rs-w1-remote-default | `ragon-rs/src/lib.rs` (the `--remote` argument path), `codex-patches/` (new patch for the bare `--remote`), new `ragon-rs/tests/remote_default.rs` | `cargo test --release -p ragon-launcher --test remote_default` | A5: `ragon --remote` with no address dials `wss://<primary>.local:8000/` and fills the token variable from the signed-in account; explicit addresses behave as in Codex |
+| rs-w1-trust | new `codex-patches/0044-remote-ca-certificate.patch` (`app-server-client/src/remote.rs:738`), `ragon-rs/src/remote_join.rs`, the Linux installer, `tests/test_codex_branded_builder.py` | `python -m pytest -q tests/test_codex_branded_builder.py` and `cargo test --release -p ragon-launcher remote_join` | A6, A11: the `--remote` dial also trusts `CODEX_CA_CERTIFICATE`; the Linux installer adds, replaces and removes the primary's CA in the system store (Debian and Fedora) |
+| rs-w1-close-two | `ragon-rs/src/lib.rs` (`codex_env`: `CODEX_CLOUD_TASKS_BASE_URL`), new `codex-patches/0045-daemon-install-url.patch` (`app-server-daemon/src/update_loop.rs:66-68`), gate route for `/ragon/v1/install.sh` | `python -m pytest -q tests/test_model_gate.py tests/test_codex_branded_builder.py` and `cargo test --release -p ragon-launcher codex_env` | A8, A9: `ragon cloud` goes to the gate and gets the 404 shape; the daemon updater fetches the primary's install script, which runs `ragon update` |
+| rs-w1-relay-host | new `dreamference/remote/relay_host.py`, `dreamference/vllm_server/model_gate_service.py` (routes), new `tests/test_relay_host.py` | `python -m pytest -q tests/test_relay_host.py` | §7.4 host side: enrol, refresh, pair, pair/status and the `/server` WSS with Codex's envelopes and headers, tested against the host code at the pinned tag |
+| rs-w1-cloud-store | new `dreamference/remote/cloud_tasks.py`, `dreamference/vllm_server/model_gate_service.py` (routes), new `tests/test_cloud_tasks_routes.py` | `python -m pytest -q tests/test_cloud_tasks_routes.py` | §7.5 first half: the task store on the primary and `/backend-api/wham/tasks`, `/tasks/list`, `/tasks/{id}`, `sibling_turns` with the shapes of `backend-client/src/client.rs:459-583` (no node job yet) |
+
+Rows 1-2 and 3-5 are L1 and L2 (0.9.10); rows 6 and 7 are L3 and L4 (1.0). Every row also runs the egress audit tests it touches (`python -m pytest -q tests/test_egress_audit_auth.py`) and adds its CODEOWNERS line for new files.
 
 ## 12. Open questions
 
-Each question has its recommended answer first. The spec uses the recommended answer until the owner says otherwise.
-
-1. **Q1 Telemetry. When an unmodified Codex client sends analytics and metrics to the primary, what does the primary do?**
-   - Recommended: answer with success and store nothing.
-   - Or: keep counts for the admin.
-   - Or: refuse with 404.
-2. **Q2 Feedback. Where does a feedback upload go?**
-   - Recommended: it is kept on the primary for an admin for 30 days and never forwarded, and the TUI's `/feedback` stays removed.
-   - Or: the TUI command comes back too.
-   - Or: refuse uploads.
-3. **Q3 Updates. What does the daemon's hourly self-update fetch?**
-   - Recommended: an install script on the primary that runs `ragon update`.
-   - Or: refuse `ragon app-server daemon` entirely.
-4. **Q4 Plugins. Which plugin catalogue do clients see?**
-   - Recommended: the node's own index only, and the vendor's catalogue is never fetched or mirrored.
-   - Or: the vendor's catalogue mirrored by the primary.
-5. **Q5 Re-point versus close.**
-   - Recommended: functions the user sees come back through the primary: remote control, cloud, `apply`, the updater, `codex app` and doctor. Data-only paths stay closed: analytics, metrics, tips and the forced settings.
-   - Or: re-point everything.
-   - Or: re-point only what a remote session needs.
-6. **Q6 Placement. In 0.9.10, which node gets a new attach?**
-   - Recommended: the node this account used last, then the primary, then the least-loaded secondary, chosen once per connection; per thread with the 1.0 router.
-   - Or: always the primary.
-7. **Q7 The relay's controller side. Codex has no source for it; what do controllers speak?**
-   - Recommended: plain app-server JSON-RPC over the front door, with the relayed host as a placement target.
-   - Or: a copy of the vendor's controller protocol, learned from the host side only.
-8. **Q8 Cloud repositories. Where does a cloud task get its code?**
-   - Recommended: from the node forge (RAGON_SYNC), with other git URLs allowed when the node can reach them.
-   - Or: only from repositories already on the node.
-9. **Q9 Trust on Linux for unmodified clients.**
-   - Recommended: document `SSL_CERT_FILE` once T1 passes, and patch only Ragon's client (A6).
-   - Or: also add the node CA to the system store at install.
-10. **Q10 Ragon's own clients. Do the desktop app and `ragon --remote` use the same route as an unmodified client?**
-    - Recommended: yes. The desktop attaches to the node's shared app-server instead of its own (§8), and every Ragon client goes through the primary.
-    - Or: let Ragon clients follow a redirect to the placed node, which saves a hop but adds a second behaviour.
+None. Q1-Q10 were answered by the owner on 2026-11-27 (22:11); the answers are in §0 and in the sections listed there.
 
 ## 13. Sources
 
@@ -1549,7 +1573,7 @@ PathStyle: when BASE contains /backend-api, paths are `/wham/...`; otherwise `/a
 - B8/B9: `experimental_realtime_*_base_url` pointing at the vendor.
 - Indirect only: F11, the CIMD client id URL at `chatgpt.com`. A third-party server fetches it; Codex does not.
 
-**Cheap closures** (suggestions, not applied):
+**Cheap closures** (suggestions from the survey, superseded: the owner's Q5 re-points every one of these at the primary, §3.3 and §7.6):
 - `-c feedback.enabled=false` in `vendor_settings()`.
 - `-c features.realtime_conversation=false`.
 - Refuse `app-server daemon`, or patch update_loop.rs:651.
