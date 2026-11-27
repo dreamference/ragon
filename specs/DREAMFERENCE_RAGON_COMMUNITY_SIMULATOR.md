@@ -15,7 +15,7 @@
 ## 0. Decisions, stated first
 
 1. **Ragon only, at run time.** Every model call the simulator makes goes to a Ragon model server through a Ragon model gate, with the job tag `community-sim`. The agent is `ragon exec`. No other model, hosted or local, is called while a run lasts, and no other model's output is an input to it. A test checks the runner's configuration: every model endpoint it names is a Ragon gate (§5.1).
-2. **It finds defects before real users do.** These are install, upgrade, uninstall, docs and first-use defects on every platform Ragon ships for. **It is not a benchmark:** it publishes no score, compares nothing with any other product, and its counts (§14) are internal.
+2. **It finds defects before real users do.** These are install, upgrade, uninstall, docs and first-use defects on every platform Ragon ships for. **It is not a benchmark:** it publishes no score, compares nothing with any other product, and its counts (§12) are internal.
 3. **Nothing pretends to be a person.** Every report says in its first line that a program wrote it. Personas carry role ids, never human names. The simulator never posts to a forum, a discussion board, a chat, a social network or any other public place, and it never files on GitHub without the owner's word (§9.3).
 4. **Public docs only.** A simulated user knows only what a stranger can read: the published user site and the release page. It never sees this repository, `AGENTS.md`, `docs/dev/`, the specs, the coordinator's notes or earlier runs' transcripts (§4.2).
 5. **Throwaway machines only.** A target is a virtual machine restored from a pristine snapshot, a disposable sandbox, or a dedicated test box reset by a checked script. It is never the owner's own machine, never a member of the real group, and never a box serving production in that hour (§10).
@@ -73,7 +73,7 @@ A persona is a combination of five things:
 
 **Platforms.** A persona attempts only what the target release's public docs offer for its platform. A platform the docs do not offer yet is still run: the persona then checks that the installer refuses plainly and points to what is supported, and that check is its success.
 
-| Platform | Role today (0.9.9 docs) | Target (§6) | Clean level |
+| Platform | Role in the 0.9.9 docs | Target (§6) | Clean level |
 |---|---|---|---|
 | GB10 node, 128 GB | node (`install.sh`, default on a GB10) | a dedicated pool GB10, reset by script | footprint-clean (§6.2) |
 | Entry-level node, 64 GB | in the 1.0 gate on every platform (owner, 2026-11-23); not offered by the 0.9.9 docs | the 64 GB Mac mini, in a dedicated account | footprint-clean |
@@ -90,14 +90,14 @@ One TOML file per persona, `personas/<id>.toml` in `ragon-community`. The runner
 
 | Field | Example | Rule |
 |---|---|---|
-| `id` | `mac-client-novice-ko` | `<platform>-<skill>-<language>[-<n>]`; a role id, never a human name |
-| `platform` | `mac-client` | one of §3.1's rows |
+| `id` | `mac-client-novice-ko` | `<platform>-<skill or goal>-<language>[-<n>]`, where the middle part is a goal id for a persona built around one goal (`gb10-node-upgrade-en`); a role id, never a human name |
+| `platform` | `mac-client` | one of `gb10-node`, `entry-node`, `mac-node`, `mac-client`, `windows-client`, `windows-node`, `linux-arm64-client`, `linux-x86-client` (§3.1's rows, in that order) |
 | `skill` | `novice` | `novice`, `intermediate` or `expert` |
 | `language` | `ko` | `en`, `ko` or `zh-Hans` |
 | `about` | "A backend developer who has never run a local model; uses the desktop app first" | at most 300 characters; no name, employer or place |
-| `goal` | `explain-repo` | a goal id from §3.3 |
+| `goals` | `["client-pairing", "web-ui"]` | one or two goal ids from §3.3, tried in order; `upgrade` and `uninstall` also need their stage in `stages` |
 | `starts_from` | `fresh` | `fresh`, or `previous-release` for an upgrade run |
-| `patience` | `{ minutes = 60, retries_per_step = 1 }` | at most 120 minutes; retries 0 to 3 |
+| `patience` | `{ minutes = 60, retries_per_step = 1 }` | at most 180 minutes (a node persona with every stage needs about 170); retries 0 to 3 |
 | `stages` | `["discover", "install", "first_use", "task", "uninstall", "report"]` | a subset of §4.1, in that order |
 | `gate` | `true` | the persona is in every release candidate's round |
 | `seed` | `17` | the driver's sampling seed, so a replay takes the same path where the model allows |
@@ -127,7 +127,7 @@ The fixture repositories are small projects written for the simulator and kept i
 
 ### 3.5 The first set
 
-| Id | Platform | Skill | Lang | Goal | Gate |
+| Id | Platform | Skill | Lang | Goals | Gate |
 |---|---|---|---|---|---|
 | `gb10-node-novice-en` | GB10 node | novice | en | `say-hi`, then `explain-repo` | yes |
 | `gb10-node-expert-en` | GB10 node | expert | en | `night-shift` | no |
@@ -218,7 +218,7 @@ The served context is 196,608 tokens per session today (`docs/models.md`). Brain
 |---|---|---|
 | Context per stage | at most 60,000 tokens of prompt (brief + journal + tool output) | the machine tool returns at most 4,000 characters per call, with the rest saved as evidence; the journal keeps a 2,000-token summary per finished stage |
 | Tokens per run | 2,000,000 (input + output), read from the gate's usage for the run's tag | the runner ends the stage, records `budget`, and continues with `report` |
-| Wall time per run | the persona's patience (at most 120 min) plus `prepare` and `collect` | as §4.1 |
+| Wall time per run | the persona's patience (at most 180 min) plus `prepare` and `collect` | as §4.1 |
 | Sessions on the brain node | at most 2 runs at once per brain node | the round waits for a free slot; it never takes a third |
 | Per round | release candidate: about 10 runs, about 20 M tokens; night: as many as §13.2 allows | the round's summary lists runs not started |
 
@@ -244,7 +244,7 @@ The helpers and the debugging port exist only inside the throwaway target. The r
 | The served model reads text only here (the launcher enables images only when the server reports image understanding; the desktop-parity spec has no computer use) | it cannot look at a screenshot | every surface is read as text (§5.3). Visual-only defects (layout, overlap, colour, icons) are **out of scope** and stay person checks. A window whose accessibility tree is empty is a finding (an accessibility defect), not a reason to guess |
 | A stage's context is finite, and long sessions drift | a 90-minute install cannot sit in one context | staged runs, each a fresh `ragon exec` with the journal (§4.1); tool output capped and saved as evidence (§5.2) |
 | The model can loop, or claim success without it | a false pass or a lost hour | the runner, not the model, decides success (§3.3); the same command three times with the same output ends the stage with a `stuck` finding |
-| The model can invent a defect | a false report | runner-observed evidence is required for S1 and S2; the verifier stage (§8.4); the false-report measure (§14) |
+| The model can invent a defect | a false report | runner-observed evidence is required for S1 and S2; the verifier stage (§8.4); the false-report measure (§12) |
 | Sampling varies | a replay may take another path | the persona's seed; the replay of §9.5 repeats the failing step's commands first, before it lets the model choose |
 | No Korean user docs, and Chinese only on the site's landing page | non-English personas read English | the persona reads English and speaks its language to Ragon. A missing translation is a known gap (§8.5), not a report |
 | Time-based features (Night Shift's morning report) | a run cannot wait for a night | the runner sets the target's timer to fire within the run, through the documented setting for the window. Without such a setting the goal is `not applicable`, not a pass |
@@ -365,7 +365,7 @@ A model-judged finding must quote the doc text or the output it judges, word for
 
 ### 8.4 The verifier stage
 
-Before filing, every finding goes to a **second, fresh `ragon exec`** on the brain node. It sees only the report and its evidence (no journal, no persona) and answers one question with `supported` or `not supported` plus a reason: does the evidence show what the report claims? A `not supported` finding is not filed. It is kept in the run record and counted (§14). This is Ragon checking Ragon in a separate context, and it calls no other model.
+Before filing, every finding goes to a **second, fresh `ragon exec`** on the brain node. It sees only the report and its evidence (no journal, no persona) and answers one question with `supported` or `not supported` plus a reason: does the evidence show what the report claims? A `not supported` finding is not filed. It is kept in the run record and counted (§12). This is Ragon checking Ragon in a separate context, and it calls no other model.
 
 ### 8.5 Known gaps
 
@@ -406,7 +406,7 @@ Labels on the forge: `simulated`, `sev:S1` … `sev:S3`, `platform:<p>`, `kind:<
 |---|---|---|
 | `new` | the runner | waits for triage |
 | `confirmed` | a person, or the coordinator's nightly review job after reproducing it from the report's steps | **a backlog row** is opened (what, why, size, dependencies, acceptance = the replay of §9.5 passes, status) and linked both ways |
-| `false` | the same | counts as a false report (§14); the reason is recorded (`not a defect`, `wrong evidence`, `environment`, `known gap`) |
+| `false` | the same | counts as a false report (§12); the reason is recorded (`not a defect`, `wrong evidence`, `environment`, `known gap`) |
 | `duplicate` | the same | merged into the open issue |
 | `environment` | the same | the target, not Ragon, was at fault (an image problem, the host's network); a fix row goes to `ragon-community` |
 | `fixed-pending` | the row's landing | waits for the replay |
@@ -571,9 +571,10 @@ The fleet's split of days and nights holds. Nights belong to the benchmark slice
 
 | Target kind | When | Where |
 |---|---|---|
-| Virtual machines and sandboxes (client personas) | nightly, 20:00–08:00 UTC | on the Mac mini, the Windows boxes, and pool GB10s whose night slot the scheduler leaves free. The brain node is a box the scheduler marks as serving |
+| Virtual machines and sandboxes (client personas) | nightly, 20:00–08:00 UTC | on the Mac mini, the Windows boxes, and pool GB10s whose night slot the scheduler leaves free |
 | Node targets (GB10, entry-level, Mac, Windows node) | in a day lane window, 08:00–20:00 UTC, as a lane takes the GPU lock and releases it by 20:00 | one node target at a time |
-| The community node | for the round only, on a pool GB10 the scheduler grants | never during that box's night slot |
+| The community node | for the round only, on a pool GB10 the scheduler grants: at night one whose night slot it leaves free (the same rule as the client targets), by day under the lane rules | never on a box that runs a benchmark slice that night |
+| The brain node | for the round only, a production node the scheduler marks as serving | never a box that runs a benchmark slice that night, never the community node, never the owner's machine |
 
 A night with no free box runs no round, and the morning summary says so.
 
@@ -601,7 +602,7 @@ The coordinator may start a round for a branch build, for example to replay a fi
 
 The gate line in each release spec reads, for example: `Community simulator: round rc-0.9.10-rc.2 (ragon-community 1a2b3c4), 10 runs, 9 pass, 1 gave up; S1 0, S2 1 open (row <id>); advisory.`
 
-The fleet e2e and the person checks stay as they are. The simulator adds to them and replaces none, until the owner decides that it may replace §11.4's "first run from a clean machine" person check.
+The fleet e2e and the person checks stay as they are. The simulator adds to them and replaces none, until the owner decides that it may replace the "first run from a clean machine" person check of the 1.0 scope's §11.4.
 
 ---
 
@@ -609,20 +610,22 @@ The fleet e2e and the person checks stay as they are. The simulator adds to them
 
 Agent-days are for building only. **L** rows go to Ragon first (the `task` tool, one named test, the RBRB routing rule). **C** rows go to the cheapest model that can do them, with review. A failed L row falls back as RBRB §5.3 says. Rows that change the gates themselves (§15 in a release spec) are never L.
 
-### Phase 0: one persona, one platform, useful in a week (3 agent-days)
+### Phase 0: one persona, one platform, useful in a week (4 agent-days)
 
-**Outcome:** `linux-arm64-client-novice-en` runs end to end against the latest release, with a community node, on a virtual machine on a pool GB10. It produces a run record and Markdown reports in a directory. A person files any real finding by hand. That already repeats, for one platform, the 1.0 gate's "first run from a clean machine" person check.
+**Outcome:** `linux-arm64-client-novice-en` runs `discover`, `install`, `first_use` and its `client-pairing` goal against the latest release, with a community node, on a virtual machine on a pool GB10. Its `uninstall` goal waits for Phase 4. It produces a run record and Markdown reports in a directory. A person files any real finding by hand. That already repeats, for one platform, the 1.0 gate's "first run from a clean machine" person check.
 
 | Row | What | Check | Who |
 |---|---|---|---|
 | 0.1 | private repository `community/ragon-community` on the forge, skeleton, CI with the offline tests | the empty suite passes | C |
 | 0.2 | persona schema and loader; the first persona file | schema test (§11.4) | L |
-| 0.3 | the virtual machine adapter: restore from a pinned image, `sim` user, SSH channel, 8 GB cap | a live restore of the image on one pool GB10, hash checked (recorded, not in the suite) | C |
+| 0.3 | the virtual machine adapter: restore from a pinned image, `sim` user, SSH channel, 8 GB cap, and a private network whose only routes are §10.2's allowed rows (the blocked-connection log waits for row 2.7) | a live restore of the image on one pool GB10, hash checked, and a fetch to the LAN refused (recorded, not in the suite) | C |
 | 0.4 | the machine tool with `run`, `fetch_doc` (allowlist) and `note` | allowlist test; output cap test | L |
-| 0.5 | the stage machine: `prepare`, `discover`, `install`, `first_use`, `report`, `collect`; caps; journal; `stuck` | stage-machine test with a fake machine and a recorded driver | C |
+| 0.5 | the stage machine: `prepare`, `discover`, `install`, `first_use`, `task`, `report`, `collect`; caps; journal; `stuck` | stage-machine test with a fake machine and a recorded driver | C |
 | 0.6 | the report writer (§8.1 format) and the scrubber (§10.4) | scrubber test | L |
 | 0.7 | the Ragon-only configuration check (§5.1) | its test | L |
-| 0.8 | one live run against the latest release; the run record and any reports to the coordinator's inbox | the run reaches `collect`; findings triaged by a person | C |
+| 0.8 | the allowlist and denylist of targets (§10.1) | the planted-id test | L |
+| 0.9 | a minimal community node: one pool GB10 running the latest release as its own primary in a fresh group, wiped after the run, with the refusal of §6.3 if a real node is a member | test with a fake group; one live start and wipe | C |
+| 0.10 | one live run against the latest release; the run record and any reports to the coordinator's inbox | the run reaches `collect`; findings triaged by a person | C |
 
 ### Phase 1: filing, triage and rows (4 agent-days)
 
@@ -637,7 +640,7 @@ Agent-days are for building only. **L** rows go to Ragon first (the `task` tool,
 | 1.7 | known gaps (§8.5) | a matching finding is not filed (test) | L |
 | 1.8 | the planted-defect self-test (§14.1) | a round with the plant reports it | C |
 
-### Phase 2: every platform, advisory in release candidates (6 agent-days)
+### Phase 2: every platform, advisory in release candidates (5 agent-days)
 
 | Row | What | Check | Who |
 |---|---|---|---|
@@ -646,11 +649,10 @@ Agent-days are for building only. **L** rows go to Ragon first (the `task` tool,
 | 2.3 | Windows sandbox target, with checkpoint fallback | live install of the latest release's `install.ps1` | C |
 | 2.4 | footprint lists for Linux, macOS and Windows; reset and check scripts | the installer-diff test (§6.2) | L (the test), C (the scripts) |
 | 2.5 | the GB10 node target: reservation, GPU lock, footprint reset, model cache moved aside | live reset to an empty footprint on one pool GB10 | C |
-| 2.6 | the community node: own group, account wipe, refusal if a real node is a member | test with a fake group; one live round | C |
+| 2.6 | the community node for every platform's clients: the isolated network's advertising, a wipe per round, a grant by the scheduler | one live round with three client platforms | C |
 | 2.7 | the targets' network rules and the blocked-connection log (§10.2) | live: a planted call to an unlisted host is logged with its process | C |
-| 2.8 | the allowlist and denylist of targets (§10.1) | the planted-id test | L |
-| 2.9 | the release candidate round command and the gate line (§15) | one advisory round on a real candidate | C |
-| 2.10 | owner step, prepared as a script with exact commands: the `sim` accounts on the Mac Studio and the AMD Windows box | (the owner runs it) | (owner) |
+| 2.8 | the release candidate round command and the gate line (§15) | one advisory round on a real candidate | C |
+| 2.9 | owner step, prepared as a script with exact commands: the `sim` accounts on the Mac Studio and the AMD Windows box | (the owner runs it) | (owner) |
 
 ### Phase 3: interactive and graphical surfaces as text (4 agent-days)
 
@@ -680,7 +682,7 @@ Agent-days are for building only. **L** rows go to Ragon first (the `task` tool,
 | 5.2 | push the forge repository's history, made by the team bot as the organisation's rules say, and keep the forge copy as a mirror | anonymity check over the whole history before the first push | C |
 | 5.3 | CI on GitHub: offline tests only | green on the first push | C |
 
-**Total: 21 agent-days,** about 40 % of them L rows. Phase 0 alone is useful, and each later phase is useful without the next.
+**Total: 21 agent-days** (4 + 4 + 5 + 4 + 3 + 1). L rows are about a third of the build rows: 13 of 38, counting a row split between L and C as half, and leaving out the two owner steps. Phase 0 alone is useful, and each later phase is useful without the next.
 
 ---
 
