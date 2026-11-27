@@ -1,6 +1,6 @@
 # Ragon on KakaoTalk and WeChat: two more adapters for `ragon chat`
 
-**Status:** Proposed; spec only, nothing built. Researched on 2026-11-27 from the vendors' own developer pages first, with third-party sources marked where nothing official was found (§14). The owner asked for it ("We need kakaotalk and wechat", 2026-11-27) and answered the coordinator's first questions the same day (§0.1). Target: the 1.0 gate (Sun 2026-12-27).
+**Status:** Proposed, every owner question answered (§0.2); spec only, nothing built. Researched on 2026-11-27 from the vendors' own developer pages first, with third-party sources marked where nothing official was found (§14). The owner asked for it ("We need kakaotalk and wechat", 2026-11-27) and answered the coordinator's first questions the same day (§0.1) and every question of §13 the same evening (§0.2). Target: the 1.0 gate (Sun 2026-12-27), with four lanes on remote sessions from 2026-12-01 (§12.3).
 
 **Spec owner:** the owner. **Depends on:** [RAGON_CHAT](./DREAMFERENCE_RAGON_CHAT.md) (the bridge, its hub, threads, approvals, rendering, splitting, bounds), [RAGON_DISCORD](./DREAMFERENCE_RAGON_DISCORD.md) (the shape of a third-party adapter, "the vendor reads it" consent), [RAGON_SIGNAL](./DREAMFERENCE_RAGON_SIGNAL.md) §8 (approvals by typed YES/NO), [RAGON_REMOTE_ACCESS](./DREAMFERENCE_RAGON_REMOTE_ACCESS.md) §2, §15 (the user's relay box, its SNI pass-through on 443, public certificates issued on the node), [RAGON_EGRESS](./DREAMFERENCE_RAGON_EGRESS.md) §10.9 (declared exceptions), [RAGON_AIRGAPPED](./DREAMFERENCE_RAGON_AIRGAPPED.md).
 
@@ -14,25 +14,44 @@
   - **In:** Kakao POSTs every message to a *skill server* at a public HTTPS URL, so the node needs an inbound path. It comes **through the user's own relay box** (the owner, A3): a third name on the box, passed through by SNI like the control plane, TLS ending on the node (§4). Without a relay box, the KakaoTalk adapter cannot be turned on.
   - **Out:** the bot answers only after the user writes: within 5 seconds in the same HTTP response, or **once** through a callback URL valid for 5 minutes. Pushing first needs a business-verified channel and costs 15 KRW a message. So an answer longer than the callback window is fetched by a tap on an **Answer** button (§5.4).
   - **Free, no business number, foreign phone numbers accepted, no review step** for a basic chatbot (deploy takes up to 30 minutes).
-- **WeChat: possible for an individual, through Tencent's own ClawBot channel (iLink), with no inbound path at all.** Since 2026-03 Tencent offers personal WeChat users a ClawBot plugin and publishes its protocol under MIT: QR-code binding on the phone, then the server **long-polls** `ilinkai.weixin.qq.com` and sends replies, outbound only, like Telegram. Catches: iOS WeChat 8.0.70 or later only at the time of writing (gradual roll-out; Android announced without a date), the user must write first, Tencent reserves the right to restrict it, and it was made for OpenClaw (§6).
-- **WeChat for a team: a WeCom intelligent bot in long-connection mode** (outbound WebSocket, no public address, no ICP filing; members use the WeCom app; free for an unverified organisation of up to 100 members) (§7). Official accounts are a later option for companies (§8).
+- **WeChat: possible for an individual, through Tencent's own ClawBot channel (iLink), with no inbound path at all.** Since 2026-03 Tencent offers personal WeChat users a ClawBot plugin and publishes its protocol under MIT: QR-code binding on the phone, then the server **long-polls** `ilinkai.weixin.qq.com` and sends replies, outbound only, like Telegram. Mainland Weixin users first (the owner, Q4); the international WeChat app when Phase 0 shows ClawBot there. Catches: iOS WeChat 8.0.70 or later only at the time of writing (gradual roll-out; Android announced without a date), the user must write first, Tencent reserves the right to restrict it, and it was made for OpenClaw (§6).
+- **WeChat for a team: a WeCom intelligent bot in long-connection mode** (outbound WebSocket, no public address, no ICP filing; members use the WeCom app; free for an unverified organisation of up to 100 members) (§7). **In 1.0 only if a lane is free, otherwise 1.0.1** (the owner, Q7); the lane plan (§12.3) has no lane free for it, so it is planned for 1.0.1. Official accounts for companies come after 1.0, on request (the owner, Q5; §8).
 - **The vendor reads every message.** Kakao and Tencent servers receive the owner's messages and every answer in plain text, keep them under their own terms, and are subject to Korean and Chinese law. Setup says so in plain words and asks for a typed `yes` (A4). At `/airgapped on`, both adapters pause, as Telegram does.
-- **Unofficial personal-account clients are a separate, explicit opt-in, never the default and never the first documented choice** (A2). The spec covers them (§9) and states the risk: they break the vendor's terms and the account can be banned. **For KakaoTalk there is no maintained open-source library to build on**; for WeChat the official ClawBot channel removes most of the reason for one. Whether Ragon ships such a mode in its binaries or documents it as a user-installed add-on is an owner question (§13 Q1); the recommendation is neither in the 1.0 binaries.
-- **First version: text and approvals** (A7): send a task, read the answer, approve or refuse a step. No files, images or voice.
-- **Order** (A6): WeChat iLink first (no inbound path, no vendor review, the Telegram adapter's shape), then KakaoTalk (needs the relay box's inbound name), then the WeCom team bot.
+- **Unofficial personal-account clients are a separate, explicit opt-in, never the default and never the first documented choice** (A2). The spec covers them (§9) and states the risk: they break the vendor's terms and the account can be banned. **For KakaoTalk there is no maintained open-source library to build on**; for WeChat the official ClawBot channel removes most of the reason for one. **Decided (the owner, Q1, 2026-11-27 evening, replacing the morning's built-in ruling): add-on page only.** For WeChat, a documented user-installed add-on page with the warning; for KakaoTalk, nothing. No unofficial client is in Ragon's binaries (§9).
+- **First version: text and approvals** (A7): send a task, read the answer, approve or refuse a step. No files, images or voice. No KakaoTalk push notifications in 1.0 (the owner, Q3; §5.6).
+- **WeChat identity:** the iLink adapter sends the known plugin's version string as `channel_version` (the owner, Q2, against the recommendation; §6.4).
+- **Fixed lines** (consent, "working…", approvals, errors) in **English, Korean and Simplified Chinese** (the owner, Q8), chosen from the language of the user's message, with the user's config as override.
+- **Live acceptance in Korea and China: the owner, with the test accounts of §10** (Q6; §11.2).
+- **Order** (A6): WeChat iLink first (no inbound path, no vendor review, the Telegram adapter's shape), then KakaoTalk (needs the relay box's inbound name), then the WeCom team bot (1.0.1 unless a lane is free). What fits before 12-27 is in §12.3.
 
 ### 0.1 The owner's answers (2026-11-27)
 
 | # | Question | Answer |
 |---|---|---|
 | A1 | Audience | Ragon users in Korea and China, with local accounts and local rules. The owner may not be able to test personally: the spec says how it is tested (§11). |
-| A2 | Official only? | Official routes **and** unofficial clients; the unofficial mode is a separate opt-in on the user's own account, off by default, with a plain warning; never the default or the first documented choice. Ship in binaries vs user add-on is a question (§13 Q1). |
+| A2 | Official only? | Official routes **and** unofficial clients; the unofficial mode is a separate opt-in on the user's own account, off by default, with a plain warning; never the default or the first documented choice. **Superseded the same evening by Q1 (§0.2): add-on page only, WeChat only.** |
 | A3 | Public callback | Through the user's relay box (remote access over the overlay). No project-run relay. |
 | A4 | Privacy | Off by default; setup says plainly the vendor can read the messages and asks for a yes; the egress audit lists the bridge as a declared exception. |
 | A5 | Release | In 1.0 (Sun 2026-12-27); both bridges are part of the 1.0 gate. §12 sizes it against that date. |
 | A6 | Order | Whichever is feasible first: WeChat iLink, then KakaoTalk, then WeCom. |
 | A7 | First version | Text and approvals. |
 | A8 | Test accounts | The owner registers, from the exact list in §10. Nothing is created by a job. |
+
+### 0.2 The owner's answers to §13 (2026-11-27 evening)
+
+Recorded in DECISIONS.md ("OWNER round", 22:07 and 22:11 UTC). They are the owner's words and apply as written, also where they differ from the recommendation this spec made.
+
+| # | Question | Answer | Where it changes the spec |
+|---|---|---|---|
+| Q1 | Unofficial personal-account mode | **Add-on page only:** for WeChat a user-installed add-on page with the warning; for KakaoTalk nothing. Replaces the morning's built-in ruling (A2). | §0, §9 |
+| Q2 | iLink client identity | **Send the known plugin's version string** (the owner's choice against the recommendation). | §0, §6.4, §6.5, §11.1 |
+| Q3 | KakaoTalk "send to me" notifications | **Not in 1.0.** Answers are fetched with the Answer button. | §0, §5.6 |
+| Q4 | Which WeChat users | **Mainland Weixin first.** | §0, §10.2, §11.1 |
+| Q5 | Companies in China (service account) | **After 1.0, on request.** | §0, §8 |
+| Q6 | Who runs the live acceptance | **The owner, with the test accounts.** | §0, §11.2 |
+| Q7 | WeCom team mode | **In 1.0 if a lane is free, otherwise 1.0.1.** | §0, §7, §12.3 |
+| Q8 | Language of the fixed lines | **English, Korean, Simplified Chinese.** | §0, §12.4 |
+| — | Date and lanes | **1.0 stays Sun 2026-12-27, with FOUR lanes on remote sessions from 12-01.** The bridges get what is left (§12.3). | §12 |
 
 ## 1. What each vendor offers (verified 2026-11-27)
 
@@ -78,7 +97,7 @@ What matters:
   - Limits from a 2026 third-party guide, not from Tencent: iOS WeChat only (Android, PC, Mac not yet); no proactive push, the user writes first; Tencent reserves control and can restrict at any time. **The ClawBot plugin's own terms were not found** (§14).
 - **WeCom intelligent bot** (`developer.work.weixin.qq.com/document/path/101463`, updated 2026-10-10): API mode by callback URL **or** long connection. Long connection: `wss://openws.work.weixin.qq.com`, subscribe with BotID and Secret (`aibot_subscribe`), heartbeat about every 30 s, one connection per bot (a new one kicks the old), streaming replies, proactive `aibot_send_msg` once the user has written in that chat, **30 messages a minute and 1,000 an hour per chat**. Launched "to integrate OpenClaw" by a "locally deployed plugin + WebSocket, bypassing corporate domain/IP restrictions". Internal groups only: no external groups, so no personal-WeChat users in them.
 - **Self-built WeCom apps** created after 2022-06-20 need trusted public IPv4 addresses for API calls, and a verified organisation's callback must be a domain filed (ICP) to the same entity. Not usable from a home node abroad.
-- **Mainland Weixin vs international WeChat.** The same backend shows "Weixin" or "WeChat" to the user. Whether ClawBot is offered in the international app, and whether an official account reaches both, is **unconfirmed** (§11.1, §13 Q4).
+- **Mainland Weixin vs international WeChat.** The same backend shows "Weixin" or "WeChat" to the user. Whether ClawBot is offered in the international app, and whether an official account reaches both, is **unconfirmed** (§11.1). Decided (the owner, Q4): mainland Weixin first, so the gate does not wait on the international app.
 - **Terms.** On 2025-04-30 WeChat's Security Center announced a crackdown on third-party tools that obtain or use WeChat data by code injection, screen recording or dumping, under the software licence and the personal-account rules (§9.2).
 
 ## 2. The privacy model, compared
@@ -165,9 +184,9 @@ The chatbot admin center routes text to *blocks*. The setup page (§10.1) makes 
 - If the callback was already used when the request comes, the request waits on the node; the next message or Answer tap shows it first.
 - No choice in 10 minutes: declined, as everywhere.
 
-### 5.6 Optional, not in the first version: "send to me" notifications
+### 5.6 Not in 1.0: "send to me" notifications (the owner, Q3)
 
-To push "your answer is ready" or Night Shift's morning report without the user writing first, the Talk Message API can post into the owner's own "chat with myself" with the owner's OAuth token (Kakao developer app, Kakao Login, `talk_message` consent; access token 6 h, refresh token 2 months, renewed when a month or less is left). Two cautions: Kakao's message tutorial says the API is meant for user-initiated sending, not for a service sending automatically; and it adds an app, a login and a token. Owner question §13 Q3. Not needed for text and approvals.
+To push "your answer is ready" or Night Shift's morning report without the user writing first, the Talk Message API can post into the owner's own "chat with myself" with the owner's OAuth token (Kakao developer app, Kakao Login, `talk_message` consent; access token 6 h, refresh token 2 months, renewed when a month or less is left). Two cautions: Kakao's message tutorial says the API is meant for user-initiated sending, not for a service sending automatically; and it adds an app, a login and a token. **Decided: not in 1.0** (the owner, Q3); answers are fetched with the Answer button (§5.4). Revisit after 1.0.
 
 ### 5.7 Team
 
@@ -195,11 +214,15 @@ Plain text: the request, then "Reply YES or NO (code 4821)". `YES`/`NO` (or `是
 
 ### 6.4 The identity it presents
 
-`base_info.bot_agent` is `Ragon/<version>`, honestly. `channel_version` must carry a version the server accepts; Tencent's plugin sends its own package version. Sending OpenClaw's version string would pass as their plugin. **Decision for the owner (§13 Q2)**; recommended: send our own version and, if the server marks it unsupported, report it in Phase 0 rather than imitate.
+**Decided (the owner, Q2, against the recommendation): `channel_version` carries the known plugin's version string**, the one Tencent's ClawBot plugin for OpenClaw sends, so the server treats the adapter as that plugin. `base_info.bot_agent` stays `Ragon/<version>`: the answer covers the version string only, and if Phase 0 (W2) shows the server checks `bot_agent` too, that is a new question for the owner, not a silent change.
+
+- The string is one constant in `wechat_ilink.rs` with a comment naming where it comes from (the plugin's published package version) and a test that pins it.
+- When Tencent's plugin moves to a new version and the server starts refusing the old one, the adapter says so in `ragon chat status` ("WeChat refused this client version; update Ragon") and a release bumps the constant. No automatic fetching of the current version: that would be a call to a vendor the egress audit does not list.
+- Setup's consent text says it plainly: "Ragon presents itself to WeChat as the ClawBot plugin."
 
 ### 6.5 What can break it, plainly
 
-- Tencent can stop non-OpenClaw clients by `channel_version` at any time, or end the ClawBot programme.
+- Tencent can stop clients it does not recognise at any time (by `bot_agent` or other signals, even with the plugin's version string), refuse an old version string after its plugin updates (§6.4), or end the ClawBot programme.
 - Availability: iOS only at the time of writing, rolled out gradually; an owner whose WeChat shows no ClawBot plugin cannot use this mode yet.
 - The account at stake is the owner's personal WeChat. The route is Tencent's own, so it is not against the terms in the way §9 is, but its terms were not found (§14).
 
@@ -214,7 +237,7 @@ Plain text: the request, then "Reply YES or NO (code 4821)". `YES`/`NO` (or `是
 
 ## 8. Not in the first version: official accounts
 
-A verified **service account** is how a company in China reaches many WeChat users: callback on 80/443 (it would come through the relay box's `hooks` name, which serves on 443, so the same §4 path works, with `/wechat/<secret>` added), XML, signature and AES (`msg_signature`), 5-second passive reply plus customer-service messages (5 within 48 h of the user's last message). It needs a mainland entity (300 RMB) or an overseas company (99 USD, service account only, 7–15 working days), and an individual account can only answer within 5 seconds, too short for an agent. Built only if the owner wants companies to run it (§13 Q5).
+A verified **service account** is how a company in China reaches many WeChat users: callback on 80/443 (it would come through the relay box's `hooks` name, which serves on 443, so the same §4 path works, with `/wechat/<secret>` added), XML, signature and AES (`msg_signature`), 5-second passive reply plus customer-service messages (5 within 48 h of the user's last message). It needs a mainland entity (300 RMB) or an overseas company (99 USD, service account only, 7–15 working days), and an individual account can only answer within 5 seconds, too short for an agent. **Decided: after 1.0, on request** (the owner, Q5): built when a company asks for it, not before.
 
 ## 9. The unofficial personal-account mode (explicit opt-in)
 
@@ -229,7 +252,7 @@ A verified **service account** is how a company in China reaches many WeChat use
 - **Sign-in** (node-kakao v4, not re-verified): e-mail and password plus a device id; the first login registers a device with a passcode confirmed on the phone and takes the PC/tablet sub-device slot. Current KakaoTalk builds add request signing and device attestation (per the 2026 repository's claim).
 - **What breaks:** every client-version bump can be refused by version check; signing and attestation changes need reverse engineering each time.
 - **Terms and record:** Kakao's operating policy (2025-09-30) names reverse engineering KakaoTalk and using or publishing the result as copyright infringement, and lists calling the protocol with non-permitted programs and distributing protocol bots as grounds for **immediate permanent restriction** of the whole KakaoTalk account. A mass permanent ban of LOCO-bot users was reported in 2021 (secondary source). No lawsuit was found.
-- **Conclusion:** there is nothing maintained to build on. Shipping this mode means Dreamference writing and maintaining its own LOCO client, which Kakao's policy calls copyright infringement, for the users of a product sold in Korea. **Recommended: not built, in binaries or as an add-on.**
+- **Conclusion:** there is nothing maintained to build on. Shipping this mode means Dreamference writing and maintaining its own LOCO client, which Kakao's policy calls copyright infringement, for the users of a product sold in Korea. **Decided (the owner, Q1): nothing for KakaoTalk**, neither in the binaries nor as an add-on page.
 
 ### 9.2 WeChat (personal account)
 
@@ -249,7 +272,7 @@ A verified **service account** is how a company in China reaches many WeChat use
 - **What breaks:** web login is closed for most accounts; hooks break on each desktop update; iPad-protocol services depend on a vendor that can vanish (Gewechat did).
 - **Terms and record:** WeChat Security Center's notice of 2025-04-30 targets exactly these tools (code injection, screen recording or dumping) under the software licence and the personal-account rules. Restrictions of accounts using such tools are widely reported; numbers and lawsuits were not confirmed (§14).
 - **And:** the working ones need a Windows machine running WeChat desktop, and the bridges are Unix-only. The official iLink route (§6) does what the owner needs without any of it.
-- **Recommended:** not in Ragon's binaries. If the owner wants the opt-in (A2), the smallest honest form is a **documented, user-installed add-on**: a page naming wechaty or wxauto, the warning, and the OpenAI-compatible endpoint `ragon web` already serves, with nothing of ours injected into WeChat. Setup of that add-on, if ever automated, prints: "This uses an unofficial client. It is against WeChat's terms. Your WeChat account can be restricted or banned. Type I ACCEPT THE RISK." (§13 Q1.)
+- **Decided (the owner, Q1): an add-on page only, not in Ragon's binaries.** The page is `docs/messengers-wechat-addon.md`, linked from `docs/messengers.md` after the official routes (never first). It names wechaty and wxauto as user-installed third-party tools, points them at the OpenAI-compatible endpoint `ragon web` already serves, and nothing of ours is injected into WeChat. Its first lines are the warning: "This uses an unofficial client. It is against WeChat's terms. Your WeChat account can be restricted or banned." Ragon ships no installer, no setup command and no code for it; the egress audit does not list it, because nothing of Ragon's makes those calls.
 
 ## 10. What the owner (or a user) does once
 
@@ -265,7 +288,7 @@ A verified **service account** is how a company in China reaches many WeChat use
 
 ### 10.2 WeChat owner mode: cost 0, minutes, no review
 
-1. A personal WeChat account on an **iPhone**, WeChat 8.0.70 or later, with **ClawBot** visible under Me → Settings → Plugins (gradual roll-out: if it is not there, this mode is not yet available to that account).
+1. A personal **mainland Weixin** account (the owner, Q4; the international WeChat app once Phase 0 shows ClawBot there) on an **iPhone**, Weixin 8.0.70 or later, with **ClawBot** visible under Me → Settings → Plugins (gradual roll-out: if it is not there, this mode is not yet available to that account).
 2. `ragon chat wechat setup`, scan the QR code with that phone, enter the PIN if asked.
 
 ### 10.3 WeChat team mode (WeCom): cost 0 unverified, under an hour
@@ -291,11 +314,11 @@ Official accounts (§8): an entity, 300 RMB or 99 USD a year, 7–15 working day
 
 ### 11.1 Phase 0 on the real services (the owner's accounts, about two hours, can run before any code)
 
-Answers needed before relying on the design: (K1) is callback available to an unverified individual's bot, with what application and wait; (K2) can a skill send a custom header; (K3) the skill request's retry behaviour and source addresses; (W1) ClawBot in the international WeChat app vs mainland Weixin, and on Android; (W2) does iLink accept a client whose `channel_version` / `bot_agent` is not OpenClaw's; (W3) text size and rate limits on `sendmessage`; (W4) can a WeCom organisation be registered with a non-mainland number, and do intelligent-bot chats reach members through the WeChat plugin. Each is a short script under `scratch/messenger-probes/{kakao,wechat}/`, run by whoever holds the account, the output pasted into §15.
+Answers needed before relying on the design: (K1) is callback available to an unverified individual's bot, with what application and wait; (K2) can a skill send a custom header; (K3) the skill request's retry behaviour and source addresses; (W1) ClawBot on the owner's mainland Weixin account (the gate's target, Q4), then the international WeChat app and Android (for after the gate); (W2) does iLink accept the known plugin's `channel_version` (Q2) together with `bot_agent: Ragon/<version>`; (W3) text size and rate limits on `sendmessage`; (W4) can a WeCom organisation be registered with a non-mainland number, and do intelligent-bot chats reach members through the WeChat plugin. Each is a short script under `scratch/messenger-probes/{kakao,wechat}/` (row `mk-phase0-probes`, §12.4), run by the owner on the test accounts, the output pasted into §15.
 
 ### 11.2 Who tests it live
 
-The owner may not be able to (A1). The live acceptance is one script per adapter (`scripts/messenger_acceptance.py --kakao|--wechat|--wecom`) that a tester runs on a node with their phone: send "ping", read "pong" from the model, trigger one approval, approve it, decline the next; the script records the transcript and the bridge's status. A tester in Korea and one in China (or the owner with test accounts per §10) each run it once before 1.0; §13 Q6 asks who.
+The owner may not be able to (A1). The live acceptance is one script per adapter (`scripts/messenger_acceptance.py --kakao|--wechat|--wecom`) that a tester runs on a node with their phone: send "ping", read "pong" from the model, trigger one approval, approve it, decline the next; the script records the transcript and the bridge's status. **Decided (the owner, Q6): the owner runs it, with the test accounts of §10**, once per adapter that is in 1.0, between the adapter landing and 12-26 (§12.3). The script prints each step before it runs so a run needs no one else.
 
 ## 12. Effort, against 2026-12-27
 
@@ -316,22 +339,74 @@ The owner may not be able to (A1). The live acceptance is one script per adapter
 | Egress lines, docs (`docs/messengers.md`, `docs/dev/messengers.md`), acceptance script | 2 | all |
 | **Total** | **20** | |
 
-**Against 12-27 (30 days, release freeze until Sunday 11-29):** feasible for iLink and KakaoTalk with one engineer from 11-30 (14 working days to about 12-18), leaving a week for Phase 0 answers and the live runs; WeCom fits with a second engineer in parallel, otherwise it slips to 1.0.1.
+WeCom is 1.0.1 (§12.3, Q7). Without it, the 1.0 part is 16 lane-days: iLink 4, hooks 5, Kakao 5, egress/docs/acceptance 2 (the add-on page of §9.2 is part of the docs).
 
 - **Vendor review is not on the critical path:** none of the three first routes has a review step found in the docs. The open risk is Kakao's callback (K1); §5.4 step 5 keeps KakaoTalk working without it.
 - **If no live account is ready by the gate:** the stand-ins plus recorded messages carry the gate for the code; the live run is recorded as a known issue. **The unofficial mode must not carry the gate**: it is the opposite of what the gate certifies, and for KakaoTalk it does not exist.
-- **The real date risk is outside our hands:** an owner without ClawBot in their WeChat cannot run the WeChat live test at all (§6.5).
+- **A date risk outside our hands:** an owner without ClawBot in their Weixin cannot run the WeChat live test at all (§6.5).
+
+### 12.3 The lane plan for 1.0 (Sun 2026-12-27): four lanes, remote sessions first
+
+The owner's ruling (2026-11-27 evening): 1.0 stays on 12-27, with **four lanes on remote sessions from Tue 12-01**. The bridges get what is left.
+
+**What is left, plainly.**
+- Remote sessions need about 57 lane-days: 12 for 0.9.10 (Mon 12-14) and 45 for 1.0 (REMOTE_SESSIONS §11, as of 2026-11-27).
+- Four lanes over the 18 working days from 12-01 to Thu 12-24 give 72 lane-days. The gate itself takes 12-25 to 12-27.
+- So about **15 lane-days are left**, all from Wed 12-16 on, and only if remote sessions land on estimate. That spec calls four lanes "tight". The owner's Q5 ("re-point everything") also adds the data-only paths to its re-points. So 15 is the ceiling, and any slip there takes it down to zero.
+- **That is enough for WeChat (iLink) and not for KakaoTalk.**
+  - The 1.0 bridge work is 16 lane-days (§12.2 without WeCom).
+  - KakaoTalk alone is 10 of them: the hooks listener (5), then the adapter (5), one after the other.
+  - The longest free stretch is one lane from 12-16 to 12-24 (7 working days), so the two KakaoTalk pieces cannot both finish by 12-24.
+- **WeCom has no free lane, so it is 1.0.1** (Q7).
+
+**Week by week.** L1-L4 are the four lanes. "RS" means remote-sessions work; its item names come from REMOTE_SESSIONS §7 and §11. Fill rows are small docs, tests and probe items on the cheapest model, as the 11-25 ruling allows; they take no lane.
+
+| Week | L1 | L2 | L3 | L4 | Bridges |
+|---|---|---|---|---|---|
+| W1 12-01-12-07 | RS 0.9.10 core: direct attach, secondaries | RS 0.9.10 core: trust root (Q9: the installer adds the node CA), the vendor paths re-pointed (Q5) | RS relay §7.4 (controller side, Q7) | RS cloud §7.5 | **No lane.** The four fill rows of §12.4. The owner registers the §10.1 and §10.2 accounts and runs the Phase 0 probes |
+| W2 12-08-12-14 | RS router §7.3 (from about 12-09) | RS re-points §7.6 (everything, Q5) | RS relay | RS cloud | No lane. Phase 0 results go into §15. Review and land the fill rows. 0.9.10 on Mon 12-14 |
+| W3 12-15-12-21 | RS router (to about 12-18), then **the hooks listener** (§4) | RS phone page | RS Win/Mac, then T15-T17 | RS cloud (to about 12-15), then **the WeChat iLink adapter** from Wed 12-16 (4 days) | iLink in L4. Hooks in L1 from about 12-19 |
+| W4 12-22-12-27 | Hooks listener ends about 12-24. **The Kakao adapter is not reached** | RS T15-T17 and gate fixes | RS gate fixes | iLink: egress, docs, acceptance script (2 days). The owner's live WeChat run 12-23 to 12-26 | 12-25 to 12-27: the 1.0 gate with WeChat (iLink) in. KakaoTalk is 1.0.1 unless a lane freed early |
+
+- **KakaoTalk in 1.0 needs one of these:**
+  - remote sessions free a lane by about 12-14;
+  - the lanes also run the weekends 12-19/20 and 12-26 (hooks plus adapter in one lane from 12-16 would end about 12-25, with no margin);
+  - a fifth lane for the bridges from 12-08.
+- The owner's morning ruling put both bridges in the gate. §13 N1 asks which way, and states the default.
+- **Order inside the leftover:** iLink first (no inbound path, smallest, the owner's A6 order), then the hooks listener, then Kakao. The first lane that remote sessions free takes the next item. A lane never stops remote-sessions work for a bridge.
+
+**The two biggest risks to the date.**
+1. **Remote sessions slip and take the leftover with them.** The relay's controller side has no upstream test peer, and Q5 grows the re-points. That spec's own honest date with three lanes is 2027-01-08. A slip of three days or more in any RS lane leaves no lane for iLink before 12-22, and then WeChat misses 12-27 too.
+   - Mitigation: the fill rows take everything that needs no lane out of the critical path (strings, egress lines, docs, probes).
+   - The coordinator checks on Fri 12-11 whether the RS lanes still free a lane by 12-16. If they do not, the owner chooses between the bridges in 1.0.1 and a fifth lane.
+2. **The live acceptance depends on Tencent, Kakao and one person in Christmas week.**
+   - ClawBot must be visible on the owner's Weixin account (iOS only, gradual roll-out).
+   - iLink must accept the plugin's version string with our `bot_agent` (W2).
+   - Kakao's callback must be available to an unverified bot (K1).
+   - The owner is the only live tester for both countries (Q6), between 12-23 and 12-26.
+   - Mitigation: Phase 0 runs in W1-W2, before any adapter code, so a "no" changes the plan while there is time. The stand-ins plus recorded messages carry the code part of the gate. A live run that cannot happen is recorded as a known issue, not faked.
+
+### 12.4 First-week rows (12-01 to 12-07), ready for dispatch on Mon 12-01
+
+Fill rows, none on a lane. Sonnet. Each row is its own worktree and branch off `origin/main`. Each lands with the full suite after the freeze, as every row does.
+
+| id | files | test command | one line |
+|---|---|---|---|
+| mk-phase0-probes | `scratch/messenger-probes/kakao/probe_skill.py`, `scratch/messenger-probes/wechat/probe_ilink.py`, `scratch/messenger-probes/wechat/probe_wecom.py`, `scratch/messenger-probes/README.md` (coordinator scratch, new; not the repository) | `python3 -I scratch/messenger-probes/wechat/probe_ilink.py --dry-run` (and the same for the other two; a dry run talks to a local stand-in, never to a vendor) | The scripts for K1-K3 and W1-W4 (§11.1). Each prints its steps and writes its output to paste into §15. The owner runs them on the test accounts in W1-W2 |
+| mk-fixed-lines | `ragon-rs/chat/src/lines.rs` (new), `ragon-rs/chat/src/lib.rs`, `ragon-rs/chat/tests/lines.rs` (new), `.github/apps/CODEOWNERS` | `cargo test --release -p ragon-signal -p ragon-chat -p ragon-sync -p ragon-loop-guard` in the build's export (the release step's exact command) | The new adapters' fixed lines in English, Korean and Simplified Chinese (Q8): the consent texts (including "Ragon presents itself to WeChat as the ClawBot plugin"), "working…", the approval prompt with its code, the errors. The language comes from the message's script (Hangul: Korean; Han: Simplified Chinese; otherwise English). The config override comes with the first adapter, so `Config` is not touched |
+| mk-egress-exceptions | `dreamference/audit/egress_audit.py` (`declared_exceptions`, beside the Telegram and Discord lines), `tests/test_egress_audit.py` | `pytest tests/test_egress_audit.py tests/test_docs_egress_audit_runs.py -q` | The three declared-exception lines of §12.1 for `ragon-chat.service`, each shown only when its adapter is on in the chat config, and none by default |
+| mk-wechat-addon-page | `docs/messengers-wechat-addon.md` (new), `docs/messengers.md`, `.github/apps/CODEOWNERS` | `pytest tests/test_docs_index.py tests/test_docs_commands.py -q` | The §9.2 add-on page (Q1): the warning first, wechaty or wxauto as user-installed tools, the `ragon web` endpoint, nothing in the binaries. Linked from `docs/messengers.md` after the official routes. There is no KakaoTalk page |
+
+The lane rows (iLink, hooks, Kakao) are written when a lane frees (§12.3). The coordinator writes them from §6, §4 and §5 then.
 
 ## 13. Questions for the owner
 
-1. **The unofficial personal-account mode:** (a) *recommended:* not in Ragon's binaries; for WeChat a documented user-installed add-on page with the warning, for KakaoTalk nothing (no maintained library; Kakao calls the reverse engineering it needs copyright infringement); (b) a built-in opt-in for WeChat only; (c) built-in for both.
-2. **iLink's client identity:** (a) *recommended:* present ourselves honestly (`bot_agent: Ragon/<version>`, our own `channel_version`) and accept that Tencent may refuse it; (b) send the OpenClaw plugin's version string so the server treats us as their plugin.
-3. **KakaoTalk notifications** ("answer ready", the morning report) through Kakao's "send to me" API: (a) *recommended:* not in 1.0; answers are fetched with the Answer button; (b) in 1.0, as an opt-in with the owner's Kakao Login.
-4. **Which WeChat users:** (a) *recommended:* mainland Weixin users first, international WeChat when Phase 0 shows ClawBot there; (b) both required for the gate.
-5. **Companies in China** (official service account, 300 RMB or 99 USD a year, entity verification, callback through the relay box): (a) *recommended:* after 1.0, only if a customer asks; (b) in 1.0.
-6. **Who runs the live acceptance** in Korea and in China before 12-27: (a) *recommended:* a tester in each country (one hour each, their own accounts, the script of §11.2); (b) the owner with the §10 accounts; (c) the gate passes on stand-ins and recorded messages alone.
-7. **WeCom team mode:** (a) *recommended:* in 1.0 if a second engineer is available, otherwise 1.0.1; (b) required for 1.0.
-8. **Language of the bridges' fixed lines** (consent, "working…", approvals, errors): (a) *recommended:* English, Korean and Simplified Chinese, chosen from the phone's message language with the user's config as override; (b) English only.
+All eight questions of the first round are answered (§0.2). One new question comes from the lane plan.
+
+1. **N1: KakaoTalk and the four lanes.** With four lanes on remote sessions, what is left fits WeChat (iLink) and not KakaoTalk (§12.3). The morning ruling put both in the 1.0 gate.
+   - (a) *Default, applied unless the owner says otherwise:* keep the date and the four lanes. KakaoTalk takes the first lane remote sessions free after iLink. If KakaoTalk is not green on its stand-ins by 12-24, it ships in 1.0.1 and the gate lists it as a known issue.
+   - (b) The lanes also run the weekends 12-19/20 and 12-26 for the bridges (more account budget, no margin).
+   - (c) A fifth lane for the bridges from 12-08: both bridges and WeCom fit, with margin.
 
 ## 14. Sources (read 2026-11-27)
 
