@@ -8,6 +8,8 @@ qualified to run on NVIDIA GB10 hardware.
 from dataclasses import dataclass, field
 from typing import Any
 
+from dreamference.hardware.gpu_platform import PLATFORM_GB10
+
 
 @dataclass
 class ModelSpec:
@@ -20,6 +22,9 @@ class ModelSpec:
         min_memory_gb (float): Minimum estimated VRAM/RAM required in GB for single batch inference.
         max_memory_gb (float): Maximum estimated VRAM/RAM required in GB for high concurrency/context length.
         compatible_gb10 (bool): Flag indicating if model fits within NVIDIA GB10 128GB unified memory.
+            Kept readable for one release; `compatible_platforms` is the field to read.
+        compatible_platforms (frozenset[str] | None): The platforms (gpu_platform.PLATFORMS) the model
+            is qualified on. None derives {gb10} from `compatible_gb10` (empty when it is False).
         notes (str): Operational or performance guidance notes for deployment.
         hf_repo_id (str): Official HuggingFace repository identifier (e.g., 'Qwen/Qwen2.5-Coder-32B-Instruct').
         launch_overrides (Dict[str, Any]): Per-model vLLM launch recipe. Not every model runs well on the
@@ -75,3 +80,15 @@ class ModelSpec:
     supports_vision: bool = False
     is_diffusion: bool = False
     swe_bench_max_parallel: int | None = None
+    compatible_platforms: frozenset[str] | None = None
+
+    def __post_init__(self) -> None:
+        """Derives `compatible_platforms` from the old `compatible_gb10` flag when it is unset."""
+        if self.compatible_platforms is None:
+            self.compatible_platforms = frozenset({PLATFORM_GB10} if self.compatible_gb10 else ())
+
+    def compatible_with(self, platform: str) -> bool:
+        """Whether the model is qualified on a platform (the GB10 also honours the old flag)."""
+        if platform == PLATFORM_GB10 and not self.compatible_gb10:
+            return False
+        return platform in (self.compatible_platforms or ())
