@@ -703,6 +703,48 @@ def test_served_assets_with_named_template_and_tokenizer_skips_the_patches(tmp_p
     }
 
 
+def test_adapter_train_generate_served_assets_raises_when_a_patch_no_longer_applies(
+    tmp_path, monkeypatch
+):
+    """A patch whose anchor no longer occurs in the snapshot's template refuses the run."""
+    from unittest import mock
+
+    from dreamference.hardware.model_matrix_registry import (
+        DEFAULT_MODEL_ALIAS,
+        ModelMatrixRegistry,
+    )
+
+    model_key = DEFAULT_MODEL_ALIAS
+    revision = ModelMatrixRegistry.get_launch_overrides(model_key, "sglang")["revision"]
+    cache_dir = tmp_path / "hf_cache"
+    monkeypatch.setenv("HF_HUB_CACHE", str(cache_dir))
+    pinned = (
+        cache_dir
+        / f"models--{ModelMatrixRegistry.resolve_hf_repo(model_key).replace('/', '--')}"
+        / "snapshots"
+        / revision
+    )
+    pinned.mkdir(parents=True)
+    (pinned / "chat_template.jinja").write_text("template without the anchor")
+    (pinned / "tokenizer.json").write_text("{}")
+    generate = AdapterTrainGenerate(
+        tmp_path / "repo",
+        tmp_path / "out",
+        [],
+        [],
+        MODEL_HOST,
+        model_key=model_key,
+    )
+    with (
+        mock.patch(
+            "dreamference.hardware.adapter_train_generate.ChatTemplatePatcher.apply",
+            return_value=("template without the anchor", ["anchor"]),
+        ),
+        pytest.raises(ValueError, match="chat template patches no longer apply"),
+    ):
+        generate.served_assets()
+
+
 def test_adapter_train_generate_arguments_of_parses_the_json_and_passes_the_dict_through():
     """A call's arguments: the JSON string is parsed, a dict passes through, a value that is neither becomes `{}`."""
     parsed = AdapterTrainGenerate.arguments_of(ARGUMENTS_JSON)
