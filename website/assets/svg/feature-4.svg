@@ -1,0 +1,40 @@
+<svg viewBox="0 0 480 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A code index: definitions, callers and impact across the repository">
+  <!-- index graph: a definition node, its callers, and an impact ring -->
+  <g fill="none" stroke="#C9D2DC" stroke-width="2">
+    <circle cx="340" cy="150" r="86" stroke-dasharray="4 8" opacity="0.6"/>
+    <path d="M150 150 H340"/>
+    <path d="M150 150 L240 70"/>
+    <path d="M150 150 L240 230"/>
+    <path d="M340 150 L430 90"/>
+    <path d="M340 150 L430 210"/>
+  </g>
+  <!-- caller edges -->
+  <g fill="none" stroke="#8E9AA8" stroke-width="2.5" stroke-linecap="round">
+    <path d="M340 150 L240 70" stroke-dasharray="6 6"/>
+    <path d="M340 150 L240 230" stroke-dasharray="6 6"/>
+  </g>
+  <!-- the definition node -->
+  <g>
+    <circle cx="340" cy="150" r="44" fill="#242A32"/>
+    <text x="340" y="158" font-family="ui-monospace, monospace" font-size="22" font-weight="600" fill="#FFFFFF" text-anchor="middle">def</text>
+  </g>
+  <!-- the callers -->
+  <g>
+    <circle cx="430" cy="90" r="18" fill="#E4572E"/>
+    <circle cx="430" cy="210" r="18" fill="#FF6B35"/>
+    <circle cx="240" cy="70" r="14" fill="#2E3947"/>
+    <circle cx="240" cy="230" r="14" fill="#2E3947"/>
+  </g>
+  <!-- the lookup: a node being found, not searched by hand -->
+  <g>
+    <circle cx="128" cy="150" r="26" fill="#FFFFFF" stroke="#242A32" stroke-width="3"/>
+    <path d="M128 134 V166 M112 150 H144" stroke="#242A32" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="128" cy="150" r="38" fill="none" stroke="#FF6B35" stroke-width="3" opacity="0.85"/>
+  </g>
+  <!-- small graph ticks so the index reads as a map of the project -->
+  <g fill="#8E9AA8">
+    <circle cx="60" cy="60" r="5"/>
+    <circle cx="76" cy="240" r="5"/>
+    <circle cx="52" cy="150" r="5"/>
+  </g>
+</svg>

@@ -8,11 +8,17 @@ import re
 from collections import Counter
 from pathlib import Path
 from types import ModuleType
+from typing import Final
 
 import pytest
 
 WEBSITE = Path(__file__).resolve().parent.parent / "website"
 PLACEHOLDER = re.compile(r"\{\{([a-z0-9_.]+)\}\}")
+# The drawn pictures of the new front page's feature cards, cards 4-6
+# (spec DREAMFERENCE_SITE_FRONT_PAGE.md, section 5; row sfp-r18-feature-svg-b).
+FEATURE_PICTURES: Final[tuple[Path, ...]] = tuple(
+    WEBSITE / "assets" / "svg" / f"feature-{number}.svg" for number in (4, 5, 6)
+)
 
 
 def _load_builder() -> ModuleType:
@@ -101,6 +107,23 @@ def test_the_root_page_alone_may_redirect() -> None:
     assert 'data-root="1"' in (WEBSITE / "index.html").read_text(encoding="utf-8")
     for code in CODES:
         assert 'data-root="1"' not in (WEBSITE / code / "index.html").read_text(encoding="utf-8")
+
+
+def test_feature_svg_pictures_for_cards_4_to_6() -> None:
+    for picture in FEATURE_PICTURES:
+        text = picture.read_text(encoding="utf-8")
+        assert "<svg" in text, f"{picture.name}: not an SVG document"
+        # No raster image: no img element and no data-URI payload of any kind.
+        assert "<img" not in text, f"{picture.name}: draws a raster image"
+        assert "data:image" not in text, f"{picture.name}: embeds raster bytes"
+        # Each file loads nothing from other hosts.
+        urls = re.findall(r"https?://[^\"'<> ]+", text)
+        assert urls == ["http://www.w3.org/2000/svg"], f"{picture.name}: loads from a host"
+        assert "url(" not in text, f"{picture.name}: loads an external resource"
+        # It is a picture, not a placeholder: it draws something.
+        assert re.search(r"<(?:path|circle|rect|polygon|polyline|line)\b", text), (
+            f"{picture.name}: no drawn shape"
+        )
 
 
 def test_pages_load_nothing_from_other_hosts() -> None:

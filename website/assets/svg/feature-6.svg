@@ -1,0 +1,42 @@
+<svg viewBox="0 0 480 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ask in a browser: questions, image search and speaking, from this machine or a paired phone">
+  <!-- the browser window -->
+  <g>
+    <rect x="48" y="48" width="296" height="204" rx="10" fill="#FFFFFF" stroke="#242A32" stroke-width="3"/>
+    <path d="M48 88 H344" stroke="#242A32" stroke-width="3"/>
+    <circle cx="72" cy="68" r="6" fill="#FF6B35"/>
+    <circle cx="94" cy="68" r="6" fill="#C9D2DC"/>
+    <circle cx="116" cy="68" r="6" fill="#C9D2DC"/>
+    <rect x="132" y="58" width="180" height="20" rx="10" fill="#E7ECF2"/>
+  </g>
+  <!-- the question and its answer -->
+  <g>
+    <rect x="72" y="112" width="150" height="26" rx="13" fill="#FF6B35"/>
+    <rect x="88" y="123" width="106" height="5" rx="2.5" fill="#FFFFFF"/>
+    <rect x="180" y="156" width="140" height="10" rx="5" fill="#C9D2DC"/>
+    <rect x="180" y="176" width="110" height="10" rx="5" fill="#C9D2DC"/>
+    <rect x="180" y="196" width="130" height="10" rx="5" fill="#E7ECF2"/>
+  </g>
+  <!-- speaking instead of typing: the waveform in the window -->
+  <g stroke="#E4572E" stroke-width="3" stroke-linecap="round">
+    <path d="M80 224 v12"/>
+    <path d="M92 218 v24"/>
+    <path d="M104 212 v36"/>
+    <path d="M116 220 v20"/>
+    <path d="M128 224 v12"/>
+  </g>
+  <!-- the paired phone -->
+  <g>
+    <rect x="368" y="96" width="84" height="160" rx="14" fill="#242A32"/>
+    <rect x="380" y="112" width="60" height="104" rx="6" fill="#FFFFFF"/>
+    <rect x="390" y="124" width="40" height="8" rx="4" fill="#FF6B35"/>
+    <rect x="390" y="142" width="40" height="6" rx="3" fill="#C9D2DC"/>
+    <rect x="390" y="156" width="28" height="6" rx="3" fill="#C9D2DC"/>
+    <circle cx="410" cy="240" r="5" fill="#8E9AA8"/>
+  </g>
+  <!-- the pairing link between the machine and the phone -->
+  <g fill="none" stroke="#8E9AA8" stroke-width="2.5" stroke-dasharray="6 6" stroke-linecap="round">
+    <path d="M344 184 H368"/>
+  </g>
+  <circle cx="344" cy="184" r="4" fill="#E4572E"/>
+  <circle cx="368" cy="184" r="4" fill="#E4572E"/>
+</svg>
