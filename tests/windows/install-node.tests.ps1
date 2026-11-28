@@ -119,6 +119,7 @@ try {
     $Written = [IO.File]::ReadAllText($Sshd)
     Check "block names the job user" ($Written -match "Match User RagonJob") $true
     Check "block gives the account its own key file" ($Written -match "AuthorizedKeysFile .ssh/authorized_keys") $true
+    Check "block disables every kind of forwarding" ($Written -match "DisableForwarding yes") $true
     Check "block forbids tty and forwarding" (($Written -match "PermitTTY no") -and ($Written -match "AllowTcpForwarding no") -and ($Written -match "GatewayPorts no")) $true
     Check "block has no ForceCommand (the first pairing login runs ragon node authorize)" ($Written -match "ForceCommand") $false
     Set-NodeSshdBlock $Sshd "RagonJob" $Tools.Sshd | Out-Null
@@ -142,6 +143,15 @@ try {
     Throws "a config sshd -t rejects is refused" { Set-NodeSshdBlock $Sshd "RagonJob" $Tools.Sshd } "was not changed: sshd -t rejected it \(1\)"
     Check "and the original bytes are back" ([IO.File]::ReadAllText($Sshd)) $SshdOriginal
     Remove-Item Env:\FAKE_SSHD_EXIT
+    # An sshd older than OpenSSH 8.4 rejects DisableForwarding: the block is written without it.
+    $OldSshd = Join-Path $Temp "oldsshd.cmd"
+    Set-Content -Path $OldSshd -Encoding ASCII -Value @("@echo off", "echo oldsshd %* >> `"%RAGON_FAKE_LOG%`"", "findstr /i /c:DisableForwarding `"%3`" >nul && (echo %3: line 9: Bad configuration option: disableforwarding 1>&2 & exit /b 255)", "exit /b 0")
+    Reset-Log
+    Check "an sshd without DisableForwarding gets the block without it" (Set-NodeSshdBlock $Sshd "RagonJob" $OldSshd) $true
+    $OldWritten = [IO.File]::ReadAllText($Sshd)
+    Check "and the explicit list stays" ((-not ($OldWritten -match "DisableForwarding")) -and ($OldWritten -match "AllowTcpForwarding no") -and ($OldWritten -match "PermitTTY no")) $true
+    Check "it was checked twice" (@(Read-Log | Where-Object { $_ -like "oldsshd -t*" }).Count) 2
+    Remove-NodeSshdBlock $Sshd
     Throws "without sshd.exe to check it, the config is not changed" { Set-NodeSshdBlock $Sshd "RagonJob" (Join-Path $Temp "no-sshd.exe") } "not found"
     Check "and stays as it was" ([IO.File]::ReadAllText($Sshd)) $SshdOriginal
 
@@ -175,7 +185,7 @@ try {
     Check "and its ACL is reset, then closed" ((@($Lines | Where-Object { $_ -like "icacls*" })[1..2]) -join "|") "icacls $($P.State) /reset /T /Q |icacls $($P.State) /inheritance:r /grant:r *S-1-5-18:(OI)(CI)(F) /grant:r *S-1-5-32-544:(OI)(CI)(F) "
     Check "the service was started" (@($Lines | Where-Object { $_ -eq "sc start ragon-node " }).Count -ge 1) $true
     Check "the service's start comes after its ACLs" ([array]::IndexOf($Lines, ($Lines | Where-Object { $_ -like "sc start*" } | Select-Object -First 1)) -gt [array]::IndexOf($Lines, ($Lines | Where-Object { $_ -like "icacls*" } | Select-Object -Last 1))) $true
-    Check "the record names what was created" ((Get-Content $P.Record) -join ";") "tag=v0.9.10;service=ragon-node;created=user:RagonJob,path:$($P.LinkBin),service:ragon-node;port=8000;state=$($P.NodeState);link=$($P.LinkBin);sshd=$Sshd;jobs=$($P.Jobs)"
+    Check "the record names what was created" ((Get-Content $P.Record) -join ";") "tag=v0.9.10;service=ragon-node;created=path:$($P.LinkBin),user:RagonJob,service:ragon-node;port=8000;state=$($P.NodeState);link=$($P.LinkBin);sshd=$Sshd;jobs=$($P.Jobs)"
     Check "the sshd block is in the config" ([IO.File]::ReadAllText($Sshd).Contains("BEGIN ragon-node")) $true
     Throws "a second install is refused" { Install-RagonNode $P "v0.9.10" $Binaries $Zip $Tools $Hooks @() @() "" 8000 1 (Expect $Zip) } "already installed"
 
@@ -248,9 +258,46 @@ try {
     $Acls = @(Read-Log | Where-Object { $_ -like "icacls*" })
     Check "taken over: owner and reset on the whole link folder" (($Acls -contains "icacls $($PF.LinkRoot) /setowner *S-1-5-32-544 /T /Q ") -and ($Acls -contains "icacls $($PF.LinkRoot) /reset /T /Q ")) $true
     Check "and on the whole state folder" (($Acls -contains "icacls $($PF.State) /setowner *S-1-5-32-544 /T /Q ") -and ($Acls -contains "icacls $($PF.State) /reset /T /Q ")) $true
+    # A link the job account left in the kept data must not steer icacls /T (it follows junctions).
+    $Elsewhere = Join-Path $Temp "elsewhere"; New-Item -ItemType Directory -Force -Path $Elsewhere | Out-Null
+    Set-Content -Path (Join-Path $Elsewhere "keep.txt") -Value "x"
+    New-Item -ItemType Directory -Force -Path (Join-Path $PF.State "jobs") | Out-Null
+    $Planted = Join-Path $PF.State "jobs\planted"
+    cmd /c mklink /J "$Planted" "$Elsewhere" | Out-Null
     Reset-Log
     Uninstall-RagonNode $PF $Tools $Hooks "" $false | Out-Null
+    Check "a link planted in the kept data is removed before icacls /T runs" (Test-Path -LiteralPath $Planted) $false
+    Check "and what it pointed at is left alone" (Test-Path (Join-Path $Elsewhere "keep.txt")) $true
     Check "kept data passes to Administrators before the job account goes" ((Read-Log) -contains "icacls $($PF.State) /setowner *S-1-5-32-544 /T /Q ") $true
+
+    # --- the link and state folders are made closed right after the preflight and checked again ---
+    $PN = New-Prefix "closed"
+    $Made = @(New-NodeClosedDir $PN.LinkRoot @("S-1-5-18", "S-1-5-32-544") @("S-1-5-32-545") $Hooks @() $PN.LinkBin)
+    Check "a new link folder has no problem" $Made.Count 0
+    $Acl = Get-Acl -LiteralPath $PN.LinkRoot
+    $Rules = @($Acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { "$($_.IdentityReference.Value):$($_.FileSystemRights):$($_.IsInherited)" })
+    Check "it is born with its own entries only: nothing inherited from the parent" ($Acl.AreAccessRulesProtected, (@($Rules | Where-Object { $_ -like "*:True" }).Count)) "True 0"
+    Check "SYSTEM and Administrators full, Users read and execute, nobody else" (($Rules | Sort-Object) -join " ") "S-1-5-18:FullControl:False S-1-5-32-544:FullControl:False S-1-5-32-545:ReadAndExecute, Synchronize:False"
+    Check "an existing folder is checked again, not adopted blindly" (@(New-NodeClosedDir $PN.LinkRoot @("S-1-5-18", "S-1-5-32-544") @() $Hooks @() "").Count) 0
+    # The race the preflight cannot see: C:\Ragon is missing at the preflight and a user's at creation.
+    foreach ($Case in @(@{ Name = "link"; Pattern = "*\race-link\link" }, @{ Name = "state"; Pattern = "*\race-state\pd\Ragon" })) {
+        $PR2 = New-Prefix "race-$($Case.Name)"
+        Reset-Log
+        [void]$Foreign.Add($Case.Pattern)
+        Check "the $($Case.Name) folder is missing at the preflight" (Test-NodePreflight $PR2 $Hooks @()).Count 0
+        Throws "the $($Case.Name) folder made by a user after the preflight is refused" { Install-RagonNode $PR2 "v0.9.10" $Binaries $Zip $Tools $Hooks @() @() "" 8000 1 (Expect $Zip) } "appeared after the check.*owned by S-1-5-21-1-2-3-1001.*Nothing was installed"
+        $Foreign.Clear()
+        Check "and nothing was copied, run or made, the folders it made are gone ($($Case.Name))" ((Test-Path $PR2.Root), @(Read-Log).Count, $Calls.Count, (Test-Path $PR2.LinkRoot), (Test-Path $PR2.State)) "False 0 0 False False"
+    }
+    Reset-Log
+    $PO = New-Prefix "order"
+    Install-RagonNode $PO "v0.9.10" $Binaries $Zip $Tools $Hooks @() @() "" 8000 5 (Expect $Zip) | Out-Null
+    $Lines = @(Read-Log)
+    $LinkOwner = [array]::IndexOf($Lines, "icacls $($PO.LinkRoot) /setowner *S-1-5-32-544 /T /Q ")
+    Check "the link folder is taken over before the service is made" (($LinkOwner -ge 0) -and ($LinkOwner -lt [array]::IndexOf($Lines, ($Lines | Where-Object { $_ -like "ragon server install*" } | Select-Object -First 1)))) $true
+    Check "and before the job account" ($Calls[0]) "addpath $($PO.LinkBin)"
+    Uninstall-RagonNode $PO $Tools $Hooks "" $true | Out-Null
+    Reset-Log
 
     # --- a failed install over kept data leaves that data ---
     $env:FAKE_RAGON_EXIT = "5"
