@@ -77,6 +77,22 @@ POSIX_OS: Final[str] = "posix"
 # (ragon-rs/web/src/cli.rs UNIT_NAME, server_file).
 WEB_UNIT: Final[str] = "ragon-web.service"
 WEB_SERVER_FILE: Final[tuple[str, str]] = ("web", "server.json")
+# The node's shared `ragon app-server` (spec §7.1 A3, A4, A7): a user unit the gate's start writes
+# and starts, so it runs as the gate's user. `ragon web` and the desktop reuse its socket, the one
+# `ragon-rs/web/src/app_server.rs` `default_socket` names under a user manager.
+APP_SERVER_UNIT: Final[str] = "ragon-app-server.service"
+APP_SERVER_SOCKET: Final[tuple[str, str]] = ("ragon", "app-server.sock")
+# The settings the shared server runs with: the same list as `SHARED_SETTINGS` in app_server.rs
+# (a test compares them). Feedback and realtime conversation are closed on a shared server.
+APP_SERVER_SETTINGS: Final[tuple[str, ...]] = (
+    "features.code_mode_host=true",
+    "feedback.enabled=false",
+    "features.realtime_conversation=false",
+)
+# The variable that tells the gate's service where the shared server listens.
+APP_SERVER_SOCKET_ENV: Final[str] = "RAGON_APP_SERVER_SOCKET"
+# Owner-only, as Codex requires of its socket folders.
+PRIVATE_DIR_MODE: Final[int] = 0o700
 
 
 class ModelGate:
@@ -150,6 +166,7 @@ class ModelGate:
             "-v",
             f"{GATE_DIR}:{CONTAINER_STATE_DIR}:ro",
             *AdapterServing.gate_mounts(),
+            *cls.app_server_mounts(),
             "--entrypoint",
             "python3",
             docker_image,
@@ -191,6 +208,7 @@ class ModelGate:
         cls.write_node_info()
         cls.write_auth_settings()
         cls.remove(port)
+        cls.prepare_app_server_dirs()
         result = subprocess.run(
             cls.run_command(port, docker_image),
             stdout=subprocess.DEVNULL,
@@ -207,6 +225,7 @@ class ModelGate:
         while time.time() < deadline:
             if cls.probe(f"http://127.0.0.1:{port}", timeout=1.0) is not None:
                 cls.start_accounts()
+                cls.start_app_server(port)
                 return True
             cls.sleep(0.25)
         logs = subprocess.run(
@@ -245,6 +264,179 @@ class ModelGate:
         from dreamference.accounts.accounts_service import AccountsService
 
         return AccountsService.stop()
+
+    # -- the shared app-server ------------------------------------------------------------------
+
+    @classmethod
+    def app_server_runtime_dir(cls) -> Path:
+        """The folder of the shared app-server's socket.
+
+        Returns:
+            Path: `$XDG_RUNTIME_DIR/ragon`, `/run/user/<uid>/ragon` when the variable is unset.
+        """
+        runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        return Path(runtime) / APP_SERVER_SOCKET[0]
+
+    @classmethod
+    def app_server_socket(cls) -> Path:
+        """The shared app-server's socket, where `ragon web` and the desktop look for it.
+
+        Returns:
+            Path: `<runtime dir>/app-server.sock`.
+        """
+        return cls.app_server_runtime_dir() / APP_SERVER_SOCKET[1]
+
+    @classmethod
+    def app_server_daemon_dir(cls) -> Path:
+        """Where Codex keeps the socket the rendezvous path links to, a seam for the tests.
+
+        Returns:
+            Path: `/tmp/codex-daemon-<euid>`.
+        """
+        return Path(f"/tmp/codex-daemon-{os.geteuid()}")
+
+    @classmethod
+    def prepare_app_server_dirs(cls) -> bool:
+        """Creates the socket folders owner-only before the gate's container mounts them.
+
+        Docker would create a missing mount source owned by root, which Codex then refuses.
+
+        Returns:
+            bool: True when both folders exist, are this user's and are 0700.
+        """
+        for folder in (cls.app_server_runtime_dir(), cls.app_server_daemon_dir()):
+            try:
+                folder.mkdir(mode=PRIVATE_DIR_MODE, exist_ok=True)
+                if folder.stat().st_uid != os.getuid():
+                    return False
+                folder.chmod(PRIVATE_DIR_MODE)
+            except OSError:
+                return False
+        return True
+
+    @classmethod
+    def app_server_mounts(cls) -> list[str]:
+        """The gate's view of the shared app-server: both socket folders at their own paths.
+
+        The rendezvous path is an absolute link into the daemon folder, so both are mounted where
+        they are on the host. Nothing is mounted when the folders are missing.
+
+        Returns:
+            List[str]: The `docker run` arguments, empty without the folders.
+        """
+        runtime, daemon = cls.app_server_runtime_dir(), cls.app_server_daemon_dir()
+        if not (runtime.is_dir() and daemon.is_dir()):
+            return []
+        return [
+            "-v",
+            f"{runtime}:{runtime}",
+            "-v",
+            f"{daemon}:{daemon}",
+            "-e",
+            f"{APP_SERVER_SOCKET_ENV}={cls.app_server_socket()}",
+        ]
+
+    @classmethod
+    def app_server_command(cls, ragon: str) -> list[str]:
+        """The shared server's command line: `app_server.rs` `server_args` on this socket.
+
+        Args:
+            ragon: The `ragon` launcher.
+
+        Returns:
+            List[str]: The command.
+        """
+        settings = [part for setting in APP_SERVER_SETTINGS for part in ("-c", setting)]
+        return [
+            ragon,
+            *settings,
+            "app-server",
+            "--listen",
+            f"unix://{cls.app_server_socket()}",
+        ]
+
+    @classmethod
+    def app_server_unit_text(cls, ragon: str, port: int) -> str:
+        """The shared app-server's user unit.
+
+        A user unit, so it runs as the user who started the gate (A4). It restarts on failure
+        without a limit: when a `ragon web` that started first holds the socket, the unit takes
+        over once that child is gone.
+
+        Args:
+            ragon: The `ragon` launcher.
+            port: The model server's public port, the gate.
+
+        Returns:
+            str: The unit file.
+        """
+        from dreamference.config.unit_log_directives import UnitLogDirectives
+
+        command = " ".join(
+            f'"{part}"' if any(c.isspace() for c in part) else part
+            for part in cls.app_server_command(ragon)
+        )
+        return (
+            "[Unit]\n"
+            "Description=Ragon shared app-server (ragon web and the desktop)\n"
+            "StartLimitIntervalSec=0\n\n"
+            "[Service]\n" + UnitLogDirectives.block("app-server") + "Environment="
+            f"DREAMFERENCE_VLLM_HOST=http://localhost:{port}\n"
+            f"ExecStart={command}\n"
+            "Restart=on-failure\n"
+            "RestartSec=30\n\n"
+            "[Install]\n"
+            "WantedBy=default.target\n"
+        )
+
+    @classmethod
+    def start_app_server(cls, port: int) -> bool:
+        """Keeps the node's shared app-server running, one per node and user (A3).
+
+        Started, not restarted, when its unit is unchanged: a restart would end every session
+        `ragon web` and the desktop hold on it. `server stop` leaves it running for the same
+        reason; it waits for the model server like any `ragon`.
+
+        Args:
+            port: The model server's public port.
+
+        Returns:
+            bool: True when systemd accepted the start.
+        """
+        from dreamference.runner.codex_installer import CodexInstaller
+
+        ragon = CodexInstaller.get_codex_executable()
+        if ragon is None or os.name != POSIX_OS:
+            return False
+        if shutil.which("systemctl") is None:
+            print(  # noqa: T201 - console output of server start
+                "⚠️  No systemd here: `ragon web` starts its own app-server."
+            )
+            return False
+        if not cls.prepare_app_server_dirs():
+            print(  # noqa: T201 - console output of server start
+                f"⚠️  {cls.app_server_runtime_dir()} is not private to this user: "
+                "`ragon web` starts its own app-server."
+            )
+            return False
+        folder = Path("~/.config/systemd/user").expanduser()
+        folder.mkdir(parents=True, exist_ok=True)
+        unit = folder / APP_SERVER_UNIT
+        text = cls.app_server_unit_text(ragon, port)
+        changed = not unit.is_file() or unit.read_text() != text
+        if changed:
+            unit.write_text(text)
+            cls.systemctl("daemon-reload")
+        verb = "restart" if changed else "start"
+        started = (
+            cls.systemctl("enable", APP_SERVER_UNIT) == 0
+            and cls.systemctl(verb, APP_SERVER_UNIT) == 0
+        )
+        if not started:
+            print(  # noqa: T201 - console output of server start
+                f"⚠️  The shared app-server did not start: systemctl --user status {APP_SERVER_UNIT}"
+            )
+        return started
 
     @classmethod
     def stage_tls(cls) -> bool:
