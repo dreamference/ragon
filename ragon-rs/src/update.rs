@@ -45,7 +45,7 @@ pub const RELEASE_REPO: &str = "dreamference/ragon";
 /// The Ragon release this binary was built as. The release workflow sets `RAGON_VERSION` when it
 /// builds. An unset or empty stamp counts as a source build.
 pub const RAGON_VERSION: Option<&str> = match option_env!("RAGON_VERSION") {
-    Some("") => None,
+    Some(version) if version.is_empty() => None,
     version => version,
 };
 
