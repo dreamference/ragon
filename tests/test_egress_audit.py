@@ -1154,6 +1154,30 @@ def test_the_image_turn_is_judged_by_the_store_not_by_the_answer_alone(
     assert EgressAudit._image_turn("/x/ragon", 1, str(tmp_path), {}) == expected
 
 
+def test_egress_audit_image_turn_an_ask_that_dies_without_a_word_says_no_answer(
+    tmp_path, monkeypatch
+):
+    _image_search_set_up(tmp_path, monkeypatch)
+
+    def ask(argv, **kwargs):
+        if argv[1] == "web" and argv[2] == "ask":
+            return subprocess.CompletedProcess(argv, 3, stdout="  \n", stderr="boom")
+        raise AssertionError(f"an unexpected ask: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", ask)
+    assert EgressAudit._image_turn("/x/ragon", 1, str(tmp_path), {}) == "no answer"
+
+
+def test_egress_audit_image_turn_an_ask_that_cannot_start_says_no_answer(tmp_path, monkeypatch):
+    _image_search_set_up(tmp_path, monkeypatch)
+
+    def ask(argv, **kwargs):
+        raise OSError("the client could not start")
+
+    monkeypatch.setattr(subprocess, "run", ask)
+    assert EgressAudit._image_turn("/x/ragon", 1, str(tmp_path), {}) == "no answer"
+
+
 def test_without_image_search_the_turn_is_skipped_and_says_so(tmp_path, monkeypatch, capsys):
     from dreamference.chat import image_search_sidecar
 
