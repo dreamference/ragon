@@ -76,6 +76,9 @@ $NodeJobAccount = "RagonJob"
 $NodeSandboxAccounts = @("CodexSandboxOffline", "CodexSandboxOnline")
 $NodeSshdBegin = "# BEGIN ragon-node (written by install.ps1 -Role node)"
 $NodeSshdEnd = "# END ragon-node"
+# Owners a folder the node adopts may have: Administrators, SYSTEM, TrustedInstaller (service SIDs,
+# S-1-5-80-*, are matched by prefix), plus the installing administrator, passed in.
+$NodeTrustedOwners = @("S-1-5-32-544", "S-1-5-18", "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464")
 
 function Get-NodePaths([string]$ProgramFiles, [string]$ProgramData, [string]$LinkRoot = "") {
     $Root = Join-Path $ProgramFiles "Ragon"
@@ -148,6 +151,13 @@ function Test-ZipEntriesSafe([string]$Zip, [string]$Destination) {
     return $true
 }
 
+# Whether the zip has the engine at its top level (Expand-NodeZip puts it at engine\ragon-serve.exe).
+function Test-ZipHasEngine([string]$Zip) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $Archive = [IO.Compression.ZipFile]::OpenRead($Zip)
+    try { return [bool]($Archive.Entries | Where-Object { $_.FullName -eq "ragon-serve.exe" }) } finally { $Archive.Dispose() }
+}
+
 function Expand-NodeZip([string]$Zip, [string]$Destination) {
     if (-not (Test-ZipEntriesSafe $Zip $Destination)) { throw "the engine zip has an entry outside its folder; nothing was installed." }
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
@@ -178,8 +188,12 @@ function Invoke-NodeTool([string]$Tool, [string[]]$Arguments) {
 # and `ragon node authorize`, after which the key's own command= forces serve-job. It goes above
 # the first existing Match block (Match blocks apply in order), or at the end when there is none.
 # Idempotent; replaced between its markers, nothing else in the file is touched.
-function Set-NodeSshdBlock([string]$Config, [string]$User) {
+# The edited file is checked with `sshd -t -f` ($Sshd, the daemon's executable) and the original
+# bytes are put back when the check fails or sshd cannot be found, so a bad edit never reaches a
+# restart.
+function Set-NodeSshdBlock([string]$Config, [string]$User, [string]$Sshd) {
     if (-not (Test-Path $Config)) { return $false }
+    $Original = [IO.File]::ReadAllBytes($Config)
     $Text = Remove-NodeSshdText ([IO.File]::ReadAllText($Config))
     $Block = (@($NodeSshdBegin, "Match User $User", "    AuthorizedKeysFile .ssh/authorized_keys",
         "    AllowTcpForwarding no", "    AllowStreamLocalForwarding no", "    GatewayPorts no", "    PermitTunnel no",
@@ -192,6 +206,14 @@ function Set-NodeSshdBlock([string]$Config, [string]$User) {
         $Text += $Block
     }
     [IO.File]::WriteAllText($Config, $Text)
+    $Why = if (-not $Sshd -or -not (Test-Path $Sshd)) { "sshd.exe was not found to check it" } else {
+        $Code = Invoke-NodeNative $Sshd @("-t", "-f", $Config)
+        if ($Code -ne 0) { "sshd -t rejected it ($Code): $($script:NodeNativeOutput -join ' ')" } else { "" }
+    }
+    if ($Why) {
+        [IO.File]::WriteAllBytes($Config, $Original)
+        throw "the ssh daemon's configuration $Config was not changed: $Why."
+    }
     return $true
 }
 
@@ -231,6 +253,60 @@ function Test-NodeHost([int]$Build, [string]$Arch, [bool]$Elevated) {
     return $Problems
 }
 
+function Test-NodeOwnerTrusted([string]$Sid, [string[]]$Also) {
+    return [bool]($Sid -and ((($NodeTrustedOwners + $Also) -contains $Sid) -or $Sid -like "S-1-5-80-*"))
+}
+
+# What under $Path (itself included) is a link (junction or symbolic link) or is owned by someone
+# not trusted: such a folder may have been made by a user to keep a say over the node's files (an
+# owner can always rewrite the ACL, and a handle opened before the install keeps its rights).
+# Links are not followed. $Skip (the node's own junction, replaced by New-NodeLink) is passed over.
+function Find-NodeUntrusted([string]$Path, $Hooks, [string[]]$Also, [string]$Skip = "") {
+    $Found = @()
+    $Stack = New-Object System.Collections.Stack
+    $Stack.Push((Get-Item -Force -LiteralPath $Path))
+    while ($Stack.Count -gt 0) {
+        $Item = $Stack.Pop()
+        if ($Skip -and $Item.FullName.TrimEnd('\') -eq $Skip.TrimEnd('\')) { continue }
+        if ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) { $Found += "$($Item.FullName) is a link"; continue }
+        $Sid = & $Hooks.OwnerSid $Item.FullName
+        if (-not (Test-NodeOwnerTrusted $Sid $Also)) { $Found += "$($Item.FullName) is owned by $Sid" }
+        if ($Item -is [IO.DirectoryInfo]) { foreach ($Child in $Item.EnumerateFileSystemInfos()) { $Stack.Push($Child) } }
+    }
+    return $Found
+}
+
+# Checks, before anything is changed, that the node is not installed yet and that every folder it
+# would adopt (C:\Ragon, %ProgramData%\Ragon, whatever is in them) is a plain folder owned by an
+# administrator or the system. Returns the list of problems.
+function Test-NodePreflight($Paths, $Hooks, [string[]]$Also) {
+    $Problems = @()
+    if (Test-Path $Paths.Current) { $Problems += "a node is already installed in $($Paths.Root); run install.ps1 -Role node -Uninstall first (weights and data are kept), or update it with the client's ragon update." }
+    if ($Paths.LinkBin -and (Test-Path $Paths.LinkBin) -and -not ((Get-Item -Force -LiteralPath $Paths.LinkBin).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        $Problems += "$($Paths.LinkBin) is a folder, not the node's junction; remove it first."
+    }
+    $Found = @()
+    foreach ($Dir in @($Paths.LinkRoot, $Paths.State)) {
+        if ($Dir -and (Test-Path -LiteralPath $Dir)) { $Found += @(Find-NodeUntrusted $Dir $Hooks $Also $Paths.LinkBin) }
+    }
+    if ($Found.Count -gt 0) {
+        $Shown = @($Found | Select-Object -First 5) -join "; "
+        $More = if ($Found.Count -gt 5) { " (and $($Found.Count - 5) more)" } else { "" }
+        $Problems += "these exist already and are not plain folders and files of an administrator: $Shown$More. Remove them, or take them over (takeown /R, icacls /reset /T) if they are yours."
+    }
+    return $Problems
+}
+
+# Takes a folder tree over: Administrators own everything in it, every ACL is reset to inherit,
+# and the top gets $Grants alone (no inherited entries), so nothing a user set before stays.
+function Set-NodeTree($Path, $Tools, [string[]]$Grants) {
+    Invoke-NodeTool $Tools.Icacls @($Path, "/setowner", "*S-1-5-32-544", "/T", "/Q") | Out-Null
+    Invoke-NodeTool $Tools.Icacls @($Path, "/reset", "/T", "/Q") | Out-Null
+    $Cmd = @($Path, "/inheritance:r")
+    foreach ($Grant in $Grants) { $Cmd += "/grant:r"; $Cmd += $Grant }
+    Invoke-NodeTool $Tools.Icacls $Cmd | Out-Null
+}
+
 # A space-free path to the node's ragon.exe for the job account (the forced command cannot name a
 # path with a space, and the primary calls plain `ragon`): C:\Ragon\bin, a junction into
 # %ProgramFiles%\Ragon\current\bin. Its parent is closed to users (read and execute only), so
@@ -238,8 +314,8 @@ function Test-NodeHost([int]$Build, [string]$Arch, [bool]$Elevated) {
 function New-NodeLink($Paths, $Tools) {
     if (-not $Paths.LinkRoot) { return }
     New-Item -ItemType Directory -Force -Path $Paths.LinkRoot | Out-Null
-    Invoke-NodeTool $Tools.Icacls @($Paths.LinkRoot, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)(F)", "/grant:r", "*S-1-5-32-544:(OI)(CI)(F)", "/grant:r", "*S-1-5-32-545:(OI)(CI)(RX)") | Out-Null
     if (Test-Path $Paths.LinkBin) { [IO.Directory]::Delete($Paths.LinkBin) }
+    Set-NodeTree $Paths.LinkRoot $Tools @("*S-1-5-18:(OI)(CI)(F)", "*S-1-5-32-544:(OI)(CI)(F)", "*S-1-5-32-545:(OI)(CI)(RX)")
     New-Item -ItemType Junction -Path $Paths.LinkBin -Target $Paths.Bin | Out-Null
 }
 
@@ -248,6 +324,26 @@ function Remove-NodeLink($Paths) {
     if (-not $Paths.LinkRoot -or -not (Test-Path $Paths.LinkRoot)) { return }
     if (Test-Path $Paths.LinkBin) { [IO.Directory]::Delete($Paths.LinkBin) }
     if (-not (Get-ChildItem -Force $Paths.LinkRoot)) { Remove-Item -Force $Paths.LinkRoot }
+}
+
+# Deletes a folder tree without following the links in it: a junction or symbolic link is
+# removed itself, never what it points to. Windows PowerShell 5.1's Remove-Item -Recurse can
+# follow a junction into the folder it names, and .NET Framework's Directory.Delete(path, true)
+# stops at a junction ("The parameter is incorrect"), so the walk is done here.
+function Remove-NodeTree([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $Item = Get-Item -Force -LiteralPath $Path
+    if ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if ($Item -is [IO.DirectoryInfo]) { [IO.Directory]::Delete($Item.FullName) } else { [IO.File]::Delete($Item.FullName) }
+        return
+    }
+    if ($Item -is [IO.DirectoryInfo]) {
+        foreach ($Child in @($Item.EnumerateFileSystemInfos())) { Remove-NodeTree $Child.FullName }
+        [IO.Directory]::Delete($Item.FullName)
+    } else {
+        $Item.Attributes = [IO.FileAttributes]::Normal
+        [IO.File]::Delete($Item.FullName)
+    }
 }
 
 # The node id: kept when the file is there, a new GUID otherwise (the file marks the machine as a node).
@@ -261,38 +357,68 @@ function Get-NodeId($Paths) {
     return $Id
 }
 
-# Whether the placed ragon names --advertise in its server usage (the node that advertises on the
-# LAN also gets its firewall rules from `server install`); an older supervisor is installed without.
-function Test-NodeAdvertise($Tools) {
+# The placed ragon's server usage: --advertise (the node that advertises on the LAN also gets its
+# firewall rules from `server install`) and --jobs-dir (the service runs node jobs from that
+# queue; `ragon update` lists it before it moves the node on) are passed only when it names them.
+function Get-NodeServerUsage($Tools) {
     Invoke-NodeNative $Tools.Ragon @("server", "--help") | Out-Null
-    return (($script:NodeNativeOutput -join " ") -match "--advertise")
+    return ($script:NodeNativeOutput -join " ")
 }
 
-function Save-NodeRecord($Paths, [string]$Tag, [string[]]$Created, [int]$Port, [string]$Sshd = "") {
+function Save-NodeRecord($Paths, [string]$Tag, [string[]]$Created, [int]$Port, [string]$Sshd = "", [string]$Jobs = "") {
     $Lines = @("tag=$Tag", "service=$NodeServiceName", "created=$($Created -join ',')", "port=$Port", "state=$($Paths.NodeState)")
     if ($Paths.LinkBin) { $Lines += "link=$($Paths.LinkBin)" }
     if ($Sshd) { $Lines += "sshd=$Sshd" }
+    if ($Jobs) { $Lines += "jobs=$Jobs" }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Paths.Record) | Out-Null
     Set-Content -Path $Paths.Record -Encoding ASCII -Value $Lines
 }
 
-# Installs the node. $Tools: Ragon (the placed ragon.exe), Sc, Icacls (paths of executables).
-# $Hooks: UserExists, NewUser, RemoveUser (scriptblocks). Called only after every download has
-# been checked. $ClientBinaries are the unpacked executables to place next to ragon.exe.
+# Installs the node. $Tools: Ragon (the placed ragon.exe), Sc, Icacls, Sshd (paths of executables).
+# $Hooks: UserExists, NewUser, RemoveUser, AddPath, RemovePath, RestartSshd, OwnerSid (scriptblocks).
+# Called only after every download has been checked. $ClientBinaries are the unpacked executables
+# to place next to ragon.exe; $Expect holds the SHA-256 each was checked with (Binaries, by file
+# name) and the engine zip's (Engine): both are checked again once copied where users cannot write.
+# $TrustedAlso: owner SIDs Test-NodePreflight accepts besides the system's (the installing user).
 function Install-RagonNode($Paths, [string]$Tag, [string[]]$ClientBinaries, [string]$EngineZip, $Tools, $Hooks,
-                           [string[]]$ServerArgs, [string[]]$EngineArgs, [string]$SshdConfig, [int]$Port, [int]$WaitSeconds) {
-    if (Test-Path $Paths.Current) { throw "a node is already installed in $($Paths.Root); run install.ps1 -Role node -Uninstall first, or ragon update." }
+                           [string[]]$ServerArgs, [string[]]$EngineArgs, [string]$SshdConfig, [int]$Port, [int]$WaitSeconds,
+                           $Expect, [string[]]$TrustedAlso = @()) {
+    $Problems = @(Test-NodePreflight $Paths $Hooks $TrustedAlso)
+    if ($Problems.Count -gt 0) { throw (($Problems -join " ") + " Nothing was changed.") }
     $Created = @()
+    $SshdRecorded = ""
+    $JobsDir = ""
+    $Save = { Save-NodeRecord $Paths $Tag $Created $Port $SshdRecorded $JobsDir }
+    # A clean-up after a failure removes the state folder only when this install made it.
+    $NewState = -not (Test-Path $Paths.State)
     try {
-        New-Item -ItemType Directory -Force -Path $Paths.Bin, $Paths.NodeState | Out-Null
-        Save-NodeRecord $Paths $Tag $Created $Port
+        New-Item -ItemType Directory -Force -Path $Paths.Bin, $Paths.State | Out-Null
+        # Taken over before anything is written in it; closed to users until the table opens it.
+        Set-NodeTree $Paths.State $Tools @("*S-1-5-18:(OI)(CI)(F)", "*S-1-5-32-544:(OI)(CI)(F)")
+        New-Item -ItemType Directory -Force -Path $Paths.NodeState | Out-Null
+        & $Save
         foreach ($Dir in @($Paths.Models, $Paths.Advert, $Paths.Jobs)) { New-Item -ItemType Directory -Force -Path $Dir | Out-Null }
-        foreach ($File in $ClientBinaries) { Copy-Item -Force -Path $File -Destination $Paths.Bin }
-        Expand-NodeZip $EngineZip $Paths.Engine
+        foreach ($File in $ClientBinaries) {
+            $Name = Split-Path -Leaf $File
+            $Placed = Join-Path $Paths.Bin $Name
+            Copy-Item -Force -Path $File -Destination $Placed
+            if ((Get-FileHash -Algorithm SHA256 -LiteralPath $Placed).Hash.ToLower() -ne $Expect.Binaries[$Name]) {
+                throw "$Name changed after it was checked; nothing was installed."
+            }
+        }
+        # The zip is copied where users cannot write and checked again there, then unpacked from it.
+        $Zip = Join-Path $Paths.Root "engine.zip"
+        Copy-Item -Force -Path $EngineZip -Destination $Zip
+        try {
+            if ((Get-FileHash -Algorithm SHA256 -LiteralPath $Zip).Hash.ToLower() -ne $Expect.Engine) {
+                throw "the engine zip changed after it was checked; nothing was installed."
+            }
+            Expand-NodeZip $Zip $Paths.Engine
+        } finally { Remove-Item -Force -LiteralPath $Zip -ErrorAction SilentlyContinue }
         if (-not (& $Hooks.UserExists $NodeJobAccount)) {
             & $Hooks.NewUser $NodeJobAccount
             $Created += "user:$NodeJobAccount"
-            Save-NodeRecord $Paths $Tag $Created $Port
+            & $Save
         }
         $Engine = Join-Path $Paths.Engine "ragon-serve.exe"
         if (-not (Test-Path $Engine)) { throw "the engine zip has no ragon-serve.exe." }
@@ -300,18 +426,22 @@ function Install-RagonNode($Paths, [string]$Tag, [string[]]$ClientBinaries, [str
             New-NodeLink $Paths $Tools
             & $Hooks.AddPath $Paths.LinkBin
             $Created += "path:$($Paths.LinkBin)"
-            Save-NodeRecord $Paths $Tag $Created $Port
+            & $Save
         }
+        $Usage = Get-NodeServerUsage $Tools
         # `server install` makes the firewall rules of an advertising node: UDP 5353 and the engine's port.
         $Advertise = @()
-        if (Test-NodeAdvertise $Tools) { $Advertise = @("--advertise", (Get-NodeId $Paths)) }
+        if ($Usage -match "--advertise") { $Advertise = @("--advertise", (Get-NodeId $Paths)) }
+        # The job runner starts only with --jobs-dir; the record keeps it for `ragon update`.
+        $Jobs = @()
+        if ($Usage -match "--jobs-dir") { $JobsDir = $Paths.Jobs; $Jobs = @("--jobs-dir", $JobsDir) }
         # --host is where the supervisor probes the engine (a connection to 0.0.0.0 fails on Windows);
         # the address the engine listens on is its own argument, in $EngineArgs (--host 0.0.0.0).
         $Install = @("server", "install", "--name", $NodeServiceName, "--state-dir", $Paths.NodeState, "--host", "127.0.0.1",
-            "--port", "$Port") + $Advertise + $ServerArgs + @("--", $Engine) + $EngineArgs
+            "--port", "$Port") + $Advertise + $Jobs + $ServerArgs + @("--", $Engine) + $EngineArgs
         Invoke-NodeTool $Tools.Ragon $Install | Out-Null
         $Created += "service:$NodeServiceName"
-        Save-NodeRecord $Paths $Tag $Created $Port
+        & $Save
         # The service's virtual account exists once the service does, so the table is applied now.
         $Sandbox = @($NodeSandboxAccounts | Where-Object { & $Hooks.UserExists $_ })
         foreach ($Command in (Get-NodeAclCommands $Paths $Sandbox $NodeServiceAccount $NodeJobAccount)) {
@@ -320,8 +450,9 @@ function Install-RagonNode($Paths, [string]$Tag, [string[]]$ClientBinaries, [str
             if (-not (Test-Path $Command[0])) { continue }
             Invoke-NodeTool $Tools.Icacls $Command | Out-Null
         }
-        if ($SshdConfig -and (Set-NodeSshdBlock $SshdConfig $NodeJobAccount)) {
-            Save-NodeRecord $Paths $Tag $Created $Port $SshdConfig
+        if ($SshdConfig -and (Set-NodeSshdBlock $SshdConfig $NodeJobAccount $Tools.Sshd)) {
+            $SshdRecorded = $SshdConfig
+            & $Save
             & $Hooks.RestartSshd
         }
         Invoke-NodeNative $Tools.Sc @("start", $NodeServiceName) | Out-Null
@@ -335,7 +466,7 @@ function Install-RagonNode($Paths, [string]$Tag, [string[]]$ClientBinaries, [str
         return $Healthy
     } catch {
         $Message = $_.Exception.Message
-        try { Uninstall-RagonNode $Paths $Tools $Hooks $SshdConfig $false | Out-Null } catch { $Message += " (and the clean-up failed: $($_.Exception.Message))" }
+        try { Uninstall-RagonNode $Paths $Tools $Hooks $SshdConfig $NewState | Out-Null } catch { $Message += " (and the clean-up failed: $($_.Exception.Message))" }
         throw $Message
     }
 }
@@ -374,14 +505,19 @@ function Uninstall-RagonNode($Paths, $Tools, $Hooks, [string]$SshdConfig, [bool]
     if (Test-Path $Paths.Root) {
         # The service's files can stay locked for a moment after it stops.
         for ($Try = 1; (Test-Path $Paths.Root) -and $Try -le 8; $Try++) {
-            try { Remove-Item -Recurse -Force -Path $Paths.Root -ErrorAction Stop } catch { Start-Sleep -Seconds 2 }
+            try { Remove-NodeTree $Paths.Root } catch { Start-Sleep -Seconds 2 }
         }
         if (Test-Path $Paths.Root) { throw "could not remove $($Paths.Root); a file in it is still in use." }
         $Removed += "distribution"
     }
+    # Kept data passes to Administrators first: files the job account wrote would otherwise be
+    # owned by a deleted account's SID, which the next install refuses to adopt.
+    if (-not $RemoveData -and (Test-Path $Paths.State)) {
+        Invoke-NodeNative $Tools.Icacls @($Paths.State, "/setowner", "*S-1-5-32-544", "/T", "/Q") | Out-Null
+    }
     if ($Created -like "*user:$NodeJobAccount*") { & $Hooks.RemoveUser $NodeJobAccount; $Removed += "user" }
-    if ($RemoveData -and (Test-Path $Paths.State)) { Remove-Item -Recurse -Force -Path $Paths.State; $Removed += "data" }
-    elseif (Test-Path $Paths.NodeState) { Remove-Item -Recurse -Force -Path $Paths.NodeState }
+    if ($RemoveData -and (Test-Path $Paths.State)) { Remove-NodeTree $Paths.State; $Removed += "data" }
+    elseif (Test-Path $Paths.NodeState) { Remove-NodeTree $Paths.NodeState }
     return $Removed
 }
 
@@ -418,6 +554,8 @@ if ($Role -eq "node") {
         Ragon = (Join-Path $NodePaths.Bin "ragon.exe")
         Sc = (Join-Path $env:SystemRoot "System32\sc.exe")
         Icacls = (Join-Path $env:SystemRoot "System32\icacls.exe")
+        Sshd = $(if (Test-Path (Join-Path $env:SystemRoot "System32\OpenSSH\sshd.exe")) { Join-Path $env:SystemRoot "System32\OpenSSH\sshd.exe" }
+                 else { (Get-Command sshd.exe -ErrorAction SilentlyContinue).Source })
     }
     $NodeHooks = @{
         UserExists = { param($Name) [bool](Get-LocalUser -Name $Name -ErrorAction SilentlyContinue) }
@@ -443,6 +581,7 @@ if ($Role -eq "node") {
         }
         # sshd reads its configuration at start. Restarting it from an ssh session ends that session,
         # so over ssh the script says so instead.
+        OwnerSid = { param($Path) (Get-Acl -LiteralPath $Path).GetOwner([Security.Principal.SecurityIdentifier]).Value }
         RestartSshd = {
             if ($env:SSH_CONNECTION) { Say "  sshd: restart it (Restart-Service sshd) from a console for the new block to apply; this session is an ssh login." }
             elseif (Get-Service sshd -ErrorAction SilentlyContinue) { Restart-Service sshd }
@@ -458,6 +597,13 @@ if ($Role -eq "node") {
     }
     $Problems = Test-NodeHost $Build $Arch $Elevated
     if ($Problems.Count -gt 0) { Fail ("not a node host: " + ($Problems -join " ") + " Nothing was changed.") }
+    # Before anything is downloaded or the client is touched.
+    # The installing administrator, and the node's own accounts when they exist (a kept state folder
+    # holds the job queue and the node id they wrote).
+    $NodeTrustedAlso = @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) +
+        @(@($NodeJobAccount) + $NodeSandboxAccounts | ForEach-Object { (Get-LocalUser -Name $_ -ErrorAction SilentlyContinue).SID.Value } | Where-Object { $_ })
+    $Problems = @(Test-NodePreflight $NodePaths $NodeHooks $NodeTrustedAlso)
+    if ($Problems.Count -gt 0) { Fail ("the node cannot be installed: " + ($Problems -join " ") + " Nothing was changed.") }
 } elseif ($Uninstall -or $RemoveData) {
     Fail "-Uninstall and -RemoveData belong to -Role node."
 }
@@ -641,6 +787,7 @@ try {
     }
 
     $Ready = @()
+    $NodeExpect = @{ Binaries = @{}; Engine = "" }
     foreach ($Name in $Wanted) {
         $Asset = "$Name-$Target.gz"
         $Archive = Get-Asset $Asset
@@ -649,6 +796,7 @@ try {
         if ($Actual -ne $Sums[$Asset]) { Fail "$Asset does not match its checksum; nothing was installed." }
         $Binary = Join-Path $Work "$Name.exe"
         Expand-Gzip $Archive $Binary
+        $NodeExpect.Binaries["$Name.exe"] = (Get-FileHash -Algorithm SHA256 -LiteralPath $Binary).Hash.ToLower()
         $Ready += $Name
     }
 
@@ -665,6 +813,8 @@ try {
             Fail "$ZipName does not match its checksum in SHA256SUMS; nothing was installed."
         }
         if (-not (Test-ZipEntriesSafe $ZipFile (Join-Path $Work "zip-check"))) { Fail "$ZipName has an entry outside its folder; nothing was installed." }
+        if (-not (Test-ZipHasEngine $ZipFile)) { Fail "$ZipName has no ragon-serve.exe; nothing was installed." }
+        $NodeExpect.Engine = $Signed[$ZipName]
         # Kept past the clean-up of $Work below: the node is placed after the sandbox step.
         $NodeEngineZip = Join-Path ([IO.Path]::GetTempPath()) ("ragon-engine-" + [Guid]::NewGuid().ToString("N") + ".zip")
         Move-Item -Force -Path $ZipFile -Destination $NodeEngineZip
@@ -948,13 +1098,18 @@ if ($Role -eq "node") {
     Say "Installing the node under $($NodePaths.Root) (state under $($NodePaths.State))"
     try {
         $Binaries = @($Ready | ForEach-Object { Join-Path $InstallDir "$_.exe" })
-        $Healthy = Install-RagonNode $NodePaths $Tag $Binaries $NodeEngineZip $NodeTools $NodeHooks @() $EngineArgs $NodeSshdConfig $Port 60
+        $Healthy = Install-RagonNode $NodePaths $Tag $Binaries $NodeEngineZip $NodeTools $NodeHooks @() $EngineArgs $NodeSshdConfig $Port 60 $NodeExpect $NodeTrustedAlso
     } finally {
         if ($NodeEngineZip) { Remove-Item -Force -Path $NodeEngineZip -ErrorAction SilentlyContinue }
     }
     if ($Healthy) { Say "The ragon-node service is running and healthy." }
     else { Say "The ragon-node service is installed but not healthy yet: ragon server status --name ragon-node" }
     Say "Weights: ragon model pull, or sync-model from another node, into $($NodePaths.Models)."
+    # C:\Ragon\bin stays on the machine PATH: the job account has no profile and its first pairing
+    # login runs plain `ragon`. The machine PATH comes before the user's, so new shells here find
+    # the node's copy, which refuses `ragon update`.
+    Say "On this PC, ragon in a new shell is the node's copy ($($NodePaths.LinkBin)); update with the client's own:"
+    Say "  & `"$InstallDir\ragon.exe`" update   (elevated; it updates the client and the node)"
 }
 
 Say ""
