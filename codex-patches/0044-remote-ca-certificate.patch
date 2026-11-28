@@ -1,0 +1,30 @@
+diff --git a/codex-rs/app-server-client/Cargo.toml b/codex-rs/app-server-client/Cargo.toml
+--- a/codex-rs/app-server-client/Cargo.toml
++++ b/codex-rs/app-server-client/Cargo.toml
+@@ -22,2 +22,3 @@ codex-exec-server = { workspace = true }
+ codex-feedback = { workspace = true }
++codex-http-client = { workspace = true }
+ codex-protocol = { workspace = true }
+diff --git a/codex-rs/app-server-client/src/remote.rs b/codex-rs/app-server-client/src/remote.rs
+--- a/codex-rs/app-server-client/src/remote.rs
++++ b/codex-rs/app-server-client/src/remote.rs
+@@ -54,3 +54,3 @@ use tokio_tungstenite::WebSocketStream;
+ use tokio_tungstenite::client_async_with_config;
+-use tokio_tungstenite::connect_async_with_config;
++use tokio_tungstenite::connect_async_tls_with_config;
+ use tokio_tungstenite::tungstenite::Error as TungsteniteError;
+@@ -735,5 +735,9 @@ async fn connect_websocket_endpoint(
+     let websocket_config = remote_websocket_config();
++    // Ragon: also trust CODEX_CA_CERTIFICATE, with the HTTP client's loader; unset, as before.
++    let connector = codex_http_client::maybe_build_rustls_client_config_with_custom_ca()
++        .map_err(|err| IoError::new(ErrorKind::InvalidInput, err.to_string()))?
++        .map(tokio_tungstenite::Connector::Rustls);
+     let stream = timeout(
+         CONNECT_TIMEOUT,
+-        connect_async_with_config(
++        connect_async_tls_with_config(
+             request,
+@@ -741,2 +745,3 @@ async fn connect_websocket_endpoint(
+             /*disable_nagle*/ false,
++            connector,
+         ),
