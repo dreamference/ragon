@@ -185,8 +185,12 @@ class NightShiftHost:
         Returns:
             Optional[Dict[str, float]]: `running` (running plus queued requests), `served` (prompt
             tokens processed so far, a counter any request moves) and `kv_pool` (tokens of KV
-            cache, 0 if unknown); None if `/metrics` does not answer.
+            cache, 0 if unknown); None if `/metrics` does not answer. With DREAMFERENCE_NO_METRICS=1
+            (a quality run against a node engine that has no `/metrics`, serving only that run) the
+            server counts as idle: nothing running, nothing served, KV pool unknown.
         """
+        if os.environ.get("DREAMFERENCE_NO_METRICS") == "1":
+            return {"running": 0.0, "served": 0.0, "kv_pool": 0.0}
         try:
             with cls.urlopen(f"{host.rstrip('/')}/metrics", timeout=timeout) as response:
                 text = response.read().decode("utf-8", "replace")
