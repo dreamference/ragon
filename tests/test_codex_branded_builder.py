@@ -63,6 +63,16 @@ def test_every_patch_applies_to_the_pinned_submodule_and_leaves_it_untouched(tmp
     assert "/*disable_nagle*/ false,\n            connector," in remote
     assert "connect_async_with_config(" not in remote
     assert "codex-http-client = { workspace = true }" in (client / "Cargo.toml").read_text()
+    # The managed daemon's updater fetches the primary's install script (the gate named in
+    # CODEX_APP_SERVER_LOGIN_ISSUER), which runs `ragon update`; never the vendor's, and with no
+    # gate an empty URL no request can reach (0045, spec A9).
+    daemon = tmp_path / "src" / "codex-rs" / "app-server-daemon" / "src" / "update_loop.rs"
+    update_loop = daemon.read_text()
+    assert "chatgpt.com/codex/install" not in update_loop
+    assert 'std::env::var("CODEX_APP_SERVER_LOGIN_ISSUER")' in update_loop
+    assert 'format!("{gate}/ragon/v1/install.{ext}")' in update_loop
+    assert ".map_or_else(String::new," in update_loop
+    assert "match http.get(&INSTALL_URL).await? {" in update_loop
     status = subprocess.run(
         ["git", "-C", CODEX_SUBMODULE_DIR, "status", "--porcelain"], capture_output=True, text=True
     )
@@ -363,7 +373,9 @@ def test_the_patches_stay_small():
     # a four-part release such as 0.9.8.1 is stamped 0.9.8+1 for Cargo); 116,647 after.
     # Raised to 118,300 for 0044 (the --remote dial also trusts CODEX_CA_CERTIFICATE, 1,542 bytes);
     # 118,189 after.
-    assert sum(Path(p).stat().st_size for p in CodexBrandedBuilder.patches()) < 118_300
+    # Raised to 119,700 for 0045 (the daemon's updater fetches the primary's install script, 1,396
+    # bytes); 119,636 after.
+    assert sum(Path(p).stat().st_size for p in CodexBrandedBuilder.patches()) < 119_700
 
 
 def test_airgapped_treats_every_profile_without_a_sandbox_like_full_access():
