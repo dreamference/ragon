@@ -99,6 +99,16 @@ def test_missing_hosts_are_refused(tmp_path: Path) -> None:
         AdapterTrainEval(tmp_path, {"base": "http://base"})
 
 
+def test_adapter_train_eval_check_holdout_skips_without_a_runner(tmp_path: Path) -> None:
+    stage = AdapterTrainEval(tmp_path, dict(HOSTS))
+    entry = stage.check_holdout()
+    assert entry == {
+        "status": "skipped",
+        "note": "no repository to grade the hold-out in",
+        "gain": False,
+    }
+
+
 def test_adapter_train_eval_check_speed_notes_the_missing_base_drafter_row(tmp_path: Path) -> None:
     hosts = dict(HOSTS)
     del hosts["adapter_base_drafter"]
