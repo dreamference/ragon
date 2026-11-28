@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from typing import Final
 
 import numpy as np
 
@@ -10,13 +11,16 @@ D = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, D)
 import evallib  # noqa: E402
 
+# len(sys.argv) index of the optional embedding-prefix argument
+EMBEDDING_PREFIX_ARG_INDEX: Final = 2
+
 data = json.load(open(sys.argv[1]))
 chunks = data["chunks"]
 qs = [json.loads(line) for line in open(f"{D}/questions.jsonl")]
 bm = evallib.BM25(chunks)
 bm_r = [bm.search(q["question"]) for q in qs]
 d_r = None
-if len(sys.argv) > 2:
+if len(sys.argv) > EMBEDDING_PREFIX_ARG_INDEX:
     dense = evallib.Dense(np.load(sys.argv[2] + ".docs.npy"))
     d_r = [dense.search(v) for v in np.load(sys.argv[2] + ".queries.npy")]
 
