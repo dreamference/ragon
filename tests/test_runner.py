@@ -144,6 +144,36 @@ def test_openhands_stays_on_this_machine_and_off_port_3000(monkeypatch):
     assert "LLM_MODEL=openai/served/other-model" in cmd
 
 
+def test_openhands_runner_run_session_reports_a_failed_launch_and_exits_1(
+    tmp_path, monkeypatch, capsys
+):
+    # `docker run` refused to start (a dead socket, a kernel without cgroups...): the session
+    # reports it and exits 1 instead of leaving the traceback to the user.
+    from dreamference.chat.docker_bridge import DockerBridge
+    from dreamference.runner.openhands_installer import OpenHandsInstaller
+
+    monkeypatch.chdir(tmp_path)
+    runner = OpenHandsRunner(config=DreamferenceConfig(vllm_host="http://localhost:8000"))
+    monkeypatch.setattr(runner.vllm_manager, "check_health", lambda: True)
+    monkeypatch.setattr(OpenHandsInstaller, "is_docker_available", classmethod(lambda cls: True))
+    monkeypatch.setattr(OpenHandsInstaller, "pull_image_if_missing", classmethod(lambda cls: True))
+    monkeypatch.setattr(DockerBridge, "gateway", classmethod(lambda cls: "172.17.0.1"))
+    monkeypatch.setattr(
+        runner.vllm_manager, "get_models", lambda timeout=2.0: ["served/other-model"]
+    )
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: None)
+
+    def refuse(cmd, **kwargs):
+        raise OSError(13, "docker refused the container")
+
+    monkeypatch.setattr("subprocess.call", refuse)
+
+    assert runner.run_session() == 1
+    out = capsys.readouterr().out
+    assert "Failed to launch OpenHands" in out
+    assert "docker refused the container" in out
+
+
 def test_agents_name_the_model_the_server_runs_not_the_configured_one(tmp_path, monkeypatch):
     # AGENTS.md: ask the server which model runs. A request naming another id answers 404, and
     # the draft model, vLLM's internal speculative head, is never served at all (Continue's
