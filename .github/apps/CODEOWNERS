@@ -125,6 +125,7 @@
 
 # Desktop
 /desktop/                                       @dreamference/desktop
+/desktop/ui/src/VpnRecovery.tsx                  @dreamference/desktop
 /dreamference/chat/desktop_installer.py         @dreamference/desktop
 /dreamference/chat/desktop_protocol_types.py    @dreamference/desktop
 /dreamference/chat/desktop_runner.py            @dreamference/desktop
