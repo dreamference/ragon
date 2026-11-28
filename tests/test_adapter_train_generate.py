@@ -543,6 +543,29 @@ def test_rollout_messages_mirror_the_servers_request_conversion(tmp_path):
         AdapterTrainGenerate.rollout_messages(rollout)
 
 
+def test_adapter_train_generate_rollout_messages_skips_lines_that_are_not_json(tmp_path):
+    """A corrupt line in the rollout is skipped; the rest of the session still parses."""
+    rollout = tmp_path / "rollout.jsonl"
+    lines = [
+        json.dumps({"type": "session_meta", "payload": {"base_instructions": "Base."}}) + "\n",
+        "{not valid json}\n",
+        json.dumps(
+            {
+                "type": "response_item",
+                "payload": {"type": "message", "role": "user", "content": "Do it."},
+            }
+        )
+        + "\n",
+    ]
+    rollout.write_text("".join(lines))
+    messages, arguments = AdapterTrainGenerate.rollout_messages(rollout)
+    assert arguments == {}
+    assert messages == [
+        {"role": "system", "content": "Base."},
+        {"role": "user", "content": "Do it."},
+    ]
+
+
 def test_adapter_train_generate_chat_message_reasoning_item_yields_assistant_or_none():
     """A reasoning item becomes an assistant message with its text, or is dropped when empty."""
     with_summary = {
