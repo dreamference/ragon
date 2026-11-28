@@ -1258,11 +1258,11 @@ async fn with_nothing_listening_the_server_starts_the_app_server_and_reports_why
     let mut browser = Browser { sink, stream, next: 0 };
     let started = browser.call(json!({ "type": "work/start" })).await;
     let error = started["error"].as_str().unwrap();
-    assert!(error.contains("exited") && error.contains("unexpected: -c features.code_mode_host=true"), "{started}");
-    // The stand-in was asked for exactly the desktop app's command, on the private socket.
+    assert!(error.contains("exited") && error.contains("unexpected: -c features.code_mode_host=true -c feedback.enabled=false"), "{started}");
+    // The stand-in was asked for the shared server's command (A7), on the private socket.
     let log = std::fs::read_to_string(&server.config.launch.log).unwrap();
     let socket = server.config.socket.display().to_string();
-    assert!(log.contains(&format!("unexpected: -c features.code_mode_host=true app-server --listen unix://{socket}")), "{log}");
+    assert!(log.contains(&format!("unexpected: -c features.code_mode_host=true -c feedback.enabled=false -c features.realtime_conversation=false app-server --listen unix://{socket}")), "{log}");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

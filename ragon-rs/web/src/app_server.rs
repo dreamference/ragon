@@ -2,10 +2,17 @@
 //! §2.1). In `--listen unix://PATH` mode the server takes any number of clients, one WebSocket
 //! each, so every browser tab gets a connection of its own and none of them owns the server.
 //!
-//! When nothing answers on the socket, `ragon web` starts the server itself, as its child: the
-//! same command the desktop app runs, with the model server named in `DREAMFERENCE_VLLM_HOST` so
-//! the child never browses for a node (an mDNS query is egress). Its stderr, where the launcher
-//! says it is waiting for a model server, goes to every tab and to `app-server.log`.
+//! On a node the server is always on (specs/DREAMFERENCE_RAGON_REMOTE_SESSIONS.md §7.1 A3): the
+//! gate's start writes and starts a user unit that runs [`server_args`] on this socket, one per node
+//! and per OS user, as the gate's user (A4: the socket and its folder are private to that user).
+//! `ragon web`, the front door on port 8000 and remote clients reach the same server and see the
+//! same threads.
+//!
+//! When nothing answers on the socket (a client with no gate, a machine without systemd), `ragon
+//! web` starts the server itself, as its child, with the same arguments and the model server named
+//! in `DREAMFERENCE_VLLM_HOST` so the child never browses for a node (an mDNS query is egress). Its
+//! stderr, where the launcher says it is waiting for a model server, goes to every tab and to
+//! `app-server.log`.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -27,6 +34,24 @@ pub type Upstream = WebSocketStream<UnixStream>;
 
 /// How long a start may take: the launcher first waits for a model server that may still be loading.
 pub const START_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// The `-c` settings of the shared server, before `app-server` (§6.4, A7). `code_mode_host` is the
+/// desktop app's; feedback and realtime conversation are the two requests that would reach the
+/// vendor from the server side, closed by config rather than by a frame filter (the front door
+/// copies frames unchanged). Realtime per thread is 1.0. The gate's unit
+/// (`dreamference/vllm_server/model_gate.py`, `APP_SERVER_SETTINGS`) passes the same list.
+pub const SHARED_SETTINGS: [&str; 3] =
+    ["features.code_mode_host=true", "feedback.enabled=false", "features.realtime_conversation=false"];
+
+/// The arguments after `ragon` that run the shared server on `socket`.
+pub fn server_args(socket: &Path) -> Vec<String> {
+    let mut args = Vec::new();
+    for setting in SHARED_SETTINGS {
+        args.extend(["-c".to_string(), setting.to_string()]);
+    }
+    args.extend(["app-server".to_string(), "--listen".to_string(), format!("unix://{}", socket.display())]);
+    args
+}
 
 /// What starts `ragon app-server` and where it listens.
 #[derive(Clone, Debug)]
@@ -140,10 +165,9 @@ impl AppServer {
 
     fn spawn(&self) -> Result<Running, String> {
         prepare_socket_dir(&self.socket).map_err(|err| format!("could not prepare {}: {err}", self.socket.display()))?;
-        let listen = format!("unix://{}", self.socket.display());
         let mut command = Command::new(&self.launch.ragon);
         command
-            .args(["-c", "features.code_mode_host=true", "app-server", "--listen", &listen])
+            .args(server_args(&self.socket))
             .envs(self.launch.env.iter().map(|(key, value)| (key.as_str(), value.as_str())))
             .env("RUST_LOG", "warn")
             .stdin(Stdio::null())
@@ -322,6 +346,56 @@ mod tests {
         assert!(kept.contains("saw [secret] here"), "{kept}");
         assert!(!err.contains(&token), "{err}");
         assert!(ragon_log::SECRETS_TXT.contains("github|gh|"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_shared_server_closes_feedback_and_realtime_before_the_subcommand() {
+        let args = server_args(Path::new("/run/user/1/ragon/app-server.sock"));
+        let at = args.iter().position(|arg| arg == "app-server").unwrap();
+        let settings: Vec<&str> =
+            args[..at].chunks(2).map(|pair| {
+                assert_eq!(pair[0], "-c");
+                pair[1].as_str()
+            }).collect();
+        assert!(settings.contains(&"feedback.enabled=false"), "{args:?}");
+        assert!(settings.contains(&"features.realtime_conversation=false"), "{args:?}");
+        assert!(settings.contains(&"features.code_mode_host=true"), "{args:?}");
+        assert_eq!(&args[at..], ["app-server", "--listen", "unix:///run/user/1/ragon/app-server.sock"]);
+    }
+
+    #[tokio::test]
+    async fn the_child_gets_the_shared_settings() {
+        let root = scratch("args");
+        let script = root.join("ragon");
+        let seen = root.join("argv");
+        std::fs::write(&script, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit 1\n", seen.display())).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let socket = root.join("run").join("s.sock");
+        let server = AppServer::new(socket.clone(), launch(script.to_str().unwrap(), root.join("log")));
+        assert!(server.connect().await.is_err());
+        let argv: Vec<String> = std::fs::read_to_string(&seen).unwrap().lines().map(String::from).collect();
+        assert_eq!(argv, server_args(&socket));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A4: a server started by the gate's unit is reused, not replaced: `ragon web` connects to
+    /// whatever answers on the socket, as the same user, and starts nothing.
+    #[tokio::test]
+    async fn a_running_shared_server_is_reused() {
+        let root = scratch("reuse");
+        let path = root.join("s.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                let _ws = tokio_tungstenite::accept_async(stream).await;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+        let server = AppServer::new(path, launch("/nonexistent/ragon", root.join("log")));
+        let (_upstream, started) = server.connect().await.expect("connects to the running server");
+        assert!(!started);
         let _ = std::fs::remove_dir_all(root);
     }
 

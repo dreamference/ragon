@@ -123,6 +123,7 @@ def test_no_other_rust_or_python_file_writes_a_service_unit():
             "forge/forge_service",
             "chat/matrix_homeserver",
             "accounts/accounts_service",
+            "vllm_server/model_gate",
         )
     }
     assert found <= known | python_known, found - known - python_known
