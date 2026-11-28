@@ -185,3 +185,15 @@ def test_a_second_run_while_one_works_is_refused_and_touches_nothing(setup, fake
         assert _run(setup) == 1
     assert (setup["night"] / "tasks" / f"{record['id']}.json").read_text() == before
     assert not (setup["night"] / "reports").exists()
+
+
+def test_night_shift_task_run_thread_id_in_returns_the_session_id(tmp_path, monkeypatch):
+    from dreamference.night_shift import NightShiftTaskRun
+
+    log = tmp_path / "events.jsonl"
+    log.write_text(
+        '{"type": "turn.completed"}\nnot json\n{"type": "thread.started", "thread_id": "sess-1"}\n'
+    )
+    assert NightShiftTaskRun.thread_id_in(log, 0) == "sess-1"
+    assert NightShiftTaskRun.thread_id_in(tmp_path / "missing.jsonl", 0) is None
+    assert NightShiftTaskRun.thread_id_in(log, len(log.read_bytes())) is None
