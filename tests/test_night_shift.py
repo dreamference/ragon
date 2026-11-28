@@ -1790,6 +1790,30 @@ def test_a_window_that_closes_while_waiting_reports_it(fake_host):
     )
 
 
+def test_night_shift_runner_wait_for_idle_rejects_when_metrics_are_silent_and_the_window_closed(
+    fake_host, monkeypatch
+):
+    # A lost metrics read while the window is already closed ends the wait straight away,
+    # instead of backing off into a sleep past the window.
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(
+        "dreamference.night_shift.night_shift_runner.time.time", lambda: clock["now"]
+    )
+    naps = []
+
+    def advance(seconds):
+        naps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(NightShiftRunner, "sleep", staticmethod(advance))
+    FakeHost.samples = [None]
+    past = datetime.now().astimezone() - timedelta(minutes=1)
+    assert "until the window closed" in NightShiftRunner.wait_for_idle(
+        "http://x", "ragon", 10, past
+    )
+    assert naps == []
+
+
 def test_one_steady_request_keeps_the_model_busy(fake_host, monkeypatch):
     # The served counter never moves, but a request is running all along: nobody has been idle.
     clock = {"now": 1000.0}
