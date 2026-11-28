@@ -532,12 +532,22 @@ step done "Ragon $TAG installed:$INSTALLED"
 
 # Linux: the primary's CA (pinned at `ragon login`) goes into the system store, replacing an older
 # one, so an unmodified Codex's `--remote` trusts it as on macOS and Windows (A11; `ragon uninstall`
-# takes it out). Only once a primary is pinned, and never by asking for a password here.
-if [ "$os" = "unknown-linux-gnu" ] && [ -x "$INSTALL_DIR/bin/ragon" ] && [ -f "${CODEX_HOME:-$HOME/.ragon}/auth.json" ]; then
-    if [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; then
+# takes it out). Only once a primary is pinned, and never by asking for a password here (the
+# `sudo -n true` gate: sudo reads the terminal, not stdin). Before the first sign-in, the summary
+# names the command to run after it; `ragon login` says so again when it pins the CA.
+if [ "$os" = "unknown-linux-gnu" ] && [ -x "$INSTALL_DIR/bin/ragon" ]; then
+    trust_later="primary's CA: after \`ragon login\`, run \`ragon node remote trust-ca\` (sudo)"
+    if [ ! -f "${CODEX_HOME:-$HOME/.ragon}/auth.json" ]; then
+        say "ℹ️  After ragon login, run: ragon node remote trust-ca (asks for sudo), so an unmodified Codex trusts your primary"
+        step available "$trust_later"
+    elif [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; then
         if trust="$("$INSTALL_DIR/bin/ragon" node remote trust-ca < /dev/null 2>&1)"; then
             say "${trust##*$'\n'}"
             step done "primary's CA: ${trust##*$'\n'}"
+        elif [ "$?" = 3 ]; then
+            # 3: signed in, but no CA pinned for the primary yet; nothing was done.
+            say "ℹ️  ${trust##*$'\n'}"
+            step available "$trust_later"
         else
             say "⚠️  The primary's CA is not in the system store: ${trust##*$'\n'}"
             step failed "primary's CA: run \`ragon node remote trust-ca\`"
