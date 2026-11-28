@@ -493,6 +493,10 @@ class ModelGateService:
             target = "/" + target.split(URL_SCHEME_SEP, 1)[1].partition("/")[2]
         path = target.split("?", 1)[0] or "/"
         headers = []
+        # A bare LF or CR (or NUL) inside a line would be read as a line end by a lenient
+        # parser downstream (httparse in the app-server): refuse the request as malformed.
+        if any(byte in line for line in lines for byte in (b"\n", b"\r", b"\0")):
+            return None
         for line in lines[1:]:
             if not line:
                 continue
