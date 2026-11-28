@@ -136,6 +136,7 @@ def byte_tokenizer(path: Path) -> Path:
 
 ADD_TEST = "import sys\nsys.path.insert(0, '.')\nfrom calc import add\nassert add(2, 3) == 5\n"
 OTHER_TEST = "import sys\nsys.path.insert(0, '.')\nimport other\nassert other.VALUE == 1\n"
+DETECTED_TEST_COMMAND: Final[str] = "pytest -q "
 
 
 @pytest.fixture
@@ -469,6 +470,23 @@ def test_adapter_train_generate_init_rejects_fewer_than_one_attempt(setup):
     """An attempt budget below one is refused before the stage stores anything."""
     with pytest.raises(ValueError, match="attempts must be at least 1"):
         stage(setup, [setup["tasks"]["fix"]], attempts=0)
+
+
+def test_adapter_train_generate_test_command_falls_back_to_night_shift_detection(
+    setup, monkeypatch
+):
+    """Without `--test-cmd`, the stage asks Night Shift's detection for the command."""
+
+    def detect(self, worktree, override, configured, repo, base):
+        return DETECTED_TEST_COMMAND + base, "detected"
+
+    monkeypatch.setattr(NightShiftTaskRun, "detect_test_command", classmethod(detect))
+    generate = stage(setup, [setup["tasks"]["fix"]], test_cmd=None)
+    worktree = setup["repo"] / "wt"
+    assert generate.test_command(worktree, "parent") == (
+        DETECTED_TEST_COMMAND + "parent",
+        "detected",
+    )
 
 
 def test_unit_commands():
