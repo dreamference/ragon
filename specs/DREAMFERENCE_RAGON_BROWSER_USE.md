@@ -247,10 +247,10 @@ The submit trigger covers forms and the page's own non-GET requests after an act
   purchase = "ask"   # ask | deny
   send     = "ask"   # ask | deny
   delete   = "ask"   # ask | deny
-  download = "ask"   # ask | deny | allow
+  download = "ask"   # ask | deny
   ```
 
-  The floor is `ask`: in 0.9.11 no category except `download` can be set to `allow`, and a download `allow` is per origin (`origins."<o>".downloads`, §4.6). A missing file or a missing key means `ask`; a value the server cannot read means `deny`. A requirements file can pin any category to `deny`. The desktop shell's `policy.json` reader (`desktop/electron/src/policy.ts`) is the precedent for a policy file the agent cannot change.
+  The floor is `ask`: no category can be set to `allow` in this file in 0.9.11. The only allow is per origin for downloads (`origins."<o>".downloads`, §4.6). A missing file or a missing key means `ask`; a value the server cannot read means `deny`. An administrator can pin any category to `deny` with a managed copy of this file, beside the requirements file; it wins over the user's copy. Upstream's requirements keys are not extended for this, so upstream's reader never sees Ragon's keys. The managed path is fixed in P2.6. The desktop shell's `policy.json` reader (`desktop/electron/src/policy.ts`) is the precedent for a policy file the agent cannot change.
 - `$CODEX_HOME/browser/sites.toml` holds "Always" answers. Only the server writes it, after a user approval.
 - **None of these files is writable by the agent's sandboxed commands:** `$CODEX_HOME` is outside the workspace-write roots. A test asserts this (§12, P2), and the AGENTS.md rule on user choices applies.
 - Under full access (`danger-full-access`) the agent could edit the file. The documentation says so, as it does for every other policy under full access.
@@ -426,6 +426,8 @@ Ten live-internet tasks are run once by hand before the release as a smoke test 
 
 - **Unit (Rust):**
   - the policy reader with every upstream key, including the requirements precedence;
+  - the `policy.toml` floor: `allow` refused for every category, an unreadable value read as deny, the managed copy winning;
+  - elicitation answers: cancel, decline, a timeout and an unparseable answer all read as deny;
   - the trigger classifier on recorded request sequences;
   - the secret-field detector;
   - the untrusted frame's escaping;
@@ -458,7 +460,7 @@ Ten live-internet tasks are run once by hand before the release as a smoke test 
 | Q6 | Browser in unattended runs (automations) when configured | Read-only on origins pre-allowed in `[browser_use]`; every gated action denied |
 | Q7 | Where downloads go | `~/Downloads/Ragon/`, each download asked unless the origin says `downloads = "allow"` |
 | Q8 | Screenshots in the model's context | Only when the agent calls `browser_screenshot`; the web-check skill requires one at the end; snapshots stay text |
-| Q9 | Label and default in 0.9.11 | Preview, on; off by default if the injection suite is below 12 of 12 or the quality set below 60 % |
+| Q9 | Label and default in 0.9.11 | Preview, on; off by default if the injection suite is below 12 of 12 or the quality set below 60 %; between 60 and 70 % it ships on, with the shortfall named in the release notes |
 | Q10 | Lanes | Two lanes of its own from Monday 11-30; cut line Monday 12-14 (§12.3) |
 
 ## 14. Owner steps
