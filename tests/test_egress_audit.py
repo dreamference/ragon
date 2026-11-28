@@ -1162,6 +1162,19 @@ def test_without_image_search_the_turn_is_skipped_and_says_so(tmp_path, monkeypa
     assert not (tmp_path / "home").exists()
 
 
+def test_egress_audit_stored_images_reports_an_empty_set_when_the_store_cannot_be_read(
+    tmp_path, monkeypatch
+):
+    # The store path exists but is not a directory: `iterdir` raises `OSError` and the turn's
+    # before/after snapshots both come back empty, so an image the answer names is not "new".
+    from dreamference.chat import image_search_sidecar
+
+    not_a_dir = tmp_path / "store"
+    not_a_dir.write_text("x")
+    monkeypatch.setattr(image_search_sidecar, "IMAGE_STORE_DIR", str(not_a_dir))
+    assert EgressAudit.stored_images() == set()
+
+
 def test_egress_audit_web_session_a_ask_that_never_completes_is_not_a_reply(
     tmp_path, monkeypatch, capsys
 ):
