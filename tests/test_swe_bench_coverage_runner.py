@@ -1,5 +1,6 @@
 """Runner decisions: what stops a run before it starts, and what an unpullable image costs."""
 
+import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -66,3 +67,13 @@ def test_until_time_is_the_next_such_time_never_one_already_past():
     past = (now - timedelta(minutes=5)).strftime("%H:%M")
     got = SweBenchRunner.until_time(past)
     assert got > now and got - now <= timedelta(days=1)
+
+
+def test_swe_bench_runner_default_name_falls_back_to_a_timestamp_when_all_letters_are_taken(
+    monkeypatch,
+):
+    today = datetime.now().strftime("%Y-%m-%d")
+    for letter in "abcdefghijklmnopqrstuvwxyz":
+        SweBenchRunStore(f"{today}-{letter}").write_manifest({"name": f"{today}-{letter}"})
+    monkeypatch.setattr(time, "time", lambda: 1234567890)
+    assert SweBenchRunner.default_name() == f"{today}-1234567890"
