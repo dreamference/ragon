@@ -234,3 +234,25 @@ def test_a_reply_cut_off_mid_body_is_an_oserror_like_any_other_failed_reply(monk
     monkeypatch.setattr(node_shelly_plug.urllib.request, "urlopen", lambda url, timeout: Cut())
     with pytest.raises(OSError):
         NodeShellyPlug._get("http://p.local/rpc/Switch.GetStatus?id=0")
+
+
+def test_node_power_cycle_plug_direct_refusal_becomes_oserror(monkeypatch):
+    # No plug is registered: the direct path's KeyError is re-raised as an OSError.
+    monkeypatch.setattr(NodeShellyPlug, "_get", classmethod(lambda cls, url: {}))
+    with pytest.raises(OSError, match="p1"):
+        NodePowerCycle._plug("house-1", "p1", None, "status")
+
+
+def test_node_power_cycle_plug_neighbour_reply_unreadable_is_oserror(monkeypatch):
+    # The neighbour answered but with something that is not a JSON object.
+    records = {"house-2": {"node": "n2", "name": "house-2", "user": "u", "address": "b"}}
+
+    def run(cls, record, request, **kwargs):
+        return subprocess.CompletedProcess([], 0, "nope", "")
+
+    monkeypatch.setattr(
+        NodePairing, "find", classmethod(lambda cls, name, browse=True: records.get(name))
+    )
+    monkeypatch.setattr(NodePairing, "run", classmethod(run))
+    with pytest.raises(OSError, match="unreadable"):
+        NodePowerCycle._plug("house-1", "p1", "house-2", "status")
