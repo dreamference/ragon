@@ -482,6 +482,18 @@ def test_unit_commands():
     )
 
 
+def test_adapter_train_generate_agent_test_command_whole_suite_in_fail_to_pass(setup):
+    """When the whole suite is the fail-to-pass target, the agent gets the bare suite command."""
+    generate = stage(setup, [setup["tasks"]["fix"]])
+    spec = AdapterTrainGenerate.task_spec(setup["tasks"]["fix"])
+    grading = {
+        "fail_to_pass": [WHOLE_SUITE],
+        "tests": ["tests/test_add.py", "tests/test_other.py"],
+        "test_command": f"{sys.executable} {{test}}",
+    }
+    assert generate.agent_test_command(spec, grading) == f"{sys.executable}"
+
+
 def test_rollout_messages_mirror_the_servers_request_conversion(tmp_path):
     rollout = tmp_path / "rollout.jsonl"
     entries = [
