@@ -196,9 +196,18 @@ async fn fetch(client: &reqwest::Client, url: &str) -> Option<String> {
     response.text().await.ok()
 }
 
+/// Allow slow local DNS during start without extending the deadline for a numeric address.
+fn start_timeout(gate: &str) -> Duration {
+    if reqwest::Url::parse(gate).is_ok_and(|url| url.domain().is_some()) {
+        Duration::from_secs(15)
+    } else {
+        Duration::from_secs(5)
+    }
+}
+
 /// The node's setup document, or `None` when it has none or gave no answer.
 async fn fetch_setup(gate: &str) -> Option<Setup> {
-    let client = reqwest::Client::builder().no_proxy().danger_accept_invalid_certs(wants_pin(gate)).timeout(Duration::from_secs(5)).build().ok()?;
+    let client = reqwest::Client::builder().no_proxy().danger_accept_invalid_certs(wants_pin(gate)).timeout(start_timeout(gate)).build().ok()?;
     fetch(&client, &format!("{gate}/ragon/v1/setup")).await.as_deref().and_then(parse_setup)
 }
 
@@ -257,7 +266,7 @@ pub fn plain_answer(status: u16, body: &str) -> PlainAnswer {
 
 async fn plain_accounts(gate: &str) -> PlainAnswer {
     let gate = gate.trim_end_matches('/');
-    let Ok(client) = reqwest::Client::builder().no_proxy().danger_accept_invalid_certs(wants_pin(gate)).timeout(Duration::from_secs(5)).build() else {
+    let Ok(client) = reqwest::Client::builder().no_proxy().danger_accept_invalid_certs(wants_pin(gate)).timeout(start_timeout(gate)).build() else {
         return PlainAnswer::NoAccounts;
     };
     let Ok(response) = client.get(format!("{gate}/ragon/v1/info")).send().await else {
@@ -368,7 +377,7 @@ pub async fn secure_gate(host: &str, codex_home: &Path, node_id: &str, node_name
     let lenient = reqwest::Client::builder()
         .no_proxy()
         .danger_accept_invalid_certs(true)
-        .timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(3))
         .build()
         .context("could not build the HTTP client")?;
     let Some(info) = fetch(&lenient, &format!("{tls}/ragon/v1/info")).await.as_deref().and_then(parse_info) else {
@@ -503,7 +512,7 @@ pub async fn start(gate: &str, codex_home: &Path, interactive: bool) -> anyhow::
         let client = reqwest::Client::builder()
             .no_proxy()
             .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(5))
+            .timeout(start_timeout(gate))
             .build()
             .context("could not build the HTTP client")?;
         if let Some(info) = fetch(&client, &format!("{gate}/ragon/v1/info")).await.as_deref().and_then(parse_info) {

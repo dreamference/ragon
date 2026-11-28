@@ -95,23 +95,33 @@ async fn a_host_on_this_machine_stays_plain() {
     assert_eq!(auth::secure_gate("https://box.local:8000", &home, "n1", "box").await.unwrap(), Secured::AsIs);
 }
 
-/// 192.0.2.0/24 is TEST-NET-1 (RFC 5737): nothing answers there.
-const NOWHERE: &str = "http://192.0.2.1:8000";
+// An IPv4-mapped loopback address exercises the advertised-address path. Keep the
+// listener open without answering TLS so the client has to enforce its deadline.
+fn unresponsive_gate() -> (TcpListener, String) {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    (listener, format!("http://[::ffff:127.0.0.1]:{port}"))
+}
 
 #[tokio::test]
 async fn a_node_never_pinned_that_gives_no_tls_answer_stays_plain() {
     let home = home("unpinned");
-    assert_eq!(auth::secure_gate(NOWHERE, &home, "n1", "box").await.unwrap(), Secured::AsIs);
+    let (_listener, gate) = unresponsive_gate();
+    let started = std::time::Instant::now();
+    assert_eq!(auth::secure_gate(&gate, &home, "n1", "box").await.unwrap(), Secured::AsIs);
+    let elapsed = started.elapsed();
+    assert!(elapsed >= std::time::Duration::from_secs(2) && elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
 }
 
 #[tokio::test]
 async fn a_pinned_node_is_never_used_over_plain_http() {
     let home = home("pinned");
+    let (_listener, gate) = unresponsive_gate();
     let pin = auth::pin::path(&home, "n1");
     std::fs::create_dir_all(pin.parent().unwrap()).unwrap();
     std::fs::write(&pin, "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n").unwrap();
     // Not answering (the node is starting): its HTTPS gate, by name, and the model wait waits there.
-    assert_eq!(auth::secure_gate(NOWHERE, &home, "n1", "box").await.unwrap(), Secured::Https("https://box.local:8000".to_string()));
+    assert_eq!(auth::secure_gate(&gate, &home, "n1", "box").await.unwrap(), Secured::Https(auth::https_gate_for(&gate, "box").unwrap()));
 }
 
 #[test]
@@ -144,15 +154,16 @@ async fn a_sign_in_refused_over_plain_http_says_so() {
 #[tokio::test]
 async fn a_pinned_node_without_a_usable_name_is_refused_not_downgraded() {
     let home = home("pinned-noname");
+    let (_listener, gate) = unresponsive_gate();
     let pin = auth::pin::path(&home, "n1");
     std::fs::create_dir_all(pin.parent().unwrap()).unwrap();
     std::fs::write(&pin, "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n").unwrap();
     for name in ["", "a.b", "x_y", "192.0.2.1"] {
-        let refused = auth::secure_gate(NOWHERE, &home, "n1", name).await;
+        let refused = auth::secure_gate(&gate, &home, "n1", name).await;
         assert!(refused.is_err(), "name {name:?} gave {refused:?}");
     }
     // Nothing pinned under that id: the old plain route, without sign-in.
-    assert_eq!(auth::secure_gate(NOWHERE, &home, "n2", "").await.unwrap(), Secured::AsIs);
+    assert_eq!(auth::secure_gate(&gate, &home, "n2", "").await.unwrap(), Secured::AsIs);
 }
 
 /// B2: once the advertised id is pinned, only an answer with that id stands for the node.
