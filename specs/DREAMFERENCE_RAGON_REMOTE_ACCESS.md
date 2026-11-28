@@ -148,11 +148,13 @@ NODE §6.1's order of resolution becomes:
 1. `DREAMFERENCE_VLLM_HOST`, then `vllm_host` in a configuration file.
 2. `RAGON_NODE=<name>`.
 3. This machine is a node: `localhost`.
-4. **New: the remembered node's overlay name.** `node.json`'s `remote` is used when it is that node's own name (`ragon-<its id>.` followed by a domain; anything else in the field is ignored, in the file and in an advert), NetBird's client reports management connected (`netbird status --json`; the daemon's socket is open to local users), and the name resolves. NetBird is asked first so that, with the overlay down, the name is never sent to the system's DNS servers. Nothing is browsed and nothing is written: the address NetBird returns is used for that run.
+4. **New: the remembered node's overlay name.** `node.json`'s `remote` is used when it is that node's own name (`ragon-<its id>.` followed by a domain, or `mightling-<its id>.` for a node that enrolled before the rename and keeps its peer name; anything else in the field is ignored, in the file and in an advert), NetBird's client reports management connected (`netbird status --json`; the daemon's socket is open to local users), and the name resolves. NetBird is asked first so that, with the overlay down, the name is never sent to the system's DNS servers. Nothing is browsed and nothing is written: the address NetBird returns is used for that run.
 5. The remembered node by id, found on the LAN.
 6. A browse.
 
-The name carries the id, so the tier needs no separate identity check: a name that resolves in the overlay is that node's. When both the overlay and the LAN would answer they lead to the same node.
+The name carries the id, so the tier needs no separate identity check: a name that resolves in the overlay is that node's. When both the overlay and the LAN would answer they lead to the same node. That holds only while the name comes from a source that proved the node: the HMAC-checked join bundle (§4) or the node's own LAN advert (§7). A peer chooses its own label, and of the two prefixes the node holds one only, so the other (`ragon-<id>` for a legacy node, `mightling-<id>` for a new one) is free for any enrolled peer to take: a name is never taken from NetBird's peer list by itself.
+
+When the remembered node is enrolled and neither the LAN nor the overlay answers, its last address is tried and the note says so: "This machine is enrolled for remote access to <node> (<name>), but the overlay did not answer: <NetBird's client is not connected to its management | its name does not resolve>".
 
 The other programs that read `node.json` (`ragon-search`, `ragon-fetch`, the indexes; the `ragon-node-locator` crate and its byte-identical copy in `ragon-web-rs/src/node_locator.rs`) use the LAN address and switch to the overlay name when it does not accept a connection within 300 ms **and** NetBird reports management connected; so for them too the name never reaches the system's resolver while the overlay is down. The launcher adds the overlay name to `NO_PROXY` beside the LAN address.
 
@@ -170,7 +172,7 @@ The other programs that read `node.json` (`ragon-search`, `ragon-fetch`, the ind
 
 ## 7. The advertisement
 
-The node's `_ragon-node._tcp` record (NODE §4) gains one TXT key, `remote`, the node's overlay name, present only while remote access is set up (`remote setup` adds it, `remove --purge` drops it; a state change or `node enable` keeps it). A LAN client reads it and stores it in `node.json`, so a client enrolled on an earlier visit keeps the name across re-pairing. The record carries a name, never an address, like every other key; a client ignores a value that is not `ragon-<the advert's id>.…`.
+The node's `_ragon-node._tcp` record (NODE §4) gains one TXT key, `remote`, the node's overlay name, present only while remote access is set up (`remote setup` adds it, `remove --purge` drops it; a state change or `node enable` keeps it). A LAN client reads it and stores it in `node.json`, so a client enrolled on an earlier visit keeps the name across re-pairing. The record carries a name, never an address, like every other key; a client ignores a value that is not `ragon-<the advert's id>.…` (or the legacy `mightling-<the advert's id>.…`, §5).
 
 ---
 
