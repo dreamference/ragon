@@ -1391,6 +1391,31 @@ def test_a_stopped_repository_stops_the_run_and_opens_an_issue(monkeypatch):
     assert ForgeGithubMirror.status()["stopped"] == f"o/r: {stop['error']}"
 
 
+def test_forge_github_mirror_run_locked_repo_without_github_destination(monkeypatch, capsys):
+    """A repo config without a `github` key is skipped by run_locked."""
+    ForgeSettings.update_state(role="record")
+    ForgeGithubMirror.save_settings(True, "dgxcoder")
+    monkeypatch.setattr(ForgeAccounts, "admin_token", classmethod(lambda cls: "t"))
+    monkeypatch.setattr(
+        ForgeRepositories,
+        "all",
+        classmethod(lambda cls, token=None: []),
+    )
+    monkeypatch.setattr(
+        ForgeRepositories,
+        "config",
+        classmethod(lambda cls: {"repositories": {"o/r": {}}}),
+    )
+    mirrored = []
+    monkeypatch.setattr(
+        ForgeGithubMirror,
+        "mirror_one",
+        classmethod(lambda cls, name, *a: mirrored.append(name) or {"ok": True}),
+    )
+    assert ForgeGithubMirror.run_locked() == 0
+    assert mirrored == []
+
+
 def test_airgapped_on_stops_the_mirror(monkeypatch):
     ForgeSettings.update_state(role="record")
     ForgeGithubMirror.save_settings(True, "dgxcoder")
