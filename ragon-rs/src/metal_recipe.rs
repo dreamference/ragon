@@ -107,6 +107,8 @@ mod tests {
         assert!(r.weights_sha256.is_none());
     }
 
+    // The sparse head's path is joined with the host's separator: Unix only (the node is a Mac).
+    #[cfg(unix)]
     #[test]
     fn serve_args_carry_the_sessions() {
         let r = fixture();

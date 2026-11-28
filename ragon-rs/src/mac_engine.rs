@@ -161,7 +161,8 @@ pub fn parse_memsize(text: &str) -> Option<u32> {
     u32::try_from(bytes >> 30).ok()
 }
 
-#[cfg(test)]
+// Unix paths throughout (the node is a Mac); Windows would join them with `\`.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::collections::HashSet;
