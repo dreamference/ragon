@@ -56,7 +56,8 @@ const CLIENT_ARCHIVES: [(&str, &str, &str); 6] = [
 ];
 
 const USAGE: &str = "Usage: ragon node remote join --code <8 digits> [--node <name>]\n\
-    On the node, on the same LAN: ragon-admin remote code";
+    On the node, on the same LAN: ragon-admin remote code\n\
+       ragon node remote trust-ca [--remove]   (Linux: the primary's CA in the system store)";
 
 /// What the node sends: everything a client needs to join, and nothing that is an address.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -357,16 +358,13 @@ pub fn trust_commands(os: &str, ca: &Path, id: &str, linux_tool: Option<&str>) -
     let short: String = id.chars().take(8).collect();
     let run = |argv: &[&str]| argv.iter().map(|arg| arg.to_string()).collect::<Vec<String>>();
     match os {
-        "linux" => match linux_tool {
-            Some("update-ca-certificates") => {
-                let target = format!("/usr/local/share/ca-certificates/ragon-node-{short}.crt");
-                Ok(vec![run(&["sudo", "install", "-m", "0644", &ca, &target]), run(&["sudo", "update-ca-certificates"])])
+        "linux" => match linux_tool.and_then(|tool| SystemStore::for_tool(Path::new("/"), tool)) {
+            Some(store) => {
+                let target = store.dir.join(format!("ragon-node-{short}.crt")).display().to_string();
+                let update: Vec<&str> = store.update.iter().map(String::as_str).collect();
+                Ok(vec![run(&["sudo", "install", "-m", "0644", &ca, &target]), run(&[&["sudo"][..], &update[..]].concat())])
             }
-            Some("update-ca-trust") => {
-                let target = format!("/etc/pki/ca-trust/source/anchors/ragon-node-{short}.crt");
-                Ok(vec![run(&["sudo", "install", "-m", "0644", &ca, &target]), run(&["sudo", "update-ca-trust", "extract"])])
-            }
-            _ => Err("this Linux has neither update-ca-certificates nor update-ca-trust".to_string()),
+            None => Err("this Linux has neither update-ca-certificates nor update-ca-trust".to_string()),
         },
         "darwin" => Ok(vec![run(&[
             "sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", "/Library/Keychains/System.keychain", &ca,
@@ -374,6 +372,148 @@ pub fn trust_commands(os: &str, ca: &Path, id: &str, linux_tool: Option<&str>) -
         "windows" => Ok(vec![run(&["certutil", "-addstore", "-f", "Root", &ca])]),
         other => Err(format!("remote access is not supported on {other}")),
     }
+}
+
+// -- the primary's CA in the system store (A11) --------------------------------------------------
+
+/// A Linux system trust store under `root` (`/`, or a test's folder): the folder of anchors its
+/// tool reads, and the command that rebuilds the bundle from that folder. An unmodified Codex's
+/// `--remote` dial trusts only the native roots, which on Linux are this bundle
+/// (specs/DREAMFERENCE_RAGON_REMOTE_SESSIONS.md §3.4, owner Q9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemStore {
+    pub dir: PathBuf,
+    pub update: Vec<String>,
+}
+
+impl SystemStore {
+    /// The store `tool` rebuilds: Debian and Ubuntu (`update-ca-certificates`) or Fedora
+    /// (`update-ca-trust`); None for any other tool.
+    pub fn for_tool(root: &Path, tool: &str) -> Option<SystemStore> {
+        let (dir, update): (&str, &[&str]) = match tool {
+            "update-ca-certificates" => ("usr/local/share/ca-certificates", &["update-ca-certificates"]),
+            "update-ca-trust" => ("etc/pki/ca-trust/source/anchors", &["update-ca-trust", "extract"]),
+            _ => return None,
+        };
+        Some(SystemStore { dir: root.join(dir), update: update.iter().map(|arg| arg.to_string()).collect() })
+    }
+
+    /// Where a primary's CA goes, `ragon-<primary id>.crt`; None unless the id is a node id (a
+    /// UUID), so a name can never leave the folder or collide with `ragon-node-…` (the overlay CA).
+    pub fn file_for(&self, primary_id: &str) -> Option<PathBuf> {
+        is_node_id(primary_id).then(|| self.dir.join(format!("ragon-{primary_id}.crt")))
+    }
+
+    /// The primaries' CAs this store holds: only names `file_for` makes, so the overlay CAs of
+    /// `ragon node remote join` and anything else in the folder are never touched.
+    pub fn primary_files(&self) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else { return Vec::new() };
+        let mut files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+                name.strip_prefix("ragon-").and_then(|rest| rest.strip_suffix(".crt")).is_some_and(is_node_id)
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    /// The commands that leave exactly `primary`'s CA (its id and pinned PEM file) in the store, or
+    /// no primary's CA when `primary` is None: install it when missing or different (a CA that
+    /// changed is replaced), remove every other primary's, then rebuild the bundle. Empty when
+    /// the store already holds exactly that. `sudo` prefixes each command (empty when root).
+    pub fn plan(&self, primary: Option<(&str, &Path)>, sudo: &[String]) -> Result<Vec<Vec<String>>, String> {
+        let run = |argv: &[&str]| sudo.iter().cloned().chain(argv.iter().map(|arg| arg.to_string())).collect::<Vec<String>>();
+        let mut steps = Vec::new();
+        let mut keep = None;
+        if let Some((id, pem)) = primary {
+            let target = self.file_for(id).ok_or_else(|| format!("`{id}` is not a node id"))?;
+            let wanted = std::fs::read(pem).map_err(|error| format!("{}: {error}", pem.display()))?;
+            if !String::from_utf8_lossy(&wanted).contains("-----BEGIN CERTIFICATE-----") {
+                return Err(format!("{} holds no PEM certificate", pem.display()));
+            }
+            if std::fs::read(&target).ok().as_deref() != Some(&wanted[..]) {
+                steps.push(run(&["install", "-m", "0644", &pem.display().to_string(), &target.display().to_string()]));
+            }
+            keep = Some(target);
+        }
+        for stale in self.primary_files() {
+            if Some(&stale) != keep.as_ref() {
+                steps.push(run(&["rm", "-f", &stale.display().to_string()]));
+            }
+        }
+        if !steps.is_empty() {
+            let update: Vec<&str> = self.update.iter().map(String::as_str).collect();
+            steps.push(run(&update));
+        }
+        Ok(steps)
+    }
+}
+
+/// A node id as `node_identity.py` makes it: a UUID, lowercase hex in its 8-4-4-4-12 groups.
+fn is_node_id(id: &str) -> bool {
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.iter().map(|group| group.len()).eq([8, 4, 4, 4, 12])
+        && groups.iter().all(|group| group.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)))
+}
+
+/// The primary this client signed in to (the `active` entry of `auth.json`) and its CA pinned at
+/// first contact (`<ragon home>/nodes/<id>/ca.pem`); None before either exists.
+pub fn pinned_primary(ragon_home: &Path) -> Option<(String, PathBuf)> {
+    let id = crate::auth::switcher::read_state(ragon_home).ok()?.active?;
+    let pem = crate::auth::pin::path(ragon_home, &id);
+    pem.is_file().then_some((id, pem))
+}
+
+/// `ragon uninstall`'s step on Linux: every primary's CA out of the system store (A11). Nothing to
+/// do on a Linux with no store tool, or when no primary's CA is there.
+pub fn untrust_primary_cas() -> Result<(), String> {
+    if os_name() != "linux" || linux_tool().is_none() {
+        return Ok(());
+    }
+    trust_ca(true).map(|lines| lines.iter().for_each(|line| println!("{line}")))
+}
+
+/// `ragon node remote trust-ca [--remove]`: puts the primary's pinned CA in the system store,
+/// replacing an older one, or with `--remove` takes every primary's CA out (the installer's and
+/// the uninstaller's step, A11). macOS and Windows keep it in the user's store instead.
+fn trust_ca(remove: bool) -> Result<Vec<String>, String> {
+    if os_name() != "linux" {
+        return Ok(vec!["Only Linux keeps the primary's CA in the system store.".to_string()]);
+    }
+    let store = linux_tool()
+        .and_then(|tool| SystemStore::for_tool(Path::new("/"), tool))
+        .ok_or("this Linux has neither update-ca-certificates nor update-ca-trust")?;
+    let primary = if remove {
+        None
+    } else {
+        match crate::auth::local::ragon_home().as_deref().and_then(pinned_primary) {
+            Some(primary) => Some(primary),
+            None => return Ok(vec!["No primary is pinned yet: `ragon login` pins it, then run this again.".to_string()]),
+        }
+    };
+    let steps = store.plan(primary.as_ref().map(|(id, pem)| (id.as_str(), pem.as_path())), &sudo_prefix())?;
+    let done = match &primary {
+        Some((id, _)) if steps.is_empty() => format!("The CA of the primary {id} is already in the system store."),
+        Some((id, _)) => format!("✅ The CA of the primary {id} is in the system store."),
+        None if steps.is_empty() => "No primary's CA is in the system store.".to_string(),
+        None => "✅ The primaries' CAs are out of the system store.".to_string(),
+    };
+    if !steps.is_empty() {
+        run_steps("Updating the system trust store", &steps)?;
+    }
+    Ok(vec![done])
+}
+
+/// `sudo` unless this process is root.
+fn sudo_prefix() -> Vec<String> {
+    #[cfg(unix)]
+    if unsafe { libc::geteuid() } == 0 {
+        return Vec::new();
+    }
+    vec!["sudo".to_string()]
 }
 
 /// The commands that install NetBird's client from a checked binary and start its service.
@@ -469,6 +609,7 @@ fn run_steps(purpose: &str, steps: &[Vec<String>]) -> Result<(), String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
     Join { code: String, node: Option<String> },
+    TrustCa { remove: bool },
     Usage,
 }
 
@@ -477,8 +618,16 @@ impl Request {
         let mut code = None;
         let mut node = None;
         let mut rest = args.iter();
-        if rest.next().map(String::as_str) != Some("join") {
-            return Request::Usage;
+        match rest.next().map(String::as_str) {
+            Some("join") => {}
+            Some("trust-ca") => {
+                return match rest.as_slice() {
+                    [] => Request::TrustCa { remove: false },
+                    [flag] if flag == "--remove" => Request::TrustCa { remove: true },
+                    _ => Request::Usage,
+                };
+            }
+            _ => return Request::Usage,
         }
         while let Some(arg) = rest.next() {
             match arg.as_str() {
@@ -530,6 +679,18 @@ pub fn choose(adverts: &[Advert], named: Option<&str>, remembered: Option<&Node>
 pub async fn run_cli(args: &[String]) -> i32 {
     let (code, named) = match Request::from_args(args) {
         Request::Join { code, node } => (code, node),
+        Request::TrustCa { remove } => {
+            return match trust_ca(remove) {
+                Ok(lines) => {
+                    lines.iter().for_each(|line| println!("{line}"));
+                    0
+                }
+                Err(message) => {
+                    eprintln!("❌ {message}");
+                    1
+                }
+            };
+        }
         Request::Usage => {
             println!("{USAGE}");
             return 2;
@@ -1259,5 +1420,155 @@ mod tests {
             let failed = run_steps("test", &[vec!["true".into()], vec!["false".into()], vec!["/nonexistent/never".into()]]).unwrap_err();
             assert!(failed.starts_with("`false` failed"), "{failed}");
         }
+    }
+
+    // -- the primary's CA in the system store (A11): a temporary root and a fake update command,
+    // never the real store and never sudo.
+
+    const PRIMARY: &str = "0f6c2a9e-1b3d-4c5e-8f70-9a1b2c3d4e5f";
+    const NEXT_PRIMARY: &str = "5e4d3c2b-1a09-4f8e-9d7c-6b5a49382716";
+
+    fn pem(serial: &str) -> String {
+        format!("-----BEGIN CERTIFICATE-----\nTUlJ{serial}\n-----END CERTIFICATE-----\n")
+    }
+
+    /// A store of `tool` under a fresh temporary root whose update command appends to `update.log`.
+    fn fake_store(tool: &str, label: &str) -> (PathBuf, SystemStore) {
+        let root = std::env::temp_dir().join(format!("ragon-trust-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut store = SystemStore::for_tool(&root, tool).unwrap();
+        std::fs::create_dir_all(&store.dir).unwrap();
+        let log = root.join("update.log");
+        store.update = vec!["sh".into(), "-c".into(), format!("echo \"$0\" >> '{}'", log.display()), tool.into()];
+        (root, store)
+    }
+
+    fn updates(root: &Path) -> usize {
+        std::fs::read_to_string(root.join("update.log")).map_or(0, |log| log.lines().count())
+    }
+
+    fn apply(store: &SystemStore, primary: Option<(&str, &Path)>) -> usize {
+        let steps = store.plan(primary, &[]).unwrap();
+        if !steps.is_empty() {
+            run_steps("test", &steps).unwrap();
+        }
+        steps.len()
+    }
+
+    #[test]
+    fn each_linux_store_is_the_folder_and_the_command_its_tool_reads() {
+        let root = Path::new("/r");
+        let debian = SystemStore::for_tool(root, "update-ca-certificates").unwrap();
+        assert_eq!(debian.dir, Path::new("/r/usr/local/share/ca-certificates"));
+        assert_eq!(debian.update, ["update-ca-certificates"]);
+        let fedora = SystemStore::for_tool(root, "update-ca-trust").unwrap();
+        assert_eq!(fedora.dir, Path::new("/r/etc/pki/ca-trust/source/anchors"));
+        assert_eq!(fedora.update, ["update-ca-trust", "extract"]);
+        assert!(SystemStore::for_tool(root, "trust").is_none());
+        assert_eq!(debian.file_for(PRIMARY).unwrap(), Path::new("/r/usr/local/share/ca-certificates").join(format!("ragon-{PRIMARY}.crt")));
+        // The overlay CA keeps its own commands and name (`ragon node remote join`).
+        let ca = Path::new("/tmp/ca.pem");
+        let fedora_join = trust_commands("linux", ca, NODE_ID, Some("update-ca-trust")).unwrap();
+        assert_eq!(fedora_join[0].last().unwrap(), "/etc/pki/ca-trust/source/anchors/ragon-node-7c1e0c7a.crt");
+        assert_eq!(fedora_join[1], ["sudo", "update-ca-trust", "extract"]);
+    }
+
+    #[test]
+    fn only_a_node_id_names_a_file_in_the_store() {
+        let store = SystemStore::for_tool(Path::new("/r"), "update-ca-certificates").unwrap();
+        for bad in ["", "../../etc/passwd", "node-7c1e0c7a", "0F6C2A9E-1B3D-4C5E-8F70-9A1B2C3D4E5F", "0f6c2a9e1b3d4c5e8f709a1b2c3d4e5f", "0f6c2a9e-1b3d-4c5e-8f70-9a1b2c3d4e5g"] {
+            assert!(store.file_for(bad).is_none(), "{bad}");
+            assert!(store.plan(Some((bad, Path::new("/tmp/ca.pem"))), &[]).unwrap_err().contains("not a node id"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_plan_runs_each_command_with_sudo_unless_root() {
+        let (root, store) = fake_store("update-ca-certificates", "sudo");
+        let ca = root.join("ca.pem");
+        std::fs::write(&ca, pem("A")).unwrap();
+        let steps = store.plan(Some((PRIMARY, &ca)), &["sudo".to_string()]).unwrap();
+        let target = store.file_for(PRIMARY).unwrap().display().to_string();
+        assert_eq!(steps[0], ["sudo", "install", "-m", "0644", &ca.display().to_string(), &target]);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[1][0], "sudo");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_primarys_ca_is_added_replaced_and_removed_on_debian_and_fedora() {
+        for tool in ["update-ca-certificates", "update-ca-trust"] {
+            let (root, store) = fake_store(tool, tool);
+            let ca = root.join("ca.pem");
+            std::fs::write(&ca, pem("A")).unwrap();
+            // What `ragon node remote join` and others put there is never touched.
+            let overlay = store.dir.join("ragon-node-7c1e0c7a.crt");
+            let other = store.dir.join("corporate.crt");
+            std::fs::write(&overlay, pem("overlay")).unwrap();
+            std::fs::write(&other, pem("other")).unwrap();
+            let installed = store.file_for(PRIMARY).unwrap();
+
+            // Added, and the bundle rebuilt once.
+            assert_eq!(apply(&store, Some((PRIMARY, &ca))), 2, "{tool}");
+            assert_eq!(std::fs::read_to_string(&installed).unwrap(), pem("A"));
+            assert_eq!(updates(&root), 1);
+            // Nothing to do while it is the same.
+            assert_eq!(apply(&store, Some((PRIMARY, &ca))), 0);
+            assert_eq!(updates(&root), 1);
+            // Replaced when the primary's CA changes.
+            std::fs::write(&ca, pem("B")).unwrap();
+            assert_eq!(apply(&store, Some((PRIMARY, &ca))), 2);
+            assert_eq!(std::fs::read_to_string(&installed).unwrap(), pem("B"));
+            assert_eq!(updates(&root), 2);
+            // A new primary: its CA in, the old one out.
+            assert_eq!(apply(&store, Some((NEXT_PRIMARY, &ca))), 3);
+            assert!(!installed.exists());
+            assert_eq!(store.primary_files(), [store.file_for(NEXT_PRIMARY).unwrap()]);
+            assert_eq!(updates(&root), 3);
+            // The uninstaller's step: every primary's CA out, then nothing more to do.
+            assert_eq!(apply(&store, None), 2);
+            assert!(store.primary_files().is_empty());
+            assert_eq!(updates(&root), 4);
+            assert_eq!(apply(&store, None), 0);
+            assert_eq!(updates(&root), 4);
+            assert_eq!(std::fs::read_to_string(&overlay).unwrap(), pem("overlay"));
+            assert_eq!(std::fs::read_to_string(&other).unwrap(), pem("other"));
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
+    fn a_file_without_a_certificate_is_never_installed() {
+        let (root, store) = fake_store("update-ca-certificates", "nocert");
+        let ca = root.join("ca.pem");
+        std::fs::write(&ca, "-----BEGIN PRIVATE KEY-----\n").unwrap();
+        assert!(store.plan(Some((PRIMARY, &ca)), &[]).unwrap_err().contains("no PEM certificate"));
+        assert!(store.plan(Some((PRIMARY, &root.join("missing.pem"))), &[]).is_err());
+        assert!(store.primary_files().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_pinned_primary_is_the_active_account_and_its_pinned_ca() {
+        let home = std::env::temp_dir().join(format!("ragon-trust-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        assert_eq!(pinned_primary(&home), None);
+        crate::auth::switcher::set_active(&home, PRIMARY).unwrap();
+        assert_eq!(pinned_primary(&home), None, "signed in but no CA pinned yet");
+        let pem_path = crate::auth::pin::path(&home, PRIMARY);
+        std::fs::create_dir_all(pem_path.parent().unwrap()).unwrap();
+        std::fs::write(&pem_path, pem("A")).unwrap();
+        assert_eq!(pinned_primary(&home), Some((PRIMARY.to_string(), pem_path)));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn trust_ca_takes_only_remove() {
+        let args = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<String>>();
+        assert_eq!(Request::from_args(&args(&["trust-ca"])), Request::TrustCa { remove: false });
+        assert_eq!(Request::from_args(&args(&["trust-ca", "--remove"])), Request::TrustCa { remove: true });
+        assert_eq!(Request::from_args(&args(&["trust-ca", "--remove", "x"])), Request::Usage);
+        assert_eq!(Request::from_args(&args(&["trust-ca", "--add"])), Request::Usage);
     }
 }
