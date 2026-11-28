@@ -54,6 +54,15 @@ def test_every_patch_applies_to_the_pinned_submodule_and_leaves_it_untouched(tmp
         '.replace("codex --remote", "ragon --remote").replace("codex agents", "ragon agents"));'
     ) in cli_main
     assert 'println!("{line}");\n        }\n    }\n    if is_fatal' not in cli_main
+    # The --remote dial trusts CODEX_CA_CERTIFICATE (the primary's node CA) beside the native roots,
+    # with the HTTP client's own loader; unset, it dials exactly as before (0044).
+    client = tmp_path / "src" / "codex-rs" / "app-server-client"
+    remote = (client / "src" / "remote.rs").read_text()
+    assert "codex_http_client::maybe_build_rustls_client_config_with_custom_ca()" in remote
+    assert ".map(tokio_tungstenite::Connector::Rustls)" in remote
+    assert "/*disable_nagle*/ false,\n            connector," in remote
+    assert "connect_async_with_config(" not in remote
+    assert "codex-http-client = { workspace = true }" in (client / "Cargo.toml").read_text()
     status = subprocess.run(
         ["git", "-C", CODEX_SUBMODULE_DIR, "status", "--porcelain"], capture_output=True, text=True
     )
@@ -352,7 +361,9 @@ def test_the_patches_stay_small():
     # output into the leaf crate ragon-rs/digest, off unless the launcher switches it on); 116,046 after.
     # Raised to 116,700 for the release's own number in the version lines (601 bytes in 0001 and 0034:
     # a four-part release such as 0.9.8.1 is stamped 0.9.8+1 for Cargo); 116,647 after.
-    assert sum(Path(p).stat().st_size for p in CodexBrandedBuilder.patches()) < 116_700
+    # Raised to 118,300 for 0044 (the --remote dial also trusts CODEX_CA_CERTIFICATE, 1,542 bytes);
+    # 118,189 after.
+    assert sum(Path(p).stat().st_size for p in CodexBrandedBuilder.patches()) < 118_300
 
 
 def test_airgapped_treats_every_profile_without_a_sandbox_like_full_access():
