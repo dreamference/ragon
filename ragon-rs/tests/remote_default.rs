@@ -148,7 +148,7 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
 #[test]
 fn bare_remote_dials_the_primary_with_the_account_token() {
     let (_tmp, home, codex_home) = fixture(Some("dgx-a"), Some(BEARER));
-    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home).unwrap().unwrap();
+    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home, false).unwrap().unwrap();
     assert_eq!(
         strings(&got.args),
         ["ragon", "--remote", "wss://dgx-a.local:8000/", "--remote-auth-token-env", REMOTE_TOKEN_ENV]
@@ -161,9 +161,9 @@ fn the_filled_line_parses_as_codex_reads_it() {
     let (_tmp, home, codex_home) = fixture(Some("dgx-a"), Some(BEARER));
     let line = args(&["--remote", "fix the tests"]);
     // "fix the tests" is an address to Codex: only the forms Codex refuses are bare.
-    assert_eq!(remote_default(&codex_like(), &line, &home, &codex_home).unwrap(), None);
+    assert_eq!(remote_default(&codex_like(), &line, &home, &codex_home, false).unwrap(), None);
     let line = args(&["resume", "--remote"]);
-    let got = remote_default(&codex_like(), &line, &home, &codex_home).unwrap().unwrap();
+    let got = remote_default(&codex_like(), &line, &home, &codex_home, false).unwrap().unwrap();
     let matches = codex_like().try_get_matches_from(&got.args).unwrap();
     let (name, sub) = matches.subcommand().unwrap();
     assert_eq!(name, "resume");
@@ -183,7 +183,7 @@ fn a_bare_remote_before_another_flag_or_a_subcommand_is_bare() {
     assert_eq!(bare_remote_index(&command, &args(&["-c", "--remote", "--remote"])), Some(3));
     assert_eq!(bare_remote_index(&command, &args(&["fix the tests", "--remote"])), Some(2));
     let (_tmp, home, codex_home) = fixture(Some("dgx-a"), Some(BEARER));
-    let got = remote_default(&command, &args(&["--remote", "resume", "--last"]), &home, &codex_home).unwrap().unwrap();
+    let got = remote_default(&command, &args(&["--remote", "resume", "--last"]), &home, &codex_home, false).unwrap().unwrap();
     assert_eq!(
         strings(&got.args),
         ["ragon", "--remote", "wss://dgx-a.local:8000/", "--remote-auth-token-env", REMOTE_TOKEN_ENV, "resume", "--last"]
@@ -207,7 +207,7 @@ fn an_explicit_address_is_left_to_codex() {
         vec!["exec", "hello"],
     ] {
         assert_eq!(bare_remote_index(&command, &args(&line)), None, "{line:?}");
-        assert_eq!(remote_default(&command, &args(&line), &home, &codex_home).unwrap(), None, "{line:?}");
+        assert_eq!(remote_default(&command, &args(&line), &home, &codex_home, false).unwrap(), None, "{line:?}");
     }
 }
 
@@ -215,7 +215,7 @@ fn an_explicit_address_is_left_to_codex() {
 fn a_token_variable_the_user_named_is_kept() {
     let (_tmp, home, codex_home) = fixture(Some("dgx-a"), Some(BEARER));
     let line = args(&["--remote-auth-token-env", "MY_TOKEN", "--remote"]);
-    let got = remote_default(&codex_like(), &line, &home, &codex_home).unwrap().unwrap();
+    let got = remote_default(&codex_like(), &line, &home, &codex_home, false).unwrap().unwrap();
     assert_eq!(
         got,
         RemoteDefault {
@@ -229,12 +229,12 @@ fn a_token_variable_the_user_named_is_kept() {
 fn the_primary_itself_dials_itself_with_a_key_entry_or_without_an_account() {
     // A key entry names no issuer: the node's own file names the primary, when its id is the active one.
     let (_tmp, home, codex_home) = machine(Some(primary_node("dgx-a")), Some("n-1"), json!({ "n-1": { "OPENAI_API_KEY": "rk-test" } }));
-    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home).unwrap().unwrap();
+    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home, false).unwrap().unwrap();
     assert_eq!(strings(&got.args)[2], "wss://dgx-a.local:8000/");
     assert_eq!(got.token.as_deref(), Some("rk-test"));
     // Not signed in: the dial goes without a token.
     let (_tmp, home, codex_home) = fixture(Some("dgx-a"), None);
-    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home).unwrap().unwrap();
+    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home, false).unwrap().unwrap();
     assert_eq!(strings(&got.args), ["ragon", "--remote", "wss://dgx-a.local:8000/"]);
     assert_eq!(got.token, None);
 }
@@ -242,7 +242,7 @@ fn the_primary_itself_dials_itself_with_a_key_entry_or_without_an_account() {
 #[test]
 fn a_client_with_no_node_dials_the_signed_in_primary() {
     let (_tmp, home, codex_home) = machine(None, Some("p-1"), json!({ "p-1": token_entry("dgx-a", BEARER) }));
-    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home).unwrap().unwrap();
+    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home, false).unwrap().unwrap();
     assert_eq!(
         strings(&got.args),
         ["ragon", "--remote", "wss://dgx-a.local:8000/", "--remote-auth-token-env", REMOTE_TOKEN_ENV]
@@ -250,13 +250,13 @@ fn a_client_with_no_node_dials_the_signed_in_primary() {
     assert_eq!(got.token.as_deref(), Some(BEARER));
     // Not signed in, and no node to fall back on.
     let (_tmp, home, codex_home) = machine(None, None, json!({}));
-    assert_eq!(remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home).unwrap_err(), no_primary_line());
+    assert_eq!(remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home, false).unwrap_err(), no_primary_line());
 }
 
 #[test]
 fn a_secondary_whose_node_names_no_primary_dials_the_signed_in_primary() {
     let (_tmp, home, codex_home) = machine(Some(secondary_node()), Some("p-1"), json!({ "p-1": token_entry("dgx-a", BEARER) }));
-    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home).unwrap().unwrap();
+    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home, false).unwrap().unwrap();
     assert_eq!(strings(&got.args)[2], "wss://dgx-a.local:8000/");
     assert_eq!(got.token.as_deref(), Some(BEARER));
 }
@@ -266,12 +266,12 @@ fn the_token_is_the_dialed_primarys_own() {
     // Two primaries in the switcher, the second active, on a machine that is the first primary.
     let entries = json!({ "n-1": token_entry("dgx-a", "token-of-a"), "p-2": token_entry("dgx-b", "token-of-b") });
     let (_tmp, home, codex_home) = machine(Some(primary_node("dgx-a")), Some("p-2"), entries);
-    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home).unwrap().unwrap();
+    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home, false).unwrap().unwrap();
     assert_eq!(strings(&got.args)[2], "wss://dgx-b.local:8000/");
     assert_eq!(got.token.as_deref(), Some("token-of-b"));
     // A key entry of another primary is never sent to the primary this node names.
     let (_tmp, home, codex_home) = machine(Some(primary_node("dgx-a")), Some("p-2"), json!({ "p-2": { "OPENAI_API_KEY": "key-of-b" } }));
-    let err = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home).unwrap_err();
+    let err = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home, false).unwrap_err();
     assert_eq!(err, no_primary_line());
 }
 
@@ -279,19 +279,19 @@ fn the_token_is_the_dialed_primarys_own() {
 fn a_node_that_names_no_primary_refuses_with_the_explicit_form() {
     for primary in [None, Some("bad name"), Some("")] {
         let (_tmp, home, codex_home) = fixture(primary, Some(BEARER));
-        let err = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home).unwrap_err();
+        let err = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home, false).unwrap_err();
         assert_eq!(err, no_primary_line());
         assert!(!err.contains(BEARER));
     }
     let tmp = Scratch::new();
-    assert!(remote_default(&codex_like(), &args(&["--remote"]), tmp.path(), tmp.path()).is_err());
+    assert!(remote_default(&codex_like(), &args(&["--remote"]), tmp.path(), tmp.path(), false).is_err());
 }
 
 #[test]
 fn the_token_is_never_written_and_never_in_the_arguments() {
     let (tmp, home, codex_home) = fixture(Some("dgx-a"), Some(BEARER));
     let before = listing(tmp.path());
-    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home).unwrap().unwrap();
+    let got = remote_default(&codex_like(), &args(&["--remote"]), &home, &codex_home, false).unwrap().unwrap();
     assert_eq!(listing(tmp.path()), before);
     assert!(strings(&got.args).iter().all(|arg| !arg.contains(BEARER)));
     assert!(!format!("{got:?}").contains(BEARER));
@@ -325,7 +325,7 @@ fn a_remote_in_a_command_codex_runs_is_never_touched() {
         vec!["exec", "--remote"],
     ] {
         assert_eq!(bare_remote_index(&command, &args(&line)), None, "{line:?}");
-        assert_eq!(remote_default(&command, &args(&line), &home, &codex_home).unwrap(), None, "{line:?}");
+        assert_eq!(remote_default(&command, &args(&line), &home, &codex_home, false).unwrap(), None, "{line:?}");
     }
 }
 
@@ -343,10 +343,40 @@ fn a_subcommand_name_after_a_subcommand_is_looked_up_in_that_subcommand() {
 fn a_token_variable_after_the_double_dash_is_not_the_users() {
     let (_tmp, home, codex_home) = fixture(Some("dgx-a"), Some(BEARER));
     let line = args(&["--remote", "--", "--remote-auth-token-env", "MY_TOKEN"]);
-    let got = remote_default(&codex_like(), &line, &home, &codex_home).unwrap().unwrap();
+    let got = remote_default(&codex_like(), &line, &home, &codex_home, false).unwrap().unwrap();
     assert_eq!(got.token.as_deref(), Some(BEARER));
     assert_eq!(
         strings(&got.args),
         ["ragon", "--remote", "wss://dgx-a.local:8000/", "--remote-auth-token-env", REMOTE_TOKEN_ENV, "--", "--remote-auth-token-env", "MY_TOKEN"]
     );
+}
+
+#[test]
+fn the_reconnect_line_codex_prints_gets_the_token_for_the_primary_only() {
+    // Codex's disconnect hint: `<bin> --remote <address> --remote-auth-token-env RAGON_REMOTE_AUTH_TOKEN`.
+    let (_tmp, home, codex_home) = machine(None, Some("p-1"), json!({ "p-1": token_entry("dgx-a", BEARER) }));
+    let command = codex_like();
+    let hint = |address: &str, variable: &str| args(&["--remote", address, "--remote-auth-token-env", variable]);
+    let line = hint("wss://dgx-a.local:8000/", REMOTE_TOKEN_ENV);
+    let got = remote_default(&command, &line, &home, &codex_home, false).unwrap().unwrap();
+    assert_eq!(got, RemoteDefault { args: line.clone(), token: Some(BEARER.to_string()) });
+    // The `=` forms and a subcommand that declares `--remote` read the same.
+    let line = args(&["resume", "abc", "--remote=wss://dgx-a.local:8000/", &format!("--remote-auth-token-env={REMOTE_TOKEN_ENV}")]);
+    assert_eq!(remote_default(&command, &line, &home, &codex_home, false).unwrap().unwrap().token.as_deref(), Some(BEARER));
+    // Already set in this shell: Codex reads it as it is.
+    assert_eq!(remote_default(&command, &hint("wss://dgx-a.local:8000/", REMOTE_TOKEN_ENV), &home, &codex_home, true).unwrap(), None);
+    // Another address, or a variable of the user's own: never filled.
+    for line in [
+        hint("wss://dgx-b.local:8000/", REMOTE_TOKEN_ENV),
+        hint("wss://dgx-a.local:9000/", REMOTE_TOKEN_ENV),
+        hint("ws://127.0.0.1:4500", REMOTE_TOKEN_ENV),
+        hint("wss://dgx-a.local:8000/", "MY_TOKEN"),
+        args(&["--remote", "wss://dgx-a.local:8000/"]),
+        args(&["--remote", "wss://dgx-a.local:8000/", "--", "--remote-auth-token-env", REMOTE_TOKEN_ENV]),
+    ] {
+        assert_eq!(remote_default(&command, &line, &home, &codex_home, false).unwrap(), None, "{line:?}");
+    }
+    // Not signed in: nothing to fill, and no refusal (the address is Codex's).
+    let (_tmp, home, codex_home) = machine(None, None, json!({}));
+    assert_eq!(remote_default(&command, &hint("wss://dgx-a.local:8000/", REMOTE_TOKEN_ENV), &home, &codex_home, false).unwrap(), None);
 }

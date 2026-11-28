@@ -392,22 +392,36 @@ pub fn primary_remote_url(primary_name: &str) -> String {
 /// add`, `exec`) ends the search, so a `--remote` among the arguments of the command it runs is
 /// never touched; nothing after `--` counts either.
 pub fn bare_remote_index(command: &Command, args: &[OsString]) -> Option<usize> {
-    remote_scan(command, args).0
+    remote_scan(command, args).bare
 }
 
-/// The scan behind [`bare_remote_index`]: the bare `--remote`'s index, and the end of the
-/// arguments Codex reads as options of the root or of a subcommand that declares `--remote`.
-fn remote_scan(command: &Command, args: &[OsString]) -> (Option<usize>, usize) {
+/// What [`remote_scan`] finds among the options Codex reads.
+#[derive(Default)]
+struct RemoteScan {
+    /// The bare `--remote`'s index.
+    bare: Option<usize>,
+    /// The end of the arguments Codex reads as options of the root or of a subcommand that
+    /// declares `--remote`.
+    end: usize,
+    /// The address of a `--remote ADDR` or `--remote=ADDR`.
+    address: Option<String>,
+    /// The variable a `--remote-auth-token-env` names.
+    token_env: Option<String>,
+}
+
+/// The scan behind [`bare_remote_index`] and [`remote_default`].
+fn remote_scan(command: &Command, args: &[OsString]) -> RemoteScan {
     let takes_value = |arg: &clap::Arg| !arg.is_positional() && arg.get_num_args().is_some_and(|range| range.min_values() > 0);
     let declares_remote = |scope: &Command| scope.get_arguments().any(|arg| arg.get_long() == Some("remote"));
     let mut scope = command;
     let mut at_root = true;
     let mut index = 1;
-    let mut bare_at = None;
+    let mut found = RemoteScan::default();
+    let value = |at: usize| args.get(at).map(|v| v.to_string_lossy().into_owned());
     while index < args.len() {
         let token = args[index].to_string_lossy();
         if token == "--" {
-            return (bare_at, index);
+            return RemoteScan { end: index, ..found };
         }
         if token == "--remote" && declares_remote(scope) {
             let bare = match args.get(index + 1).map(|next| next.to_string_lossy()) {
@@ -416,14 +430,23 @@ fn remote_scan(command: &Command, args: &[OsString]) -> (Option<usize>, usize) {
             };
             if bare {
                 // The first one is the one filled; the scan goes on to find the end of the options.
-                bare_at.get_or_insert(index);
+                found.bare.get_or_insert(index);
                 index += 1;
                 continue;
             }
+            found.address = value(index + 1);
             index += 2;
             continue;
         }
-        if let Some(name) = token.strip_prefix("--") {
+        if let Some(address) = token.strip_prefix("--remote=").filter(|_| declares_remote(scope)) {
+            found.address = Some(address.to_string());
+        } else if let Some(variable) = token.strip_prefix("--remote-auth-token-env=").filter(|_| declares_remote(scope)) {
+            found.token_env = Some(variable.to_string());
+        } else if token == "--remote-auth-token-env" && declares_remote(scope) {
+            found.token_env = value(index + 1);
+            index += 2;
+            continue;
+        } else if let Some(name) = token.strip_prefix("--") {
             let long = scope.get_arguments().find(|arg| {
                 arg.get_long() == Some(name) || arg.get_all_aliases().is_some_and(|aliases| aliases.contains(&name))
             });
@@ -445,7 +468,7 @@ fn remote_scan(command: &Command, args: &[OsString]) -> (Option<usize>, usize) {
         } else if at_root {
             if let Some(sub) = command.find_subcommand(token.as_ref()) {
                 if !declares_remote(sub) {
-                    return (bare_at, index);
+                    return RemoteScan { end: index, ..found };
                 }
                 scope = sub;
                 at_root = false;
@@ -453,11 +476,11 @@ fn remote_scan(command: &Command, args: &[OsString]) -> (Option<usize>, usize) {
             // Otherwise the prompt: Codex's root options may follow it.
         } else if scope.has_subcommands() {
             // A nested subcommand's arguments are its own.
-            return (bare_at, index);
+            return RemoteScan { end: index, ..found };
         }
         index += 1;
     }
-    (bare_at, args.len())
+    RemoteScan { end: args.len(), ..found }
 }
 
 /// A bare `--remote` filled in: the arguments with the primary's address, and the bearer the
@@ -494,19 +517,32 @@ pub fn remote_not_signed_in_line(primary_name: &str) -> String {
 /// Fills a bare `--remote` (A5): the address becomes the front door of the signed-in account's
 /// primary, and `--remote-auth-token-env` names [`REMOTE_TOKEN_ENV`], filled from that primary's
 /// own entry in `codex_home` ([`signed_in_primary`]), unless the user named a token variable.
-/// `Ok(None)`: no bare `--remote`, the arguments are Codex's.
+///
+/// Also the reconnect line Codex prints when such a session ends (`--remote <the primary's
+/// address> --remote-auth-token-env RAGON_REMOTE_AUTH_TOKEN`), run in a new shell where the
+/// variable is not set (`token_env_set` false): the arguments are kept and the token is filled,
+/// only when the address is the signed-in primary's own, never for another address.
+///
+/// `Ok(None)`: neither form, the arguments are Codex's.
 ///
 /// # Errors
-/// [`no_primary_line`] when no primary is known.
-pub fn remote_default(command: &Command, args: &[OsString], home: &Path, codex_home: &Path) -> Result<Option<RemoteDefault>, String> {
-    let Some(index) = bare_remote_index(command, args) else {
-        return Ok(None);
+/// [`no_primary_line`] when a bare `--remote` is given and no primary is known.
+pub fn remote_default(command: &Command, args: &[OsString], home: &Path, codex_home: &Path, token_env_set: bool) -> Result<Option<RemoteDefault>, String> {
+    let scan = remote_scan(command, args);
+    let Some(index) = scan.bare else {
+        if !reconnect_line(&scan, token_env_set) {
+            return Ok(None);
+        }
+        let Some((primary, token)) = signed_in_primary(home, codex_home) else {
+            return Ok(None);
+        };
+        if token.is_none() || scan.address.as_deref() != Some(primary_remote_url(&primary).as_str()) {
+            return Ok(None);
+        }
+        return Ok(Some(RemoteDefault { args: args.to_vec(), token }));
     };
     let (primary, token) = signed_in_primary(home, codex_home).ok_or_else(no_primary_line)?;
-    let own_variable = args[..remote_scan(command, args).1].iter().any(|arg| {
-        let arg = arg.to_string_lossy();
-        arg == "--remote-auth-token-env" || arg.starts_with("--remote-auth-token-env=")
-    });
+    let own_variable = scan.token_env.is_some();
     let token = if own_variable { None } else { token };
     if !own_variable && token.is_none() {
         eprintln!("{}", remote_not_signed_in_line(&primary));
@@ -519,6 +555,19 @@ pub fn remote_default(command: &Command, args: &[OsString], home: &Path, codex_h
     }
     filled.extend_from_slice(&args[index + 1..]);
     Ok(Some(RemoteDefault { args: filled, token }))
+}
+
+/// Whether the scan found Codex's reconnect line for a filled session: an address, and
+/// [`REMOTE_TOKEN_ENV`] named but not set.
+fn reconnect_line(scan: &RemoteScan, token_env_set: bool) -> bool {
+    !token_env_set && scan.address.is_some() && scan.token_env.as_deref() == Some(REMOTE_TOKEN_ENV)
+}
+
+/// Whether [`remote_default`] has anything to do with these arguments: a bare `--remote`, or the
+/// reconnect line while [`REMOTE_TOKEN_ENV`] is not set. Reads no file.
+pub fn remote_default_wanted(command: &Command, args: &[OsString], token_env_set: bool) -> bool {
+    let scan = remote_scan(command, args);
+    scan.bare.is_some() || reconnect_line(&scan, token_env_set)
 }
 
 /// Parses the process's command line into Codex's CLI type `T`, after [`prepare_args`] has pointed
@@ -547,12 +596,13 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
     let (args, adapter_flag) = adapter::without_flag(args);
     // A bare `--remote` dials the primary with the signed-in account (remote_default; specs/
     // DREAMFERENCE_RAGON_REMOTE_SESSIONS.md §7.1 A5). Any address given is Codex's to check.
-    let args = if bare_remote_index(command, &args).is_some() {
+    let token_env_set = std::env::var_os(REMOTE_TOKEN_ENV).is_some();
+    let args = if remote_default_wanted(command, &args, token_env_set) {
         let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).filter(|home| !home.is_empty()).map(PathBuf::from) else {
             bail!("{}", no_primary_line());
         };
         let codex_home = codex_utils_home_dir::find_codex_home().context("could not resolve CODEX_HOME")?.as_path().to_path_buf();
-        match remote_default(command, &args, &home, &codex_home) {
+        match remote_default(command, &args, &home, &codex_home, token_env_set) {
             Ok(Some(filled)) => {
                 if let Some(token) = filled.token {
                     // SAFETY: the launcher's start-up path, before Codex spawns threads of its
