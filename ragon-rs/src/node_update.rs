@@ -171,6 +171,22 @@ pub enum Outcome {
 }
 
 /// Swaps the staged tree in. `staging` must hold `bin\ragon.exe` and `engine\ragon-serve.exe`.
+/// Stops when a job is running or queued on the node. `ragon update` asks before it downloads
+/// anything (`refuse_busy_node`), and `swap` asks again right before it stops the service, since a
+/// job can arrive while the release downloads.
+pub fn refuse_busy(host: &dyn NodeHost) -> anyhow::Result<()> {
+    let running = host.jobs_in_flight().context("could not tell whether a job is running; nothing was changed")?;
+    if running > 0 {
+        bail!("{running} job(s) running or queued on this node; update when they finish (ragon server job list). Nothing was changed");
+    }
+    Ok(())
+}
+
+/// `refuse_busy` against the installed node's own `ragon server job list`.
+pub fn refuse_busy_node(install: &NodeInstall) -> anyhow::Result<()> {
+    refuse_busy(&CommandHost { install, wait_s: wait_seconds() })
+}
+
 pub fn swap(install: &NodeInstall, host: &dyn NodeHost, new_tag: &str) -> anyhow::Result<Outcome> {
     let staging = install.staging();
     for needed in ["bin/ragon.exe", "engine/ragon-serve.exe"] {
@@ -178,10 +194,7 @@ pub fn swap(install: &NodeInstall, host: &dyn NodeHost, new_tag: &str) -> anyhow
             bail!("the staged update has no {needed}; nothing was changed");
         }
     }
-    let running = host.jobs_in_flight().context("could not tell whether a job is running; nothing was changed")?;
-    if running > 0 {
-        bail!("{running} job(s) running or queued on this node; update when they finish (ragon server job list). Nothing was changed");
-    }
+    refuse_busy(host)?;
     host.stop().context("could not stop the service; nothing was changed")?;
     let (current, previous) = (install.current(), install.previous());
     let restart = |why: String| -> anyhow::Error {
@@ -575,6 +588,18 @@ mod tests {
         assert_eq!(std::fs::read_to_string(install.current().join("bin/ragon.exe")).unwrap(), "old");
         assert!(install.staging().exists());
         assert_eq!(*host.calls.borrow(), vec!["jobs"]);
+    }
+
+    #[test]
+    fn a_busy_node_is_refused_before_anything_is_downloaded_and_an_idle_one_passes() {
+        let install = node("busy");
+        let busy = host(&install, 1, &[]);
+        let error = refuse_busy(&busy).unwrap_err().to_string();
+        assert!(error.contains("1 job(s) running or queued"), "{error}");
+        assert_eq!(*busy.calls.borrow(), vec!["jobs"]);
+        let idle = host(&install, 0, &[]);
+        refuse_busy(&idle).unwrap();
+        assert_eq!(*idle.calls.borrow(), vec!["jobs"]);
     }
 
     #[test]

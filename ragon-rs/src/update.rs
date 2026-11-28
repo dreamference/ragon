@@ -428,6 +428,9 @@ pub async fn run() -> anyhow::Result<()> {
     // machine PATH); it must not update itself, so it stops before anything is downloaded.
     if let Some(node) = crate::node_update::installed() {
         crate::node_update::refuse_node_own(&std::env::current_exe()?, &node)?;
+        // A job running on the node would make the swap refuse after the whole release (engine
+        // included) was downloaded and staged; ask first. The swap asks again before it stops.
+        crate::node_update::refuse_busy_node(&node)?;
     }
     let repo = std::env::var("RAGON_RELEASE_REPO")
         .ok()
