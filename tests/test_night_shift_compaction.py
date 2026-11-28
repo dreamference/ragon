@@ -206,3 +206,28 @@ def test_the_ledger_setting_survives_a_save(tmp_path, monkeypatch):
     assert "ragon_compaction_ledger" not in path.read_text()
     monkeypatch.setenv("DREAMFERENCE_RAGON_COMPACTION_LEDGER", "on" if chosen else "off")
     assert DreamferenceConfig(config_file=str(path)).ragon_compaction_ledger is chosen
+
+
+def test_night_shift_task_run_base_table_reads_the_night_table_at_the_base(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from dreamference.runner.safe_git import SafeGit
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    # The stand-in returns each base commit's `dreamference.toml` without running git at all.
+    shown = {
+        "ab12:dreamference.toml": ('[night]\ntest = "make check"\n', 0),
+        "cd34:dreamference.toml": ("not [ valid toml", 0),
+        "ef56:dreamference.toml": ("", 128),
+    }
+
+    def fake_show(cls, args, directory, git_dir=None, **_):
+        stdout, returncode = shown[args[1]]
+        return SimpleNamespace(returncode=returncode, stdout=stdout)
+
+    monkeypatch.setattr(SafeGit, "run", classmethod(fake_show))
+    assert NightShiftTaskRun._base_table(worktree, "ab12") == {"test": "make check"}
+    # A commit without the file, or one whose contents `tomllib` cannot parse, reads as empty.
+    assert NightShiftTaskRun._base_table(worktree, "ef56") == {}
+    assert NightShiftTaskRun._base_table(worktree, "cd34") == {}
