@@ -4,7 +4,7 @@
 **Target:** a first version in **0.9.11, Friday 2026-12-18**, labelled preview (§12 sizes it and says what the date needs). The rest goes to 1.0 and later (§11).
 **Builds on:**
 - the desktop preview tab: its separate session, its site rules, its downloads and its airgapped rule ([RAGON_DESKTOP_PARITY](./DREAMFERENCE_RAGON_DESKTOP_PARITY.md) §2.9, `desktop/electron/src/preview.ts`, `preview-rules.ts`), and the shell's egress switches (`desktop/electron/src/egress.ts`);
-- the app MCP servers the launcher declares (`ragon apps serve <app>`, [RAGON_APPS](./DREAMFERENCE_RAGON_APPS.md) §12), the air-gap reader ([RAGON_AIRGAPPED](./DREAMFERENCE_RAGON_AIRGAPPED.md), `ragon airgapped --json`), the egress audit ([RAGON_EGRESS](./DREAMFERENCE_RAGON_EGRESS.md), `docs/dev/egress-audit.md`);
+- the app MCP servers the launcher declares (`ragon apps serve <app>`, [RAGON_APPS](./DREAMFERENCE_RAGON_APPS.md) §6.2, "Declared by the launcher"), the air-gap reader ([RAGON_AIRGAPPED](./DREAMFERENCE_RAGON_AIRGAPPED.md), `ragon airgapped --json`), the egress audit ([RAGON_EGRESS](./DREAMFERENCE_RAGON_EGRESS.md), `docs/dev/egress-audit.md`);
 - host safety on unified memory (`docs/dev/host-safety.md`), the Chromium sandbox under the AppArmor user-namespace rule (AGENTS.md, "Sandbox results need the AppArmor profile");
 - image input on the default model ([MODELS](./DREAMFERENCE_MODELS.md), `ragon-rs/src/vision.rs`), and the companion 0.9.11 specs on branches `spec/desk-work`, `spec/ide-extension` and `spec/automations`.
 
@@ -17,10 +17,10 @@
 | B3 | **The browser runs where the agent runs.** That means the client for the terminal and the desktop app, and the node for a session started there (SSH, Night Shift, automations). This is so `localhost` resolves when the agent checks its own web work. | §5 |
 | B4 | **A separate profile, kept on disk**, under `$CODEX_HOME/browser/profile`. It never reads the user's browser profiles, cookies, passwords or history. The password manager and autofill are switched off in it. | §6 |
 | B5 | **The agent never handles a password.** Typing into password, one-time-code and payment-card fields is refused by the server. Sign-in is a hand-off: the user types in a visible window, then gives control back. | §6.2 |
-| B6 | **Approvals are enforced by the server, from a policy file the agent's sandbox cannot write, not by the prompt.** The server gates submits, purchases, sends, deletes and downloads. When no one can answer, it fails closed. | §7 |
+| B6 | **Approvals are enforced by the server, from a policy file the agent's sandbox cannot write, not by the prompt.** The server gates submits, purchases, sends, deletes and downloads; the five categories are keys in `$CODEX_HOME/browser/policy.toml`, each `ask` or `deny`. The question always goes to the user: a small codex patch keeps the browser server's questions away from the automatic reviewer and the full-access shortcut. When no one can answer, it fails closed. | §7 |
 | B7 | **Page text is data, never instructions.** Every page-derived tool output is framed as untrusted. The enforcement is B6: whatever a page talks the model into, the gated action still waits for the user. | §8 |
 | B8 | **`/airgapped on` means no browser network** beyond loopback and local files, decided before any DNS lookup, as the preview tab already does. The browser's own background traffic is always off. | §9 |
-| B9 | **Text first, screenshots to check.** The small local model works from the page's structure and text. Screenshots are taken to verify what a page shows. Measured 2026-11-28: one synthetic page, read correctly 3 of 3 times. Acting by screen coordinates is not in 0.9.11. | §10 |
+| B9 | **Text first, screenshots to check.** The small local model works from the page's structure and text. Screenshots are taken to verify what a page shows. Measured 2026-11-28 on one synthetic page, read correctly 3 of 3 times, with the default model's checkpoint served by the node's SGLang server; ragon-serve's image path is unmeasured (Phase 0). Acting by screen coordinates is not in 0.9.11. | §10 |
 | B10 | **0.9.11 ships it as a preview**: Linux nodes and clients (arm64 and x86-64), the macOS client found-browser path, and the terminal and the desktop app (Work and Ask). Not in 0.9.11: the extension into the user's own browser, desktop computer use, coordinate clicks, uploads, developer mode. | §11 |
 
 ## 1. The goal and what the user gets
@@ -42,7 +42,7 @@ Pinned upstream tree: `codex/` at `064c6b8`. "Verified" means read in that tree 
 | U3 | The core's special handling keys on that name and on the tool `js`: approval metadata kept for the call, a computer-use review scope, review evidence (made multimodal when the model requires it), a shortcut that skips ordinary checks when the user approved, and a distinct history cell in the terminal. | verified, `core/src/mcp_tool_call.rs:1219,1377`; `core/src/session/mcp.rs:757,808`; `core/src/tools/handlers/mcp.rs:329`; `core/src/context/node_repl_review_evidence.rs`; `tui/src/history_cell/mcp.rs:137` |
 | U4 | **Confirmation policies are sent as request metadata** (`openai/confirmation_policies`) to those servers. They are two Markdown documents, `browser_use` and `computer_use`, taken from the model's catalogue entry; the browser one is about 11 KB. It treats the user's own instructions as intent and website content as potentially malicious. It names four modes: hand-off required, confirmation at action time, pre-approval allowed, not required. | verified, `core/src/mcp_tool_call.rs:1370-1395`; `models-manager/models.json` |
 | U5 | The `node_repl` server's tool is `js`, with one argument, `code` (a string). | verified, as a test fixture only: `rmcp-client/src/bin/test_stdio_server.rs:150` |
-| U6 | The `[browser_use]` config holds `allow_history_access`, `default_origin_policy` and `origins."<origin>"`. Each origin sets `access`, `downloads`, `uploads` and `full_cdp_access` to `allow` or `deny`. The open tree only **parses** these keys and passes them to the app-server API. Nothing in it enforces them; enforcement is in the closed runtime. | verified, `config/src/browser_use.rs`; `app-server/src/request_processors/config_processor.rs:500,587`; no other reader found by search |
+| U6 | The `[browser_use]` config holds `allow_history_access`, `default_origin_policy` and `origins."<origin>"`. Each origin sets `access`, `downloads`, `uploads` and `full_cdp_access` to `allow` or `deny`. The open tree only **parses** these keys and passes them to the app-server API. Nothing in it enforces them; that enforcement sits in the closed runtime is **inferred**, not verified. `BrowserUseConfigToml` rejects unknown keys (`deny_unknown_fields`). | verified, `config/src/browser_use.rs`; `app-server/src/request_processors/config_processor.rs:500,587`; no other reader found by search |
 | U7 | Managed requirements add `allow_webmcp`, `disable_auto_review` and `allow_global_persistent_approval`. Per origin they add `auto_review`, `persistent_approval` and `access_approval_lifetime = turn \| thread`. | verified, `config/src/browser_computer_use_requirements.rs`; the public managed-configuration page shows the same example |
 | U8 | `[computer_use]` holds `default_app_access` and per-app rules: macOS bundle ids, and Windows app ids and executables. | verified, `config/src/computer_use.rs` |
 | U9 | The features `in_app_browser`, `browser_use` and `computer_use` are stable and on by default. Full CDP access is a requirements-only gate. | verified, `features/src/lib.rs:1462,1492,1510` |
@@ -89,7 +89,7 @@ What follows later (§11):
 | `ragon browser serve` | A stdio MCP server in the Rust launcher (`ragon-rs`), beside `ragon apps serve`. It owns one browser process per agent session, speaks the DevTools protocol to it over `--remote-debugging-pipe`, builds snapshots, runs the gate (§7), and writes screenshots. It uses an open-licence DevTools client crate as a dependency, or a small own client, decided in Phase 1; no code is copied from other servers. |
 | The declaration | The launcher adds `-c mcp_servers.ragon_browser.command=<current_exe>`, `args=["browser","serve"]`, as `src/apps.rs` does for the app servers. It does so only when browser use is on (§4.5). |
 | Browser finding | `ragon browser status` and `ragon-admin browser install` (§5.1). |
-| Policy | `[browser_use]` in `config.toml` (upstream keys, §4.6) plus `$CODEX_HOME/browser/sites.toml`. The sites file holds the user's "Always" answers and is written only by the server, after an approval (§7.4). |
+| Policy | `[browser_use]` in `config.toml` (upstream keys, §4.6), Ragon's `$CODEX_HOME/browser/policy.toml` (the five gated categories, §7.4) and `$CODEX_HOME/browser/sites.toml`. The sites file holds the user's "Always" answers and is written only by the server, after an approval (§7.4). |
 | Surfaces | Terminal history cells, desktop tool cards with screenshots, a live panel, and Settings › Browser › Agent permissions (§10.3). |
 
 ### 4.2 Tools (the model-facing interface)
@@ -98,22 +98,24 @@ Discrete tools with small schemas, modelled on the open snapshot-first shape. Ev
 
 | Tool | Arguments | Returns | Annotation |
 |---|---|---|---|
-| `browser_open` | `url`, `new_tab?` | title, final URL, snapshot | open-world |
-| `browser_back` | none | snapshot | |
+| `browser_open` | `url`, `new_tab?` | title, final URL, snapshot | action |
+| `browser_back` | none | snapshot | action |
 | `browser_snapshot` | `max_tokens?` (default 4,000) | the accessibility tree, pruned to headings, landmarks, text and interactive elements, each with a ref `e12` | read-only |
 | `browser_find` | `text` | matching elements with refs and their surroundings | read-only |
 | `browser_read` | none | the page's main text as Markdown, capped at 8,000 tokens with a "continued" marker | read-only |
-| `browser_click` | `ref`, `element` (the label the model saw) | snapshot of the change; `needs_approval` when gated (§7) | |
-| `browser_type` | `ref`, `text`, `submit?` | snapshot; refused for password, code and card fields (§6.2) | |
-| `browser_fill_form` | `fields: [{ref, value}]` | snapshot; never submits | |
-| `browser_select` | `ref`, `values` | snapshot | |
-| `browser_press` | `key` | snapshot | |
+| `browser_click` | `ref`, `element` (the label the model saw) | snapshot of the change; `needs_approval` when gated (§7) | action |
+| `browser_type` | `ref`, `text`, `submit?` | snapshot; refused for password, code and card fields (§6.2) | action |
+| `browser_fill_form` | `fields: [{ref, value}]` | snapshot; never submits | action |
+| `browser_select` | `ref`, `values` | snapshot | action |
+| `browser_press` | `key` | snapshot | action |
 | `browser_wait_for` | `text?`, `gone?`, `seconds?` (max 30) | snapshot | read-only |
-| `browser_tabs` | `action` (list, new, select, close), `index?` | the tab list (at most 3 tabs, §5.3) | |
+| `browser_tabs` | `action` (list, new, select, close), `index?` | the tab list (at most 3 tabs, §5.3) | action |
 | `browser_screenshot` | `ref?`, `full_page?` | a PNG as image content, plus its path (§10) | read-only |
 | `browser_console` | `level?` | console messages and failed requests since the last call (for checking its own web work) | read-only |
-| `browser_handoff` | `reason` | waits until the user returns control (§6.2) | |
-| `browser_close` | none | ends the browser | |
+| `browser_handoff` | `reason` | waits until the user returns control (§6.2) | action |
+| `browser_close` | none | ends the browser | action |
+
+Annotations: "read-only" tools carry `readOnlyHint: true`. "Action" tools carry `destructiveHint: false` and `openWorldHint: false`, because the gate of §7 is the approval for them. Without these hints the pinned core asks before every call of an unannotated tool (`requires_mcp_tool_approval`, `core/src/mcp_tool_call.rs:2440`: destructive unless said otherwise, open-world unless said otherwise), so the user would be asked twice. The launcher also declares `approval_mode = "auto"` for each `ragon_browser` tool (`config/src/mcp_types.rs:88`). Phase 0 (P0.9) checks that no other path asks.
 
 Not in 0.9.11:
 - free-form script evaluation and full DevTools access (developer mode, U12);
@@ -154,6 +156,8 @@ They are absent in unattended runs unless configured: `ragon exec`, Night Shift,
 | `[features] browser_use` | on or off, as upstream |
 
 A requirements value always wins over the user's config, as for every other requirements key.
+
+Ragon's five gated categories are **not** keys under `[browser_use]`: upstream's parser rejects unknown keys there (U6), so a config written for Ragon would break upstream's reader. They live in Ragon's own file, `$CODEX_HOME/browser/policy.toml` (§7.4).
 
 ## 5. Which browser, where
 
@@ -224,8 +228,10 @@ While a gated request waits for the user, it is **paused**: DevTools request int
 ### 7.2 Who answers
 
 - The approval is an MCP elicitation. The terminal and the app already render these as approval prompts. Each prompt shows the category, the origin, and the exact data to be sent.
-- **Fail closed.** If the session has no one to answer (`ragon exec`, Night Shift, automations, a closed app), every gated action is denied. The tool result says "needs approval; nothing was sent". An unattended run can read allowed origins and nothing more (§13 Q6).
-- The approval is not a model step: a model cannot approve, and an approval prompt carries no page-provided text except the origin and the field values.
+- **The form is never empty.** It carries one required field, `decision`, with the choices once, this thread, always (where §7.4 allows it) and deny. This matters: in the pinned core, under full access, an elicitation whose form has no fields is approved without asking (verified, `core/src/session/mcp.rs`, about lines 766-790).
+- **Only the user answers.** In the pinned core an automatic reviewer model can answer MCP elicitations when the session or the requirements choose it (verified, `core/src/session/mcp.rs`, about lines 880-960; `core/src/connectors.rs:514-551`). A small numbered codex patch (half a day, P2.7) makes elicitations from `ragon_browser` skip both the automatic reviewer and the full-access shortcut, so they always reach the user's prompt. Until that patch is in, the server denies every gated action when the launcher reports that the reviewer is not the user.
+- **Fail closed.** If the session has no one to answer (`ragon exec`, Night Shift, automations, a closed app), every gated action is denied. `ragon exec` already cancels every elicitation (verified, `exec/src/lib.rs`, about line 1922 and 1998), and the server treats cancel, decline, a timeout and any answer it cannot parse as deny. The tool result says "needs approval; nothing was sent". An unattended run can read allowed origins and nothing more (§13 Q6).
+- An approval prompt carries no page-provided text except the origin and the field values.
 
 ### 7.3 What the gate cannot catch (said plainly)
 
@@ -233,9 +239,20 @@ The submit trigger covers forms and the page's own non-GET requests after an act
 
 ### 7.4 Where the policy lives
 
-- `[browser_use]` in `$CODEX_HOME/config.toml` (user) and in the requirements file (managed), with the keys of §4.6.
+- `[browser_use]` in `$CODEX_HOME/config.toml` (user) and in the requirements file (managed), with the upstream keys of §4.6.
+- `$CODEX_HOME/browser/policy.toml`, Ragon's own file, holds the five gated categories:
+
+  ```toml
+  submit   = "ask"   # ask | deny
+  purchase = "ask"   # ask | deny
+  send     = "ask"   # ask | deny
+  delete   = "ask"   # ask | deny
+  download = "ask"   # ask | deny | allow
+  ```
+
+  The floor is `ask`: in 0.9.11 no category except `download` can be set to `allow`, and a download `allow` is per origin (`origins."<o>".downloads`, §4.6). A missing file or a missing key means `ask`; a value the server cannot read means `deny`. A requirements file can pin any category to `deny`. The desktop shell's `policy.json` reader (`desktop/electron/src/policy.ts`) is the precedent for a policy file the agent cannot change.
 - `$CODEX_HOME/browser/sites.toml` holds "Always" answers. Only the server writes it, after a user approval.
-- **Neither file is writable by the agent's sandboxed commands:** `$CODEX_HOME` is outside the workspace-write roots. A test asserts this (§12, P2), and the AGENTS.md rule on user choices applies.
+- **None of these files is writable by the agent's sandboxed commands:** `$CODEX_HOME` is outside the workspace-write roots. A test asserts this (§12, P2), and the AGENTS.md rule on user choices applies.
 - Under full access (`danger-full-access`) the agent could edit the file. The documentation says so, as it does for every other policy under full access.
 - The server reads the policy at start and when the files change. A page or a model can only reach the policy through the user's answer to an elicitation.
 
@@ -269,9 +286,11 @@ These run on fixture pages on loopback, in the quality set's harness (§12, P7).
 
 ### 9.1 Background traffic is always off
 
-The browser starts with the same switches the desktop shell uses (`desktop/electron/src/egress.ts`), which turn off:
-- background networking, component and safety-list updates, metrics and crash upload, field trials and the variations seed;
-- domain-reliability reports;
+The browser starts with the switches the desktop shell already uses (`desktop/electron/src/egress.ts`, read for this spec): `--disable-background-networking`, `--disable-component-update`, `--disable-features=…`, `--blink-settings=…` and `--use-mock-keychain`.
+
+The server adds its own, which are **to be verified by the audit** (§9.3, session 2), not taken from the shell:
+- metrics and crash upload, field trials and the variations seed;
+- domain-reliability reports and safety-list updates;
 - DNS prefetch and secure DNS by the browser itself;
 - sign-in and sync, and translation.
 
@@ -312,7 +331,7 @@ The model works from `browser_snapshot`, `browser_find` and `browser_read`, whic
 
 ### 10.2 Screenshots: measured on one page, used to check
 
-**Measured 2026-11-28** on a DGX Spark node, with the default model's checkpoint on the node's model server, temperature 0, n=3:
+**Measured 2026-11-28** on a DGX Spark node, with the default model's checkpoint (NVFP4) served by the node's **SGLang** server, not ragon-serve; temperature 0, thinking off, n=3. Whether ragon-serve's image path gives the same result is **unmeasured** (P0.7):
 - **The page:** a 1280×800 screenshot of a synthetic checkout page with a heading, two inputs, a checkbox, a total, a link and two buttons.
 - **Cost:** **1,000 image tokens, 2.5-3.9 s per request.**
 - **Reading:** the model listed **all 6 interactive elements with their labels and kinds, the order total, and which button submits, correctly in 3 of 3 runs.**
@@ -348,7 +367,7 @@ The measurement above is one synthetic page. Phase 0 repeats it on 20 fixture an
 - the extension into the user's own browser (route c);
 - desktop computer use (route d), and coordinate clicks inside the agent's browser;
 - uploads; developer mode, free-form scripts, full DevTools access; cookie and storage tools;
-- sign-in on a remote node with no display; the in-app view that takes input; take over and return control in the app;
+- sign-in on a remote node with no display; the in-app view that takes input (Take over in 0.9.11 opens a separate visible browser window, §6.2; taking over inside the app's own view comes in 1.0);
 - persistent approvals beyond `sites.toml`'s per-origin access and download answers;
 - site tools (`allow_webmcp`), an automatic reviewer, an annotate mode for the agent's browser;
 - reading the user's browsing history; several browsers per session; the Windows hard memory cap; the macOS and Windows client live panel beyond the same frames.
@@ -372,16 +391,16 @@ Rows go to Ragon lanes first for the site, docs and test fixtures (owner rule). 
 
 | Phase | Rows | Agent-days |
 |---|---|---|
-| **P0 Measurements and checks** | P0.1 browser sources on Linux arm64 (deb, snap and its confinement) and on the Mac gate box; P0.2 PSS on ten real pages and the cgroup cap; P0.3 sandbox under AppArmor on a node; P0.4 `strace -f` through the sandbox; P0.5 session cookies across a headless-to-headed restart; P0.6 the turn-end hook route (§4.4); P0.7 vision on 20 screenshots through ragon-serve and the agent loop; P0.8 snapshot sizes and the tool-list token cost | 2 |
+| **P0 Measurements and checks** | P0.1 browser sources on Linux arm64 (deb, snap and its confinement) and on the Mac gate box; P0.2 PSS on ten real pages and the cgroup cap; P0.3 sandbox under AppArmor on a node; P0.4 `strace -f` through the sandbox; P0.5 session cookies across a headless-to-headed restart; P0.6 the turn-end hook route (§4.4); P0.7 vision on 20 screenshots through ragon-serve and the agent loop; P0.8 snapshot sizes and the tool-list token cost; P0.9 approval routing: the tool annotations ask nothing, the elicitation reaches the user under every reviewer setting (§7.2) | 2 |
 | **P1 Server core** | P1.1 `ragon browser serve`, the pipe transport, launch and lifecycle; P1.2 snapshots and refs (§4.3); P1.3 the 16 tools; P1.4 the declaration in the launcher, the switch (§4.5); P1.5 the turn-end hook or codex patch | 5.5 |
-| **P2 Policy and gate** | P2.1 `[browser_use]` and requirements reading (§4.6); P2.2 origin access with lifetimes; P2.3 submit, purchase, send and delete triggers with request pausing; P2.4 downloads, uploads, permissions, secret fields; P2.5 elicitations and fail-closed; P2.6 `sites.toml` and the sandbox-cannot-write test | 4 |
+| **P2 Policy and gate** | P2.1 `[browser_use]` and requirements reading (§4.6); P2.2 origin access with lifetimes; P2.3 submit, purchase, send and delete triggers with request pausing; P2.4 downloads, uploads, permissions, secret fields; P2.5 elicitations and fail-closed; P2.6 `policy.toml`, `sites.toml` and the sandbox-cannot-write test; P2.7 the codex patch that keeps `ragon_browser` elicitations from the automatic reviewer and the full-access shortcut | 4.5 |
 | **P3 Network** | P3.1 background-off switches; P3.2 airgapped layers and the reader; P3.3 `audit egress --browser` with its four sessions | 2.5 |
 | **P4 Surfaces** | P4.1 terminal lines and screenshot files; P4.2 Work and Ask cards and thumbnails; P4.3 the live panel (screencast frames); P4.4 Take over (hand-off) in the app; P4.5 Settings › Browser › Agent permissions; P4.6 `@Browser` | 4.5 |
 | **P5 Memory and host safety** | the scope cap, the tab cap, idle shutdown, the host-safety check before launch | 1 |
 | **P6 Finding and install** | `ragon browser status`, `ragon-admin browser install` for Linux, macOS and Windows, the sandbox step in `host setup` | 1.5 |
 | **P7 Quality and injection** | P7.1 fixture sites on loopback (Ragon rows); P7.2 the 40-task set and harness; P7.3 the injection suite (§8.2); P7.4 the gate run and one fix round | 4 |
 | **P8 Docs and release** | the user page, `docs/dev/browser.md`, the release notes' limits (§7.3) (Ragon rows) | 1 |
-| | **Total** | **about 26 agent-days**, plus review on the path |
+| | **Total** | **about 26.5 agent-days**, plus review on the path |
 
 ### 12.1 The quality set
 
@@ -417,11 +436,11 @@ Ten live-internet tasks are run once by hand before the release as a smoke test 
 
 ### 12.3 Does 12-18 hold?
 
-- **The critical path:** P0 → P1 → P2 → P7.4 (the gate run) → fixes. That is 2 + 5.5 + 4 + 2 + 1 = **14.5 days**, plus review on that path. It comes to about **16 calendar days**.
+- **The critical path:** P0 → P1 → P2 → P7.4 (the gate run) → fixes. That is 2 + 5.5 + 4.5 + 2 + 1 = **15 days**, plus review on that path. It comes to about **16.5 calendar days**.
 - P3, P4, P5, P6 and the fixture writing of P7 run in a **second lane** beside it.
-- Starting Monday 2026-11-30, 16 days ends **Tuesday 2026-12-15**. That leaves three days of slack before Friday 2026-12-18.
+- Starting Monday 2026-11-30, 16.5 days ends **Wednesday 2026-12-16**. That leaves two days of slack before Friday 2026-12-18.
 - **It holds only with two lanes of its own from 11-30.** The desk-work spec already plans three lanes and about 34 agent-days, with one day of slack on 12-17. The IDE extension and automations come on top. If browser use has to share desk work's lanes, the date does not hold for both.
-- **The cut line is Thursday 2026-12-10.** If P2 is not done by then, 0.9.11 ships with:
+- **The cut line is Monday 2026-12-14.** P0 to P2 take 12 days, so on plan P2 is done on Friday 12-11. If P2 is not done by Monday 12-14, 0.9.11 ships with:
   - the server, the gate, the network rules, the audit and the terminal lines;
   - Work and Ask showing screenshot cards **without** the live panel and Take over.
 
@@ -440,7 +459,7 @@ Ten live-internet tasks are run once by hand before the release as a smoke test 
 | Q7 | Where downloads go | `~/Downloads/Ragon/`, each download asked unless the origin says `downloads = "allow"` |
 | Q8 | Screenshots in the model's context | Only when the agent calls `browser_screenshot`; the web-check skill requires one at the end; snapshots stay text |
 | Q9 | Label and default in 0.9.11 | Preview, on; off by default if the injection suite is below 12 of 12 or the quality set below 60 % |
-| Q10 | Lanes | Two lanes of its own from Monday 11-30; cut line 12-10 (§12.3) |
+| Q10 | Lanes | Two lanes of its own from Monday 11-30; cut line Monday 12-14 (§12.3) |
 
 ## 14. Owner steps
 
