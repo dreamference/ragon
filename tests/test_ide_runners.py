@@ -69,6 +69,13 @@ def test_cline_leaves_rules_the_user_wrote(ready, monkeypatch, tmp_path):
     assert rules.read_text(encoding="utf-8") == "# my own rules\n"
 
 
+def test_cline_runner_run_session_reports_a_missing_vscode_binary(ready, monkeypatch, capsys):
+    # A server that is healthy but no `code` binary on PATH: the session refuses to start.
+    monkeypatch.setattr(ClineInstaller, "get_vscode_executable", classmethod(lambda cls: None))
+    assert ClineRunner(config=DreamferenceConfig()).run_session() == 1
+    assert "Failed to launch VS Code" in capsys.readouterr().out
+
+
 def test_continue_keeps_the_users_other_settings_and_replaces_only_the_models(ready, tmp_path):
     # A config it can read is merged in place: no backup, the user's keys stay, and the two
     # model entries point at this server.
