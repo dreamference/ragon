@@ -75,6 +75,12 @@ tokio = { workspace = true, features = ["rt", "time"] }
 toml = { workspace = true }
 toml_edit = { workspace = true }
 
+# `ragon server`: the node's model server under a supervisor, as a Windows service with the engine
+# in a Job Object (src/supervisor_windows.rs) or a macOS LaunchDaemon with the engine in a guarded
+# process group (src/supervisor_macos.rs); both on the crate's shared neutral core. Built on every
+# target: src/mac_engine.rs reads the supervisor's options and its tests run everywhere.
+ragon-supervisor = { path = "supervisor" }
+
 # Build OpenSSL from source on glibc Linux, as upstream does only for musl, so building ragon needs
 # no libssl-dev. Cargo unifies features across the build, so enabling `vendored` here applies to the
 # openssl-sys every other crate links -- which is what keeps this out of a patch to codex-core.
@@ -118,10 +124,6 @@ windows-sys = { version = "0.52", features = [
 codex-windows-sandbox = { workspace = true }
 # `ragon audit egress`: the ETW real-time trace (src/audit.rs; WINDOWS_ARM §14).
 ferrisetw = "1.2"
-# `ragon server`: the node's model server under a supervisor, as a Windows service with the engine
-# in a Job Object (src/supervisor_windows.rs) or a macOS LaunchDaemon with the engine in a guarded
-# process group (src/supervisor_macos.rs); both on the crate's shared neutral core.
-ragon-supervisor = { path = "supervisor" }
 
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
