@@ -95,8 +95,8 @@ async fn a_host_on_this_machine_stays_plain() {
     assert_eq!(auth::secure_gate("https://box.local:8000", &home, "n1", "box").await.unwrap(), Secured::AsIs);
 }
 
-// An IPv4-mapped loopback address exercises the advertised-address path. Keep the
-// listener open without answering TLS so the client has to enforce its deadline.
+// The IPv4-mapped form bypasses the launcher's loopback shortcut while staying on
+// loopback. Keep the listener open without answering TLS to exercise the deadline.
 fn unresponsive_gate() -> (TcpListener, String) {
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -107,10 +107,19 @@ fn unresponsive_gate() -> (TcpListener, String) {
 async fn a_node_never_pinned_that_gives_no_tls_answer_stays_plain() {
     let home = home("unpinned");
     let (_listener, gate) = unresponsive_gate();
+    #[cfg(not(windows))]
     let started = std::time::Instant::now();
     assert_eq!(auth::secure_gate(&gate, &home, "n1", "box").await.unwrap(), Secured::AsIs);
-    let elapsed = started.elapsed();
-    assert!(elapsed >= std::time::Duration::from_secs(2) && elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
+    // Windows IPv6-only sockets can reject the mapped address before the TLS deadline.
+    #[cfg(not(windows))]
+    {
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_secs(2)
+                && elapsed < std::time::Duration::from_secs(5),
+            "{elapsed:?}"
+        );
+    }
 }
 
 #[tokio::test]
