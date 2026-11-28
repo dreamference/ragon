@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -2259,6 +2260,58 @@ def test_night_shift_index_refresh_says_not_refreshed_when_it_cannot_start(tmp_p
     assert outcome == "not refreshed: no such file or directory"
     assert len(started) == 1 and started[0][0] == ["/opt/ragon-code", "index", "--exact", "--wait"]
     assert started[0][1] == tmp_path and started[0][2][index_module.NIGHT_RUN_ENV] == "1"
+
+
+def test_night_shift_index_stop_breaks_when_the_process_group_is_already_gone(
+    tmp_path, monkeypatch
+):
+    import dreamference.night_shift.night_shift_index as index_module
+
+    class Stop:
+        pid = -999_999
+
+    stopped = []
+    monkeypatch.setattr(
+        index_module.os,
+        "killpg",
+        lambda pid, sig: (
+            stopped.append((pid, sig))
+            or (_ for _ in ()).throw(ProcessLookupError("no such process"))
+        ),
+    )
+    systemctl = []
+    monkeypatch.setattr(
+        index_module.subprocess,
+        "run",
+        lambda argv, **kwargs: systemctl.append((argv, kwargs.get("capture_output"))),
+    )
+
+    assert NightShiftIndex._stop(Stop()) is None
+    # The SIGTERM branch ends the loop at the first missing group: no SIGKILL.
+    assert stopped == [(-999_999, signal.SIGTERM)]
+    assert systemctl and systemctl[0][0][-1] == "ragon-index.slice"
+
+
+def test_night_shift_index_stop_escals_to_sigkill_when_the_grace_wait_times_out(
+    tmp_path, monkeypatch
+):
+    import dreamference.night_shift.night_shift_index as index_module
+
+    class Stop:
+        pid = -999_998
+
+        def wait(self, timeout=None):
+            assert timeout == index_module.KILL_GRACE_S
+            raise subprocess.TimeoutExpired("fake", timeout)
+
+    seen = []
+    monkeypatch.setattr(index_module.os, "killpg", lambda pid, sig: seen.append(sig))
+    monkeypatch.setattr(
+        index_module.subprocess, "run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0)
+    )
+
+    assert NightShiftIndex._stop(Stop()) is None
+    assert seen == [signal.SIGTERM, signal.SIGKILL]
 
 
 def test_a_refused_admission_keeps_the_queue_and_says_why(setup, fake_host):
