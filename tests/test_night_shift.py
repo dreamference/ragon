@@ -2365,6 +2365,27 @@ def test_a_repeating_task_not_queued_on_an_empty_night_still_reaches_a_report(tm
     assert "not queued" in report.read_text()
 
 
+def test_night_shift_recurring_templates_skips_files_that_are_not_templates(tmp_path):
+    from dreamference.night_shift.night_shift_recurring import NightShiftRecurring
+
+    night = tmp_path / "night"
+    recurring = night / "recurring"
+    recurring.mkdir(parents=True)
+    first, second = (
+        NightShiftRecurring.add(night, tmp_path, "A", "daily"),
+        NightShiftRecurring.add(night, tmp_path, "B", "daily"),
+    )
+    # A file that is not valid JSON is skipped, as is one whose id does not look like a
+    # template's, and the result is ordered by the templates' creation time.
+    (recurring / f"{first['id']}.json").write_text("not json at all")
+    (recurring / "r000000000000.json").write_text(json.dumps({"id": "nope"}))
+    (recurring / "r999999999999.json").write_text(
+        json.dumps({"id": "r" + "a" * 12, "created": "0001"})
+    )
+    found = NightShiftRecurring.templates(night)
+    assert [entry["id"] for entry in found] == ["r" + "a" * 12, second["id"]]
+
+
 def test_a_second_runner_is_refused_while_the_lock_is_held(setup, fake_host):
     queue(setup["night"], setup["repo"])
     with NightShiftQueue.runner_lock(setup["night"]) as held:
