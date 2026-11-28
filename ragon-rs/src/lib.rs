@@ -1190,7 +1190,13 @@ async fn served_listing(
     let base = host.trim_end_matches('/');
     let response = client.get(format!("{base}/v1/models")).send().await?;
     if !response.status().is_success() {
-        bail!("model listing returned HTTP {}", response.status());
+        let status = response.status();
+        if let Ok(body) = response.json::<serde_json::Value>().await
+            && let Some(message) = body.pointer("/error/message").and_then(|value| value.as_str())
+        {
+            bail!("model listing returned HTTP {status}: {message}");
+        }
+        bail!("model listing returned HTTP {status}");
     }
     let body: serde_json::Value = response.json().await?;
     let card = served_card(&body).context("model listing contains no models")?;
@@ -2625,6 +2631,45 @@ mod tests {
         let base = stand_in(&[("/v1/models", "503 Service Unavailable", "{}")]);
         let error = wait_for_model_within(&base, Duration::ZERO, Duration::ZERO).await.unwrap_err();
         assert!(error.to_string().contains("HTTP 503 Service Unavailable"));
+    }
+
+    // Exercise the production resolver and HTTPS clients in a separate process: the
+    // pinned CA, startup environment and ten-second DNS stub are private to the test.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[tokio::test]
+    async fn slow_local_lookup_reaches_models_and_by_name_sign_in() {
+        let Ok(port) = std::env::var("RAGON_TEST_GATE_PORT") else {
+            let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/slow_lookup.py");
+            let status = std::process::Command::new("python3").arg(fixture)
+                .arg(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::slow_local_lookup_reaches_models_and_by_name_sign_in", "--nocapture"])
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        };
+        let home = std::path::PathBuf::from(std::env::var_os("CODEX_HOME").unwrap());
+        let pem = std::fs::read_to_string(home.join("ca.pem")).unwrap();
+        let pin = auth::pin::path(&home, "fixture");
+        std::fs::create_dir_all(pin.parent().unwrap()).unwrap();
+        std::fs::write(&pin, pem).unwrap();
+        let address = format!("http://[::ffff:127.0.0.1]:{port}");
+        let gate = format!("https://fixture.local:{port}");
+        assert_eq!(auth::secure_gate(&address, &home, "fixture", "fixture").await.unwrap(),
+                   auth::Secured::Https(gate.clone()));
+        let (model, _) = wait_for_model(&gate).await.unwrap();
+        assert_eq!(model.id, "stub");
+        assert!(auth::start(&gate, &home, true).await.unwrap());
+        assert_eq!(std::env::var_os(auth::CA_ENV).unwrap(), pin.into_os_string());
+        let plain_port = std::env::var("RAGON_TEST_PLAIN_PORT").unwrap();
+        assert!(auth::gate_has_accounts(&format!("http://fixture.local:{plain_port}")).await);
+    }
+
+    #[tokio::test]
+    async fn a_probe_reports_the_loading_message_from_the_gate() {
+        let base = stand_in(&[("/v1/models", "502 Bad Gateway",
+            r#"{"error":{"code":"engine_unavailable","message":"The model server may still be loading."}}"#)]);
+        let error = wait_for_model_within(&base, Duration::ZERO, Duration::ZERO).await.unwrap_err();
+        assert!(error.to_string().contains("HTTP 502 Bad Gateway: The model server may still be loading."));
     }
 
     #[tokio::test]
