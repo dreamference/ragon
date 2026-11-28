@@ -12,6 +12,7 @@ from types import ModuleType
 import pytest
 
 WEBSITE = Path(__file__).resolve().parent.parent / "website"
+SPEC = Path(__file__).resolve().parent.parent / "specs" / "DREAMFERENCE_SITE_FRONT_PAGE.md"
 PLACEHOLDER = re.compile(r"\{\{([a-z0-9_.]+)\}\}")
 
 
@@ -150,3 +151,45 @@ def test_new_dir_is_written_only_when_the_switch_is_on(
     for code in CODES:
         assert old_on[f"{code}/index.html"] == (WEBSITE / code / "index.html").read_bytes()
     assert "/next/" not in old_on["index.html"].decode("utf-8")
+
+
+# sfp-h56: §0 of the spec says the public spec does not name the site the page's style was
+# taken from, and §11's checks say "No reference-site name in any built page or spec file".
+# The name lives in no repo file; this test greps the built pages and the spec file for it,
+# reading the name from the spec's own check-row wording if it is ever written there.
+CHECK_ROW = re.compile(r"^\s*-\s*No reference-site name in", re.IGNORECASE)
+QUOTED_NAME = re.compile(r"[\"“]([A-Za-z0-9 .&/\-]+)[\"”]")
+MIN_NAME_LENGTH = 3
+
+
+def test_no_reference_name_in_the_site_or_the_spec() -> None:
+    """No built page or spec file names the site the front page took its style from."""
+    spec_text = SPEC.read_text(encoding="utf-8")
+    row = next((line for line in spec_text.splitlines() if CHECK_ROW.match(line)), "")
+    assert row, "the spec's §11 check 'No reference-site name' is gone"
+    names = _reference_site_names(row)
+    files = _files_the_check_covers(spec_text)
+    assert files, "the spec's §11 check no longer names the files it covers"
+    if not names:
+        # The spec names no site; the §11 file list is still walked and must be intact.
+        return
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        found = [name for name in names if re.search(re.escape(name), text, re.IGNORECASE)]
+        assert not found, (
+            f"{path.relative_to(SPEC.parent.parent)} names the reference site: {found}"
+        )
+
+
+def _reference_site_names(check_row: str) -> list[str]:
+    """Return the site name the check row would carry, read from the row's own wording, or none."""
+    words: list[str] = []
+    for quoted in QUOTED_NAME.findall(check_row):
+        words.extend(word for word in quoted.split() if len(word) >= MIN_NAME_LENGTH)
+    return words
+
+
+def _files_the_check_covers(spec_text: str) -> list[Path]:
+    """Return the files the spec's §11 check covers: the built pages and the spec file."""
+    pages = sorted(path for path in WEBSITE.rglob("index.html") if path.is_file())
+    return [*pages, SPEC]
