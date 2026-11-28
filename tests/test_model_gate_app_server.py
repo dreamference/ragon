@@ -76,7 +76,7 @@ def test_an_unchanged_unit_is_started_not_restarted(systemd):
     assert all(call[0] not in {"restart", "daemon-reload"} for call in systemd)
 
 
-def test_the_socket_folders_are_private_and_mounted_at_their_own_paths(folders):
+def test_the_socket_folders_are_private_and_mounted_at_their_own_paths(systemd, folders):
     runtime, daemon = folders
     assert ModelGate.prepare_app_server_dirs()
     for folder in (runtime, daemon):
@@ -87,8 +87,22 @@ def test_the_socket_folders_are_private_and_mounted_at_their_own_paths(folders):
     assert f"RAGON_APP_SERVER_SOCKET={runtime / 'app-server.sock'}" in command
 
 
-def test_without_the_folders_nothing_is_mounted(folders):
+def test_without_the_folders_nothing_is_mounted(systemd, folders):
     assert ModelGate.app_server_mounts() == []
+
+
+def test_without_a_launcher_the_gate_mounts_nothing_and_creates_no_folder(folders):
+    # Installed nowhere (as in every test): the gate's command does not depend on the host.
+    runtime, daemon = folders
+    assert ModelGate.app_server_launcher() is None
+    assert ModelGate.app_server_mounts() == []
+    assert not runtime.exists() and not daemon.exists()
+
+
+def test_unit_words_escape_specifiers_variables_and_quotes():
+    assert ModelGate.unit_word("/opt/ragon") == "/opt/ragon"
+    assert ModelGate.unit_word("/a b/100%$x") == '"/a b/100%%$$x"'
+    assert ModelGate.unit_word('a"b\\c') == '"a\\"b\\\\c"'
 
 
 def test_without_ragon_or_systemd_nothing_is_written(systemd, monkeypatch):
