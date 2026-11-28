@@ -1,6 +1,6 @@
 # Ragon Scheduled Automations
 
-**Status:** draft for the owner, on branch `spec/automations`; nothing is built. The owner asked on 2026-11-28 for "fully compatible scheduled automations for 0.9.11" (release on Fri 2026-12-18) and answered four points the same day: A1, A2, G2 and G3, folded in below (§0.1). §0.4 lists eleven open questions (Q3-Q13), each with a recommended default; the design follows the defaults.
+**Status:** draft for the owner, on branch `spec/automations`; nothing is built. The owner asked on 2026-11-28 for "fully compatible scheduled automations for 0.9.11" (release on Fri 2026-12-18) and answered four points the same day: A1, A2, G2 and G3, folded in below (§0.1). §0.4 lists twelve open questions (Q3-Q14), each with a recommended default; the design follows the defaults.
 
 **In one sentence:** an automation created by Codex runs on Ragon unchanged. Ragon uses the same folder and file (`automations/<id>/automation.toml` and `memory.md` under the Codex home), the same two kinds (a standalone scheduled task and a task inside a chat), the same RFC 5545 schedule, the same `automation_update` tool and the same turn triggers, heartbeat envelope and thread source on the app-server protocol. The run itself happens on the user's own node, which is always on, so the desktop app does not have to be open.
 
@@ -24,7 +24,7 @@
 
 ### 0.1 Owner answers that bind (2026-11-28)
 
-- **A1. The unattended default is exactly upstream's.** Ragon runs an automation with the permissions upstream gives it, whatever they are; it adds no cap. Its one addition is the automation's own folder as a writable root, so that `memory.md` can be written, as upstream's runs evidently do (row 23). §0.2 states that default with its sources. Where the sources leave a part open, §0.2 says so, and Ragon's choice for that part is an owner question (Q10).
+- **A1. The unattended default is exactly upstream's.** Ragon runs an automation with the permissions upstream gives it, whatever they are; it adds no cap and no opening. §0.2 states that default with its sources. Where the sources leave a part open, §0.2 says so, and Ragon's choice for that part is an owner question (Q10, Q14).
 - **A2. Night Shift becomes one kind of automation.** There is one system and one inbox. `/night add` keeps working unchanged for users, and the tasks already queued carry over (§4.8).
 - **G2. Automations come first in 0.9.11.** The order, if not everything fits by 12-18: automations, the IDE extension, desk work, browser use. Browser use slips first. §8 plans the lanes on that basis.
 - **G3. New capacity is the Codex account only.** No further subscription. §8 says what that means for the lanes.
@@ -35,7 +35,7 @@ In plain words:
 1. **Sandbox:** the user's own default sandbox setting, unchanged. With `read-only` or `workspace-write`, a tool call that needs more fails. With full access, the run has full access.
 2. **Network:** whatever that sandbox setting gives. Under `workspace-write`, a call that needs the network fails, unless the user's settings allow network.
 3. **Approvals:** `approval_policy = "never"` when the organisation's requirements allow it. Otherwise the run uses the approval behaviour of the user's selected permission mode.
-4. **When an approval would be needed and nobody is there:** under `never`, no one is asked. The failure goes back to the model, which carries on without it. A request from an MCP server for the user's input is declined in an automation thread.
+4. **When an approval would be needed and nobody is there:** under `never`, no one is asked. The failure goes back to the model, which carries on without it. With `never` and full access, a request from an MCP server for the user's input is declined in an automation thread (the one case the test covers).
 5. **Admins** can forbid `never` and constrain sandbox modes with `requirements.toml`.
 
 Sources:
@@ -53,6 +53,7 @@ Sources:
 - **An approval nobody answers, in the fallback case** (requirements forbid `never`). The docs say only that the run "falls back to the approval behavior of your selected permission mode". Nothing says whether the run waits, for how long, or where the request shows. Nearest evidence: the Scheduled view is the inbox for runs [D-auto §Manage scheduled tasks], and an interactive thread in that mode waits for the user. Ragon's choice is Q10.
 - **`network_access = true` under `workspace-write`.** The automations page says only that a call needing the network fails under `workspace-write`. It does not say whether a user who allowed network in that mode keeps it in a scheduled task. Nearest evidence: the same page says runs use "your default sandbox settings", and `network_access` is one of those settings (`config/src/types.rs:1136`). Ragon keeps it: that is the user's setting, applied by the same config code as an interactive thread.
 - **The default for a user who never chose a mode.** Not stated for scheduled tasks. Nearest evidence: [D-sb] calls `workspace-write` "the default low-friction mode for local work". Ragon resolves the setting with the same Codex config code an interactive `ragon` session uses in that folder (config file, profile, project trust). It does not guess a value.
+- **How a run writes `memory.md` under `read-only` or `workspace-write`.** The automation's folder sits under the Codex home, outside the project, so a run with either sandbox could not write it unless the folder is made writable. Nothing in the docs or the open code says whether upstream adds it as a writable root. Nearest evidence: the docs and #14742 say runs keep notes in `memory.md` between runs, which implies a write path, but the closed app may write the file itself rather than the model. Ragon's choice is Q14; owner step 2 or Phase 0 settles it.
 - **Which "default" counts in a desktop app.** Upstream's docs speak of "your default sandbox settings" without saying whether the app's permissions picker or `config.toml` is meant. Ragon uses the resolved configuration, which is shared by the terminal, `ragon exec` and the app-server. Work's per-thread preset (`policy.json` `repoThreadParams`) is a choice for one thread, not the saved default.
 
 ### 0.3 Decisions this spec makes (the owner may reverse any)
@@ -83,10 +84,11 @@ Q1 and Q2 of the first draft are answered by A1 and A2 and removed. The numbers 
 | Q11 | Sandbox of the `night` kind: A1's default, or Night Shift's own `-s workspace-write` | **Night Shift's own, unchanged.** The `night` kind has no upstream counterpart, and `/night add` is to stay as it is: its runs keep `workspace-write` and `ragon exec` as today (`night_shift_task_run.py:456-466`). A1 applies to the upstream kinds, `cron` and `heartbeat`. |
 | Q12 | A run at `/airgapped on` whose default is full access | **Skipped with the reason "full access is off at /airgapped on"**, shown in the inbox and notified. Never silently downgraded to `workspace-write`, which would be neither upstream's default nor the user's choice. |
 | Q13 | Night Shift's queued one-off tasks: one automation folder each, or entries in the `night-shift` automation's queue | **Queue entries.** `night/tasks/<id>.json` stays the queue of one built-in automation `night-shift`; each task's run is a run of that automation. A one-off upstream file per task would need `COUNT=1` RRULEs, whose handling upstream is unverified, and would rewrite every reader of the queue for no gain to the user (§4.8). |
+| Q14 | `memory.md` under `read-only` or `workspace-write` (upstream silent, §0.2) | **No extra writable root until upstream's behaviour is known.** The run gets the path in `automation_info`; under a sandbox that cannot write it, the write fails like any other and the run record says so. If owner step 2 or Phase 0 shows that upstream's runs write `memory.md` under those sandboxes, Ragon adds the folder as a writable root through the `config` overrides of `thread/start` (`app-server-protocol/src/protocol/v2/thread.rs:100`; key `sandbox_workspace_write.writable_roots`) and §6.4 gains that test. |
 
 ### 0.5 Owner steps
 
-1. Answer Q3–Q13 (or accept the defaults).
+1. Answer Q3–Q14 (or accept the defaults).
 2. Optional, if the owner uses the upstream desktop app: create one standalone automation in worktree mode with a custom RRULE, and one automation inside a chat. Send the two `automation.toml` files with the project paths replaced by `/x`. They settle the rows of §1 marked *unverified* (the worktree key, `destination`, the id format, DTSTART). Without them, Phase 0 reads the keys from public issue reports and keeps unknown keys intact, so nothing breaks if they differ. The same session can settle Q10's evidence: with `approval_policy = "never"` forbidden in `requirements.toml`, does a scheduled task that needs approval wait, and where does the request show?
 3. The Codex account sign-in, already planned for 11-29: G3 makes it the only new capacity, so §8's lane plan counts on it only for docs and test rows.
 4. Nothing else: no credentials beyond that, no store or signing steps.
@@ -141,7 +143,7 @@ Q1 and Q2 of the first draft are answered by A1 and A2 and removed. The numbers 
 | # | Upstream | Source | Ragon | Verdict |
 |---|---|---|---|---|
 | 22 | `~/.codex/automations/<id>/automation.toml` | [I] #19960, #23798, #36256, #30439 (unverified tier) | `~/.ragon/automations/<id>/automation.toml`: the same path under Ragon's Codex home (`CODEX_HOME=~/.ragon`, `docs/dev/launcher.md:47`) | Identical relative to the Codex home |
-| 23 | `memory.md` beside it: the automation's notes between runs | [I] #14742 | Same file. The run gets the folder as its only extra writable root, and its path in `automation_info` | Identical |
+| 23 | `memory.md` beside it: the automation's notes between runs | [I] #14742 | Same file. Its path reaches the run in `automation_info`; whether the run may write it outside the user's sandbox is open (§0.2, Q14) | Identical |
 | 24 | Keys `version = 1`, `id`, `kind`, `name`, `prompt`, `status` (`"ACTIVE"`/`"PAUSED"`), `rrule`, `cwds`, `model`, `reasoning_effort`, `created_at`, `updated_at` (epoch ms) | [I] #19960, #23798, #30439, #36256, #39899 | Read and written with the same names, types and values | Identical (keys unverified) |
 | 25 | `rrule` is seen both with and without the `RRULE:` prefix | [I] #21342, #36225 | Both are read; Ragon writes what the file had, or the prefixed form for new files | Identical |
 | 26 | Heartbeat keys `target_thread_id` and `destination = "thread"` | [I] #23798, #24294 | Same | Identical (unverified) |
@@ -220,9 +222,10 @@ Q1 and Q2 of the first draft are answered by A1 and A2 and removed. The numbers 
   catch_up_hours = 12
   notify = "findings"         # "findings" | "always" | "never" (Q7)
   max_minutes = 30            # 1 … 90
-  kind = "cron"               # "cron" | "heartbeat" as in the upstream file, or "night" (§4.8)
-  role = "window"             # night kind only: "window" | "template"
-  window_end = "07:00"        # night kind, role "window" only
+  # The night kind only (§4.8); absent for "cron" and "heartbeat":
+  # kind = "night"
+  # role = "window"           # "window" | "template"
+  # window_end = "07:00"      # role "window" only
   ```
 
 - `runs/<run id>.json`: scheduled time, start, end, state, machine, thread id, worktree, branch, diff stat, final message, `findings`, `read`, `archived`, `pinned`, skip reason.
@@ -313,10 +316,10 @@ A copied upstream folder without a sidecar runs with the defaults on the machine
    | `requirements.toml` forbids `never` | not sent | not sent: the user's own approval policy and `approvals_reviewer` apply. A request with nobody there waits (Q10) |
    | `requirements.toml` constrains sandbox modes | not sent: the config code applies the requirement as it does everywhere | as above |
    | `/airgapped on` and the resolved default is full access | the run is not started: skipped with "full access is off at /airgapped on" (AIRGAPPED:139, Q12) | — |
-   | The `night` kind | `workspace-write`, as today (Q11) | as today |
 
+   - The `night` kind does not use `thread/start`: its tasks run through `ragon exec -s workspace-write` as today (Q11, §4.8).
    - Under `never`, a call that needs more than the sandbox fails and the failure goes back to the model; nobody is asked (`protocol/src/protocol.rs:1006-1008`).
-   - The one extra writable root is the automation's own folder, for `memory.md` (row 23).
+   - No writable root is added, not even for `memory.md` (Q14).
    - Rules (the `rules/` allow-list) apply as upstream says: they are the way to let a named command out.
    - The run record stores the resolved sandbox and approval policy, so the inbox shows what the run had.
 6. **Environment.** `CODEX_HOME` is exported (row 43), as are `DREAMFERENCE_VLLM_HOST` (AGENTS.md: unattended callers set it) and `RAGON_AUTOMATION_ID`.
@@ -542,7 +545,7 @@ These run on the node, with a real app-server and a tiny model or a scripted one
 - `requirements.toml` constraining sandbox modes is applied;
 - at `/airgapped on` with full access as default, the run is skipped with the reason (Q12);
 - the run record shows the resolved sandbox and approval policy;
-- `memory.md` is writable while its sibling `automation.toml` is not;
+- with the Q14 default, the run's sandbox has no extra writable root and a `memory.md` write under `read-only` fails and is recorded;
 - `CODEX_HOME` and `DREAMFERENCE_VLLM_HOST` are set in the run's shell;
 - the memory cap stops a run that allocates 9 GiB;
 - `RuntimeMaxSec` stops a run at `max_minutes`;
@@ -599,9 +602,10 @@ Phase 8 grew from 1.5 to 3 days with A2 (the window moves, not only the template
 - **By G2, automations takes the first two lanes that free up for 0.9.11.** The IDE extension, desk work and browser use take lanes after it; browser use slips first, then desk work.
 - **The Codex account (G3) is not on the critical path.** It is the only new capacity, it starts on 11-29 with a trial (one job, then two), and it is limited to docs, mechanical edits and tests. It takes phase 10 and test rows of phase 11 once its trial passes; the two build lanes come from the existing capacity.
 
-**Does 12-18 hold?** Yes, on one condition: **two build lanes on automations from Wed 12-02, Thu 12-03 at the latest.**
-- From Wed 12-02, 12.75 days put code complete on about 12-14. Landing, review and the release gate take about two to three days, so the gate falls on 12-16 or 12-17 and Fri 12-18 holds with one to two days of slack. Starting on Thu 12-03 uses that slack.
-- The lanes on the other account run until 12-02 10:00 UTC; the 1.0 remote-session lanes are booked and do not give way. Two lanes on 12-02 therefore means the first two lanes that 0.9.11 gets go to automations, as G2 says.
+**Does 12-18 hold?** Yes, on one condition: **two build lanes on automations from Wed 12-02.**
+- From 12-02 10:00 UTC, the 12.75-day path ends on about 12-15 04:00 UTC. Landing, review and the release gate are assumed at two to three days (no freeze date for 0.9.11 is recorded yet; 0.9.9 froze about four days before its release), so the gate falls on 12-17 or 12-18: zero to one day of slack.
+- A start on Thu 12-03 holds only if landing takes two days; with three it misses 12-18. A third lane from 12-02 (path 11.75 days) buys one day of margin.
+- **Where the lanes come from.** Not from account A: its four ordinary lanes expire on 12-02 10:00 UTC. Not from the Codex account (G3: trial, docs and tests only). Not from the 1.0 remote-session lanes, which do not give way. They come from the existing lanes on the main account that 0.9.10 frees, which G2 gives to automations first; whether two are free on 12-02 is the coordinator's to confirm.
 - **One lane only, from 12-02:** the cut of phases 0-3, 5, 6, 10 and 11 is 13.5 days, the whole window with no slack: automations from the terminal and the chat tool, the inbox as a minimal list. The `night` kind (A2) and the Scheduled view move to the release after, and Night Shift stays as it is. Not recommended.
 - **Lanes only after 12-10:** the smallest useful cut (phases 0-3, 6 and 11, 11 days, 7.25 on two lanes) plus landing does not fit before 12-18. Move automations to the release after rather than ship a cut.
 - **The heartbeat stretch** (phase 9) lands only with a third lane.
