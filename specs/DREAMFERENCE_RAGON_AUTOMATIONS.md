@@ -96,7 +96,7 @@
 | 18 | The computer must be on, the desktop app running, and the project on disk | [D-auto] intro, §Manage scheduled tasks | The machine must be on and the project on disk. The desktop app may be closed (§4.2) | **Different, in the user's favour:** the node runs around the clock, and requiring an open window would lose runs for no reason |
 | 19 | Missed runs while the computer is off | **unverified**: not documented | Catch up once within a grace period, otherwise skip and record (Q4, §4.5) | Ragon's own rule, stated |
 | 20 | Team tasks and event triggers (mail, chat and code-hosting events) | [D-new]; [D-auto] intro: web and mobile only, on eligible plans | Not in v1 (§7) | **Different:** these run on the vendor's servers. Ragon has no cloud, and an event source needs a connector that polls (later) |
-| 21 | Deep link `codex://automations` opens Scheduled with the create flow | [D-cmd] | `ragon://automations` with the same meaning (DESKTOP_PARITY B19) | **Different scheme:** `codex://` belongs to the other app on the same machine; taking it over would steal its links |
+| 21 | Deep link `codex://automations` opens Scheduled with the create flow | [D-cmd] | `ragon://automations` with the same meaning (Ragon's scheme, DESKTOP_PARITY §2.21) | **Different scheme:** `codex://` belongs to the other app on the same machine; taking it over would steal its links |
 
 ### 1.2 Files
 
@@ -108,7 +108,7 @@
 | 25 | `rrule` is seen both with and without the `RRULE:` prefix | [I] #21342, #36225 | Both are read; Ragon writes what the file had, or the prefixed form for new files | Identical |
 | 26 | Heartbeat keys `target_thread_id` and `destination = "thread"` | [I] #23798, #24294 | Same | Identical (unverified) |
 | 27 | The key choosing local or worktree mode | **unverified**: not found in any public source | Phase 0 settles it from owner step 2 or a newer issue report. Until then Ragon reads the mode from the sidecar and leaves any upstream key untouched | Identical once known |
-| 28 | Unknown and future keys | — | Kept byte for byte (§3.1); the format-preserving round trip is tested | Identical |
+| 28 | Unknown and future keys | no upstream source (how the upstream app treats unknown keys is unverified) | Kept byte for byte (§3.1); the format-preserving round trip is tested | Identical |
 | 29 | Run state in an SQLite file `codex-dev.db` with the tables `automations`, `automation_runs`, `inbox_items` | [I] #19960, #23895 | Not written. Ragon keeps run records as JSON files in the sidecar folder (§3.2) | **Different:** the database is the closed app's private state, with an unpublished schema. Writing it would risk corrupting the other app's data. Ragon also never moves databases between machines (SYNC §0 point 3). No automation depends on it: the definition is the TOML file |
 | 30 | First-run copy from `~/.codex` to `~/.ragon` (Ragon's own, an allow-list) | `docs/dev/launcher.md:47` | `automations/` is **not** added to the automatic copy; `ragon automations import` copies them as PAUSED (Q3) | Ragon's own; it prevents double runs |
 
@@ -124,7 +124,7 @@
 | 36 | A heartbeat turn's input is the envelope `<heartbeat>` / `<automation_id>` / `<current_time_iso>` / `<instructions>`. The id is `[A-Za-z0-9_-]`, at most 128 characters; the envelope has a size limit (3,600 with the per-line allowance); it is stored with content kind `user.heartbeat` | [C] `history/src/heartbeat.rs:10, 24-28, 76-110`; `history/src/heartbeat_tests.rs:7-26`; `core/src/session/mod.rs:4925-4935` | Ragon builds the same bytes. A heartbeat prompt that would overflow the envelope is refused when the automation is saved, not when it runs | Identical |
 | 37 | Heartbeat versions coalesce in retained context | [C] `history/src/reconciled_retained_context.rs:5, 116-137` | Inherited | Identical |
 | 38 | The guardian reads a replay as "Scheduled automation … ran at … not a new human instruction"; human overrides are preserved | [C] `guardian-context/src/transcript.rs:315-336`; `core/tests/suite/scenarios_guardian_heartbeat.rs:1`; `core/tests/suite/guardian_heartbeat_authorization.rs:1` | Inherited | Identical |
-| 39 | Thread source `ThreadSource::Feature("automation")`, sent in `thread/start.threadSource` | [C] `app-server-protocol/src/protocol/v2/thread_data.rs:106-111`; `app-server-protocol/src/protocol/v2/thread.rs:124`; `protocol/src/protocol.rs:4604-4608` | Ragon's runner sends it on every standalone run | Identical |
+| 39 | Thread source `ThreadSource::Feature("automation")`, sent in `thread/start.threadSource` | [C] `app-server-protocol/src/protocol/v2/thread_data.rs:106-111`; `app-server-protocol/src/protocol/v2/thread.rs:124`; `protocol/src/protocol.rs:4604-4608`; the literal `"automation"` in `app-server/tests/suite/v2/mcp_tool.rs:537-542` | Ragon's runner sends it on every standalone run | Identical |
 | 40 | `additionalContext` with the key `automation_info` (kind Application), shown as `<automation_info>…</automation_info>` | [C] `app-server-protocol/src/protocol/v2/turn.rs:193-195`; `core/tests/suite/additional_context.rs:55, 86, 100-104`; `core/tests/suite/context_annotations.rs:134, 215` | Same key. The content is Ragon's own: automation id, name, run id, scheduled time and the path of `memory.md` | Interface identical (upstream's content unverified) |
 | 41 | An MCP tool asking for full access is declined in an automation thread | [C] `app-server/tests/suite/v2/mcp_tool.rs:537` | Inherited; that test is part of Ragon's codex-tests run | Identical |
 | 42 | Remote control lacks `automation_update` | [I] #26489 | Ragon's phone and web clients offer it | **Different, in the user's favour** |
@@ -167,7 +167,7 @@
 - **Location.** `~/.ragon/automations/<id>/automation.toml`, plus `memory.md` created empty on first run.
 - **Ids.** Ragon creates ids in the envelope's character set (`[A-Za-z0-9_-]`, at most 128 characters): a slug of the name plus 6 hex characters. It accepts any id in that set.
 - **Format-preserving.** It is edited with `toml_edit` (or an equivalent): Ragon changes only the keys it sets, and keeps comments, order and unknown keys. `updated_at` is set on every change.
-- **Atomic.** Writes go to a temporary file followed by a rename. A per-machine lock (`~/.ragon/automations/.lock`, `flock`) gives one writer.
+- **Atomic.** Writes go to a temporary file followed by a rename. A per-machine lock (`~/.ragon/ragon-automations/.lock`, `flock`, outside the upstream folder) gives one writer.
 - **Validated on save.** The RRULE parses; the `status`, `kind` and `cwds` values are known; a heartbeat names its thread and fits the envelope. An invalid file found on disk is shown in the Scheduled view as invalid and never runs.
 
 ### 3.2 Ragon's sidecar
@@ -198,7 +198,7 @@ A copied upstream folder without a sidecar runs with the defaults on the machine
 |---|---|---|
 | Terminal | `ragon automations add --name … --rrule … --cwd … [--worktree] [--model …] [--effort …] --prompt-file …`, `edit` (opens `$EDITOR` on the TOML, validated on close), `pause`, `resume`, `run`, `rm`, `list`, `show`, `import`, `doctor` | Local store; for an automation owned by another machine, the primary's `/api/automations` |
 | Work (desktop) | The Scheduled view gets a create and edit form: name, prompt, a schedule (presets plus a raw RRULE field showing the next five times), projects, local or worktree, model, effort, status and the Ragon settings. In chats, the `automation_update` tool; `ragon://automations` opens the form | The machine's `ragon web` API |
-| Phone | `/auto list\|show\|pause\|resume\|run <id>` in the bridges. In phone threads, the `automation_update` tool; any create, update or delete from the phone asks YES/NO first, as `/night add` does (SIGNAL §19.7) | The node's `ragon web` API |
+| Phone | `/auto list\|show\|pause\|resume\|run <id>` in the bridges. In phone threads, the `automation_update` tool; any create, update or delete from the phone asks YES/NO first, in the bridge's existing question form (SIGNAL §19) | The node's `ragon web` API |
 
 ## 4. Design
 
@@ -260,7 +260,7 @@ A copied upstream folder without a sidecar runs with the defaults on the machine
    - A non-Git project always runs locally (upstream's rule).
    - A project missing from disk: the run is skipped with the reason "project not found".
 3. **Process limits.**
-   - Linux: the runner starts in `systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=400% -p TasksMax=4096 -p RuntimeMaxSec=<max_minutes>`, the values of Night Shift and node jobs (`night_shift_task_run.py:913-923`, `node_job.py:398-413`).
+   - Linux: the runner starts in `systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=400% -p TasksMax=4096 -p RuntimeMaxSec=<max_minutes>`, Night Shift's values (`night_shift_task_run.py:919-923`) plus node jobs' task limit (`node_job.py:65, 405-413`).
    - Mac and Windows: the node specs' job limits once built.
 4. **The protocol** (stdio to `ragon app-server`):
    - `initialize`.
@@ -293,7 +293,7 @@ Every firing passes admission on the owning machine at the moment it would start
 | Machine off or asleep at the due time | On wake-up: **once**, if less than `catch_up_hours` late (12 h by default, or one period if that is shorter); several missed times give a single run; older ones are recorded as `missed` | Skipped and recorded; the next one fires normally |
 | `ragon web` restarting (update) | Same as off (usually seconds late, so caught up) | Same |
 | Job cap reached (NODE: admission; the default is one automation run at a time, plus Night Shift's own slot) | **Waits** up to 30 minutes in a FIFO queue, then is skipped with "node busy" | Skipped if the last one is still running (never two at once on one thread) |
-| Benchmark or GPU window: the runner lock held by a benchmark, a `ragon-swe-*` unit, or `~/.ragon-gpu.lock` held (the checks of `night_shift_autofill.py:115-147`) | Skipped with "benchmark running", then caught up after the benchmark under the off rule | Skipped |
+| Benchmark or GPU window: the runner lock held by a benchmark, a `ragon-swe-*` unit, or `~/.ragon-gpu.lock` held (the checks of `night_shift_autofill.py:115-147`; the lock file as in `node_role_provisioner.py:72`) | Skipped with "benchmark running", then caught up after the benchmark under the off rule | Skipped |
 | A Night Shift round running | Runs if the job cap has a slot (Night Shift holds its own); its 8 GiB scope counts toward the node's memory reserve | Same |
 | Model server down or not answering its health check | Retried every 5 minutes for up to 30 minutes, then skipped with "model down" | Skipped |
 | Project missing, invalid file, model not served | Skipped with the reason (model not served: runs on the default model, row 7) | Same |
@@ -348,13 +348,13 @@ Every skip is a run record with its reason. Skips are archived, not in the inbox
     | `monthly D` with D > 28 | `FREQ=MONTHLY;BYMONTHDAY=28,…,D;BYSETPOS=-1;…` |
 
     The last row keeps Night Shift's rule that a day the month lacks is its last day (`night_shift_recurring.py:261-266`); a plain `BYMONTHDAY=31` would skip short months.
-- **The migration loses nothing.** `ragon-admin night migrate-recurring`, also run once by the update:
+- **The migration loses nothing.** `ragon night migrate-recurring`, also run once by the update:
   1. It never touches `night/tasks/`, so every queued task stays queued.
   2. For each template it writes the automation and its sidecar, then moves the template to `night/recurring/migrated/`. It never deletes the template.
   3. It records the template's "last queued" date in the sidecar, so the night of the migration does not queue twice. The runner's existing once-a-day rule is a second guard.
   4. It is idempotent: a template already migrated is skipped.
   5. `--undo` moves the templates back and pauses the automations.
-  6. `ragon-admin night every add` keeps working: it now creates the automation.
+  6. `ragon night every add` keeps working: it now creates the automation.
 - **One inbox.** The Scheduled view (which already shows Night Shift, DESKTOP_PARITY §2.12) lists Night Shift results beside automation runs, with the same actions. The morning report is unchanged.
 
 ### 4.9 Limits
@@ -378,14 +378,14 @@ Every skip is a run record with its reason. Skips are archived, not in the inbox
 - **Runs inherit the machine's level.** At `on` the sandbox has no network, and full access is refused, even with `allow_full_access` (AIRGAPPED:139).
 - **Automations that need a connection** (an app or plugin, web search) still run. Their tool calls fail as for any thread at `on`, and the run notes it.
 - **No notifications** are sent (§4.7).
-- **Egress.** The egress audit (EGRESS:66) gains the scheduler and the runner as processes that must show no outside connection.
+- **Egress.** The egress audit's process list (EGRESS §3.3 point 7) gains the scheduler and the runner as processes that must show no outside connection.
 - **Unattended runs.** At `/airgapped env` (one run) the level applies to the run that set it, not to unattended runs.
 
 ## 5. Security
 
 - **The tool is a privilege.** `automation_update` lets a model schedule future unattended work. Safeguards:
   - In phone threads, every create, update or delete needs the user's YES.
-  - In desktop and TUI threads, a create shows the user a card (the name, schedule and prompt) before the file is written.
+  - In desktop threads (and the TUI once it has the tool, §7), a create shows the user a card (the name, schedule and prompt) before the file is written.
   - A run can update only its own automation, never create another.
 - **What a run can reach.** A run never gets more than the cap of §4.4. A prompt in the file cannot raise its sandbox: only the sidecar can, and the sidecar is written only by the user's own edit through the form or `ragon automations edit --allow-full-access`.
 - **Imported upstream automations** arrive PAUSED (Q3). The user resumes them after reading them.
@@ -479,7 +479,7 @@ These run on the node, with a real app-server and a tiny model or a scripted one
 ## 7. Not in v1
 
 - event triggers and team tasks (row 20);
-- automations scheduled on Mac and Windows machines (they wait for the 0.9.10 nodes and Phase 8);
+- automations scheduled on Mac and Windows machines (they wait for the 0.9.10 nodes and Phase 12);
 - heartbeats on remote-session threads (they wait for 0.9.10 attach);
 - the `automation_update` tool in the TUI: it needs a Codex patch to inject a dynamic tool; until then the TUI has `ragon automations`;
 - failover of an automation to another node;
@@ -516,14 +516,16 @@ Agent-days are for one lane. Rows for site, docs and tests go to Ragon first, th
 - With the heartbeat stretch: 20.5.
 - Everything: 24.5.
 
-**Does 12-18 hold?**
-- **The window.** From Mon 12-01 to the freeze before Fri 12-18 there are 13 working days. 0.9.10 (12-10) takes lanes until then. Desk work, the IDE extension and browser use are specced for the same release.
-- **Two lanes:** the cut fits in about 9-10 days, from 12-01 or 12-02. The chain:
-  - lane A: 1 → 2 → 4 → 8;
-  - lane B: 0 → 3 → 5 → 6 → 7;
-  - then 10 and 11 shared.
-- **One lane:** it does not fit; the honest cut is then phases 0-3, 5, 6, 10 and 11 (12.5 days). That means automations from the terminal and the chat tool, with the inbox in a minimal list.
-- **The heartbeat stretch** lands only if both lanes finish by 12-12.
+**Does 12-18 hold?** Only on a condition.
+- **The window.** From Mon 12-01 to the freeze before Fri 12-18 there are 13 working days. 0.9.10 (12-10) takes lanes until then, and desk work, the IDE extension and browser use are specced for the same release.
+- **The chain on two lanes** is about 10.5 days:
+  - lane A: 1 → 2 → 4 → 8 (9 days);
+  - lane B: 0, then 3 (after 1) → 5, 6, 7 (after 2);
+  - then 10 and 11 shared (about 1.5 days on two lanes).
+- **It holds if two lanes start by about 12-02**, overlapping the last week of 0.9.10. Nothing in the cut touches the 0.9.10 work (remote sessions, Mac and Windows nodes), so the overlap costs lanes, not conflicts.
+- **If the lanes are free only after 12-10,** about 5 working days remain (about 10 agent-days on two lanes). The full cut does not fit. What can ship then is phases 0-3, 6 and 11 (10.5 days, at the edge): automations from the terminal on Linux nodes, with runs, catch-up and records. The Scheduled view, the tool, the phone and the Night Shift migration move to the release after.
+- **One lane only:** phases 0-3, 5, 6, 10 and 11 add up to 13 days, the whole window with no slack: automations from the terminal and the chat tool, the inbox as a minimal list.
+- **The heartbeat stretch** lands only if both lanes finish the cut by 12-12.
 - **The 0.9.10 dependency.** Nothing in the cut depends on remote sessions or on the Mac and Windows nodes. Phases 12 and 13 do, and go to the release after 0.9.11.
 
 ## 9. Risks
@@ -543,7 +545,7 @@ Agent-days are for one lane. Rows for site, docs and tests go to Ragon first, th
 6. `automation_update` in the clients; `policy.json`.
 7. CLI.
 8. The bridges' `/auto` and the reports endpoint.
-9. `ragon-admin night migrate-recurring`; `night every add` writing automations.
+9. `ragon night migrate-recurring`; `ragon night every add` writing automations.
 10. Docs: `docs/dev/automations.md`, the user guide page, CHANGELOG; DESKTOP §6.8 and DESKTOP_PARITY §2.12 pointing here.
 11. Tests of §6.
 12. After 0.9.11: phases 12-14.
