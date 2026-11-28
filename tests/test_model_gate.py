@@ -1257,3 +1257,55 @@ def test_a_gate_that_never_answers_starts_no_accounts_service(monkeypatch):
     )
     assert not ModelGate.start(8000, "image")
     assert started == []
+
+
+def test_the_install_script_runs_ragon_update_and_nothing_else(live, tmp_path):
+    # Spec A9 (owner Q3): patch 0045 points the managed daemon's updater at this route, which it
+    # pipes to `/bin/sh -s`; the script updates through `ragon update` only.
+    url = f"http://127.0.0.1:{live['port']}/ragon/v1/install.sh"
+    with urllib.request.urlopen(url, timeout=10) as response:
+        assert response.status == 200
+        assert response.headers["Content-Type"].startswith("text/x-shellscript")
+        script = response.read()
+    assert script == model_gate_service.INSTALL_SCRIPT
+    assert b"chatgpt" not in script and b"openai" not in script and b"curl" not in script
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "ragon"
+    fake.write_text('#!/bin/sh\nprintf "%s|" "$@" > "$HOME/ran"\n')
+    fake.chmod(0o755)
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path)}
+    done = subprocess.run(["/bin/sh", "-s"], input=script, env=env, timeout=10, check=False)
+    assert done.returncode == 0
+    assert (tmp_path / "ran").read_text() == "update|"
+    head = urllib.request.Request(url, method="HEAD")
+    with urllib.request.urlopen(head, timeout=10) as response:
+        assert response.status == 200 and response.read() == b""
+    assert StandIn.seen == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/backend-api/wham/tasks/list?limit=20",
+        "/backend-api/wham/tasks/task_1",
+        "/backend-api/wham/environments",
+        "/backend-api/wham/environments/by-repo/github/acme/repo",
+    ],
+)
+def test_cloud_task_routes_get_the_404_shape_and_the_token_stays_here(live, path):
+    # Spec A8: the launcher sets CODEX_CLOUD_TASKS_BASE_URL to `<gate>/backend-api`; the gate has no
+    # task service, so it answers like a Codex backend without one, and forwards nothing.
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{live['port']}{path}",
+        headers={"Authorization": "Bearer token-secret"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        urllib.request.urlopen(request, timeout=10)
+    assert caught.value.code == 404
+    raw = caught.value.read()
+    error = json.loads(raw)["error"]
+    assert error["code"] == "not_found"
+    assert error["message"] == f"Not found: {path.split('?', 1)[0]}"
+    assert b"token-secret" not in raw
+    assert StandIn.seen == []
