@@ -46,7 +46,7 @@ try {
     $env:RAGON_FAKE_LOG = $Log
     function New-Fake([string]$Name, [string]$ExitVar) {
         $Path = Join-Path $Temp "$Name.cmd"
-        Set-Content -Path $Path -Encoding ASCII -Value @("@echo off", "echo $Name %* >> `"%RAGON_FAKE_LOG%`"", "if defined $ExitVar exit /b %$ExitVar%", "exit /b 0")
+        Set-Content -Path $Path -Encoding ASCII -Value @("@echo off", "echo $Name %* >> `"%RAGON_FAKE_LOG%`"", "if defined FAKE_STDERR echo noise 1>&2", "if defined $ExitVar exit /b %$ExitVar%", "exit /b 0")
         return $Path
     }
     $Tools = @{ Sc = (New-Fake "sc" "FAKE_SC_EXIT"); Icacls = (New-Fake "icacls" "FAKE_ICACLS_EXIT"); Ragon = (New-Fake "ragon" "FAKE_RAGON_EXIT") }
@@ -128,13 +128,21 @@ try {
     Check "the engine is unpacked beside it" (Test-Path (Join-Path $P.Engine "kernels\a.co")) $true
     Check "the job account was made" ($Calls -contains "newuser RagonJob") $true
     $Lines = Read-Log
-    Check "the service is made by ragon server install" ($Lines[0] -match "^ragon server install --name ragon-node --state-dir .*node --host 0.0.0.0 --port 8000 -- .*ragon-serve.exe --model D:.m") $true
+    Check "the service is made by ragon server install" ($Lines[0] -match "^ragon server install --name ragon-node --state-dir .*node --host 127.0.0.1 --port 8000 -- .*ragon-serve.exe --model D:.m") $true
     Check "icacls ran for the root, models, advert, jobs (not the absent id file)" (@($Lines | Where-Object { $_ -like "icacls*" }).Count) 4
     Check "the service was started" (@($Lines | Where-Object { $_ -eq "sc start ragon-node " }).Count -ge 1) $true
     Check "the service's start comes after its ACLs" ([array]::IndexOf($Lines, ($Lines | Where-Object { $_ -like "sc start*" } | Select-Object -First 1)) -gt [array]::IndexOf($Lines, ($Lines | Where-Object { $_ -like "icacls*" } | Select-Object -Last 1))) $true
     Check "the record names what was created" ((Get-Content $P.Record) -join ";") "tag=v0.9.10;service=ragon-node;created=user:RagonJob,service:ragon-node;port=8000;state=$($P.NodeState);sshd=$Sshd"
     Check "the sshd block is in the config" ([IO.File]::ReadAllText($Sshd).Contains("BEGIN ragon-node")) $true
     Throws "a second install is refused" { Install-RagonNode $P "v0.9.10" $Binaries $Zip $Tools $Hooks @() @() "" 8000 1 } "already installed"
+
+    # --- a tool that writes to stderr is not an error (Windows PowerShell 5.1 under Stop) ---
+    $env:FAKE_STDERR = "1"
+    $PS = New-Prefix "stderr"
+    Check "install succeeds when the tools print to stderr" (Install-RagonNode $PS "v0.9.10" $Binaries $Zip $Tools $Hooks @() @() "" 8000 5) $true
+    Check "and so does uninstall" ((Uninstall-RagonNode $PS $Tools $Hooks "" $true) -join ",") "service,distribution,data"
+    Remove-Item Env:\FAKE_STDERR
+    Reset-Log
 
     # --- uninstall leaves nothing ---
     Set-Content -Path (Join-Path $P.Models "weights.bin") -Value "w"

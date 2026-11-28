@@ -23,9 +23,13 @@ def test_the_role_parameter_is_client_or_node_and_defaults_to_the_client() -> No
     assert re.search(r'\[ValidateSet\("client", "node"\)\]\[string\]\$Role = "client"', INSTALL)
 
 
-def test_the_node_needs_a_signed_release_and_the_engine_zip_is_checked_before_anything_is_placed() -> None:
+def test_the_node_needs_a_signed_release_and_the_engine_zip_is_checked_before_anything_is_placed() -> (
+    None
+):
     check = INSTALL.index("the node role needs a signed release")
-    zip_check = INSTALL.index("does not match its checksum in SHA256SUMS; nothing was installed.", check)
+    zip_check = INSTALL.index(
+        "does not match its checksum in SHA256SUMS; nothing was installed.", check
+    )
     place = INSTALL.index("# -- install ----")
     assert check < zip_check < place
     assert "if ($null -eq $Signed)" in INSTALL[check - 120 : check]
@@ -43,7 +47,7 @@ def test_uninstall_runs_before_any_network_use() -> None:
 def test_the_service_is_made_by_the_supervisor_from_the_program_files_copy() -> None:
     assert '"server", "install", "--name", $NodeServiceName' in INSTALL
     assert 'Ragon = (Join-Path $NodePaths.Bin "ragon.exe")' in INSTALL
-    assert r'NT SERVICE\ragon-node' in INSTALL
+    assert r"NT SERVICE\ragon-node" in INSTALL
 
 
 def test_the_ps_state_table_is_the_rust_one() -> None:
@@ -52,20 +56,36 @@ def test_the_ps_state_table_is_the_rust_one() -> None:
         return  # the state layout lands in its own branch (win-node-state-layout)
     table = rust[rust.index("pub fn table()") :]
     table = table[: table.index("\n    }\n")]
-    words = {"System": "SYSTEM", "Administrators": "ADMINS", "Service": "SERVICE", "Job": "JOB", "Sandbox": "SANDBOX"}
+    words = {
+        "System": "SYSTEM",
+        "Administrators": "ADMINS",
+        "Service": "SERVICE",
+        "Job": "JOB",
+        "Sandbox": "SANDBOX",
+    }
     access = {"Full": "F", "Modify": "M", "ReadExecute": "RX", "Read": "R"}
     rust_rows = set()
     for item in ("Root", "Models", "NodeId", "Advert", "Jobs"):
         for who in ("System", "Administrators", "Service"):
-            rust_rows.add((item, words[who], {"System": "F", "Administrators": "F", "Service": "M"}[who]))
+            rust_rows.add(
+                (item, words[who], {"System": "F", "Administrators": "F", "Service": "M"}[who])
+            )
     for match in re.finditer(r"rows\.push\(rule\((\w+), (\w+), (\w+)\)\);\n", table):
         item, who, level = match.groups()
-        if who in ("System", "Administrators", "Service") and item not in ("Root", "Models", "NodeId", "Advert", "Jobs"):
+        if who in ("System", "Administrators", "Service") and item not in (
+            "Root",
+            "Models",
+            "NodeId",
+            "Advert",
+            "Jobs",
+        ):
             continue
         rust_rows.add((item, words[who], access[level]))
     ps = INSTALL[INSTALL.index("function Get-NodeAclTable") :]
     ps = ps[: ps.index("return $Rows")]
-    ps_rows = {tuple(m.groups()) for m in re.finditer(r'\$Rows \+= , @\("(\w+)", "(\w+)", "(\w+)"\)', ps)}
+    ps_rows = {
+        tuple(m.groups()) for m in re.finditer(r'\$Rows \+= , @\("(\w+)", "(\w+)", "(\w+)"\)', ps)
+    }
     # the first block of the PS table is a loop over the five items with the three base rows
     for item in ("Root", "Models", "NodeId", "Advert", "Jobs"):
         ps_rows |= {(item, "SYSTEM", "F"), (item, "ADMINS", "F"), (item, "SERVICE", "M")}
@@ -81,7 +101,7 @@ def test_the_record_install_ps1_writes_is_what_ragon_update_reads() -> None:
 
 
 def test_the_engine_asset_is_named_the_same_in_the_script_and_the_updater() -> None:
-    assert 'ragon-engine-$($Tag.TrimStart(\'v\'))-windows-gfx1151.zip' in INSTALL
+    assert "ragon-engine-$($Tag.TrimStart('v'))-windows-gfx1151.zip" in INSTALL
     assert 'format!("ragon-engine-{}-windows-gfx1151.zip"' in NODE_UPDATE
 
 

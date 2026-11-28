@@ -153,11 +153,23 @@ function Expand-NodeZip([string]$Zip, [string]$Destination) {
     [IO.Compression.ZipFile]::ExtractToDirectory($Zip, $Destination)
 }
 
+# Runs a native tool and returns its exit code. Windows PowerShell 5.1 turns a native command's
+# stderr into a terminating error under $ErrorActionPreference = Stop (and 2>&1 does not help), so
+# the call runs in a child scope that continues; callers read the exit code.
+function Invoke-NodeNative([string]$Tool, [string[]]$Arguments) {
+    $Lines = & {
+        $ErrorActionPreference = "Continue"
+        & $Tool @Arguments 2>&1 | ForEach-Object { "$_" }
+    }
+    $script:NodeNativeOutput = @($Lines)
+    return $LASTEXITCODE
+}
+
 # Runs a tool and fails with its output when it exits non-zero.
 function Invoke-NodeTool([string]$Tool, [string[]]$Arguments) {
-    $Output = & $Tool @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "$Tool $($Arguments -join ' ') failed ($LASTEXITCODE): $($Output -join ' ')" }
-    return $Output
+    $Code = Invoke-NodeNative $Tool $Arguments
+    if ($Code -ne 0) { throw "$Tool $($Arguments -join ' ') failed ($Code): $($script:NodeNativeOutput -join ' ')" }
+    return $script:NodeNativeOutput
 }
 
 # The ssh daemon's block for the job account: no tty, no forwarding. The forced command itself is
@@ -222,7 +234,9 @@ function Install-RagonNode($Paths, [string]$Tag, [string[]]$ClientBinaries, [str
         $Ragon = Join-Path $Paths.Bin "ragon.exe"
         $Engine = Join-Path $Paths.Engine "ragon-serve.exe"
         if (-not (Test-Path $Engine)) { throw "the engine zip has no ragon-serve.exe." }
-        $Install = @("server", "install", "--name", $NodeServiceName, "--state-dir", $Paths.NodeState, "--host", "0.0.0.0",
+        # --host is where the supervisor probes the engine (a connection to 0.0.0.0 fails on Windows);
+        # the address the engine listens on is its own argument, in $EngineArgs (--host 0.0.0.0).
+        $Install = @("server", "install", "--name", $NodeServiceName, "--state-dir", $Paths.NodeState, "--host", "127.0.0.1",
             "--port", "$Port") + $ServerArgs + @("--", $Engine) + $EngineArgs
         Invoke-NodeTool $Tools.Ragon $Install | Out-Null
         $Created += "service:$NodeServiceName"
@@ -236,12 +250,12 @@ function Install-RagonNode($Paths, [string]$Tag, [string[]]$ClientBinaries, [str
             Invoke-NodeTool $Tools.Icacls $Command | Out-Null
         }
         if ($SshdConfig -and (Set-NodeSshdBlock $SshdConfig $NodeJobAccount)) { Save-NodeRecord $Paths $Tag $Created $Port $SshdConfig }
-        & $Tools.Sc start $NodeServiceName 2>&1 | Out-Null
+        Invoke-NodeNative $Tools.Sc @("start", $NodeServiceName) | Out-Null
         $Deadline = (Get-Date).AddSeconds($WaitSeconds)
         $Healthy = $false
         while ((Get-Date) -lt $Deadline) {
-            & $Tools.Ragon server status --name $NodeServiceName --state-dir $Paths.NodeState --port $Port 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { $Healthy = $true; break }
+            $Code = Invoke-NodeNative $Tools.Ragon @("server", "status", "--name", $NodeServiceName, "--state-dir", $Paths.NodeState, "--port", "$Port")
+            if ($Code -eq 0) { $Healthy = $true; break }
             Start-Sleep -Seconds 1
         }
         return $Healthy
@@ -262,19 +276,28 @@ function Uninstall-RagonNode($Paths, $Tools, $Hooks, [string]$SshdConfig, [bool]
         if ($Line) { $Created = $Line.Substring(8) }
     }
     $Removed = @()
-    & $Tools.Sc stop $NodeServiceName 2>&1 | Out-Null
-    # The supervisor's own uninstall removes the service and its firewall rules; sc.exe is the
-    # fallback when the binary is gone.
+    # The supervisor's own uninstall stops the service and removes it and its firewall rules;
+    # sc.exe is the fallback when the binary is gone or that fails.
     $Ragon = Join-Path $Paths.Bin "ragon.exe"
     $Done = $false
     if (Test-Path $Ragon) {
-        & $Tools.Ragon server uninstall --name $NodeServiceName 2>&1 | Out-Null
-        $Done = ($LASTEXITCODE -eq 0)
+        $Done = ((Invoke-NodeNative $Tools.Ragon @("server", "uninstall", "--name", $NodeServiceName)) -eq 0)
     }
-    if (-not $Done) { & $Tools.Sc delete $NodeServiceName 2>&1 | Out-Null }
+    if (-not $Done) {
+        Invoke-NodeNative $Tools.Sc @("stop", $NodeServiceName) | Out-Null
+        Start-Sleep -Seconds 2
+        Invoke-NodeNative $Tools.Sc @("delete", $NodeServiceName) | Out-Null
+    }
     $Removed += "service"
     if ($SshdConfig) { Remove-NodeSshdBlock $SshdConfig }
-    if (Test-Path $Paths.Root) { Remove-Item -Recurse -Force -Path $Paths.Root; $Removed += "distribution" }
+    if (Test-Path $Paths.Root) {
+        # The service's files can stay locked for a moment after it stops.
+        for ($Try = 1; (Test-Path $Paths.Root) -and $Try -le 8; $Try++) {
+            try { Remove-Item -Recurse -Force -Path $Paths.Root -ErrorAction Stop } catch { Start-Sleep -Seconds 2 }
+        }
+        if (Test-Path $Paths.Root) { throw "could not remove $($Paths.Root); a file in it is still in use." }
+        $Removed += "distribution"
+    }
     if ($Created -like "*user:$NodeJobAccount*") { & $Hooks.RemoveUser $NodeJobAccount; $Removed += "user" }
     if ($RemoveData -and (Test-Path $Paths.State)) { Remove-Item -Recurse -Force -Path $Paths.State; $Removed += "data" }
     elseif (Test-Path $Paths.NodeState) { Remove-Item -Recurse -Force -Path $Paths.NodeState }
