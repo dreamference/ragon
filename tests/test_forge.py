@@ -2367,3 +2367,23 @@ def test_a_secret_is_on_disk_before_it_replaces_the_old_one(monkeypatch):
     )
     ForgeSettings.update_state(role="record")
     assert events[:2] == ["fsync", "replace"], "an empty state.json after a power cut has no role"
+
+
+def test_forge_service_memory_allowance_gb_follows_the_container_and_the_role(monkeypatch):
+    from dreamference.forge.forge_service import GIB_IN_GB, MEMORY_CAP_GIB
+
+    ForgeSettings.update_state(role="record")
+    running = [True]
+    monkeypatch.setattr(ForgeContainer, "running", classmethod(lambda cls: running[0]))
+    assert ForgeService.memory_allowance_gb() == MEMORY_CAP_GIB * GIB_IN_GB
+    running[0] = False
+    assert ForgeService.memory_allowance_gb() == 0.0, "a stopped container keeps nothing back"
+
+    def broken(cls, *a, **k):
+        raise OSError("no docker on this host")
+
+    monkeypatch.setattr(ForgeContainer, "running", classmethod(broken))
+    assert ForgeService.memory_allowance_gb() == 0.0, "an unreadable docker falls back to zero"
+
+    monkeypatch.setattr(ForgeSettings, "role", classmethod(lambda cls: None))
+    assert ForgeService.memory_allowance_gb() == 0.0, "a node without a role asks docker nothing"
