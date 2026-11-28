@@ -302,6 +302,121 @@ pub fn check_apply_patch_setting(setting: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// The variable a bare `ragon --remote` names in `--remote-auth-token-env`: it carries the
+/// signed-in account's bearer to Codex's dial, in this process's environment only (never logged,
+/// never written to a file). `TOKEN` in the name keeps it out of the commands Codex runs (Codex's
+/// default shell-environment excludes).
+pub const REMOTE_TOKEN_ENV: &str = "RAGON_REMOTE_AUTH_TOKEN";
+
+/// The port of the primary's front door (the gate's TLS port).
+pub const PRIMARY_GATE_PORT: u16 = 8000;
+
+/// The node's own description, written by its gate at start (`node.json` beside the gate's
+/// state): `primary_name` is set where this node is the primary.
+pub fn gate_node_file(home: &Path) -> PathBuf {
+    home.join(".local/state/dreamference/model-gate/node.json")
+}
+
+/// The primary's name in a `node.json` text, when it is a host label.
+pub fn primary_name_from_node_file(text: &str) -> Option<String> {
+    let doc: serde_json::Value = serde_json::from_str(text).ok()?;
+    let name = doc.get("primary_name")?.as_str()?.trim();
+    auth::is_host_label(name).then(|| name.to_string())
+}
+
+/// The address a bare `--remote` dials: the primary's front door (specs/
+/// DREAMFERENCE_RAGON_REMOTE_SESSIONS.md §6.2, §7.1 A5).
+pub fn primary_remote_url(primary_name: &str) -> String {
+    format!("wss://{primary_name}.local:{PRIMARY_GATE_PORT}/")
+}
+
+/// The index of a `--remote` given with no address: the last argument, or followed by another
+/// flag or by a subcommand's name. Codex refuses those forms; every other form (`--remote ADDR`,
+/// `--remote=ADDR`, even an invalid address) is Codex's and left alone. Nothing after `--` counts.
+pub fn bare_remote_index(command: &Command, args: &[OsString]) -> Option<usize> {
+    for (index, arg) in args.iter().enumerate().skip(1) {
+        let arg = arg.to_string_lossy();
+        if arg == "--" {
+            return None;
+        }
+        if arg != "--remote" {
+            continue;
+        }
+        let bare = match args.get(index + 1).map(|next| next.to_string_lossy()) {
+            None => true,
+            Some(next) => next.starts_with('-') || command.find_subcommand(next.as_ref()).is_some(),
+        };
+        if bare {
+            return Some(index);
+        }
+    }
+    None
+}
+
+/// A bare `--remote` filled in: the arguments with the primary's address, and the bearer the
+/// caller puts in [`REMOTE_TOKEN_ENV`] when one was added.
+#[derive(PartialEq, Eq)]
+pub struct RemoteDefault {
+    /// The command line Codex parses.
+    pub args: Vec<OsString>,
+    /// The signed-in account's bearer, for [`REMOTE_TOKEN_ENV`]; `None` when the user named a
+    /// token variable of their own or no account is signed in.
+    pub token: Option<String>,
+}
+
+// By hand, so a debug print never shows the bearer.
+impl std::fmt::Debug for RemoteDefault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteDefault").field("args", &self.args).field("token", &self.token.as_ref().map(|_| "<redacted>")).finish()
+    }
+}
+
+/// The line for a bare `--remote` on a machine whose node names no primary.
+pub fn no_primary_line() -> String {
+    format!(
+        "ragon --remote with no address dials this node's primary, and this node names none. Give the address: ragon --remote wss://<node>.local:{PRIMARY_GATE_PORT}/"
+    )
+}
+
+/// The line for a bare `--remote` with no account signed in: the dial goes without a token.
+pub fn remote_not_signed_in_line(primary_name: &str) -> String {
+    format!("Not signed in: dialing {primary_name} without a token. Run ragon login to sign in.")
+}
+
+/// Fills a bare `--remote` (A5): the address becomes the primary's front door, named by the node's
+/// own `node.json` under `home`, and `--remote-auth-token-env` names [`REMOTE_TOKEN_ENV`], filled
+/// from the signed-in account of `codex_home` (or `env_key`, as for every local tool), unless the
+/// user named a token variable. `Ok(None)`: no bare `--remote`, the arguments are Codex's.
+///
+/// # Errors
+/// [`no_primary_line`] when the node names no primary.
+pub fn remote_default(command: &Command, args: &[OsString], home: &Path, codex_home: &Path, env_key: Option<&str>) -> Result<Option<RemoteDefault>, String> {
+    let Some(index) = bare_remote_index(command, args) else {
+        return Ok(None);
+    };
+    let primary = std::fs::read_to_string(gate_node_file(home))
+        .ok()
+        .as_deref()
+        .and_then(primary_name_from_node_file)
+        .ok_or_else(no_primary_line)?;
+    let own_variable = args.iter().any(|arg| {
+        let arg = arg.to_string_lossy();
+        arg == "--remote-auth-token-env" || arg.starts_with("--remote-auth-token-env=")
+    });
+    let token = if own_variable { None } else { auth::bearer(codex_home, env_key) };
+    if !own_variable && token.is_none() {
+        eprintln!("{}", remote_not_signed_in_line(&primary));
+    }
+    let mut filled = args[..=index].to_vec();
+    filled.push(OsString::from(primary_remote_url(&primary)));
+    if token.is_some() {
+        filled.push(OsString::from("--remote-auth-token-env"));
+        filled.push(OsString::from(REMOTE_TOKEN_ENV));
+    }
+    filled.extend_from_slice(&args[index + 1..]);
+    Ok(Some(RemoteDefault { args: filled, token }))
+}
+
 /// Parses the process's command line into Codex's CLI type `T`, after [`prepare_args`] has pointed
 /// it at the local model. This is what the one-line hook in Codex's `cli_main` calls in place of
 /// `T::parse()`; taking `T` lets the launcher read Codex's own option definitions (see
@@ -326,6 +441,27 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
     // `--adapter <name>` is Ragon's too (adapter.rs), taken out before the subcommand is found:
     // Codex does not know it, so its value would be taken for the subcommand.
     let (args, adapter_flag) = adapter::without_flag(args);
+    // A bare `--remote` dials the primary with the signed-in account (remote_default; specs/
+    // DREAMFERENCE_RAGON_REMOTE_SESSIONS.md §7.1 A5). Any address given is Codex's to check.
+    let args = if bare_remote_index(command, &args).is_some() {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_default();
+        let codex_home = codex_utils_home_dir::find_codex_home().context("could not resolve CODEX_HOME")?.as_path().to_path_buf();
+        let env_key = std::env::var(auth::local::RAGON_API_KEY_ENV).ok();
+        match remote_default(command, &args, &home, &codex_home, env_key.as_deref()) {
+            Ok(Some(filled)) => {
+                if let Some(token) = filled.token {
+                    // SAFETY: the launcher's start-up path, before Codex spawns threads of its
+                    // own, as auth::start does for its variables.
+                    unsafe { std::env::set_var(REMOTE_TOKEN_ENV, token) };
+                }
+                filled.args
+            }
+            Ok(None) => args,
+            Err(line) => bail!("{line}"),
+        }
+    } else {
+        args
+    };
     // What the user asked for, before anything is added: refine mode's study step starts from it.
     let original = args.clone();
     let user_args: Vec<String> = args
