@@ -720,6 +720,14 @@ def test_adapter_verifier_file_digest_returns_empty_string_when_the_file_cannot_
     assert AdapterVerifier.file_digest(tmp_path / "missing.bin") == ""
 
 
+def test_adapter_verifier_read_returns_a_file_content_and_names_a_missing_one(tmp_path):
+    path = tmp_path / "adapter_config.json"
+    path.write_bytes(b'{"r": 16}')
+    assert AdapterVerifier._read(path) == b'{"r": 16}'
+    with pytest.raises(ValueError, match=r"missing\.json is missing"):
+        AdapterVerifier._read(tmp_path / "missing.json")
+
+
 def test_adapter_verifier_json_reads_a_json_object_file_and_refuses_everything_else(tmp_path):
     path = tmp_path / "adapter_config.json"
     path.write_text(json.dumps({"r": 16}), encoding="utf-8")
