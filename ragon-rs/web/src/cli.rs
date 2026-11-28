@@ -290,9 +290,68 @@ fn launchd_domain() -> String {
     "gui/0".to_string()
 }
 
-/// Stops the web server: the user unit on Linux, the launchd agent on macOS.
-fn stop() -> i32 {
-    let result = if cfg!(target_os = "macos") {
+/// Where a server `ragon web start` detached (on Windows) writes its output.
+fn detached_log(state: &Path) -> PathBuf {
+    state.join("web.log")
+}
+
+/// Stops the server `server.json` names, on Windows: no user unit there, so the process itself.
+fn stop_detached(state: &Path) -> Result<(), String> {
+    let pid = std::fs::read_to_string(server_file(state))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value| value.get("pid")?.as_u64())
+        .ok_or_else(|| "The Ragon web server is not running.".to_string())?;
+    let status = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|err| format!("could not run taskkill: {err}"))?;
+    // A killed server cannot remove its own file.
+    remove_server_file_if_ours(state, u32::try_from(pid).unwrap_or(0));
+    if status.success() { Ok(()) } else { Err(format!("taskkill /PID {pid} failed ({status})")) }
+}
+
+/// Starts `ragon web serve` detached from this console (on Windows), after stopping one running.
+fn start_detached(environment: &Environment, lan: bool, port: u16) -> Result<(), String> {
+    let state = environment.state_dir();
+    let _ = stop_detached(&state);
+    auth::private_dir(&state).map_err(|err| format!("Could not create {}: {err}", state.display()))?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(detached_log(&state))
+        .map_err(|err| format!("Could not open {}: {err}", detached_log(&state).display()))?;
+    let mut command = std::process::Command::new(&environment.ragon);
+    command.args(["web", "serve"]);
+    if lan {
+        command.arg("--lan");
+    }
+    if port != DEFAULT_PORT {
+        command.args(["--port", &port.to_string()]);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        /// `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW`.
+        const FLAGS: u32 = 0x0000_0200 | 0x0000_0008 | 0x0800_0000;
+        command.creation_flags(FLAGS);
+    }
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone().map_err(|err| err.to_string())?)
+        .stderr(log)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("could not start {} web serve: {err}", environment.ragon.display()))
+}
+
+/// Stops the web server: the user unit on Linux, the launchd agent on macOS, the process on Windows.
+fn stop(state: &Path) -> i32 {
+    let result = if cfg!(windows) {
+        stop_detached(state)
+    } else if cfg!(target_os = "macos") {
         let target = format!("{}/{LAUNCHD_LABEL}", launchd_domain());
         launchctl(&["bootout", &target])
     } else {
@@ -310,8 +369,12 @@ fn stop() -> i32 {
     }
 }
 
-/// Writes the service definition and (re)starts it: a user unit on Linux, a launchd agent on macOS.
+/// Writes the service definition and (re)starts it: a user unit on Linux, a launchd agent on
+/// macOS; Windows has neither, so the server is started there as a detached process.
 fn install_and_restart(environment: &Environment, lan: bool, port: u16) -> Result<(), String> {
+    if cfg!(windows) {
+        return start_detached(environment, lan, port);
+    }
     let macos = cfg!(target_os = "macos");
     let (path, text) = if macos {
         let log = environment.home.join("Library/Logs/ragon-web.log");
@@ -339,8 +402,16 @@ fn install_and_restart(environment: &Environment, lan: bool, port: u16) -> Resul
 
 /// Opens a URL in this machine's browser, without waiting for it.
 fn open_browser(url: &str) -> bool {
-    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    // On Windows the URL handler, not `cmd /c start`, which would read `&` in the URL.
+    let (opener, first): (&str, &[&str]) = if cfg!(windows) {
+        ("rundll32", &["url.dll,FileProtocolHandler"])
+    } else if cfg!(target_os = "macos") {
+        ("open", &[])
+    } else {
+        ("xdg-open", &[])
+    };
     std::process::Command::new(opener)
+        .args(first)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -393,7 +464,7 @@ pub async fn run_cli(args: &[String], environment: Environment) -> i32 {
     match words.first().copied() {
         Some("serve") => serve_command(&args[1..], &environment).await,
         Some("start") => start(&args[1..], &environment),
-        Some("stop") => stop(),
+        Some("stop") => stop(&state),
         Some("status") => status(&state),
         Some("open") if words.contains(&"--print-url") => print_login_url(&state),
         Some("open") => open(&state, words.contains(&"--no-browser")),
