@@ -8,11 +8,19 @@ import re
 from collections import Counter
 from pathlib import Path
 from types import ModuleType
+from typing import Final
 
 import pytest
 
 WEBSITE = Path(__file__).resolve().parent.parent / "website"
 PLACEHOLDER = re.compile(r"\{\{([a-z0-9_.]+)\}\}")
+# The share image rendered from SVG (spec DREAMFERENCE_SITE_FRONT_PAGE.md, the OG image row):
+# the only bitmap allowed among the site's pictures.
+OG_IMAGE: Final[Path] = WEBSITE / "assets" / "og.png"
+# The browser home-screen icon is not a product picture; spec §11 checks the page's assets.
+APPLE_TOUCH_ICON: Final[Path] = WEBSITE / "assets" / "apple-touch-icon.png"
+# The bitmap image types the check looks for.
+BITMAP_SUFFIXES: Final[tuple[str, ...]] = (".png", ".jpg", ".jpeg")
 
 
 def _load_builder() -> ModuleType:
@@ -150,3 +158,10 @@ def test_new_dir_is_written_only_when_the_switch_is_on(
     for code in CODES:
         assert old_on[f"{code}/index.html"] == (WEBSITE / code / "index.html").read_bytes()
     assert "/next/" not in old_on["index.html"].decode("utf-8")
+
+
+def test_no_bitmap_picture_except_the_og_image() -> None:
+    bitmaps = [p for p in WEBSITE.rglob("*") if p.suffix.lower() in BITMAP_SUFFIXES]
+    assert sorted(bitmaps) == sorted((OG_IMAGE, APPLE_TOUCH_ICON)), [
+        str(p.relative_to(WEBSITE)) for p in bitmaps
+    ]
