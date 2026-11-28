@@ -8,7 +8,9 @@
 //! A client enrolled for remote access (specs/DREAMFERENCE_RAGON_REMOTE_ACCESS.md §5) also
 //! remembers the node's overlay name, `remote`: a name, never an address. A program that finds the
 //! node's LAN address silent uses that name instead, if NetBird's client reports its management
-//! connected: with the overlay down the name is never handed to the system's resolver.
+//! connected: with the overlay down the name is never handed to the system's resolver. NetBird's
+//! peer list ([`node_peers`]) never chooses a node: a peer picks its own label, so the launcher
+//! only names the candidates it lists and adopts one on the user's explicit `ragon node use`.
 //!
 //! Standard library only: this file is compiled into the launcher and the web commands.
 //!
@@ -41,6 +43,17 @@ pub const DEFAULT_MODEL_PORT: u16 = 8000;
 
 /// The prefix of a node's peer name in the overlay: `ragon-<node id>`.
 pub const OVERLAY_PREFIX: &str = "ragon-";
+
+/// The peer-name prefixes of nodes that enrolled before the product's last rename
+/// (`mightling-<node id>`). Such a node keeps its peer name, and its clients accept it: renaming
+/// the peer would cut off every client until it learnt the new name. The name still reaches a
+/// client only from the join bundle or the node's LAN advert, never from the overlay's peer list.
+pub const LEGACY_OVERLAY_PREFIXES: [&str; 1] = ["mightling-"];
+
+/// Every prefix a node's peer name may carry, the current one first.
+fn overlay_prefixes() -> impl Iterator<Item = &'static str> {
+    std::iter::once(OVERLAY_PREFIX).chain(LEGACY_OVERLAY_PREFIXES)
+}
 
 /// How long the LAN address may take to accept a connection before the overlay name is tried.
 const LAN_PROBE: Duration = Duration::from_millis(300);
@@ -142,19 +155,31 @@ impl Node {
         })
     }
 
-    /// Whether `remote` is this node's own overlay name: `ragon-<its id>.` and a domain. The
-    /// name carries the id, so a client that resolves it has found this node and no other.
+    /// Whether `remote` is this node's own overlay name: `ragon-<its id>.` (or a
+    /// [`LEGACY_OVERLAY_PREFIXES`] prefix) and a domain. The name carries the id, so a client that
+    /// resolves it has found this node and no other.
     pub fn overlay_name_is_its_own(&self) -> bool {
         let remote = self.remote.to_ascii_lowercase();
-        !self.node.is_empty()
-            && remote.len() > OVERLAY_PREFIX.len() + self.node.len() + 1
-            && remote.starts_with(&format!(
-                "{OVERLAY_PREFIX}{}.",
-                self.node.to_ascii_lowercase()
-            ))
+        let id = self.node.to_ascii_lowercase();
+        !id.is_empty()
             && remote
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+            && overlay_prefixes().any(|prefix| {
+                remote
+                    .strip_prefix(prefix)
+                    .and_then(|rest| rest.strip_prefix(id.as_str()))
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .is_some_and(|domain| !domain.is_empty())
+            })
+    }
+
+    /// Whether this node is known by its overlay name only (adopted from NetBird's peer list by
+    /// `ragon node use <overlay name>`, never seen on the LAN): its address is that name.
+    pub fn overlay_only(&self) -> bool {
+        !self.remote.is_empty()
+            && self.address.eq_ignore_ascii_case(&self.remote)
+            && self.overlay_name_is_its_own()
     }
 
     /// This node at its overlay name instead of its LAN address.
@@ -435,6 +460,11 @@ pub fn remote_node_pinned(
 
 /// [`remote_node`]'s choice of address, with the LAN probe and NetBird's state given.
 pub fn reachable(node: Node, lan_answers: fn(&Node) -> bool, overlay_up: fn() -> bool) -> Node {
+    // A node adopted from the overlay (`ragon node use <overlay name>`) has no LAN address: its
+    // name is not probed as one, which would hand it to the system's resolver.
+    if node.overlay_only() {
+        return node;
+    }
     if !node.overlay_name_is_its_own() || lan_answers(&node) || !overlay_up() {
         node
     } else {
@@ -445,14 +475,120 @@ pub fn reachable(node: Node, lan_answers: fn(&Node) -> bool, overlay_up: fn() ->
 /// Whether NetBird's client reports its management connected (`netbird status --json`; the
 /// daemon's socket is open to local users). False when NetBird is absent or says otherwise.
 pub fn overlay_up() -> bool {
-    Command::new("netbird")
-        .args(["status", "--json"])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .is_some_and(|output| management_connected(&String::from_utf8_lossy(&output.stdout)))
+    netbird_status().is_some_and(|status| management_connected(&status))
+}
+
+/// How long `netbird status --json` may take before NetBird counts as absent: a hung daemon must
+/// not stall every start.
+const NETBIRD_WAIT: Duration = Duration::from_secs(2);
+
+/// What `netbird status --json` prints; `None` when NetBird is absent, fails or takes longer than
+/// [`NETBIRD_WAIT`]. It asks the local daemon only: no name is resolved and nothing leaves the
+/// machine.
+pub fn netbird_status() -> Option<String> {
+    let mut command = Command::new("netbird");
+    command.args(["status", "--json"]);
+    output_within(command, NETBIRD_WAIT)
+}
+
+/// The node peers NetBird's client lists (`peers.details[].fqdn` in `netbird status --json`), each
+/// once, in the order listed; this machine's own name (the top-level `fqdn`) is not among them. A
+/// peer's name is what that peer told the overlay's management, so this list is a set of
+/// CANDIDATES: nothing here proves a peer is a node, and no client uses one by itself.
+pub fn node_peers(status: &str) -> Vec<Node> {
+    let Some(details) = peer_details(status) else {
+        return Vec::new();
+    };
+    let mut found: Vec<Node> = Vec::new();
+    for (start, key) in details.match_indices("\"fqdn\"") {
+        let mut chars = details[start + key.len()..].chars().peekable();
+        skip_space(&mut chars);
+        if chars.next() != Some(':') {
+            continue;
+        }
+        skip_space(&mut chars);
+        if let Some(node) = string(&mut chars).as_deref().and_then(node_peer) {
+            if !found.iter().any(|known| known.remote == node.remote) {
+                found.push(node);
+            }
+        }
+    }
+    found
+}
+
+/// The text of the `"details"` array inside the top-level `"peers"` object, brackets included:
+/// strings are skipped whole, so a bracket or a key inside a value does not end or start it.
+fn peer_details(status: &str) -> Option<&str> {
+    let after_peers = status
+        .match_indices("\"peers\"")
+        .find_map(|(start, key)| {
+            status[start + key.len()..]
+                .trim_start()
+                .strip_prefix(':')
+        })?
+        .trim_start();
+    let peers_at = status.len() - after_peers.len();
+    let peers = &status[peers_at..enclosing_end(status, peers_at)?];
+    let after_details = peers
+        .match_indices("\"details\"")
+        .find_map(|(start, key)| peers[start + key.len()..].trim_start().strip_prefix(':'))?
+        .trim_start();
+    if !after_details.starts_with('[') {
+        return None;
+    }
+    let at = peers.len() - after_details.len();
+    Some(&peers[at..enclosing_end(peers, at)?])
+}
+
+/// The end (exclusive) of the object or array that opens at byte `open` of `text`.
+fn enclosing_end(text: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, c) in text[open..].char_indices() {
+        if in_string {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(open + offset + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The node a peer name names: a node prefix, an id of at least eight hex digits and dashes, a
+/// dot and a domain. Known by its id and overlay name only (its address is that name, see
+/// [`Node::overlay_only`]); its ports are the defaults until the node itself says otherwise.
+pub fn node_peer(name: &str) -> Option<Node> {
+    let name = name.trim().trim_end_matches('.').to_ascii_lowercase();
+    let rest = overlay_prefixes().find_map(|prefix| name.strip_prefix(prefix))?;
+    let (id, _domain) = rest.split_once('.')?;
+    if id.len() < 8 || !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return None;
+    }
+    let node = Node {
+        node: id.to_string(),
+        address: name.clone(),
+        model_port: DEFAULT_MODEL_PORT,
+        search_port: Some(8888),
+        remote: name.clone(),
+        ..Node::default()
+    };
+    node.overlay_name_is_its_own().then_some(node)
 }
 
 /// Reads `"management": {..., "connected": true, ...}` out of `netbird status --json` without a
@@ -713,9 +849,15 @@ fn shell_quote(word: &str) -> String {
 fn read_command(argv: &[&str]) -> Option<String> {
     let (name, args) = argv.split_first()?;
     let program = find_program(name)?;
-    let mut child = Command::new(program)
-        .args(args)
-        .env("LC_ALL", "C")
+    let mut command = Command::new(program);
+    command.args(args).env("LC_ALL", "C");
+    output_within(command, WIFI_READ_TIMEOUT)
+}
+
+/// What `command` prints on success, or `None` when it cannot start, fails, or runs past
+/// `timeout` (it is killed then).
+fn output_within(mut command: Command, timeout: Duration) -> Option<String> {
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -729,7 +871,7 @@ fn read_command(argv: &[&str]) -> Option<String> {
         let read = std::io::Read::read_to_string(&mut stdout, &mut output);
         let _ = sender.send(read.ok().map(|_| output));
     });
-    let deadline = Instant::now() + WIFI_READ_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -908,6 +1050,107 @@ mod tests {
             "192.168.50.105",
             "no overlay name, no fallback"
         );
+    }
+
+    #[test]
+    fn a_node_enrolled_before_the_rename_keeps_its_old_peer_name() {
+        let id = "7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001";
+        let old = Node {
+            remote: format!("mightling-{id}.netbird.selfhosted"),
+            ..enrolled()
+        };
+        assert!(old.overlay_name_is_its_own());
+        assert_eq!(
+            reachable(old, |_| false, || true).address,
+            format!("mightling-{id}.netbird.selfhosted")
+        );
+        for remote in [
+            format!("mightling-{id}"),
+            format!("mightling-{id}."),
+            format!("puffin-{id}.netbird.selfhosted"),
+            format!("mightling-ragon-{id}.netbird.selfhosted"),
+            "mightling-0000.netbird.selfhosted".to_string(),
+        ] {
+            assert!(
+                !Node {
+                    remote: remote.clone(),
+                    ..enrolled()
+                }
+                .overlay_name_is_its_own(),
+                "{remote}"
+            );
+        }
+    }
+
+    const PEER_STATUS: &str = r#"{
+      "peers": {
+        "total": 4,
+        "connected": 3,
+        "details": [
+          {"fqdn": "ragon-7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001.netbird.selfhosted", "netbirdIp": "100.90.0.5", "status": "Connected"},
+          {"fqdn": "laptop-of-someone.netbird.selfhosted", "note": "a ] and a { in a value", "status": "Connected"},
+          {"fqdn": "MIGHTLING-0d5e7a91-1c2b-4c3d-8e4f-5a6b7c8d9e0f.netbird.selfhosted.", "status": "Idle"},
+          {"fqdn": "ragon-7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001.netbird.selfhosted", "status": "Connected"}
+        ]
+      },
+      "fqdn": "ragon-11112222-3333-4444-5555-666677778888.netbird.selfhosted",
+      "management": {"url": "https://example.invalid", "connected": true}
+    }"#;
+
+    #[test]
+    fn the_node_peers_are_read_from_netbirds_peer_list_only() {
+        let peers = node_peers(PEER_STATUS);
+        let names: Vec<&str> = peers.iter().map(|peer| peer.remote.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "ragon-7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001.netbird.selfhosted",
+                "mightling-0d5e7a91-1c2b-4c3d-8e4f-5a6b7c8d9e0f.netbird.selfhosted",
+            ],
+            "each peer once, never this machine's own top-level name"
+        );
+        let first = &peers[0];
+        assert_eq!(first.node, "7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001");
+        assert_eq!(first.address, first.remote);
+        assert!(first.overlay_only());
+        assert_eq!(
+            first.model_url(),
+            "http://ragon-7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001.netbird.selfhosted:8000"
+        );
+        assert!(node_peers("").is_empty());
+        assert!(node_peers("not json at all").is_empty());
+        assert!(
+            node_peers(r#"{"fqdn": "ragon-7c1e0c7a-58a4.netbird.selfhosted", "peers": {"total": 0}}"#)
+                .is_empty(),
+            "no details array, no peers: the own name is not one"
+        );
+    }
+
+    #[test]
+    fn only_a_node_shaped_peer_name_is_a_node() {
+        assert!(node_peer("ragon-7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001.netbird.selfhosted").is_some());
+        assert!(node_peer("mightling-7c1e0c7a.netbird.selfhosted").is_some());
+        for name in [
+            "laptop.netbird.selfhosted",
+            "ragon-7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001",
+            "ragon-7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001.",
+            "ragon-7c1e.netbird.selfhosted",
+            "ragon-notahexid.netbird.selfhosted",
+            "puffin-7c1e0c7a-58a4.netbird.selfhosted",
+            "ragon-7c1e0c7a_58a4.netbird.selfhosted",
+            "",
+        ] {
+            assert!(node_peer(name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_node_known_by_its_overlay_name_only_is_never_probed_on_the_lan() {
+        let peer = node_peer("ragon-7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001.netbird.selfhosted").unwrap();
+        // The LAN probe would panic: it must not run for an overlay-only node.
+        let kept = reachable(peer.clone(), |_| panic!("probed"), || panic!("asked"));
+        assert_eq!(kept, peer);
+        assert!(!enrolled().overlay_only(), "a node with a LAN address is not overlay-only");
     }
 
     #[test]

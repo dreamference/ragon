@@ -43,12 +43,15 @@ pub fn export() {
     }
 }
 
-/// The URLs `node` is reached at, which must not go to a proxy: its address, and `<name>.local`,
-/// the name its HTTPS gate is used by (`auth::https_gate_for`).
+/// The URLs `node` is reached at, which must not go to a proxy: its address, `<name>.local`, the
+/// name its HTTPS gate is used by (`auth::https_gate_for`), and its own overlay name (remote access).
 pub fn node_urls(node: &ragon_node_locator::Node) -> Vec<String> {
     let mut urls = vec![node.model_url()];
     if crate::auth::is_host_label(&node.name) {
         urls.push(format!("https://{}.local", node.name));
+    }
+    if node.overlay_name_is_its_own() && node.remote != node.address {
+        urls.push(node.via_overlay().model_url());
     }
     urls
 }
@@ -197,5 +200,20 @@ mod tests {
     fn the_direct_client_builds_for_any_timeout() {
         assert!(direct_client(std::time::Duration::from_millis(1)).is_ok());
         assert!(direct_client(std::time::Duration::from_secs(600)).is_ok());
+    }
+
+    #[test]
+    fn the_nodes_own_overlay_name_skips_the_proxy_too() {
+        let node = ragon_node_locator::Node {
+            node: "11111111-aaaa".to_string(),
+            address: "192.168.50.105".to_string(),
+            model_port: 8000,
+            remote: "mightling-11111111-aaaa.netbird.selfhosted".to_string(),
+            ..Default::default()
+        };
+        let urls = node_urls(&node);
+        assert!(urls.contains(&"http://mightling-11111111-aaaa.netbird.selfhosted:8000".to_string()), "{urls:?}");
+        let stranger = ragon_node_locator::Node { remote: "laptop.netbird.selfhosted".to_string(), ..node };
+        assert_eq!(node_urls(&stranger), vec!["http://192.168.50.105:8000".to_string()]);
     }
 }
