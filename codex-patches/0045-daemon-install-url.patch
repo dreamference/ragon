@@ -1,0 +1,26 @@
+diff --git a/codex-rs/app-server-daemon/src/update_loop.rs b/codex-rs/app-server-daemon/src/update_loop.rs
+--- a/codex-rs/app-server-daemon/src/update_loop.rs
++++ b/codex-rs/app-server-daemon/src/update_loop.rs
+@@ -64,6 +64,13 @@
+ const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+-#[cfg(unix)]
+-const INSTALL_URL: &str = "https://chatgpt.com/codex/install.sh";
+-#[cfg(windows)]
+-const INSTALL_URL: &str = "https://chatgpt.com/codex/install.ps1";
++// Ragon: the primary's install script, which runs `ragon update` (owner Q3), at the gate the
++// launcher names in CODEX_APP_SERVER_LOGIN_ISSUER; never the vendor's. No gate: "", which no
++// request can reach, so the update fails closed.
++static INSTALL_URL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
++    let ext = if cfg!(windows) { "ps1" } else { "sh" };
++    std::env::var("CODEX_APP_SERVER_LOGIN_ISSUER")
++        .ok()
++        .map(|gate| gate.trim().trim_end_matches('/').to_string())
++        .filter(|gate| gate.starts_with("https://") || gate.starts_with("http://"))
++        .map_or_else(String::new, |gate| format!("{gate}/ragon/v1/install.{ext}"))
++});
+ 
+@@ -650,3 +657,3 @@
+ async fn fetch_installer_script(http: &impl InstallerHttp) -> Result<Vec<u8>> {
+-    match http.get(INSTALL_URL).await? {
++    match http.get(&INSTALL_URL).await? {
+         InstallerResponse::Success(body) => Ok(body),
