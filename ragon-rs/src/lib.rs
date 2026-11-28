@@ -314,16 +314,67 @@ pub const REMOTE_TOKEN_ENV: &str = "RAGON_REMOTE_AUTH_TOKEN";
 pub const PRIMARY_GATE_PORT: u16 = 8000;
 
 /// The node's own description, written by its gate at start (`node.json` beside the gate's
-/// state): `primary_name` is set where this node is the primary.
+/// state). It names a primary only on the primary itself: a secondary and a client have none, so
+/// a bare `--remote` reads it only as the last resort there (see [`remote_default`]).
 pub fn gate_node_file(home: &Path) -> PathBuf {
     home.join(".local/state/dreamference/model-gate/node.json")
 }
 
-/// The primary's name in a `node.json` text, when it is a host label.
-pub fn primary_name_from_node_file(text: &str) -> Option<String> {
+/// The primary's id and name in a `node.json` text: set only where this node is the primary, and
+/// only when the name is a host label.
+pub fn primary_from_node_file(text: &str) -> Option<(String, String)> {
     let doc: serde_json::Value = serde_json::from_str(text).ok()?;
+    let id = doc.get("primary_id")?.as_str()?.trim();
     let name = doc.get("primary_name")?.as_str()?.trim();
+    (!id.is_empty() && auth::is_host_label(name)).then(|| (id.to_string(), name.to_string()))
+}
+
+/// The primary's name in an account's id token: the primary signed it, and its issuer is the
+/// primary's front door, `https://<primary>.local:8000` (the accounts service's issuer).
+pub fn primary_name_from_id_token(id_token: &str) -> Option<String> {
+    let claims = auth::screen::claims(id_token);
+    let issuer = claims.get("iss")?.as_str()?;
+    let host = issuer.strip_prefix("https://")?.split(['/', ':']).next()?;
+    let name = host.strip_suffix(".local")?;
     auth::is_host_label(name).then(|| name.to_string())
+}
+
+/// The signed-in account's entry in an `auth.json` text: the `active` primary id and its entry,
+/// or, in a file with no `entries` (the old one-entry layout), no id and the file itself.
+fn active_entry(text: &str) -> Option<(Option<String>, serde_json::Value)> {
+    let doc: serde_json::Value = serde_json::from_str(text).ok()?;
+    match doc.get("entries") {
+        Some(entries) => {
+            let active = doc.get("active")?.as_str()?;
+            Some((Some(active.to_string()), entries.get(active)?.clone()))
+        }
+        None => Some((None, doc)),
+    }
+}
+
+/// The primary a bare `--remote` dials, and the bearer it is sent: the signed-in account's.
+///
+/// The primary is `auth.json`'s `active` id (specs/DREAMFERENCE_RAGON_REMOTE_SESSIONS.md §3.4: the
+/// primary is remembered by its id), named by the issuer of that entry's id token, and the bearer
+/// is that entry's own: never another primary's entry, and never `RAGON_API_KEY`, which was set
+/// for whichever node the user meant. Only where the entry names no issuer (a key entry) or no
+/// account is signed in does this node's `node.json` count, and only on the primary itself: with an
+/// entry, its `primary_id` must be the active id. `None`: no primary is known here.
+pub fn signed_in_primary(home: &Path, codex_home: &Path) -> Option<(String, Option<String>)> {
+    let account = std::fs::read_to_string(codex_home.join("auth.json")).ok().as_deref().and_then(active_entry);
+    let node = std::fs::read_to_string(gate_node_file(home)).ok().as_deref().and_then(primary_from_node_file);
+    match account {
+        Some((id, entry)) => {
+            // The entry alone, read as a one-entry file: its key, else its access token.
+            let token = auth::local::bearer_from_text(&entry.to_string());
+            let named = entry.pointer("/tokens/id_token").and_then(serde_json::Value::as_str).and_then(primary_name_from_id_token);
+            let name = named.or_else(|| {
+                node.filter(|(node_id, _)| id.as_deref() == Some(node_id.as_str())).map(|(_, name)| name)
+            })?;
+            Some((name, token))
+        }
+        None => node.map(|(_, name)| (name, None)),
+    }
 }
 
 /// The address a bare `--remote` dials: the primary's front door (specs/
@@ -427,10 +478,11 @@ impl std::fmt::Debug for RemoteDefault {
     }
 }
 
-/// The line for a bare `--remote` on a machine whose node names no primary.
+/// The line for a bare `--remote` where no primary is known: no account is signed in, and this
+/// node is not a primary.
 pub fn no_primary_line() -> String {
     format!(
-        "ragon --remote with no address dials this node's primary, and this node names none. Give the address: ragon --remote wss://<node>.local:{PRIMARY_GATE_PORT}/"
+        "ragon --remote with no address dials the signed-in account's primary, and none is known here. Run ragon login, or give the address: ragon --remote wss://<node>.local:{PRIMARY_GATE_PORT}/"
     )
 }
 
@@ -439,27 +491,23 @@ pub fn remote_not_signed_in_line(primary_name: &str) -> String {
     format!("Not signed in: dialing {primary_name} without a token. Run ragon login to sign in.")
 }
 
-/// Fills a bare `--remote` (A5): the address becomes the primary's front door, named by the node's
-/// own `node.json` under `home`, and `--remote-auth-token-env` names [`REMOTE_TOKEN_ENV`], filled
-/// from the signed-in account of `codex_home` (or `env_key`, as for every local tool), unless the
-/// user named a token variable. `Ok(None)`: no bare `--remote`, the arguments are Codex's.
+/// Fills a bare `--remote` (A5): the address becomes the front door of the signed-in account's
+/// primary, and `--remote-auth-token-env` names [`REMOTE_TOKEN_ENV`], filled from that primary's
+/// own entry in `codex_home` ([`signed_in_primary`]), unless the user named a token variable.
+/// `Ok(None)`: no bare `--remote`, the arguments are Codex's.
 ///
 /// # Errors
-/// [`no_primary_line`] when the node names no primary.
-pub fn remote_default(command: &Command, args: &[OsString], home: &Path, codex_home: &Path, env_key: Option<&str>) -> Result<Option<RemoteDefault>, String> {
+/// [`no_primary_line`] when no primary is known.
+pub fn remote_default(command: &Command, args: &[OsString], home: &Path, codex_home: &Path) -> Result<Option<RemoteDefault>, String> {
     let Some(index) = bare_remote_index(command, args) else {
         return Ok(None);
     };
-    let primary = std::fs::read_to_string(gate_node_file(home))
-        .ok()
-        .as_deref()
-        .and_then(primary_name_from_node_file)
-        .ok_or_else(no_primary_line)?;
+    let (primary, token) = signed_in_primary(home, codex_home).ok_or_else(no_primary_line)?;
     let own_variable = args[..remote_scan(command, args).1].iter().any(|arg| {
         let arg = arg.to_string_lossy();
         arg == "--remote-auth-token-env" || arg.starts_with("--remote-auth-token-env=")
     });
-    let token = if own_variable { None } else { auth::bearer(codex_home, env_key) };
+    let token = if own_variable { None } else { token };
     if !own_variable && token.is_none() {
         eprintln!("{}", remote_not_signed_in_line(&primary));
     }
@@ -504,8 +552,7 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
             bail!("{}", no_primary_line());
         };
         let codex_home = codex_utils_home_dir::find_codex_home().context("could not resolve CODEX_HOME")?.as_path().to_path_buf();
-        let env_key = std::env::var(auth::local::RAGON_API_KEY_ENV).ok();
-        match remote_default(command, &args, &home, &codex_home, env_key.as_deref()) {
+        match remote_default(command, &args, &home, &codex_home) {
             Ok(Some(filled)) => {
                 if let Some(token) = filled.token {
                     // SAFETY: the launcher's start-up path, before Codex spawns threads of its
