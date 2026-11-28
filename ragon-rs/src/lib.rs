@@ -2673,15 +2673,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_server_that_never_answers_ends_the_wait_with_an_error() {
+    async fn a_server_that_stays_unavailable_ends_the_wait_with_an_error() {
+        let base = stand_in(&[("/v1/models", "503 Service Unavailable", "{}")]);
         let started = Instant::now();
         let result = wait_for_model_within(
-            "http://127.0.0.1:1",
+            &base,
             Duration::from_millis(300),
             Duration::from_millis(50),
         )
         .await;
-        assert!(result.unwrap_err().to_string().to_lowercase().contains("refused"));
+        assert!(result.unwrap_err().to_string().contains("HTTP 503 Service Unavailable"));
         assert!(started.elapsed() < Duration::from_secs(10));
     }
 
