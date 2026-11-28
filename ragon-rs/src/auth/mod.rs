@@ -423,6 +423,76 @@ pub async fn secure_gate(host: &str, codex_home: &Path, node_id: &str, node_name
     Ok(Secured::Https(gate))
 }
 
+/// What [`prove_overlay_node`] found out about the machine behind an overlay name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverlayProof {
+    /// It answered by the node's own name under the CA pinned for the id, and says that id: it holds
+    /// the node's key. Carries the node's name.
+    Proven(String),
+    /// No CA is pinned for the id (the node has no accounts, or this machine never signed in to it):
+    /// the overlay path carries nothing that can be checked, so only the user can vouch for it.
+    NoPin,
+    /// A CA is pinned and the machine did not prove it holds it; the text says what happened.
+    Failed(String),
+}
+
+/// Checks that the machine at `overlay`:`port` is the node `node_id` before the launcher sends it
+/// anything else (`ragon node use <overlay name>`, REMOTE_ACCESS §5). Possible only where this
+/// machine pinned the node's CA before: the public info document is read over TLS without
+/// verification (it names the node, nothing secret is sent), then read again as
+/// `https://<node name>.local:<port>`, connecting to the overlay name's addresses and trusting
+/// only the pinned CA. Without a pin nothing is sent at all.
+pub async fn prove_overlay_node(overlay: &str, port: u16, codex_home: &Path, node_id: &str) -> OverlayProof {
+    let Ok(pem) = std::fs::read(pin::path(codex_home, node_id)) else {
+        return OverlayProof::NoPin;
+    };
+    let failed = |why: String| OverlayProof::Failed(format!("{overlay} {why}"));
+    let addresses: Vec<std::net::SocketAddr> = match std::net::ToSocketAddrs::to_socket_addrs(&(overlay, port)) {
+        Ok(found) => found.collect(),
+        Err(_) => Vec::new(),
+    };
+    if addresses.is_empty() {
+        return failed("does not resolve (is the overlay up? netbird status)".to_string());
+    }
+    let Ok(cert) = reqwest::Certificate::from_pem(&pem) else {
+        return failed(format!("cannot be checked: the CA pinned for node {node_id} cannot be read"));
+    };
+    let Ok(lenient) = reqwest::Client::builder()
+        .no_proxy()
+        .danger_accept_invalid_certs(true)
+        .resolve_to_addrs(overlay, &addresses)
+        .timeout(Duration::from_secs(3))
+        .build()
+    else {
+        return failed("cannot be checked: no HTTP client".to_string());
+    };
+    let Some(info) = fetch(&lenient, &format!("https://{overlay}:{port}/ragon/v1/info")).await.as_deref().and_then(parse_info) else {
+        return failed("does not answer over https with a node's info".to_string());
+    };
+    if info.node_id != node_id {
+        return failed(format!("answers as node {}, not {node_id}", info.node_id));
+    }
+    if !is_host_label(&info.node_name) {
+        return failed(format!("names itself {:?}, which no certificate can name", info.node_name));
+    }
+    let gate = format!("{}.local", info.node_name);
+    let Ok(pinned_only) = reqwest::Client::builder()
+        .no_proxy()
+        .tls_built_in_root_certs(false)
+        .add_root_certificate(cert)
+        .resolve_to_addrs(&gate, &addresses)
+        .timeout(Duration::from_secs(3))
+        .build()
+    else {
+        return failed("cannot be checked: no HTTP client".to_string());
+    };
+    match fetch(&pinned_only, &format!("https://{gate}:{port}/ragon/v1/info")).await.as_deref().and_then(parse_info) {
+        Some(verified) if verified.node_id == node_id => OverlayProof::Proven(info.node_name),
+        Some(verified) => failed(format!("answers as node {} under the pinned CA", verified.node_id)),
+        None => failed(format!("does not present a certificate of the CA pinned for node {node_id}")),
+    }
+}
+
 /// Whether the machine that answered at an advertised address may stand for the advertised node:
 /// once the advertised id is pinned, only an answer with that same id may (the answer comes over
 /// TLS not verified yet, so the machine chooses the id it reports; another id would be pinned and
