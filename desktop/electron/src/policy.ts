@@ -118,6 +118,7 @@ export interface Policy {
   /** The `thread/start` field naming the window's own tools (the terminal's output, the preview's console); the policy writes their definitions as `dynamicTools`. */
   windowToolsField: string;
   windowTools: ReadonlyMap<string, unknown>;
+  desktopNodeRecovery: ReadonlyMap<string, ReadonlyMap<string, AccountField>>;
   /** The desktop window's account messages to its main process (`desktopAccount`), each with the fields it carries and their kinds. */
   desktopAccount: ReadonlyMap<string, ReadonlyMap<string, AccountField>>;
 }
@@ -129,12 +130,12 @@ export type AccountField = { kind: "oneOf"; values: ReadonlySet<string> } | { ki
 export const ACCOUNT_TEXT_MAX = 256;
 export const ACCOUNT_SECRET_MAX = 1024;
 
-function accountMessages(value: unknown): Map<string, Map<string, AccountField>> {
-  if (!isObject(value) || !isObject(value.messages)) throw new Error("policy.json: `desktopAccount` must name its messages");
+function desktopMessages(value: unknown, section: string): Map<string, Map<string, AccountField>> {
+  if (!isObject(value) || !isObject(value.messages)) throw new Error(`policy.json: ${section} must name its messages`);
   return new Map(Object.entries(value.messages).map(([type, fields]) => {
-    if (!isObject(fields)) throw new Error(`policy.json: the account message \`${type}\` must be an object of fields`);
+    if (!isObject(fields)) throw new Error(`policy.json: the desktop message \`${type}\` must be an object of fields`);
     return [type, new Map(Object.entries(fields).map(([field, kind]): [string, AccountField] => {
-      if (field === "type") throw new Error(`policy.json: the account message \`${type}\` cannot name \`type\` as a field`);
+      if (field === "type") throw new Error(`policy.json: the desktop message \`${type}\` cannot name \`type\` as a field`);
       if (kind === "text" || kind === "secret") return [field, { kind }];
       if (Array.isArray(kind) && kind.length > 0 && kind.every((item) => typeof item === "string")) return [field, { kind: "oneOf", values: new Set(kind as string[]) }];
       throw new Error(`policy.json: the field \`${field}\` of \`${type}\` must be text, secret or a list of values`);
@@ -202,7 +203,8 @@ export function parsePolicy(value: unknown): Policy {
     ),
     windowToolsField: string(value, "windowToolsField"),
     windowTools: new Map(Object.entries(isObject(value.windowTools) ? value.windowTools : (() => { throw new Error("policy.json: `windowTools` must be an object"); })()) as [string, unknown][]),
-    desktopAccount: accountMessages(value.desktopAccount),
+    desktopNodeRecovery: desktopMessages(value.desktopNodeRecovery, "desktopNodeRecovery"),
+    desktopAccount: desktopMessages(value.desktopAccount, "desktopAccount"),
   };
   for (const [name, spec] of policy.windowTools) {
     if (!isObject(spec) || spec.name !== name) throw new Error(`policy.json: the window tool \`${name}\` must carry its own name`);
@@ -242,9 +244,13 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
  * and the field, never what the field held, so a password cannot reach a log through an error.
  */
 export function vetDesktopAccount(message: unknown, policy: Policy = POLICY): JsonObject {
-  if (!isObject(message) || typeof message.type !== "string") throw new Error("an account message must name its type");
-  const fields = policy.desktopAccount.get(message.type);
-  if (!fields) throw new Error("not an account message the policy names");
+  return vetDesktopFields(message, policy.desktopAccount);
+}
+
+export function vetDesktopFields(message: unknown, messages: Policy["desktopNodeRecovery"]): JsonObject {
+  if (!isObject(message) || typeof message.type !== "string") throw new Error("a desktop message must name its type");
+  const fields = messages.get(message.type);
+  if (!fields) throw new Error("not a message the policy names");
   const type = message.type;
   for (const key of Object.keys(message)) {
     if (key !== "type" && !fields.has(key)) throw new Error(`\`${type}\` carries a field the policy does not name`);

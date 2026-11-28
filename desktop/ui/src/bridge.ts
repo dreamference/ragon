@@ -539,7 +539,10 @@ export interface NodeList {
 }
 
 /** Settings › Node: `ragon node list --json` and `ragon node use <name>`, in the main process. */
+export type VpnResult = { state: "ready"; started: Started } | { state: "discover"; started: Started } | { state: "unenrolled" | "down" | "missing" };
 export const nodes = {
+  vpn: () => send<VpnResult>({ type: "node/vpn" }),
+  address: (address: string) => send<boolean>({ type: "node/address", address }),
   list: () => send<NodeList>({ type: "node/list" }),
   use: (choice: string) => send<string>({ type: "node/use", choice }),
 };

@@ -13,6 +13,7 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 
 import { ASK_PROMPT, askThreads, askTitle, attachmentKind, attachmentName, baseName, fileKindLabel, insideFolder, isAskThread, turnInput, viewTabs, type Attached } from "./ask";
 import * as bridge from "./bridge";
+import { VpnRecovery } from "./VpnRecovery";
 import { needsNodeChoice, pickable } from "./nodechoice";
 import { copyText } from "./clipboard";
 import { Composer, type ComposerAttachment } from "./ComposerView";
@@ -507,10 +508,10 @@ export function App() {
     listQueue(client, threadId).then((items) => dispatch({ type: "queue", threadId, items })).catch(() => {});
   }, [client]);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (running?: bridge.Started) => {
     dispatch({ type: "server", status: "starting" });
     try {
-      const started = await bridge.startServer();
+      const started = running ?? await bridge.startServer();
       setServedModel(started.served_model);
       setAskRoot(started.ask_root ?? null);
       await client.request("initialize", { clientInfo: CLIENT_INFO, capabilities: { experimentalApi: true, requestAttestation: false } });
@@ -3805,7 +3806,7 @@ function CopyButton({ text: value }: { text: string }) {
 }
 
 
-function StartupScreen(props: { state: string; stderr: string[]; protocolErrors: string[]; notices: string[]; onRetry: () => void }) {
+function StartupScreen(props: { state: string; stderr: string[]; protocolErrors: string[]; notices: string[]; onRetry: (running?: bridge.Started) => void }) {
   const log = [...props.stderr, ...props.protocolErrors, ...props.notices];
   return (
     <div className="startup">
@@ -3815,7 +3816,9 @@ function StartupScreen(props: { state: string; stderr: string[]; protocolErrors:
         : "ragon app-server is waiting for the model server. A cold load takes a few minutes; `ragon-admin server start` starts it if it is stopped."}</p>
       <pre className="log">{log.join("\n") || "…"}</pre>
       {props.state === "exited" && needsNodeChoice(log) ? <NodePicker /> : null}
-      {props.state === "exited" ? <button className="primary" onClick={props.onRetry}>Start again</button> : null}
+      {bridge.host() === "electron"
+        ? <VpnRecovery exited={props.state === "exited"} log={log} connect={props.onRetry} />
+        : props.state === "exited" && <button className="primary" onClick={() => props.onRetry()}>Start again</button>}
     </div>
   );
 }

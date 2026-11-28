@@ -13,6 +13,7 @@
 // `rg`); never the Codex app's analytics flag.
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { clientPath } from "./nodes";
 import { command } from "./platform";
 import path from "node:path";
 import readline from "node:readline";
@@ -54,12 +55,14 @@ export class AppServer {
   constructor(private readonly resourcesPath: string | null, private readonly events: ServerEvents) {}
 
   /** Starts `ragon app-server` if it is not running. */
-  start(): Started {
+  start(overlayHost?: string): Started {
     const home = codexHome();
     if (this.child) return { served_model: home ? servedModel(home) : null, started: false, ask_root: this.askRootFor(home) };
     const ragon = findRagon(this.resourcesPath);
     if (!ragon) throw new Error("ragon is not installed: build it with `ragon-admin codex build`, or install Ragon");
     const env: NodeJS.ProcessEnv = { ...process.env, LOG_FORMAT: "json", RUST_LOG: process.env.RUST_LOG ?? "warn" };
+    env.PATH = clientPath();
+    if (overlayHost) env.DREAMFERENCE_VLLM_HOST = overlayHost;
     if (this.resourcesPath) env.PATH = `${this.resourcesPath}${path.delimiter}${env.PATH ?? ""}`;
     const run = command(ragon, ["-c", "features.code_mode_host=true", "app-server"]);
     const child = spawn(run.file, run.args, { env, stdio: ["pipe", "pipe", "pipe"], shell: run.shell, windowsHide: true });

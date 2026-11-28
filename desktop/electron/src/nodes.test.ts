@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { Nodes, parseList } from "./nodes";
+import { Nodes, nodeAddress, parseList, useAddress, vpnRoute } from "./nodes";
 import { nodeScript } from "./test-ragon";
 
 const LIST = {
@@ -54,5 +54,47 @@ else console.log("Using node " + process.argv[4] + " at http://192.168.50.106:80
     const nodes = new Nodes();
     expect((await nodes.list(ragon)).thisMachine).toBe("node");
     await expect(nodes.use(ragon, "spark-1")).rejects.toThrow("from the list");
+  });
+});
+
+describe("startup node recovery", () => {
+  it("starts only with the enrolled node's overlay URL and connected management", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ragon-vpn-"));
+    try {
+      const file = path.join(home, "node.json");
+      const client = nodeScript(home, "netbird", `if (process.argv.slice(2).join(" ") !== "status --json") process.exit(1);
+console.log(JSON.stringify({management: {connected: true}}));`);
+      await expect(vpnRoute(home, client)).resolves.toEqual({ state: "unenrolled" });
+      const peers = nodeScript(home, "peers", 'console.log(JSON.stringify({management:{connected:true},peers:{details:[{fqdn:"peer.example"}]}}))');
+      await expect(vpnRoute(home, peers)).resolves.toEqual({ state: "discover" });
+      const record = { node: "abcd", remote: "ragon-abcd.overlay.test", model_port: 8123 };
+      fs.writeFileSync(file, JSON.stringify({ ...record, node: "other" }));
+      await expect(vpnRoute(home, client)).resolves.toEqual({ state: "unenrolled" });
+      fs.writeFileSync(file, JSON.stringify(record));
+      await expect(vpnRoute(home, client)).resolves.toEqual({ state: "ready", host: "http://ragon-abcd.overlay.test:8123" });
+      await expect(vpnRoute(home, null)).resolves.toEqual({ state: "missing" });
+      const loggedOut = nodeScript(home, "logged-out", 'console.log(JSON.stringify({daemonStatus:"NeedsLogin"}))');
+      await expect(vpnRoute(home, loggedOut)).resolves.toEqual({ state: "down" });
+      const down = nodeScript(home, "down", 'console.log(JSON.stringify({peers:{connected:2}, management:{connected:false}}))');
+      await expect(vpnRoute(home, down)).resolves.toEqual({ state: "down" });
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("saves a named address with node use, accepting only a host and optional port", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ragon-address-"));
+    try {
+      const log = path.join(home, "args");
+      const ragon = nodeScript(home, "ragon", `require("fs").writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)))`);
+      await useAddress(ragon, "http://model.example:8123/");
+      expect(JSON.parse(fs.readFileSync(log, "utf8"))).toEqual(["node", "use", "model.example:8123"]);
+      expect(nodeAddress("[::1]:8123")).toBe("[::1]:8123");
+      for (const bad of ["--help", "model.example?token=x", "user@node.test", "node.test;id", "http://node.test/file", "node.test:99999"]) {
+        expect(() => nodeAddress(bad)).toThrow("Enter a node address");
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });

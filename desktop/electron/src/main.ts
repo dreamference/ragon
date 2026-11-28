@@ -39,12 +39,12 @@ import { addRepeating, addTask, dropRepeating, dropTask, listRepeating, nightSta
 import { applyTask, taskNote } from "./night";
 import { signIn } from "./login";
 import { accountState, signOut } from "./account";
-import { POLICY, vetDesktopAccount } from "./policy";
+import { POLICY, vetDesktopAccount, vetDesktopFields } from "./policy";
 import { ARCHIVE, nightUnread, searchArchive } from "./nightinbox";
 import { writeWorkAttachment } from "./attachments";
 import { listMemoryFiles, writeMemoryFile } from "./memoryfiles";
 import * as mcpb from "./mcpb";
-import { Nodes } from "./nodes";
+import { Nodes, nodeAddress, useAddress, vpnRoute } from "./nodes";
 import { docsAdd, docsReindex, docsRemove, docsStatus, locate, syncKnowledge } from "./docs";
 import { Tasks } from "./tasks";
 import { PANE_KINDS, WindowHub, paneAction, type PaneKind, type WindowKind } from "./windows";
@@ -683,6 +683,26 @@ export async function main(options: MainOptions): Promise<void> {
         return own.isAlwaysOnTop();
       case "app/home":
         return app.getPath("home");
+      case "node/vpn": {
+        vetDesktopFields(message, POLICY.desktopNodeRecovery);
+        const route = await vpnRoute(codexHome());
+        if (route.state !== "ready" && route.state !== "discover") return { state: route.state };
+        const started = server.start(route.state === "ready" ? route.host : undefined);
+        syncHost?.start();
+        return { state: route.state, started };
+      }
+      case "node/address": {
+        vetDesktopFields(message, POLICY.desktopNodeRecovery);
+        const address = nodeAddress(message.address);
+        const ragon = findRagon(resourcesPath());
+        if (!ragon) throw new Error("ragon is not installed");
+        const answer = await dialog.showMessageBox(own, {
+          message: `Use ${address} as your Ragon node?`, buttons: ["Cancel", "Use node"], cancelId: 0, defaultId: 1,
+        });
+        if (answer.response !== 1) return false;
+        await useAddress(ragon, address);
+        return true;
+      }
       case "node/list": {
         const ragon = findRagon(resourcesPath());
         if (!ragon) throw new Error("ragon is not installed");

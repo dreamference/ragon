@@ -16,6 +16,31 @@ describe("the app-server's process", () => {
     }
   });
 
+  it("starts the agent with the enrolled node as its model host", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ragon-vpn-server-"));
+    process.env.CODEX_HOME = dir;
+    process.env.RAGON_BIN = nodeScript(dir, "ragon", 'console.error(process.env.DREAMFERENCE_VLLM_HOST);');
+    const lines: string[] = [];
+    let finished!: () => void;
+    const exit = new Promise<void>(resolve => { finished = resolve; });
+    const server = new AppServer(null, {
+      deliver: event => {
+        if (event.channel === "work://stderr") lines.push(event.payload);
+        if (event.channel === "work://exit") finished();
+      },
+      busyChanged() {},
+    });
+    try {
+      const host = "http://ragon-abcd.overlay.test:8123";
+      expect(server.start(host).started).toBe(true);
+      await exit;
+      expect(lines).toEqual([host]);
+    } finally {
+      server.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(process.platform === "win32")("closing its input throws nothing in this process", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ragon-server-closed-"));
     process.env.CODEX_HOME = path.join(dir, "home");

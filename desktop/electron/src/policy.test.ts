@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { POLICY, airgapThread, levelMatters, namedPrompt, parsePolicy, threadPlace, vetDesktopAccount, vetOutgoing, type PromptSource, type WorkspaceSandbox } from "./policy";
+import { POLICY, airgapThread, levelMatters, namedPrompt, parsePolicy, threadPlace, vetDesktopAccount, vetDesktopFields, vetOutgoing, type PromptSource, type WorkspaceSandbox } from "./policy";
 
 const WEB = path.join(__dirname, "..", "..", "..", "ragon-rs", "web");
 
@@ -308,4 +308,14 @@ describe("what the policy refuses or pins without a conformance case", () => {
     const file = JSON.parse(fs.readFileSync(path.join(WEB, "policy.json"), "utf8"));
     expect(() => parsePolicy({ ...file, bridgeAllowedRequests: [...file.bridgeAllowedRequests, "account/login/start"] })).toThrow(/every request a phone bridge may send must be allowed/);
   });
+});
+
+it("accepts only the two node recovery messages and their declared fields", () => {
+  const vet = (message: unknown) => vetDesktopFields(message, POLICY.desktopNodeRecovery);
+  expect(vet({ type: "node/vpn" })).toEqual({ type: "node/vpn" });
+  expect(vet({ type: "node/address", address: "model.example" })).toHaveProperty("address");
+  for (const message of [
+    { type: "node/connect" }, { type: "node/vpn", host: "model.example" },
+    { type: "node/address" }, { type: "node/address", address: "model.example", secret: "private" },
+  ]) expect(() => vet(message)).toThrow();
 });

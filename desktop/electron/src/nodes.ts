@@ -3,13 +3,16 @@
 // `ragon node list --json` (the same browse as `ragon node list`, names only: no address, URL or
 // configured host is in it) and `ragon node use <name>`, which remembers the node in
 // `$CODEX_HOME/node.json` as it always has (the last address stays its fallback after a failed
-// browse). The window only ever sends a name, or a node's id when it advertises no name, from the
-// list it was last given; never an address. Nothing browses until the page asks: an mDNS query at
+// browse). The Settings picker only sends a name, or a node's id when it advertises no name, from the
+// list it was last given. Startup recovery confirms a manually entered address separately. Nothing browses until the page asks: an mDNS query at
 // start-up would be a finding of the egress audit's app session. No Electron here.
 
 import { execFile } from "node:child_process";
 
-import { command } from "./platform";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { isIP } from "node:net";
+import { command, programOnPath } from "./platform";
 
 export interface NodeEntry {
   name: string;
@@ -94,5 +97,66 @@ export class Nodes {
       return Promise.reject(new Error("choose a node from the list"));
     }
     return run(ragon, ["node", "use", choice]).then((output) => output.trim());
+  }
+}
+
+/** GUI launches may omit the directory where remote join installed NetBird. */
+export function clientPath(): string {
+  const installed = process.platform === "win32"
+    ? path.join(process.env.ProgramFiles || "C:\\Program Files", "Ragon", "NetBird")
+    : "/usr/local/bin";
+  return [process.env.PATH, installed].filter(Boolean).join(path.delimiter);
+}
+
+const DNS_NAME = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+/** Only a remembered overlay name carrying the remembered node's own id can become a server URL. */
+export async function vpnRoute(home: string | null, client = programOnPath("netbird", process.platform, clientPath())) {
+  if (!home) throw new Error("The remembered node is unavailable.");
+  let record;
+  try {
+    record = JSON.parse(await readFile(path.join(home, "node.json"), "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Could not read the remembered node.");
+  }
+  const { node, remote, model_port: port } = record ?? {};
+  const remembered = typeof node === "string" && node && typeof remote === "string" && DNS_NAME.test(remote)
+    && remote.toLowerCase().startsWith(`ragon-${node.toLowerCase()}.`);
+  if (!client) return { state: remembered ? "missing" : "unenrolled" } as const;
+  try {
+    const status = JSON.parse(await run(client, ["status", "--json"]));
+    if (status.daemonStatus === "NeedsLogin") return { state: remembered ? "down" : "unenrolled" } as const;
+    if (status.management?.connected === true) {
+      if (remembered) {
+        const modelPort = Number.isInteger(port) && port > 0 && port <= 65535 ? port : 8000;
+        return { state: "ready", host: `http://${remote}:${modelPort}` } as const;
+      }
+      // After a reinstall or a peer rename, only the launcher may select a node from the peers.
+      if (Array.isArray(status.peers?.details) && status.peers.details.length) return { state: "discover" } as const;
+      return { state: "unenrolled" } as const;
+    }
+  } catch {
+    // The CLI can include peer and management details in errors. Only expose the connection state.
+  }
+  return { state: "down" } as const;
+}
+
+/** Accept a single address in the launcher's node-use syntax, including IPv6 and a model port. */
+export function nodeAddress(value: unknown): string {
+  if (typeof value === "string" && value.length <= 256) {
+    const address = value.replace(/^http:\/\//i, "").replace(/\/$/, "");
+    if (isIP(address)) return address;
+    const match = /^(?:\[([a-f0-9:.]+)\]|([a-z0-9.-]+))(?::([0-9]{1,5}))?$/i.exec(address);
+    if (match && (match[1] ? isIP(match[1]) === 6 : DNS_NAME.test(match[2]))
+        && (!match[3] || (+match[3] > 0 && +match[3] <= 65535))) return address;
+  }
+  throw new Error("Enter a node address, optionally followed by its model port.");
+}
+
+export async function useAddress(ragon: string, address: string): Promise<void> {
+  try {
+    await run(ragon, ["node", "use", nodeAddress(address)]);
+  } catch {
+    throw new Error("The node address could not be saved.");
   }
 }

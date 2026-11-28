@@ -149,6 +149,8 @@ export type FromView =
   /** Settings › Notifications: one notification now, to see that they arrive. */
   | { type: "notify/test" }
   /** Settings › Node (nodes.ts): the nodes on the network, by name, and the choice of one. */
+  | { type: "node/vpn" }
+  | { type: "node/address"; address: string }
   | { type: "node/list" }
   | { type: "node/use"; choice: string }
   /** Quit and start again, so the agent's server resolves the node chosen (Settings › Node). */
