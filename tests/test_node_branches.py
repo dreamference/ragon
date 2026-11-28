@@ -717,3 +717,28 @@ def test_a_jump_address_is_used_only_for_a_single_machine():
     assert one._address("new-node") == "jump-name"
     two = NodeProvisioner(["node-a", "node-b"], {"user": "user", "via": "jump-name"})
     assert two._address("node-a") == "node-a" and two._address("node-b") == "node-b"
+
+
+def test_node_model_sync_sync_fails_when_the_node_refuses_the_copy(monkeypatch, tmp_path, capsys):
+    # A failed node-side receive (non-zero ssh exit) ends the copy with 1 and keeps the node's
+    # cache as it was; the failure message names both exit codes.
+    def fake_popen(argv, **kwargs):
+        if argv[0] == "tar":
+            return SimpleNamespace(stdout=io.BytesIO(), returncode=0, wait=lambda: 0)
+        return SimpleNamespace(wait=lambda: 3)
+
+    import dreamference.node.node_model_sync as nms
+
+    monkeypatch.setattr(NodePairing, "find", classmethod(lambda cls, name, browse=True: PAIRED))
+    monkeypatch.setattr(
+        NodePairing,
+        "ssh_command",
+        classmethod(lambda cls, record, request: ["ssh", "-p", "22", "u@house-2.local", request]),
+    )
+    monkeypatch.setattr(NodeModelSync, "hub", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(NodeModelSync, "repos", classmethod(lambda cls, key: ["org/model"]))
+    monkeypatch.setattr(NodeModelSync, "members", classmethod(lambda cls, hub, repo: []))
+    monkeypatch.setattr(NodeModelSync, "size", classmethod(lambda cls, paths: 1024**3))
+    monkeypatch.setattr(nms.subprocess, "Popen", fake_popen)
+    assert NodeModelSync.sync("house-2", a_matrix_key()) == 1
+    assert "The copy did not complete (node exit 3, tar exit 0)" in capsys.readouterr().out
