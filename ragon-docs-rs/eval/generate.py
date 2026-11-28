@@ -498,16 +498,22 @@ for name in sorted(os.listdir(src)) if os.path.isdir(src) else []:
         f'Text adapted from the Wikipedia article "{title}" by Wikipedia contributors, '
         "CC BY-SA 4.0. Generated for the ragon-docs evaluation set."
     )
-    for el in soup.find_all(["h2", "h3", "p"]):
+    for el in soup.find_all([DOCX_H2, DOCX_H3, "p"]):
         text = el.get_text(" ", strip=True)
         if not text:
             continue
-        if el.name == "h2":
+        if el.name == DOCX_H2:
             doc.add_heading(text, level=1)
-        elif el.name == "h3":
+        elif el.name == DOCX_H3:
             doc.add_heading(text, level=2)
         else:
             doc.add_paragraph(text)
     doc.core_properties.author = "Wikipedia contributors"
     doc.save(f"{ROOT}/docx/{name[:-5]}.docx")
 print("generated")
+import sys
+from email.message import EmailMessage
+
+# DOCX section heading tags written as real headings (anything else becomes a paragraph).
+DOCX_H2 = "h2"
+DOCX_H3 = "h3"
