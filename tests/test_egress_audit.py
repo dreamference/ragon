@@ -1162,6 +1162,32 @@ def test_without_image_search_the_turn_is_skipped_and_says_so(tmp_path, monkeypa
     assert not (tmp_path / "home").exists()
 
 
+def test_egress_audit_prepare_image_search_says_no_when_the_home_cannot_be_laid_out(
+    tmp_path, monkeypatch
+):
+    # The scratch home cannot be laid out (an unreadable, or otherwise failing, home is the same
+    # `OSError`): the turn is skipped instead of breaking the session.
+    from dreamference.chat import image_search_sidecar
+
+    secret = tmp_path / "image-search" / "secret"
+    secret.parent.mkdir()
+    secret.write_text("s3cret")
+    monkeypatch.setattr(image_search_sidecar, "IMAGE_SEARCH_SECRET_FILE", str(secret))
+    monkeypatch.setattr(EgressAudit, "write_admin", classmethod(lambda cls, path: None))
+    assert EgressAudit.prepare_image_search(str(tmp_path / "home")) is True
+    assert (tmp_path / "home" / ".local" / "bin").is_dir()
+    assert (tmp_path / "home" / ".config" / "dreamference" / "node-id").read_text().strip() != ""
+    assert (
+        tmp_path / "home" / ".config" / "dreamference" / "image-search" / "secret"
+    ).read_text() == "s3cret"
+
+    def failing(*_args, **_kwargs):
+        raise OSError("no write access")
+
+    monkeypatch.setattr(Path, "mkdir", failing)
+    assert EgressAudit.prepare_image_search(str(tmp_path / "other")) is False
+
+
 def test_egress_audit_web_session_a_ask_that_never_completes_is_not_a_reply(
     tmp_path, monkeypatch, capsys
 ):
