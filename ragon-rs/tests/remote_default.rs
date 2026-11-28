@@ -22,11 +22,17 @@ fn codex_like() -> Command {
             Arg::new("remote-auth-token-env").long("remote-auth-token-env").value_name("ENV_VAR"),
         ]
     };
+    // `sandbox` and `mcp add` take the rest of the line as the command they run, as Codex's do.
+    let trailing = |name: &'static str| Arg::new(name).num_args(1..).trailing_var_arg(true).allow_hyphen_values(true);
     let mut command = Command::new("ragon")
+        .arg(Arg::new("config").short('c').long("config").global(true))
         .args(remote())
         .arg(Arg::new("prompt"))
         .subcommand(Command::new("resume").args(remote()).arg(Arg::new("session")))
-        .subcommand(Command::new("exec").arg(Arg::new("prompt")));
+        .subcommand(Command::new("fork").args(remote()).arg(Arg::new("session")))
+        .subcommand(Command::new("exec").arg(Arg::new("prompt")))
+        .subcommand(Command::new("sandbox").subcommand(Command::new("linux").arg(trailing("command"))))
+        .subcommand(Command::new("mcp").subcommand(Command::new("add").arg(Arg::new("name")).arg(trailing("command"))));
     command.build();
     command
 }
@@ -140,6 +146,9 @@ fn a_bare_remote_before_another_flag_or_a_subcommand_is_bare() {
     assert_eq!(bare_remote_index(&command, &args(&["--remote", "resume", "--last"])), Some(1));
     assert_eq!(bare_remote_index(&command, &args(&["resume", "--remote"])), Some(2));
     assert_eq!(bare_remote_index(&command, &args(&["--", "--remote"])), None);
+    // An option's value is skipped, and Codex's root options may follow the prompt.
+    assert_eq!(bare_remote_index(&command, &args(&["-c", "--remote", "--remote"])), Some(3));
+    assert_eq!(bare_remote_index(&command, &args(&["fix the tests", "--remote"])), Some(2));
     let (_tmp, home, codex_home) = fixture(Some("dgx-a"), Some(BEARER));
     let got = remote_default(&command, &args(&["--remote", "resume", "--last"]), &home, &codex_home, None).unwrap().unwrap();
     assert_eq!(
@@ -222,4 +231,43 @@ fn the_node_file_and_the_url() {
     assert_eq!(primary_name_from_node_file(r#"{"primary_name":"a.b"}"#), None);
     assert_eq!(primary_name_from_node_file("not json"), None);
     assert_eq!(primary_remote_url("gx10-1a2b"), "wss://gx10-1a2b.local:8000/");
+}
+
+#[test]
+fn a_remote_in_a_command_codex_runs_is_never_touched() {
+    let command = codex_like();
+    let (_tmp, home, codex_home) = fixture(Some("dgx-a"), Some(BEARER));
+    for line in [
+        vec!["sandbox", "linux", "python", "app.py", "--remote"],
+        vec!["sandbox", "linux", "--remote"],
+        vec!["mcp", "add", "srv", "npx", "pkg", "--remote"],
+        vec!["-c", "x=1", "mcp", "add", "srv", "--", "pkg", "--remote"],
+        // `exec` takes no `--remote`: Codex's own error, not a dial.
+        vec!["exec", "--remote"],
+    ] {
+        assert_eq!(bare_remote_index(&command, &args(&line)), None, "{line:?}");
+        assert_eq!(remote_default(&command, &args(&line), &home, &codex_home, None).unwrap(), None, "{line:?}");
+    }
+}
+
+#[test]
+fn a_subcommand_name_after_a_subcommand_is_looked_up_in_that_subcommand() {
+    let command = codex_like();
+    // `fork` is a root subcommand, not one of `resume`'s: Codex reads it as the address.
+    assert_eq!(bare_remote_index(&command, &args(&["resume", "--remote", "fork"])), None);
+    // At the root it is the subcommand, so the `--remote` before it is bare.
+    assert_eq!(bare_remote_index(&command, &args(&["--remote", "fork"])), Some(1));
+    assert_eq!(bare_remote_index(&command, &args(&["fork", "--remote"])), Some(2));
+}
+
+#[test]
+fn a_token_variable_after_the_double_dash_is_not_the_users() {
+    let (_tmp, home, codex_home) = fixture(Some("dgx-a"), Some(BEARER));
+    let line = args(&["--remote", "--", "--remote-auth-token-env", "MY_TOKEN"]);
+    let got = remote_default(&codex_like(), &line, &home, &codex_home, None).unwrap().unwrap();
+    assert_eq!(got.token.as_deref(), Some(BEARER));
+    assert_eq!(
+        strings(&got.args),
+        ["ragon", "--remote", "wss://dgx-a.local:8000/", "--remote-auth-token-env", REMOTE_TOKEN_ENV, "--", "--remote-auth-token-env", "MY_TOKEN"]
+    );
 }
