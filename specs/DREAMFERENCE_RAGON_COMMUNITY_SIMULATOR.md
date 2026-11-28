@@ -482,7 +482,7 @@ A post that claims an outcome ("the install failed at step 3", "it worked on 0.9
 | The only script is the site's own search | one script file, served by the site itself, searches an index built at build time, inside the visitor's browser. No request leaves the page: no script, style or font from another origin, no cookie, no analytics. The site collects nothing, so it needs no privacy page and no consent banner | a test scans the built site for scripts, styles and fonts from another origin, `document.cookie`, and `fetch(` or `XMLHttpRequest` to another origin, and allows exactly one script, the site's search |
 | Disclosure and indexing | the About page (§1), linked in the main navigation of every page; no header, footer or per-post notice; every page may be indexed (Q44) | the build refuses a page whose navigation lacks the About link; a test reads the About page's sentence and checks that no page template other than the About page contains "simulated" |
 | Filter | the build runs the filter (§11) over everything again and refuses to publish on any hit | a planted secret stops the publish |
-| Publish | every hour (R3), `ragon-community publish` on the community GB10 builds the site, runs the filter and the path check, commits the hour's content with the rebuilt `docs/` and pushes the branch `content` as the community GitHub App. GitHub Pages serves `docs/` of that branch at `community.ragon.ai`, with HTTPS enforced. An hour with nothing new pushes nothing | the publish log; a publish with a planted hit pushes nothing (test) |
+| Publish | every hour (R3), `ragon-community publish` on the community GB10 builds the site, runs the filter and the path check, commits the hour's content with the rebuilt `docs/` and pushes the branch `content` as the community GitHub App. The builder writes `docs/CNAME` (`community.ragon.ai`) and an empty `docs/.nojekyll` on every build, so the custom domain stays set and GitHub serves the files as built. GitHub Pages serves `docs/` of that branch at `community.ragon.ai`, with HTTPS enforced. An hour with nothing new pushes nothing | the publish log; a publish with a planted hit pushes nothing (test) |
 
 ### 10.2 Categories
 
@@ -624,7 +624,7 @@ Following the rule that tests never touch the real machine, every test runs offl
 
 - **Versions.** `ragon-community` has its own version, starting at `0.1.0` in Phase 0, with tags (Q65). `compat.toml` names the brain releases and the oldest target release that version supports, and the runner refuses an unsupported pair. Each round summary names the `ragon-community` commit that ran it, so a round can be run again with the same code.
 - **Outside runs** (Q61, Q64). Anyone may run `ragon-community` on their own node with their own throwaway machines. The tool writes a results directory and **never sends anything**: it has no upload code. Its only network peers are the user's own node, the docs, the release page and the targets (test).
-- **Submitting an outside run** takes a hand-made pull request against the branch `content`, adding `results/outside/<round>/`. That pull request is the explicit opt-in for that submission. The schema and the filter run on it before it is merged. The site marks such results "outside run". An outside report never becomes a GitHub issue by itself; it needs a reproduction by one of our runs (§8.4).
+- **Submitting an outside run** takes a hand-made pull request against the branch `content`, adding `results/outside/<round>/`. That pull request is the explicit opt-in for that submission. The schema and the filter run on it before it is merged. The coordinator's merge job merges it by having the App push the reviewed commit to `content`, because only the App may push there (§12.3). The site marks such results "outside run". An outside report never becomes a GitHub issue by itself; it needs a reproduction by one of our runs (§8.4).
 
 ---
 
@@ -753,7 +753,7 @@ Agent-days count building work only. **L** rows go to Ragon first, through the `
 | 3.1 | desktop windows as text: macOS accessibility and Windows UI Automation helpers (Q31) | live: the desktop app's first window as a tree | C |
 | 3.2 | phone users against stand-in messenger servers on the community GB10 (Q28) | live: one message round trip per messenger | L |
 | 3.3 | about 100 users (Q10) | `cargo test -p rc-profile mix` | L |
-| 3.4 | outside runs: the results format and the CI checks for hand-made pull requests (§12.5) | `python -m pytest tests/test_outside_results.py` | L |
+| 3.4 | outside runs: the results format and the checks for hand-made pull requests against `content` (§12.5) | `python -m pytest tests/test_outside_results.py` | L |
 | 3.5 | the quarterly task refresh | `ragon-community tasks check` on the new list | C |
 
 **Total: 25 agent-days** (6 + 6 + 7 + 6). Roughly 28 of the 52 build rows are L. A row split between L and C counts as half, and the owner's steps are left out. Each phase is useful without the next.
