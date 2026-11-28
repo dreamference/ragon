@@ -443,6 +443,26 @@ def test_the_lan_is_read_from_the_route_to_the_donor(probe, network):
     assert FleetHubFetch.lan_network(probe) == network
 
 
+def test_fleet_hub_fetch_lan_network_skips_a_broken_inet_on_the_route_device():
+    """An unparseable `inet` on the route's device is skipped, not fatal."""
+    probe = (
+        "192.168.50.11 dev enP7s7 src 192.168.50.12 uid 1000 \\\n"
+        "2: enP7s7    inet 192.168.50.12/xx brd 192.168.50.255 scope global\n"
+        "3: enP7s7    inet 192.168.50.12/24 brd 192.168.50.255 scope global\n"
+    )
+    assert FleetHubFetch.lan_network(probe) == "192.168.50.0/24"
+
+
+def test_fleet_hub_fetch_lan_network_skips_a_line_that_names_no_inet_address():
+    """A line without an `inet` address is skipped until the device names one."""
+    probe = (
+        "192.168.50.11 dev enP7s7 src 192.168.50.12 uid 1000 \\\n"
+        "1: lo    inet6 ::1/128 scope host\n"
+        "2: enP7s7    inet 192.168.50.12/24 brd 192.168.50.255 scope global\n"
+    )
+    assert FleetHubFetch.lan_network(probe) == "192.168.50.0/24"
+
+
 # -- the provisioner -------------------------------------------------------------------------------
 
 
