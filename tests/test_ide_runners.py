@@ -69,6 +69,19 @@ def test_cline_leaves_rules_the_user_wrote(ready, monkeypatch, tmp_path):
     assert rules.read_text(encoding="utf-8") == "# my own rules\n"
 
 
+def test_continue_runner_run_session_reports_when_no_executable_is_found(
+    ready, monkeypatch, capsys
+):
+    # is_vscode_installed() said yes but nothing is on PATH: the launch is refused, with 1,
+    # not a traceback.
+    launched = []
+    monkeypatch.setattr(ContinueInstaller, "get_vscode_executable", classmethod(lambda cls: None))
+    monkeypatch.setattr(subprocess, "call", lambda cmd: launched.append(cmd) or 0)
+    assert ContinueRunner(config=DreamferenceConfig()).run_session() == 1
+    assert "Failed to launch VS Code" in capsys.readouterr().out
+    assert launched == []
+
+
 def test_continue_keeps_the_users_other_settings_and_replaces_only_the_models(ready, tmp_path):
     # A config it can read is merged in place: no backup, the user's keys stay, and the two
     # model entries point at this server.
