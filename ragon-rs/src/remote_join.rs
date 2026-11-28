@@ -420,22 +420,23 @@ impl SystemStore {
         files
     }
 
-    /// The commands that leave exactly `primary`'s CA (its id and pinned PEM file) in the store, or
-    /// no primary's CA when `primary` is None: install it when missing or different (a CA that
-    /// changed is replaced), remove every other primary's, then rebuild the bundle. Empty when
-    /// the store already holds exactly that. `sudo` prefixes each command (empty when root).
-    pub fn plan(&self, primary: Option<(&str, &Path)>, sudo: &[String]) -> Result<Vec<Vec<String>>, String> {
+    /// The commands that leave exactly `primary`'s CA (its id and the certificate `one_certificate`
+    /// returned) in the store, or no primary's CA when `primary` is None: install it when missing
+    /// or different (a CA that changed is replaced), remove every other primary's, then rebuild the
+    /// bundle. Empty when the store already holds exactly that. The install copies `staged`, which
+    /// the caller writes with exactly that certificate (`stage`), so the pin is read once.
+    /// `sudo` prefixes each command (empty when root).
+    pub fn plan(&self, primary: Option<(&str, &str)>, staged: &Path, sudo: &[String]) -> Result<Vec<Vec<String>>, String> {
         let run = |argv: &[&str]| sudo.iter().cloned().chain(argv.iter().map(|arg| arg.to_string())).collect::<Vec<String>>();
         let mut steps = Vec::new();
         let mut keep = None;
-        if let Some((id, pem)) = primary {
+        if let Some((id, certificate)) = primary {
             let target = self.file_for(id).ok_or_else(|| format!("`{id}` is not a node id"))?;
-            let wanted = std::fs::read(pem).map_err(|error| format!("{}: {error}", pem.display()))?;
-            if !String::from_utf8_lossy(&wanted).contains("-----BEGIN CERTIFICATE-----") {
-                return Err(format!("{} holds no PEM certificate", pem.display()));
+            if one_certificate(certificate.as_bytes())? != certificate {
+                return Err("the certificate to install is not the checked one".to_string());
             }
-            if std::fs::read(&target).ok().as_deref() != Some(&wanted[..]) {
-                steps.push(run(&["install", "-m", "0644", &pem.display().to_string(), &target.display().to_string()]));
+            if std::fs::read(&target).ok().as_deref() != Some(certificate.as_bytes()) {
+                steps.push(run(&["install", "-m", "0644", &staged.display().to_string(), &target.display().to_string()]));
             }
             keep = Some(target);
         }
@@ -450,6 +451,104 @@ impl SystemStore {
         }
         Ok(steps)
     }
+}
+
+/// The one certificate a pinned CA file may hold before it becomes a root of the system store:
+/// exactly one PEM block, labelled CERTIFICATE, nothing before or after it, whose body is one
+/// well-formed X.509 certificate (a DER SEQUENCE of the signed part, the algorithm and the
+/// signature). Several certificates, a private key or trailing bytes are refused. Returns the
+/// block as it goes in the store, ending in one newline.
+pub fn one_certificate(text: &[u8]) -> Result<String, String> {
+    let refused = || "the pinned CA is not exactly one PEM certificate".to_string();
+    let block = std::str::from_utf8(text).map_err(|_| refused())?.trim();
+    let lines: Vec<&str> = block.lines().map(str::trim).collect();
+    if block.matches("-----BEGIN ").count() != 1
+        || block.matches("-----END ").count() != 1
+        || lines.len() < 3
+        || lines.first() != Some(&"-----BEGIN CERTIFICATE-----")
+        || lines.last() != Some(&"-----END CERTIFICATE-----")
+    {
+        return Err(refused());
+    }
+    let body: String = lines[1..lines.len() - 1].concat();
+    let der = base64::engine::general_purpose::STANDARD.decode(body).map_err(|_| refused())?;
+    match der_only(&der, 0x30).and_then(der_all).map_err(|_| refused())?.as_slice() {
+        [(0x30, _), (0x30, _), (0x03, _)] => Ok(lines.join("\n") + "\n"),
+        _ => Err(refused()),
+    }
+}
+
+/// Writes the checked `certificate` to a new private folder in the temporary directory, readable
+/// (0644) for `install`; the folder is new (never one that already exists), so nobody else's file
+/// is copied. The caller removes the folder.
+fn stage(certificate: &str) -> Result<(PathBuf, PathBuf), String> {
+    static STAGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let serial = STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let folder = std::env::temp_dir().join(format!("ragon-trust-ca-{}-{serial}", std::process::id()));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+    let file = folder.join("ca.crt");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o644);
+    }
+    let written = options.open(&file).and_then(|mut handle| {
+        std::io::Write::write_all(&mut handle, certificate.as_bytes())?;
+        // 0644 whatever the umask: `install -m 0644` reads it, the store's other readers read the copy.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            handle.set_permissions(std::fs::Permissions::from_mode(0o644))?;
+        }
+        Ok(())
+    });
+    if let Err(error) = written {
+        let _ = std::fs::remove_dir_all(&folder);
+        return Err(format!("{}: {error}", file.display()));
+    }
+    Ok((folder, file))
+}
+
+/// This Linux's system store; None off Linux or without update-ca-certificates/update-ca-trust.
+pub fn system_store() -> Option<SystemStore> {
+    (os_name() == "linux").then(linux_tool).flatten().and_then(|tool| SystemStore::for_tool(Path::new("/"), tool))
+}
+
+/// The one line printed after a primary's CA is newly pinned (first contact, or again after the
+/// node was set up again) when `store` does not hold exactly that CA: an unmodified Codex trusts
+/// the primary only once `ragon node remote trust-ca` has run, and an older primary's CA still in
+/// the store is stale until then. None when the store already holds it, or the pin is unusable.
+pub fn trust_ca_hint(store: &SystemStore, primary_id: &str, pem: &Path) -> Option<String> {
+    let certificate = one_certificate(&std::fs::read(pem).ok()?).ok()?;
+    let steps = store.plan(Some((primary_id, &certificate)), Path::new("-"), &[]).ok()?;
+    if steps.is_empty() {
+        return None;
+    }
+    Some(if store.primary_files().is_empty() {
+        "ℹ️  So an unmodified Codex trusts this primary, run: ragon node remote trust-ca (asks for sudo)".to_string()
+    } else {
+        "ℹ️  The system store holds an older primary's CA; to replace it, run: ragon node remote trust-ca (asks for sudo)".to_string()
+    })
+}
+
+/// What `ragon uninstall` shows and does about the primaries' CAs in `store`: the plan line, and
+/// the literal commands that take them out by hand (the `ragon` binary is gone after the run, so
+/// the hint never names it). None when the store holds no primary's CA.
+pub fn untrust_lines(store: &SystemStore) -> Option<(String, String)> {
+    let steps = store.plan(None, Path::new("-"), &["sudo".to_string()]).ok()?;
+    if steps.is_empty() {
+        return None;
+    }
+    let commands = steps.iter().map(|step| step.join(" ")).collect::<Vec<String>>().join(" && ");
+    Some((format!("the primary's CA in the system store, {} (sudo asks for your password)", store.dir.display()), commands))
 }
 
 /// A node id as `node_identity.py` makes it: a UUID, lowercase hex in its 8-4-4-4-12 groups.
@@ -473,38 +572,62 @@ pub fn untrust_primary_cas() -> Result<(), String> {
     if os_name() != "linux" || linux_tool().is_none() {
         return Ok(());
     }
-    trust_ca(true).map(|lines| lines.iter().for_each(|line| println!("{line}")))
+    trust_ca(true).map(|(_, lines)| lines.iter().for_each(|line| println!("{line}")))
 }
+
+/// `ragon node remote trust-ca`'s exit code when no primary's CA is pinned yet: nothing was done,
+/// and the installer shows it as a step still to take, not as done.
+pub const NOTHING_PINNED: i32 = 3;
 
 /// `ragon node remote trust-ca [--remove]`: puts the primary's pinned CA in the system store,
 /// replacing an older one, or with `--remove` takes every primary's CA out (the installer's and
-/// the uninstaller's step, A11). macOS and Windows keep it in the user's store instead.
-fn trust_ca(remove: bool) -> Result<Vec<String>, String> {
+/// the uninstaller's step, A11). macOS and Windows keep it in the user's store instead. Returns the
+/// exit code (0, or `NOTHING_PINNED`) and the lines to print.
+fn trust_ca(remove: bool) -> Result<(i32, Vec<String>), String> {
     if os_name() != "linux" {
-        return Ok(vec!["Only Linux keeps the primary's CA in the system store.".to_string()]);
+        return Ok((0, vec!["Only Linux keeps the primary's CA in the system store.".to_string()]));
     }
-    let store = linux_tool()
-        .and_then(|tool| SystemStore::for_tool(Path::new("/"), tool))
-        .ok_or("this Linux has neither update-ca-certificates nor update-ca-trust")?;
+    let store = system_store().ok_or("this Linux has neither update-ca-certificates nor update-ca-trust")?;
+    // The pin is looked up under the active account's primary id; a pin taken through a secondary
+    // node (its own id) is not the primary's and is not installed (review L2).
     let primary = if remove {
         None
     } else {
         match crate::auth::local::ragon_home().as_deref().and_then(pinned_primary) {
             Some(primary) => Some(primary),
-            None => return Ok(vec!["No primary is pinned yet: `ragon login` pins it, then run this again.".to_string()]),
+            None => {
+                let line = "No CA is pinned for the primary you signed in to yet: `ragon login` pins it, then run this again.";
+                return Ok((NOTHING_PINNED, vec![line.to_string()]));
+            }
         }
     };
-    let steps = store.plan(primary.as_ref().map(|(id, pem)| (id.as_str(), pem.as_path())), &sudo_prefix())?;
+    let certificate = match &primary {
+        Some((_, pem)) => Some(one_certificate(&std::fs::read(pem).map_err(|error| format!("{}: {error}", pem.display()))?)?),
+        None => None,
+    };
+    let checked = primary.as_ref().zip(certificate.as_deref()).map(|((id, _), certificate)| (id.as_str(), certificate));
+    let staged = match checked {
+        Some((_, certificate)) => Some(stage(certificate)?),
+        None => None,
+    };
+    let result = (|| -> Result<bool, String> {
+        let steps = store.plan(checked, staged.as_ref().map_or(Path::new("-"), |(_, file)| file.as_path()), &sudo_prefix())?;
+        if !steps.is_empty() {
+            run_steps("Updating the system trust store", &steps)?;
+        }
+        Ok(steps.is_empty())
+    })();
+    if let Some((folder, _)) = &staged {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+    let unchanged = result?;
     let done = match &primary {
-        Some((id, _)) if steps.is_empty() => format!("The CA of the primary {id} is already in the system store."),
+        Some((id, _)) if unchanged => format!("The CA of the primary {id} is already in the system store."),
         Some((id, _)) => format!("✅ The CA of the primary {id} is in the system store."),
-        None if steps.is_empty() => "No primary's CA is in the system store.".to_string(),
+        None if unchanged => "No primary's CA is in the system store.".to_string(),
         None => "✅ The primaries' CAs are out of the system store.".to_string(),
     };
-    if !steps.is_empty() {
-        run_steps("Updating the system trust store", &steps)?;
-    }
-    Ok(vec![done])
+    Ok((0, vec![done]))
 }
 
 /// `sudo` unless this process is root.
@@ -681,9 +804,9 @@ pub async fn run_cli(args: &[String]) -> i32 {
         Request::Join { code, node } => (code, node),
         Request::TrustCa { remove } => {
             return match trust_ca(remove) {
-                Ok(lines) => {
+                Ok((code, lines)) => {
                     lines.iter().for_each(|line| println!("{line}"));
-                    0
+                    code
                 }
                 Err(message) => {
                     eprintln!("❌ {message}");
@@ -1428,8 +1551,13 @@ mod tests {
     const PRIMARY: &str = "0f6c2a9e-1b3d-4c5e-8f70-9a1b2c3d4e5f";
     const NEXT_PRIMARY: &str = "5e4d3c2b-1a09-4f8e-9d7c-6b5a49382716";
 
-    fn pem(serial: &str) -> String {
-        format!("-----BEGIN CERTIFICATE-----\nTUlJ{serial}\n-----END CERTIFICATE-----\n")
+    /// Two real certificates for the pinned CA, A and B, and arbitrary text for files of others.
+    fn pem(which: &str) -> String {
+        match which {
+            "A" => format!("{GOOD_CA}\n"),
+            "B" => format!("{CA_WITHOUT_NAME_CONSTRAINTS}\n"),
+            other => format!("-----BEGIN CERTIFICATE-----\nTUlJ{other}\n-----END CERTIFICATE-----\n"),
+        }
     }
 
     /// A store of `tool` under a fresh temporary root whose update command appends to `update.log`.
@@ -1447,10 +1575,17 @@ mod tests {
         std::fs::read_to_string(root.join("update.log")).map_or(0, |log| log.lines().count())
     }
 
+    /// What `trust_ca` does, without sudo: the pin checked, staged, planned and run.
     fn apply(store: &SystemStore, primary: Option<(&str, &Path)>) -> usize {
-        let steps = store.plan(primary, &[]).unwrap();
+        let certificate = primary.map(|(_, pem)| one_certificate(&std::fs::read(pem).unwrap()).unwrap());
+        let checked = primary.zip(certificate.as_deref()).map(|((id, _), certificate)| (id, certificate));
+        let staged = certificate.as_deref().map(|certificate| stage(certificate).unwrap());
+        let steps = store.plan(checked, staged.as_ref().map_or(Path::new("-"), |(_, file)| file.as_path()), &[]).unwrap();
         if !steps.is_empty() {
             run_steps("test", &steps).unwrap();
+        }
+        if let Some((folder, _)) = staged {
+            std::fs::remove_dir_all(folder).unwrap();
         }
         steps.len()
     }
@@ -1476,22 +1611,33 @@ mod tests {
     #[test]
     fn only_a_node_id_names_a_file_in_the_store() {
         let store = SystemStore::for_tool(Path::new("/r"), "update-ca-certificates").unwrap();
+        let certificate = pem("A");
         for bad in ["", "../../etc/passwd", "node-7c1e0c7a", "0F6C2A9E-1B3D-4C5E-8F70-9A1B2C3D4E5F", "0f6c2a9e1b3d4c5e8f709a1b2c3d4e5f", "0f6c2a9e-1b3d-4c5e-8f70-9a1b2c3d4e5g"] {
             assert!(store.file_for(bad).is_none(), "{bad}");
-            assert!(store.plan(Some((bad, Path::new("/tmp/ca.pem"))), &[]).unwrap_err().contains("not a node id"), "{bad}");
+            assert!(store.plan(Some((bad, &certificate)), Path::new("-"), &[]).unwrap_err().contains("not a node id"), "{bad}");
         }
     }
 
     #[test]
-    fn the_plan_runs_each_command_with_sudo_unless_root() {
+    fn the_plan_installs_the_staged_checked_copy_with_sudo_unless_root() {
         let (root, store) = fake_store("update-ca-certificates", "sudo");
-        let ca = root.join("ca.pem");
-        std::fs::write(&ca, pem("A")).unwrap();
-        let steps = store.plan(Some((PRIMARY, &ca)), &["sudo".to_string()]).unwrap();
+        let certificate = one_certificate(pem("A").as_bytes()).unwrap();
+        let (folder, staged) = stage(&certificate).unwrap();
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), certificate);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&staged).unwrap().permissions().mode() & 0o777, 0o644);
+            assert_eq!(std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        let steps = store.plan(Some((PRIMARY, &certificate)), &staged, &["sudo".to_string()]).unwrap();
         let target = store.file_for(PRIMARY).unwrap().display().to_string();
-        assert_eq!(steps[0], ["sudo", "install", "-m", "0644", &ca.display().to_string(), &target]);
+        assert_eq!(steps[0], ["sudo", "install", "-m", "0644", &staged.display().to_string(), &target]);
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[1][0], "sudo");
+        // Only the checked text is planned: anything else is refused before a command is made.
+        assert!(store.plan(Some((PRIMARY, &format!("{certificate}junk"))), &staged, &[]).is_err());
+        let _ = std::fs::remove_dir_all(&folder);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1512,15 +1658,18 @@ mod tests {
             assert_eq!(apply(&store, Some((PRIMARY, &ca))), 2, "{tool}");
             assert_eq!(std::fs::read_to_string(&installed).unwrap(), pem("A"));
             assert_eq!(updates(&root), 1);
-            // Nothing to do while it is the same.
+            // Nothing to do while it is the same, and no hint after a pin.
             assert_eq!(apply(&store, Some((PRIMARY, &ca))), 0);
             assert_eq!(updates(&root), 1);
-            // Replaced when the primary's CA changes.
+            assert_eq!(trust_ca_hint(&store, PRIMARY, &ca), None);
+            // Replaced when the primary's CA changes; until then the hint names the stale one.
             std::fs::write(&ca, pem("B")).unwrap();
+            assert!(trust_ca_hint(&store, PRIMARY, &ca).unwrap().contains("older primary's CA"));
             assert_eq!(apply(&store, Some((PRIMARY, &ca))), 2);
             assert_eq!(std::fs::read_to_string(&installed).unwrap(), pem("B"));
             assert_eq!(updates(&root), 2);
             // A new primary: its CA in, the old one out.
+            assert!(trust_ca_hint(&store, NEXT_PRIMARY, &ca).unwrap().contains("ragon node remote trust-ca"));
             assert_eq!(apply(&store, Some((NEXT_PRIMARY, &ca))), 3);
             assert!(!installed.exists());
             assert_eq!(store.primary_files(), [store.file_for(NEXT_PRIMARY).unwrap()]);
@@ -1538,14 +1687,60 @@ mod tests {
     }
 
     #[test]
+    fn a_first_pin_hints_at_trust_ca_until_the_store_holds_it() {
+        let (root, store) = fake_store("update-ca-certificates", "hint");
+        let ca = root.join("ca.pem");
+        std::fs::write(&ca, pem("A")).unwrap();
+        assert!(trust_ca_hint(&store, PRIMARY, &ca).unwrap().contains("run: ragon node remote trust-ca"));
+        apply(&store, Some((PRIMARY, &ca)));
+        assert_eq!(trust_ca_hint(&store, PRIMARY, &ca), None);
+        // A pin that is not one certificate never gets a hint (trust-ca would refuse it).
+        std::fs::write(&ca, format!("{}{}", pem("A"), pem("B"))).unwrap();
+        assert_eq!(trust_ca_hint(&store, PRIMARY, &ca), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn uninstall_shows_the_store_and_the_literal_commands() {
+        for tool in ["update-ca-certificates", "update-ca-trust"] {
+            let (root, store) = fake_store(tool, &format!("untrust-{tool}"));
+            assert_eq!(untrust_lines(&store), None, "nothing to take out");
+            let ca = root.join("ca.pem");
+            std::fs::write(&ca, pem("A")).unwrap();
+            apply(&store, Some((PRIMARY, &ca)));
+            let (line, commands) = untrust_lines(&store).unwrap();
+            assert!(line.contains(&store.dir.display().to_string()) && line.contains("sudo"), "{line}");
+            let file = store.file_for(PRIMARY).unwrap().display().to_string();
+            assert_eq!(commands, format!("sudo rm -f {file} && sudo {}", store.update.join(" ")));
+            assert!(!commands.contains("ragon "), "the binary is gone by then: {commands}");
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
     fn a_file_without_a_certificate_is_never_installed() {
         let (root, store) = fake_store("update-ca-certificates", "nocert");
-        let ca = root.join("ca.pem");
-        std::fs::write(&ca, "-----BEGIN PRIVATE KEY-----\n").unwrap();
-        assert!(store.plan(Some((PRIMARY, &ca)), &[]).unwrap_err().contains("no PEM certificate"));
-        assert!(store.plan(Some((PRIMARY, &root.join("missing.pem"))), &[]).is_err());
+        assert!(one_certificate(b"-----BEGIN PRIVATE KEY-----\n").is_err());
+        assert!(one_certificate(pem("not-base64!").as_bytes()).is_err());
+        assert!(one_certificate(pem("overlay").as_bytes()).is_err(), "base64, but not a certificate");
+        assert!(one_certificate(format!("{}trailing junk\n", pem("A")).as_bytes()).is_err());
+        assert!(one_certificate(format!("junk\n{}", pem("A")).as_bytes()).is_err());
+        assert_eq!(one_certificate(pem("A").replace('\n', "\r\n").as_bytes()).unwrap(), pem("A"), "a CRLF copy is the same");
         assert!(store.primary_files().is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_with_two_certificates_is_never_installed() {
+        let both = format!("{}{}", pem("A"), pem("B"));
+        assert!(one_certificate(both.as_bytes()).unwrap_err().contains("exactly one PEM certificate"));
+    }
+
+    #[test]
+    fn a_certificate_with_a_private_key_is_never_installed() {
+        let key = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg\n-----END PRIVATE KEY-----\n";
+        assert!(one_certificate(format!("{}{key}", pem("A")).as_bytes()).is_err());
+        assert!(one_certificate(format!("{key}{}", pem("A")).as_bytes()).is_err());
     }
 
     #[test]
