@@ -78,15 +78,19 @@ class AppServer:
         self.frames: list[tuple[int, bytes]] = []
         self.ended = asyncio.Event()
         self.server = None
+        self.writers: list = []
 
     async def start(self):
         self.server = await asyncio.start_unix_server(self.serve, self.path)
 
     async def stop(self):
         self.server.close()
-        await self.server.wait_closed()
+        for writer in self.writers:
+            writer.close()
+        await asyncio.wait_for(self.server.wait_closed(), 5)
 
     async def serve(self, reader, writer):
+        self.writers.append(writer)
         try:
             head = await reader.readuntil(b"\r\n\r\n")
             self.heads.append(head)
@@ -180,7 +184,7 @@ async def with_gate(tmp_path, body, status=b"101 Switching Protocols", socket=Tr
     )
     port = await gate.start()
     try:
-        return await asyncio.wait_for(body(port, app), 20)
+        return await asyncio.wait_for(body(port, app), 15)
     finally:
         gate.server.close()
         if socket:
@@ -194,7 +198,8 @@ async def exchange(port, data, context=None):
     )
     writer.write(data)
     await writer.drain()
-    answer = await reader.read()
+    # A check that was removed lets the attach through (101, then silence): fail by name at once.
+    answer = await asyncio.wait_for(reader.read(), 3)
     writer.close()
     return answer
 
@@ -492,3 +497,33 @@ def test_the_app_server_socket_follows_ragons_convention(monkeypatch, tmp_path):
     monkeypatch.delenv("RAGON_APP_SERVER_SOCKET")
     monkeypatch.delenv("XDG_RUNTIME_DIR")
     assert ModelGateService.default_app_server_socket() is None
+
+
+def test_the_bearer_never_appears_in_the_gate_log(tmp_path, quiet, signed_in, capsys):
+    wrong = "sk-ragon-wrong-secret"
+
+    async def body_(port, app):
+        await exchange(port, upgrade(token=wrong))
+        await exchange(port, upgrade(path="/?access_token=" + wrong, token=wrong))
+        await exchange(port, upgrade(token=None, extra=b"Origin: https://evil.example\r\n"))
+        _reader, writer, _head = await attach(port)
+        writer.close()
+        await app.ended.wait()
+
+    asyncio.run(with_gate(tmp_path, body_))
+    assert any("session attached" in line for line in quiet)
+    seen = "\n".join(quiet) + capsys.readouterr().out + capsys.readouterr().err
+    assert GOOD not in seen and wrong not in seen
+
+
+@pytest.mark.parametrize("separator", [b"\n", b"\r", b"\0"])
+def test_a_bare_line_end_or_nul_in_a_header_is_400_and_reaches_no_one(
+    tmp_path, quiet, signed_in, separator
+):
+    async def body_(port, app):
+        injected = b"Sec-WebSocket-Protocol: x" + separator + b"X-Injected: 1\r\n"
+        return await exchange(port, upgrade(extra=injected)), app.heads
+
+    answer, heads = asyncio.run(with_gate(tmp_path, body_))
+    assert status(answer) == 400
+    assert heads == []
