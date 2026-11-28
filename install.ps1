@@ -42,7 +42,13 @@ param(
     [string]$Version = "",
     [switch]$NoPath,
     [switch]$NoSandbox,
-    [switch]$NoApp
+    [switch]$NoApp,
+    [ValidateSet("client", "node")][string]$Role = "client",
+    [switch]$Uninstall,
+    [switch]$RemoveData,
+    [switch]$NoSshd,
+    [int]$Port = 8000,
+    [string[]]$EngineArgs = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,6 +59,228 @@ $ProgressPreference = "SilentlyContinue"
 
 function Say([string]$Text) { Write-Host $Text }
 function Fail([string]$Text) { Write-Host "ERROR: $Text" -ForegroundColor Red; throw $Text }
+
+# -- the node role: functions (specs/DREAMFERENCE_WINDOWS_NODE.md section 6) ---------------------
+#
+# Everything below takes its folders, tools and hooks as parameters, so tests/windows/
+# install-node.Tests.ps1 loads these functions alone (by syntax tree, the script is not run) and
+# drives them against a temp prefix with a fake sc.exe, icacls.exe and ragon.exe and hooks that
+# record instead of touching accounts, services or the firewall.
+#   %ProgramFiles%\Ragon (read-only to users): current\bin, current\engine, previous, staging
+#   %ProgramData%\Ragon (ACLs by the table of ragon-node-locator's state module): node, models,
+#   advert, jobs, node-id
+
+$NodeServiceName = "ragon-node"
+$NodeServiceAccount = "NT SERVICE\ragon-node"
+$NodeJobAccount = "RagonJob"
+$NodeSandboxAccounts = @("CodexSandboxOffline", "CodexSandboxOnline")
+$NodeSshdBegin = "# BEGIN ragon-node (written by install.ps1 -Role node)"
+$NodeSshdEnd = "# END ragon-node"
+
+function Get-NodePaths([string]$ProgramFiles, [string]$ProgramData) {
+    $Root = Join-Path $ProgramFiles "Ragon"
+    $State = Join-Path $ProgramData "Ragon"
+    return @{
+        Root = $Root; Current = (Join-Path $Root "current"); Previous = (Join-Path $Root "previous")
+        Staging = (Join-Path $Root "staging"); Bin = (Join-Path $Root "current\bin")
+        Engine = (Join-Path $Root "current\engine"); Record = (Join-Path $Root "node-install")
+        State = $State; NodeState = (Join-Path $State "node"); Models = (Join-Path $State "models")
+        Advert = (Join-Path $State "advert"); Jobs = (Join-Path $State "jobs"); NodeId = (Join-Path $State "node-id")
+    }
+}
+
+# The state directory's table (ragon_node_locator::state::table): one row per (item, who, access).
+# Who: SYSTEM, ADMINS, SERVICE, JOB, SANDBOX. Kept in step by the test that compares it to the
+# Rust source and by the CI step that applies and checks the Rust table.
+function Get-NodeAclTable {
+    $Rows = @()
+    foreach ($Item in @("Root", "Models", "NodeId", "Advert", "Jobs")) {
+        $Rows += , @($Item, "SYSTEM", "F")
+        $Rows += , @($Item, "ADMINS", "F")
+        $Rows += , @($Item, "SERVICE", "M")
+    }
+    $Rows += , @("Root", "JOB", "RX")
+    $Rows += , @("Models", "JOB", "RX")
+    $Rows += , @("NodeId", "JOB", "R")
+    $Rows += , @("NodeId", "SANDBOX", "R")
+    $Rows += , @("Advert", "JOB", "R")
+    $Rows += , @("Jobs", "JOB", "M")
+    $Rows += , @("Jobs", "SANDBOX", "M")
+    return $Rows
+}
+
+# The icacls argument lists (one per item) that make the state directory match the table.
+function Get-NodeAclCommands($Paths, [string[]]$Sandbox, [string]$Service, [string]$Job) {
+    $Where = @{ Root = $Paths.State; Models = $Paths.Models; NodeId = $Paths.NodeId; Advert = $Paths.Advert; Jobs = $Paths.Jobs }
+    $Table = Get-NodeAclTable
+    $Commands = @()
+    foreach ($Item in @("Root", "Models", "NodeId", "Advert", "Jobs")) {
+        $Cmd = @($Where[$Item], "/inheritance:r")
+        $Inherit = if ($Item -eq "NodeId") { "" } else { "(OI)(CI)" }
+        foreach ($Row in $Table) {
+            if ($Row[0] -ne $Item) { continue }
+            $Names = switch ($Row[1]) {
+                "SYSTEM" { @("*S-1-5-18") }
+                "ADMINS" { @("*S-1-5-32-544") }
+                "SERVICE" { @($Service) }
+                "JOB" { @($Job) }
+                "SANDBOX" { $Sandbox }
+            }
+            foreach ($Name in $Names) { $Cmd += "/grant:r"; $Cmd += "${Name}:${Inherit}($($Row[2]))" }
+        }
+        $Commands += , $Cmd
+    }
+    return $Commands
+}
+
+# A zip's entries must all land under the folder it is unpacked into.
+function Test-ZipEntriesSafe([string]$Zip, [string]$Destination) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $Base = [IO.Path]::GetFullPath($Destination).TrimEnd('\') + '\'
+    $Archive = [IO.Compression.ZipFile]::OpenRead($Zip)
+    try {
+        foreach ($Entry in $Archive.Entries) {
+            $Target = [IO.Path]::GetFullPath((Join-Path $Destination $Entry.FullName))
+            if (-not $Target.StartsWith($Base, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        }
+    } finally { $Archive.Dispose() }
+    return $true
+}
+
+function Expand-NodeZip([string]$Zip, [string]$Destination) {
+    if (-not (Test-ZipEntriesSafe $Zip $Destination)) { throw "the engine zip has an entry outside its folder; nothing was installed." }
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    [IO.Compression.ZipFile]::ExtractToDirectory($Zip, $Destination)
+}
+
+# Runs a tool and fails with its output when it exits non-zero.
+function Invoke-NodeTool([string]$Tool, [string[]]$Arguments) {
+    $Output = & $Tool @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "$Tool $($Arguments -join ' ') failed ($LASTEXITCODE): $($Output -join ' ')" }
+    return $Output
+}
+
+# The ssh daemon's block for the job account: no tty, no forwarding. The forced command itself is
+# the account's authorized_keys entry (ragon node authorize). Idempotent; replaced between its
+# markers, nothing else in the file is touched.
+function Set-NodeSshdBlock([string]$Config, [string]$User) {
+    if (-not (Test-Path $Config)) { return $false }
+    $Text = [IO.File]::ReadAllText($Config)
+    $Text = Remove-NodeSshdText $Text
+    $Block = @($NodeSshdBegin, "Match User $User", "    PasswordAuthentication no", "    PermitTTY no",
+        "    AllowTcpForwarding no", "    AllowAgentForwarding no", "    X11Forwarding no", $NodeSshdEnd) -join "`r`n"
+    if (-not $Text.EndsWith("`n")) { $Text += "`r`n" }
+    [IO.File]::WriteAllText($Config, $Text + $Block + "`r`n")
+    return $true
+}
+
+function Remove-NodeSshdText([string]$Text) {
+    $Pattern = "(?s)\r?\n?" + [regex]::Escape($NodeSshdBegin) + ".*?" + [regex]::Escape($NodeSshdEnd) + "\r?\n?"
+    return [regex]::Replace($Text, $Pattern, "`r`n").TrimEnd() + "`r`n"
+}
+
+function Remove-NodeSshdBlock([string]$Config) {
+    if (-not (Test-Path $Config)) { return }
+    $Text = [IO.File]::ReadAllText($Config)
+    if ($Text.Contains($NodeSshdBegin)) { [IO.File]::WriteAllText($Config, (Remove-NodeSshdText $Text)) }
+}
+
+# Checks the host before anything is changed; returns the list of problems.
+function Test-NodeHost([int]$Build, [string]$Arch, [bool]$Elevated) {
+    $Problems = @()
+    if (-not $Elevated) { $Problems += "this needs an elevated PowerShell (Run as administrator); over SSH there is no UAC, so start the shell elevated." }
+    if ($Build -lt 22000) { $Problems += "Windows 11 (build 22000 or later) is required; this is build $Build." }
+    if ($Arch -ne "x86_64") { $Problems += "the node's engine is built for x86_64 (gfx1151); this PC is $Arch." }
+    return $Problems
+}
+
+function Save-NodeRecord($Paths, [string]$Tag, [string[]]$Created, [int]$Port, [string]$Sshd = "") {
+    $Lines = @("tag=$Tag", "service=$NodeServiceName", "created=$($Created -join ',')", "port=$Port", "state=$($Paths.NodeState)")
+    if ($Sshd) { $Lines += "sshd=$Sshd" }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Paths.Record) | Out-Null
+    Set-Content -Path $Paths.Record -Encoding ASCII -Value $Lines
+}
+
+# Installs the node. $Tools: Ragon (the placed ragon.exe), Sc, Icacls (paths of executables).
+# $Hooks: UserExists, NewUser, RemoveUser (scriptblocks). Called only after every download has
+# been checked. $ClientBinaries are the unpacked executables to place next to ragon.exe.
+function Install-RagonNode($Paths, [string]$Tag, [string[]]$ClientBinaries, [string]$EngineZip, $Tools, $Hooks,
+                           [string[]]$ServerArgs, [string[]]$EngineArgs, [string]$SshdConfig, [int]$Port, [int]$WaitSeconds) {
+    if (Test-Path $Paths.Current) { throw "a node is already installed in $($Paths.Root); run install.ps1 -Role node -Uninstall first, or ragon update." }
+    $Created = @()
+    try {
+        New-Item -ItemType Directory -Force -Path $Paths.Bin, $Paths.NodeState | Out-Null
+        Save-NodeRecord $Paths $Tag $Created $Port
+        foreach ($Dir in @($Paths.Models, $Paths.Advert, $Paths.Jobs)) { New-Item -ItemType Directory -Force -Path $Dir | Out-Null }
+        foreach ($File in $ClientBinaries) { Copy-Item -Force -Path $File -Destination $Paths.Bin }
+        Expand-NodeZip $EngineZip $Paths.Engine
+        if (-not (& $Hooks.UserExists $NodeJobAccount)) {
+            & $Hooks.NewUser $NodeJobAccount
+            $Created += "user:$NodeJobAccount"
+            Save-NodeRecord $Paths $Tag $Created $Port
+        }
+        $Ragon = Join-Path $Paths.Bin "ragon.exe"
+        $Engine = Join-Path $Paths.Engine "ragon-serve.exe"
+        if (-not (Test-Path $Engine)) { throw "the engine zip has no ragon-serve.exe." }
+        $Install = @("server", "install", "--name", $NodeServiceName, "--state-dir", $Paths.NodeState, "--host", "0.0.0.0",
+            "--port", "$Port") + $ServerArgs + @("--", $Engine) + $EngineArgs
+        Invoke-NodeTool $Tools.Ragon $Install | Out-Null
+        $Created += "service:$NodeServiceName"
+        Save-NodeRecord $Paths $Tag $Created $Port
+        # The service's virtual account exists once the service does, so the table is applied now.
+        $Sandbox = @($NodeSandboxAccounts | Where-Object { & $Hooks.UserExists $_ })
+        foreach ($Command in (Get-NodeAclCommands $Paths $Sandbox $NodeServiceAccount $NodeJobAccount)) {
+            # The id file is made by `ragon node id` later and inherits the root's entries; the
+            # table's rows for it are applied only when it already exists.
+            if (-not (Test-Path $Command[0])) { continue }
+            Invoke-NodeTool $Tools.Icacls $Command | Out-Null
+        }
+        if ($SshdConfig -and (Set-NodeSshdBlock $SshdConfig $NodeJobAccount)) { Save-NodeRecord $Paths $Tag $Created $Port $SshdConfig }
+        & $Tools.Sc start $NodeServiceName 2>&1 | Out-Null
+        $Deadline = (Get-Date).AddSeconds($WaitSeconds)
+        $Healthy = $false
+        while ((Get-Date) -lt $Deadline) {
+            & $Tools.Ragon server status --name $NodeServiceName --state-dir $Paths.NodeState --port $Port 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $Healthy = $true; break }
+            Start-Sleep -Seconds 1
+        }
+        return $Healthy
+    } catch {
+        $Message = $_.Exception.Message
+        try { Uninstall-RagonNode $Paths $Tools $Hooks $SshdConfig $false | Out-Null } catch { $Message += " (and the clean-up failed: $($_.Exception.Message))" }
+        throw $Message
+    }
+}
+
+# Removes what Install-RagonNode made: the service (and its firewall rules, through the supervisor),
+# the distribution, the sshd block, the job account if this installer made it. Weights and the
+# forge's data stay unless $RemoveData.
+function Uninstall-RagonNode($Paths, $Tools, $Hooks, [string]$SshdConfig, [bool]$RemoveData) {
+    $Created = ""
+    if (Test-Path $Paths.Record) {
+        $Line = Get-Content -Path $Paths.Record | Where-Object { $_ -like "created=*" } | Select-Object -First 1
+        if ($Line) { $Created = $Line.Substring(8) }
+    }
+    $Removed = @()
+    & $Tools.Sc stop $NodeServiceName 2>&1 | Out-Null
+    # The supervisor's own uninstall removes the service and its firewall rules; sc.exe is the
+    # fallback when the binary is gone.
+    $Ragon = Join-Path $Paths.Bin "ragon.exe"
+    $Done = $false
+    if (Test-Path $Ragon) {
+        & $Tools.Ragon server uninstall --name $NodeServiceName 2>&1 | Out-Null
+        $Done = ($LASTEXITCODE -eq 0)
+    }
+    if (-not $Done) { & $Tools.Sc delete $NodeServiceName 2>&1 | Out-Null }
+    $Removed += "service"
+    if ($SshdConfig) { Remove-NodeSshdBlock $SshdConfig }
+    if (Test-Path $Paths.Root) { Remove-Item -Recurse -Force -Path $Paths.Root; $Removed += "distribution" }
+    if ($Created -like "*user:$NodeJobAccount*") { & $Hooks.RemoveUser $NodeJobAccount; $Removed += "user" }
+    if ($RemoveData -and (Test-Path $Paths.State)) { Remove-Item -Recurse -Force -Path $Paths.State; $Removed += "data" }
+    elseif (Test-Path $Paths.NodeState) { Remove-Item -Recurse -Force -Path $Paths.NodeState }
+    return $Removed
+}
+
 
 $Repo = if ($env:RAGON_RELEASE_REPO) { $env:RAGON_RELEASE_REPO } else { "dreamference/ragon" }
 $Api = if ($env:RAGON_RELEASE_API) { $env:RAGON_RELEASE_API } else { "https://api.github.com" }
@@ -72,6 +300,46 @@ $Target = "$Arch-pc-windows-msvc"
 $Build = [Environment]::OSVersion.Version.Build
 if ($Build -lt 22000) {
     Fail "Ragon needs Windows 11 (build 22000 or later); this is build $Build."
+}
+
+# -- the node role: where it goes, who does it, and uninstall ---------------------------------
+
+$NodeEngineZip = ""
+if ($Role -eq "node") {
+    $NodePaths = Get-NodePaths $(if ($env:RAGON_NODE_PROGRAM_FILES) { $env:RAGON_NODE_PROGRAM_FILES } else { $env:ProgramFiles }) `
+        $(if ($env:RAGON_NODE_PROGRAM_DATA) { $env:RAGON_NODE_PROGRAM_DATA } else { $env:ProgramData })
+    $NodeSshdConfig = if ($NoSshd) { "" } elseif ($env:RAGON_NODE_SSHD_CONFIG) { $env:RAGON_NODE_SSHD_CONFIG } else { Join-Path $env:ProgramData "ssh\sshd_config" }
+    $NodeTools = @{
+        Ragon = (Join-Path $NodePaths.Bin "ragon.exe")
+        Sc = (Join-Path $env:SystemRoot "System32\sc.exe")
+        Icacls = (Join-Path $env:SystemRoot "System32\icacls.exe")
+    }
+    $NodeHooks = @{
+        UserExists = { param($Name) [bool](Get-LocalUser -Name $Name -ErrorAction SilentlyContinue) }
+        # A local account for the node's jobs: not an administrator, a long random password nobody
+        # is told (the account is reached by key over ssh, never by password).
+        NewUser = {
+            param($Name)
+            $Bytes = New-Object byte[] 24
+            (New-Object Security.Cryptography.RNGCryptoServiceProvider).GetBytes($Bytes)
+            $Secret = ConvertTo-SecureString ("aA1!" + [Convert]::ToBase64String($Bytes)) -AsPlainText -Force
+            New-LocalUser -Name $Name -Password $Secret -PasswordNeverExpires -UserMayNotChangePassword `
+                -AccountNeverExpires -Description "Ragon node jobs" | Out-Null
+        }
+        RemoveUser = { param($Name) Remove-LocalUser -Name $Name -ErrorAction SilentlyContinue }
+    }
+    $Elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $Elevated) { Fail "the node role needs an elevated PowerShell (Run as administrator); over SSH there is no UAC, so start the shell elevated. Nothing was changed." }
+    if ($Uninstall) {
+        $Gone = Uninstall-RagonNode $NodePaths $NodeTools $NodeHooks $NodeSshdConfig ([bool]$RemoveData)
+        Say "Removed the node: $($Gone -join ', ')."
+        if (-not $RemoveData) { Say "Weights and the forge's data under $($NodePaths.State) were kept; -RemoveData removes them too." }
+        return
+    }
+    $Problems = Test-NodeHost $Build $Arch $Elevated
+    if ($Problems.Count -gt 0) { Fail ("not a node host: " + ($Problems -join " ") + " Nothing was changed.") }
+} elseif ($Uninstall -or $RemoveData) {
+    Fail "-Uninstall and -RemoveData belong to -Role node."
 }
 
 # -- which release ---------------------------------------------------------------------------
@@ -262,6 +530,24 @@ try {
         $Binary = Join-Path $Work "$Name.exe"
         Expand-Gzip $Archive $Binary
         $Ready += $Name
+    }
+
+    # The node's engine: the zip must be named in the signed SHA256SUMS. A node install with no
+    # signed sums fails (unlike the desktop app below, which is skipped), because the driver runs
+    # whatever code object it is given (spec section 7).
+    if ($Role -eq "node") {
+        if ($null -eq $Signed) { Fail "the node role needs a signed release; $Tag has no SHA256SUMS.sig, so no engine can be checked. Nothing was installed." }
+        $ZipName = "ragon-engine-$($Tag.TrimStart('v'))-windows-gfx1151.zip"
+        if (-not $Assets.ContainsKey($ZipName)) { Fail "release $Tag carries no $ZipName; nothing was installed." }
+        if (-not $Signed.ContainsKey($ZipName)) { Fail "SHA256SUMS has no checksum for $ZipName; nothing was installed." }
+        $ZipFile = Get-Asset $ZipName
+        if ((Get-FileHash -Algorithm SHA256 -Path $ZipFile).Hash.ToLower() -ne $Signed[$ZipName]) {
+            Fail "$ZipName does not match its checksum in SHA256SUMS; nothing was installed."
+        }
+        if (-not (Test-ZipEntriesSafe $ZipFile (Join-Path $Work "zip-check"))) { Fail "$ZipName has an entry outside its folder; nothing was installed." }
+        # Kept past the clean-up of $Work below: the node is placed after the sandbox step.
+        $NodeEngineZip = Join-Path ([IO.Path]::GetTempPath()) ("ragon-engine-" + [Guid]::NewGuid().ToString("N") + ".zip")
+        Move-Item -Force -Path $ZipFile -Destination $NodeEngineZip
     }
 
     # The desktop app: the release's installer for this PC (windows.yml names it
@@ -535,6 +821,21 @@ Note "audit-exit=$LASTEXITCODE"
             Say "  administrator, set CODEX_HOME=$CodexHome in that terminal first, so it judges your node.)"
         }
     }
+}
+
+if ($Role -eq "node") {
+    Say ""
+    Say "Installing the node under $($NodePaths.Root) (state under $($NodePaths.State))"
+    try {
+        $Binaries = @($Ready | ForEach-Object { Join-Path $InstallDir "$_.exe" })
+        $Healthy = Install-RagonNode $NodePaths $Tag $Binaries $NodeEngineZip $NodeTools $NodeHooks @() $EngineArgs $NodeSshdConfig $Port 60
+    } finally {
+        if ($NodeEngineZip) { Remove-Item -Force -Path $NodeEngineZip -ErrorAction SilentlyContinue }
+    }
+    if ($Healthy) { Say "The ragon-node service is running and healthy." }
+    else { Say "The ragon-node service is installed but not healthy yet: ragon server status --name ragon-node" }
+    if ($NodeSshdConfig) { Say "sshd: restart it (Restart-Service sshd) for the Match block to apply; this script never does, over ssh that ends the session." }
+    Say "Weights: ragon model pull, or sync-model from another node, into $($NodePaths.Models)."
 }
 
 Say ""

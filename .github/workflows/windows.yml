@@ -260,6 +260,13 @@ jobs:
       # Phase 2 (WINDOWS_ARM §7, §14, §18): the refusal at `on`, the offline account taking a
       # sandboxed command's network away, and the egress audit over ETW, against a stand-in model
       # server. The runner is an administrator, which both the sandbox and ETW need.
+      # install.ps1 -Role node: the install, rollback and uninstall logic against a temp prefix with
+      # a fake service manager (never the runner's real services, accounts or firewall).
+      - name: The node installer's logic
+        shell: powershell
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File tests\windows\install-node.tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "the node installer's tests failed" }
       - name: Air gap and egress audit
         shell: powershell
         run: |

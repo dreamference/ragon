@@ -85,6 +85,7 @@
 /specs/DREAMFERENCE_RELEASE_SIGNING.md          @dreamference/release @dreamference/security
 /ragon-rs/release-signing.pub                    @dreamference/release @dreamference/security
 /ragon-rs/src/update.rs                          @dreamference/release
+/ragon-rs/src/node_update.rs                      @dreamference/release
 /ragon-rs/src/release_signature.rs               @dreamference/release @dreamference/security
 
 # Inference & Models

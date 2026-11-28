@@ -88,6 +88,7 @@ pub mod summary_cap;
 pub mod sync;
 
 pub mod uninstall;
+pub mod node_update;
 pub mod update;
 
 /// For the Codex patches that print a version (`update::shown_version`).

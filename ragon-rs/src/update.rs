@@ -203,7 +203,7 @@ pub fn parse_sums(text: &str) -> HashMap<String, String> {
         .collect()
 }
 
-fn hex_sha256(bytes: &[u8]) -> String {
+pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -469,13 +469,16 @@ pub async fn run() -> anyhow::Result<()> {
         .to_string_lossy()
         .into_owned();
     let app = installed_app(install_dir).filter(|(_, record)| app_is_behind(&record.version, latest));
+    // A Windows node (install.ps1 -Role node) is updated with the client, and again on the next run
+    // when its own update was rolled back.
+    let node = crate::node_update::installed().filter(|node| node.tag.trim_start_matches('v') != latest);
 
     let binaries_due = match decide(RAGON_VERSION, latest) {
-        Decision::UpToDate if app.is_none() => {
+        Decision::UpToDate if app.is_none() && node.is_none() => {
             println!("✅ Ragon {latest} is the latest release.");
             return Ok(());
         }
-        Decision::NewerThanRelease if app.is_none() => {
+        Decision::NewerThanRelease if app.is_none() && node.is_none() => {
             println!(
                 "✅ This Ragon ({}) is newer than the latest release ({latest}); nothing to do.",
                 RAGON_VERSION.unwrap_or_default()
@@ -483,7 +486,7 @@ pub async fn run() -> anyhow::Result<()> {
             return Ok(());
         }
         Decision::UpToDate | Decision::NewerThanRelease => {
-            println!("⬆️  ragon is current; updating the desktop app to {latest}");
+            println!("⬆️  ragon is current; updating {} to {latest}", if node.is_some() { "the node" } else { "the desktop app" });
             false
         }
         Decision::Install => {
@@ -558,6 +561,9 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
     if !binaries_due {
+        if let Some(node) = &node {
+            crate::node_update::update(node, tag, &assets, &download, &all_sums, install_dir).await?;
+        }
         return finish_app(staged_app, &work, tag);
     }
     let result = install_binaries(
@@ -572,6 +578,9 @@ pub async fn run() -> anyhow::Result<()> {
         println!("ℹ️  Windows builds are a preview and are not signed: Smart App Control must be off to run them.");
     }
     println!("✅ Ragon {latest} installed in {}", install_dir.display());
+    if let Some(node) = &node {
+        crate::node_update::update(node, tag, &assets, &download, &all_sums, install_dir).await?;
+    }
     finish_app(staged_app, &work, tag)
 }
 
