@@ -232,6 +232,38 @@ def test_a_relay_whose_renewal_timer_does_not_start_fails_with_a_warning(relay_i
     assert "renewal timer did not start" in capsys.readouterr().out
 
 
+def test_remote_access_relay_issue_all_steps_green_reports_the_new_address(
+    relay_issuing, monkeypatch, capsys
+):
+    """Every step of the relay's issue succeeds: the box, management and timer all happen."""
+    monkeypatched = []
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "describe",
+        classmethod(lambda cls, path: monkeypatched.append(("describe", path)) or None),
+    )
+    switch = []
+    timer = []
+    monkeypatch.setattr(
+        RemoteRelayCertificate,
+        "switch",
+        classmethod(lambda cls, record, relay: switch.append((record["dns_name"], relay)) or True),
+    )
+    monkeypatch.setattr(
+        RemotePublicCertificate,
+        "install_timer",
+        classmethod(lambda cls: timer.append(None) or True),
+    )
+    record = RemoteSettings.read()
+    assert RemoteAccess._relay_issue(record, RELAY, staging=False) == 0
+    out = capsys.readouterr().out
+    assert "A public certificate for the relay, turn.example.org, from Let's Encrypt" in out
+    assert "?, valid ? more days" in out, "describe's empty answer becomes the placeholder"
+    assert "restarts with it" in out
+    assert "The relay presents its own certificate at turn.example.org" in out
+    assert switch == [(BOX, RELAY)] and timer == [None]
+
+
 # -- setup stages -----------------------------------------------------------------------------------
 
 
