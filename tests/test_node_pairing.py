@@ -113,6 +113,55 @@ def test_pairing_over_a_session_pins_the_host_key_authorises_the_key_and_saves_t
     assert command.endswith("node authorize") and key == "ssh-ed25519 AAAAsender ragon-node\n"
 
 
+class WindowsSession(Session):
+    """A Windows node: its shell does not know the Linux path; `ragon node id` answers both lines."""
+
+    def run(self, command, input_text=None):
+        self.commands.append((command, input_text))
+        if command.startswith("$HOME"):
+            return answer(1, "", "The term '$HOME/...' is not recognized as a name of a cmdlet")
+        return self.id_answer if command == "ragon node id" else self.authorize
+
+
+def test_a_windows_node_is_paired_through_its_own_ragon_command(pairing):
+    session = WindowsSession(answer(0, f"{NODE}\nWINNODE\n"))
+    record = NodePairing.pair_over_session(session)
+    assert record is not None and record["name"] == "WINNODE"
+    assert [c for c, _ in session.commands][-2:] == ["ragon node id", "ragon node authorize"]
+
+
+def test_a_linux_node_is_never_asked_the_windows_command(pairing):
+    session = Session(answer(0, f"{NODE}\nspark-1\n"))
+    NodePairing.pair_over_session(session)
+    assert not any(c.startswith("ragon node") for c, _ in session.commands)
+
+
+@pytest.mark.parametrize(
+    ("first_error", "asked"),
+    [
+        ("'$HOME' is not recognized as an internal or external command", 2),
+        ("bash: ragon-admin: No such file or directory", 1),
+        ("Permission denied (publickey,password).", 1),
+    ],
+)
+def test_authorising_asks_a_windows_node_again_by_its_own_command_only(
+    monkeypatch, first_error, asked
+):
+    calls = []
+
+    def ssh(argv, **_):
+        calls.append(argv[-1])
+        return answer(1, "", first_error) if len(calls) == 1 else answer(0)
+
+    monkeypatch.setattr(subprocess, "run", ssh)
+    record = {"node": NODE, "address": "192.0.2.7", "user": "owner"}
+    assert NodePairing.authorize_on_node(record, "ssh-ed25519 AAAA", NodePairing.key_path()) is (
+        asked == 2
+    )
+    assert len(calls) == asked
+    assert calls[0].startswith("$HOME/") and (asked == 1 or calls[1] == "ragon node authorize")
+
+
 def test_a_machine_that_reports_no_node_id_is_not_paired(pairing, capsys):
     assert NodePairing.pair_over_session(Session(answer(127, "", "not found"))) is None
     assert "did not report a node id" in capsys.readouterr().out
