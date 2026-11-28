@@ -184,7 +184,8 @@ function Invoke-NodeTool([string]$Tool, [string[]]$Arguments) {
 }
 
 # The ssh daemon's block for the job account (the text nw-pairing hands over): its own key file,
-# no forwarding, no tty. There is no ForceCommand: the first pairing login runs `ragon node id`
+# no forwarding of any kind (DisableForwarding also covers kinds added later; an sshd older than
+# OpenSSH 8.4 does not know it and gets the explicit list alone), no tty. There is no ForceCommand: the first pairing login runs `ragon node id`
 # and `ragon node authorize`, after which the key's own command= forces serve-job. It goes above
 # the first existing Match block (Match blocks apply in order), or at the end when there is none.
 # Idempotent; replaced between its markers, nothing else in the file is touched.
@@ -194,21 +195,29 @@ function Invoke-NodeTool([string]$Tool, [string[]]$Arguments) {
 function Set-NodeSshdBlock([string]$Config, [string]$User, [string]$Sshd) {
     if (-not (Test-Path $Config)) { return $false }
     $Original = [IO.File]::ReadAllBytes($Config)
-    $Text = Remove-NodeSshdText ([IO.File]::ReadAllText($Config))
-    $Block = (@($NodeSshdBegin, "Match User $User", "    AuthorizedKeysFile .ssh/authorized_keys",
-        "    AllowTcpForwarding no", "    AllowStreamLocalForwarding no", "    GatewayPorts no", "    PermitTunnel no",
-        "    X11Forwarding no", "    AllowAgentForwarding no", "    PermitTTY no", $NodeSshdEnd) -join "`r`n") + "`r`n"
-    $First = [regex]::Match($Text, "(?im)^\s*Match\s")
-    if ($First.Success) {
-        $Text = $Text.Substring(0, $First.Index) + $Block + $Text.Substring($First.Index)
-    } else {
-        if (-not $Text.EndsWith("`n")) { $Text += "`r`n" }
-        $Text += $Block
-    }
-    [IO.File]::WriteAllText($Config, $Text)
-    $Why = if (-not $Sshd -or -not (Test-Path $Sshd)) { "sshd.exe was not found to check it" } else {
-        $Code = Invoke-NodeNative $Sshd @("-t", "-f", $Config)
-        if ($Code -ne 0) { "sshd -t rejected it ($Code): $($script:NodeNativeOutput -join ' ')" } else { "" }
+    $Clean = Remove-NodeSshdText ([IO.File]::ReadAllText($Config))
+    foreach ($Disable in @($true, $false)) {
+        $Lines = @($NodeSshdBegin, "Match User $User", "    AuthorizedKeysFile .ssh/authorized_keys")
+        if ($Disable) { $Lines += "    DisableForwarding yes" }
+        $Lines += @("    AllowTcpForwarding no", "    AllowStreamLocalForwarding no", "    GatewayPorts no", "    PermitTunnel no",
+            "    X11Forwarding no", "    AllowAgentForwarding no", "    PermitTTY no", $NodeSshdEnd)
+        $Block = ($Lines -join "`r`n") + "`r`n"
+        # Above the first Match block, that is after every global directive (a Match block runs to
+        # the next Match or to the end of the file), or at the end when there is none.
+        $Text = $Clean
+        $First = [regex]::Match($Text, "(?im)^\s*Match\s")
+        if ($First.Success) {
+            $Text = $Text.Substring(0, $First.Index) + $Block + $Text.Substring($First.Index)
+        } else {
+            if (-not $Text.EndsWith("`n")) { $Text += "`r`n" }
+            $Text += $Block
+        }
+        [IO.File]::WriteAllText($Config, $Text)
+        $Why = if (-not $Sshd -or -not (Test-Path $Sshd)) { "sshd.exe was not found to check it" } else {
+            $Code = Invoke-NodeNative $Sshd @("-t", "-f", $Config)
+            if ($Code -ne 0) { "sshd -t rejected it ($Code): $($script:NodeNativeOutput -join ' ')" } else { "" }
+        }
+        if (-not ($Why -and $Disable -and $Why -match "(?i)disableforwarding")) { break }
     }
     if ($Why) {
         [IO.File]::WriteAllBytes($Config, $Original)
@@ -297,9 +306,52 @@ function Test-NodePreflight($Paths, $Hooks, [string[]]$Also) {
     return $Problems
 }
 
+# Makes $Path when it is missing with $Full (full control) and $Read (read and execute) as its
+# only access entries, in the same call, so it never exists with the inherited entries of the
+# drive's root (where every user may make folders). Then checks what is there now, owner and links,
+# as the preflight did: a folder someone made between the preflight and this call is theirs (its
+# owner can always rewrite its ACL, and a handle opened before a takeover keeps its rights), so it
+# is refused. Returns the list of problems.
+function New-NodeClosedDir([string]$Path, [string[]]$Full, [string[]]$Read, $Hooks, [string[]]$Also, [string]$Skip = "") {
+    $Security = New-Object Security.AccessControl.DirectorySecurity
+    $Security.SetAccessRuleProtection($true, $false)
+    $Inherit = [Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit"
+    $Rights = New-Object Collections.ArrayList
+    foreach ($Name in @($Full)) { if ($Name) { [void]$Rights.Add(@($Name, "FullControl")) } }
+    foreach ($Name in @($Read)) { if ($Name) { [void]$Rights.Add(@($Name, "ReadAndExecute")) } }
+    foreach ($Pair in $Rights) {
+        $Sid = New-Object Security.Principal.SecurityIdentifier ([string]$Pair[0])
+        $Security.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($Sid, $Pair[1], $Inherit, "None", "Allow")))
+    }
+    # .NET Framework (Windows PowerShell 5.1) has the overload on Directory, .NET (PowerShell 7) on
+    # FileSystemAclExtensions; both pass the descriptor to CreateDirectory itself.
+    if ([IO.Directory].GetMethod("CreateDirectory", [type[]]@([string], [Security.AccessControl.DirectorySecurity]))) {
+        [IO.Directory]::CreateDirectory($Path, $Security) | Out-Null
+    } else {
+        [IO.FileSystemAclExtensions]::CreateDirectory($Security, $Path) | Out-Null
+    }
+    return @(Find-NodeUntrusted $Path $Hooks $Also $Skip)
+}
+
+# icacls /T follows junctions (/L does not stop it), so a link someone with write access left in
+# a tree would steer /setowner and /reset into whatever it points at. Links are removed (never
+# followed) before any /T command runs on a tree.
+function Remove-NodeLinks([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $Stack = New-Object System.Collections.Stack
+    $Stack.Push((Get-Item -Force -LiteralPath $Path))
+    while ($Stack.Count -gt 0) {
+        $Item = $Stack.Pop()
+        if ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            if ($Item -is [IO.DirectoryInfo]) { [IO.Directory]::Delete($Item.FullName) } else { [IO.File]::Delete($Item.FullName) }
+        } elseif ($Item -is [IO.DirectoryInfo]) { foreach ($Child in $Item.EnumerateFileSystemInfos()) { $Stack.Push($Child) } }
+    }
+}
+
 # Takes a folder tree over: Administrators own everything in it, every ACL is reset to inherit,
 # and the top gets $Grants alone (no inherited entries), so nothing a user set before stays.
 function Set-NodeTree($Path, $Tools, [string[]]$Grants) {
+    Remove-NodeLinks $Path
     Invoke-NodeTool $Tools.Icacls @($Path, "/setowner", "*S-1-5-32-544", "/T", "/Q") | Out-Null
     Invoke-NodeTool $Tools.Icacls @($Path, "/reset", "/T", "/Q") | Out-Null
     $Cmd = @($Path, "/inheritance:r")
@@ -313,7 +365,6 @@ function Set-NodeTree($Path, $Tools, [string[]]$Grants) {
 # nobody can swap the junction; the path stays the same when an update renames the trees.
 function New-NodeLink($Paths, $Tools) {
     if (-not $Paths.LinkRoot) { return }
-    New-Item -ItemType Directory -Force -Path $Paths.LinkRoot | Out-Null
     if (Test-Path $Paths.LinkBin) { [IO.Directory]::Delete($Paths.LinkBin) }
     Set-NodeTree $Paths.LinkRoot $Tools @("*S-1-5-18:(OI)(CI)(F)", "*S-1-5-32-544:(OI)(CI)(F)", "*S-1-5-32-545:(OI)(CI)(RX)")
     New-Item -ItemType Junction -Path $Paths.LinkBin -Target $Paths.Bin | Out-Null
@@ -385,16 +436,36 @@ function Install-RagonNode($Paths, [string]$Tag, [string[]]$ClientBinaries, [str
                            $Expect, [string[]]$TrustedAlso = @()) {
     $Problems = @(Test-NodePreflight $Paths $Hooks $TrustedAlso)
     if ($Problems.Count -gt 0) { throw (($Problems -join " ") + " Nothing was changed.") }
+    # The link folder and the state folder are made now, before anything is downloaded, copied or
+    # unpacked, closed to users from the moment they exist, and checked again (B3/N1: on a fresh
+    # machine they did not exist at the preflight, and any user may make C:\Ragon until then).
+    # A clean-up after a failure removes the state folder only when this install made it.
+    $NewState = -not (Test-Path $Paths.State)
+    $NewLink = [bool]$Paths.LinkRoot -and -not (Test-Path $Paths.LinkRoot)
+    $Taken = @()
+    if ($Paths.LinkRoot) { $Taken += @(New-NodeClosedDir $Paths.LinkRoot @("S-1-5-18", "S-1-5-32-544") @("S-1-5-32-545") $Hooks $TrustedAlso $Paths.LinkBin) }
+    $Taken += @(New-NodeClosedDir $Paths.State @("S-1-5-18", "S-1-5-32-544") @() $Hooks $TrustedAlso)
+    if ($Taken.Count -gt 0) {
+        # Only an empty folder is removed, and a link itself, never what it points to.
+        foreach ($Made in @(@($Paths.LinkRoot) | Where-Object { $NewLink }) + @(@($Paths.State) | Where-Object { $NewState })) {
+            try { [IO.Directory]::Delete($Made) } catch { }
+        }
+        throw ("these appeared after the check and are not plain folders of an administrator: " + (@($Taken | Select-Object -First 5) -join "; ") + ". Nothing was installed; find out who made them before you try again.")
+    }
     $Created = @()
     $SshdRecorded = ""
     $JobsDir = ""
     $Save = { Save-NodeRecord $Paths $Tag $Created $Port $SshdRecorded $JobsDir }
-    # A clean-up after a failure removes the state folder only when this install made it.
-    $NewState = -not (Test-Path $Paths.State)
     try {
-        New-Item -ItemType Directory -Force -Path $Paths.Bin, $Paths.State | Out-Null
+        New-Item -ItemType Directory -Force -Path $Paths.Bin | Out-Null
         # Taken over before anything is written in it; closed to users until the table opens it.
         Set-NodeTree $Paths.State $Tools @("*S-1-5-18:(OI)(CI)(F)", "*S-1-5-32-544:(OI)(CI)(F)")
+        # The link folder too, before the long steps: owner, reset and the junction.
+        if ($Paths.LinkRoot) {
+            New-NodeLink $Paths $Tools
+            & $Hooks.AddPath $Paths.LinkBin
+            $Created += "path:$($Paths.LinkBin)"
+        }
         New-Item -ItemType Directory -Force -Path $Paths.NodeState | Out-Null
         & $Save
         foreach ($Dir in @($Paths.Models, $Paths.Advert, $Paths.Jobs)) { New-Item -ItemType Directory -Force -Path $Dir | Out-Null }
@@ -422,12 +493,6 @@ function Install-RagonNode($Paths, [string]$Tag, [string[]]$ClientBinaries, [str
         }
         $Engine = Join-Path $Paths.Engine "ragon-serve.exe"
         if (-not (Test-Path $Engine)) { throw "the engine zip has no ragon-serve.exe." }
-        if ($Paths.LinkRoot) {
-            New-NodeLink $Paths $Tools
-            & $Hooks.AddPath $Paths.LinkBin
-            $Created += "path:$($Paths.LinkBin)"
-            & $Save
-        }
         $Usage = Get-NodeServerUsage $Tools
         # `server install` makes the firewall rules of an advertising node: UDP 5353 and the engine's port.
         $Advertise = @()
@@ -513,6 +578,7 @@ function Uninstall-RagonNode($Paths, $Tools, $Hooks, [string]$SshdConfig, [bool]
     # Kept data passes to Administrators first: files the job account wrote would otherwise be
     # owned by a deleted account's SID, which the next install refuses to adopt.
     if (-not $RemoveData -and (Test-Path $Paths.State)) {
+        Remove-NodeLinks $Paths.State
         Invoke-NodeNative $Tools.Icacls @($Paths.State, "/setowner", "*S-1-5-32-544", "/T", "/Q") | Out-Null
     }
     if ($Created -like "*user:$NodeJobAccount*") { & $Hooks.RemoveUser $NodeJobAccount; $Removed += "user" }
@@ -559,13 +625,16 @@ if ($Role -eq "node") {
     }
     $NodeHooks = @{
         UserExists = { param($Name) [bool](Get-LocalUser -Name $Name -ErrorAction SilentlyContinue) }
-        # A local account for the node's jobs: not an administrator, a long random password nobody
-        # is told (the account is reached by key over ssh, never by password).
+        # A local account for the node's jobs: not an administrator, a long random password. The
+        # first pairing (`ragon node add` on the primary) logs in with it once and authorises the
+        # primary's key, which is then forced to serve-job; it is shown once at the end of the
+        # install, never written to a file or the log.
         NewUser = {
             param($Name)
-            $Bytes = New-Object byte[] 24
+            $Bytes = New-Object byte[] 18
             (New-Object Security.Cryptography.RNGCryptoServiceProvider).GetBytes($Bytes)
-            $Secret = ConvertTo-SecureString ("aA1!" + [Convert]::ToBase64String($Bytes)) -AsPlainText -Force
+            $script:NodeJobPassword = "aA1-" + ([Convert]::ToBase64String($Bytes) -replace '\+', '-' -replace '/', '_')
+            $Secret = ConvertTo-SecureString $script:NodeJobPassword -AsPlainText -Force
             New-LocalUser -Name $Name -Password $Secret -PasswordNeverExpires -UserMayNotChangePassword `
                 -AccountNeverExpires -Description "Ragon node jobs" | Out-Null
         }
@@ -1105,6 +1174,15 @@ if ($Role -eq "node") {
     if ($Healthy) { Say "The ragon-node service is running and healthy." }
     else { Say "The ragon-node service is installed but not healthy yet: ragon server status --name ragon-node" }
     Say "Weights: ragon model pull, or sync-model from another node, into $($NodePaths.Models)."
+    # The job account's password: the first pairing's ssh login asks for it once. Shown here only.
+    if ($script:NodeJobPassword) {
+        Say "Pairing: on the primary, ragon node add asks once for the password of $NodeJobAccount on this PC:"
+        Say "  $script:NodeJobPassword"
+        Say "  It is shown only now and stored nowhere. A new one: net user $NodeJobAccount * (elevated)."
+        $script:NodeJobPassword = ""
+    } else {
+        Say "Pairing: the account $NodeJobAccount was kept with its password; set a new one with net user $NodeJobAccount * (elevated) if you do not know it."
+    }
     # C:\Ragon\bin stays on the machine PATH: the job account has no profile and its first pairing
     # login runs plain `ragon`. The machine PATH comes before the user's, so new shells here find
     # the node's copy, which refuses `ragon update`.
