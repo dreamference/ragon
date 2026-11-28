@@ -11,9 +11,18 @@ import pytest
 
 from dreamference.cli.adapter_command import AdapterCommand
 from dreamference.hardware.adapter_train_run import AdapterTrainRun
+from dreamference.hardware.adapter_train_tasks import AdapterTrainTasks
 
 BASE_TIME = 1_700_000_000
 CONFIG = SimpleNamespace(vllm_host="localhost", model="m")
+
+
+def test_adapter_train_tasks_parse_rejects_a_short_header_and_a_binary_numstat() -> None:
+    assert AdapterTrainTasks._parse("a\x00b") is None
+    assert (
+        AdapterTrainTasks._parse("h\x00p\x00n\x00e\x001700000000\x00Fix the thing\x02-\t-\tmod.py")
+        is None
+    )
 
 
 def build_repo(path: Path, commits: int = 60) -> None:
