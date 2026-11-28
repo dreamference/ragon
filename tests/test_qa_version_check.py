@@ -110,3 +110,29 @@ def test_the_windows_rule_in_powershell(line, want, expected, tmp_path):
         ["pwsh", "-NoProfile", "-File", str(script)], capture_output=True, text=True, env=env
     )
     assert run.stdout.strip() == ("yes" if expected else "no")
+
+
+# The releases page from 11-26 on: the 0.9.9 candidates sit above the latest release, 0.9.8.1.
+PAGE = "\n".join(
+    f'<a href="/dreamference/ragon/releases/tag/v{tag}">'
+    for tag in ["0.9.9-rc.2", "0.9.9-rc.1", "0.9.9-rc.1", "0.9.8.1", "0.9.8", "0.9.7"]
+)
+PREVIOUS = [
+    ("0.9.8.1", "0.9.8"),  # 11-26 to 11-28 the cut tag of the candidates gave 0.9.9, never published
+    ("0.9.8", "0.9.7"),
+    ("0.9.9", "0.9.8.1"),  # a latest not on the page: the first release that is not it
+    ("", "0.9.8.1"),
+    ("0.9.7", ""),
+]
+
+def test_the_previous_release_skips_the_candidates_above_the_latest_one():
+    script = SCRIPTS[0]
+    function = re.search(r"^previous_release\(\) \{.*?^\}", script.read_text(), re.S | re.M).group(0)
+    for latest, want in PREVIOUS:
+        run = subprocess.run(
+            ["bash", "-c", function + '\nprevious_release "$1"', "_", latest],
+            input=PAGE,
+            capture_output=True,
+            text=True,
+        )
+        assert (run.returncode, run.stdout.strip(), run.stderr) == (0, want, ""), latest
