@@ -10,10 +10,16 @@ import random
 import shutil
 import sys
 
+from typing import Final
+
 corpus, out = sys.argv[1], sys.argv[2]
 os.makedirs(out, exist_ok=True)
 rng = random.Random(0x135288F)
 BLOCK = os.urandom(1 << 20)  # one random MiB, rotated per write so blocks differ
+
+# Browser-style duplicate copies made for PDFs (other formats get one copy).
+PDF_COPIES: Final[int] = 3
+PDF_SUBDIR: Final[str] = "pdf"
 
 
 def blob(name, mb, magic=b""):
@@ -55,10 +61,10 @@ for i in range(240):  # phone photos and screenshots
 for i in range(60):
     blob(f"invoice-template-{i}.xlsx", 1, b"PK\x03\x04")
 # Documents downloaded more than once, the way browsers name the copies.
-for sub in ("pdf", "docx", "csv"):
+for sub in (PDF_SUBDIR, "docx", "csv"):
     for f in sorted(os.listdir(os.path.join(corpus, sub))):
         stem, ext = os.path.splitext(f)
-        copies = 3 if sub == "pdf" else 1
+        copies = PDF_COPIES if sub == PDF_SUBDIR else 1
         for c in range(copies):
             name = f if c == 0 else f"{stem} ({c}){ext}"
             shutil.copyfile(os.path.join(corpus, sub, f), os.path.join(out, name))
