@@ -457,6 +457,23 @@ def test_without_a_served_model_the_vision_ranker_gets_the_id_the_server_will_se
     )
 
 
+def test_image_search_sidecar_vision_model_falls_back_to_the_model_when_the_registry_blows_up(
+    monkeypatch,
+):
+    def urlopen(url, timeout):
+        assert url == "http://localhost:8000/v1/models"
+        return io.BytesIO(b'{"data": []}')
+
+    def broken(cls, model_key):
+        raise ValueError("no such model")
+
+    monkeypatch.setattr(image_search_sidecar.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(
+        "dreamference.hardware.ModelMatrixRegistry.resolve_hf_repo", classmethod(broken)
+    )
+    assert ImageSearchSidecar.vision_model("http://localhost:8000", "configured") == "configured"
+
+
 def test_server_start_warns_and_still_loads_the_model_when_a_sidecar_fails(monkeypatch, capsys):
     from dreamference.cli import dreamference_cli_controller as controller
     from dreamference.cli.dreamference_cli_controller import DreamferenceCLIController
