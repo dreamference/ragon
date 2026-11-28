@@ -204,6 +204,21 @@ CLOSE_BRACE: Final[int] = ord("}")
 # and the CA its certificate is signed by (specs/DREAMFERENCE_AUTH.md §5.1, §6).
 INFO_PATH: Final[str] = "/ragon/v1/info"
 CA_PATH: Final[str] = "/ragon/v1/ca.pem"
+# The install script a managed Codex daemon's updater fetches and pipes to `/bin/sh -s` (patch
+# 0045 points it here instead of the vendor's): it runs `ragon update`, nothing else (spec Q3, A9).
+INSTALL_PATH: Final[str] = "/ragon/v1/install.sh"
+INSTALL_SCRIPT: Final[bytes] = (
+    b"#!/bin/sh\n"
+    b"# Ragon: the daemon's updater runs this; it updates through `ragon update`, nothing else.\n"
+    b"set -eu\n"
+    b'ragon_bin="$(command -v ragon 2>/dev/null || true)"\n'
+    b'[ -n "$ragon_bin" ] || ragon_bin="$HOME/.local/bin/ragon"\n'
+    b'exec "$ragon_bin" update\n'
+)
+SCRIPT_TYPE: Final[str] = "text/x-shellscript; charset=utf-8"
+# Codex's cloud environment lookups (`wham/environments`, `.../by-repo/...`): no task service
+# here, so they get the same 404 shape as `wham/tasks` (spec A8; the store is §7.5).
+CLOUD_ENV_TAIL: Final[str] = "wham/environments"
 # The node's identity, written by `ModelGate.start` beside the gate's state.
 NODE_FILE: Final[str] = "node.json"
 PEM_TYPE: Final[str] = "application/x-pem-file"
@@ -972,12 +987,19 @@ class ModelGateService:
         return info
 
     async def answer_node_route(self, writer: asyncio.StreamWriter, method: str, path: str) -> bool:
-        """Answers `/ragon/v1/info` and `/ragon/v1/ca.pem`; True when the path was one of them."""
+        """Answers `/ragon/v1/info`, `/ragon/v1/ca.pem` and `/ragon/v1/install.sh`; True when the path was one of them."""
         route = path.split("?", 1)[0]
-        if route not in (INFO_PATH, CA_PATH) or method not in (METHOD_GET, METHOD_HEAD):
+        if route not in (INFO_PATH, CA_PATH, INSTALL_PATH) or method not in (
+            METHOD_GET,
+            METHOD_HEAD,
+        ):
             return False
         head_only = method == METHOD_HEAD
-        if route == INFO_PATH:
+        if route == INSTALL_PATH:
+            await self.respond_raw(
+                writer, (200, "OK", SCRIPT_TYPE), INSTALL_SCRIPT, head_only=head_only
+            )
+        elif route == INFO_PATH:
             await self.respond(writer, 200, "OK", self.node_info(), head_only=head_only)
         elif self.ca_pem is None:
             await self.respond(
@@ -1270,6 +1292,10 @@ class ModelGateService:
         headers = parsed[2] if parsed else []
         bearer = dict(headers).get(AUTHORIZATION, b"").decode("latin-1")
         status, body = GateCompat.backend(path, bearer)
+        route = path.split("?", 1)[0].rstrip("/")
+        tail = route[len(gate_compat.BACKEND_PREFIX) :].strip("/")
+        if tail == CLOUD_ENV_TAIL or tail.startswith(CLOUD_ENV_TAIL + "/"):
+            status, body = HTTP_NOT_FOUND, GateCompat.error(f"Not found: {route}", "not_found")
         self.log(f"stub {method} {path} -> {status}")
         await self.respond(
             writer,
