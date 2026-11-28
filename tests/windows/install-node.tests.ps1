@@ -15,7 +15,7 @@ $Tree = [Management.Automation.Language.Parser]::ParseFile((Resolve-Path $Script
 if ($Errors.Count) { throw "install.ps1 does not parse: $($Errors[0].Message)" }
 $Pieces = @()
 foreach ($Statement in $Tree.EndBlock.Statements) {
-    if ($Statement -is [Management.Automation.Language.FunctionDefinitionAst] -and $Statement.Name -match '^(Get-Node|Test-Zip|Expand-Node|Invoke-Node|Set-Node|Remove-Node|Test-Node|Save-Node|Install-RagonNode|Uninstall-RagonNode)') {
+    if ($Statement -is [Management.Automation.Language.FunctionDefinitionAst] -and $Statement.Name -match '^(Get-Node|Test-Zip|Expand-Node|Invoke-Node|Set-Node|Remove-Node|Test-Node|Save-Node|New-Node|Install-RagonNode|Uninstall-RagonNode)') {
         $Pieces += $Statement.Extent.Text
     } elseif ($Statement -is [Management.Automation.Language.AssignmentStatementAst] -and $Statement.Left.Extent.Text -match '^\$Node(Service|Job|Sandbox|Sshd)') {
         $Pieces += $Statement.Extent.Text
@@ -46,7 +46,7 @@ try {
     $env:RAGON_FAKE_LOG = $Log
     function New-Fake([string]$Name, [string]$ExitVar) {
         $Path = Join-Path $Temp "$Name.cmd"
-        Set-Content -Path $Path -Encoding ASCII -Value @("@echo off", "echo $Name %* >> `"%RAGON_FAKE_LOG%`"", "if defined FAKE_STDERR echo noise 1>&2", "if defined $ExitVar exit /b %$ExitVar%", "exit /b 0")
+        Set-Content -Path $Path -Encoding ASCII -Value @("@echo off", "echo $Name %* >> `"%RAGON_FAKE_LOG%`"", "if defined FAKE_STDERR echo noise 1>&2", "if `"%2`"==`"--help`" if not defined FAKE_NO_ADVERTISE echo usage server --advertise NODE_ID", "if defined $ExitVar exit /b %$ExitVar%", "exit /b 0")
         return $Path
     }
     $Tools = @{ Sc = (New-Fake "sc" "FAKE_SC_EXIT"); Icacls = (New-Fake "icacls" "FAKE_ICACLS_EXIT"); Ragon = (New-Fake "ragon" "FAKE_RAGON_EXIT") }
@@ -57,6 +57,9 @@ try {
         UserExists = { param($Name) $Users -contains $Name }.GetNewClosure()
         NewUser = { param($Name) [void]$Users.Add($Name); [void]$Calls.Add("newuser $Name") }.GetNewClosure()
         RemoveUser = { param($Name) $Users.Remove($Name); [void]$Calls.Add("removeuser $Name") }.GetNewClosure()
+        AddPath = { param($Dir) [void]$Calls.Add("addpath $Dir") }.GetNewClosure()
+        RemovePath = { param($Dir) [void]$Calls.Add("removepath $Dir") }.GetNewClosure()
+        RestartSshd = { [void]$Calls.Add("restartsshd") }.GetNewClosure()
     }
     function Read-Log { if (Test-Path $Log) { @(Get-Content $Log) } else { @() } }
     function Reset-Log { Remove-Item -Force $Log -ErrorAction SilentlyContinue; $Calls.Clear() }
@@ -85,7 +88,7 @@ try {
 
     function New-Prefix([string]$Name) {
         $Base = Join-Path $Temp $Name
-        return Get-NodePaths (Join-Path $Base "pf") (Join-Path $Base "pd")
+        return Get-NodePaths (Join-Path $Base "pf") (Join-Path $Base "pd") (Join-Path $Base "link")
     }
     $Sshd = Join-Path $Temp "sshd_config"
     $SshdOriginal = "Port 22`r`nSubsystem sftp sftp-server.exe`r`n"
@@ -108,11 +111,21 @@ try {
     Check "a block is written" (Set-NodeSshdBlock $Sshd "RagonJob") $true
     $Written = [IO.File]::ReadAllText($Sshd)
     Check "block names the job user" ($Written -match "Match User RagonJob") $true
-    Check "block forbids tty and forwarding" (($Written -match "PermitTTY no") -and ($Written -match "AllowTcpForwarding no")) $true
+    Check "block gives the account its own key file" ($Written -match "AuthorizedKeysFile .ssh/authorized_keys") $true
+    Check "block forbids tty and forwarding" (($Written -match "PermitTTY no") -and ($Written -match "AllowTcpForwarding no") -and ($Written -match "GatewayPorts no")) $true
+    Check "block has no ForceCommand (the first pairing login runs ragon node authorize)" ($Written -match "ForceCommand") $false
     Set-NodeSshdBlock $Sshd "RagonJob" | Out-Null
     Check "a second write leaves one block" ([regex]::Matches([IO.File]::ReadAllText($Sshd), "BEGIN ragon-node").Count) 1
     Remove-NodeSshdBlock $Sshd
     Check "removing the block restores the file" ([IO.File]::ReadAllText($Sshd)) $SshdOriginal
+    $WithMatch = $SshdOriginal + "Match Group administrators`r`n    AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys`r`n"
+    $SshdM = Join-Path $Temp "sshd_config_match"
+    [IO.File]::WriteAllText($SshdM, $WithMatch)
+    Set-NodeSshdBlock $SshdM "RagonJob" | Out-Null
+    $M = [IO.File]::ReadAllText($SshdM)
+    Check "the block goes above the first existing Match block" ($M.IndexOf("Match User RagonJob") -lt $M.IndexOf("Match Group administrators")) $true
+    Remove-NodeSshdBlock $SshdM
+    Check "and removing it restores that file too" ([IO.File]::ReadAllText($SshdM)) $WithMatch
     Check "a missing config is skipped" (Set-NodeSshdBlock (Join-Path $Temp "none") "RagonJob") $false
 
     # --- the zip ---
@@ -128,11 +141,16 @@ try {
     Check "the engine is unpacked beside it" (Test-Path (Join-Path $P.Engine "kernels\a.co")) $true
     Check "the job account was made" ($Calls -contains "newuser RagonJob") $true
     $Lines = Read-Log
-    Check "the service is made by ragon server install" ($Lines[0] -match "^ragon server install --name ragon-node --state-dir .*node --host 127.0.0.1 --port 8000 -- .*ragon-serve.exe --model D:.m") $true
-    Check "icacls ran for the root, models, advert, jobs (not the absent id file)" (@($Lines | Where-Object { $_ -like "icacls*" }).Count) 4
+    $InstallLine = $Lines | Where-Object { $_ -like "ragon server install*" } | Select-Object -First 1
+    Check "the service is made by ragon server install" ($InstallLine -match "^ragon server install --name ragon-node --state-dir .*node --host 127.0.0.1 --port 8000 --advertise [0-9a-f-]{36} -- .*ragon-serve.exe --model D:.m") $true
+    Check "a node id was written, one line" ((Get-Content $P.NodeId).Count) 1
+    Check "the junction gives the job account a space-free ragon.exe" (Test-Path (Join-Path $P.LinkBin "ragon.exe")) $true
+    Check "and its path is on the machine PATH" ($Calls -contains "addpath $($P.LinkBin)") $true
+    Check "sshd was restarted for the block" ($Calls -contains "restartsshd") $true
+    Check "icacls ran for the link folder and the five state items" (@($Lines | Where-Object { $_ -like "icacls*" }).Count) 6
     Check "the service was started" (@($Lines | Where-Object { $_ -eq "sc start ragon-node " }).Count -ge 1) $true
     Check "the service's start comes after its ACLs" ([array]::IndexOf($Lines, ($Lines | Where-Object { $_ -like "sc start*" } | Select-Object -First 1)) -gt [array]::IndexOf($Lines, ($Lines | Where-Object { $_ -like "icacls*" } | Select-Object -Last 1))) $true
-    Check "the record names what was created" ((Get-Content $P.Record) -join ";") "tag=v0.9.10;service=ragon-node;created=user:RagonJob,service:ragon-node;port=8000;state=$($P.NodeState);sshd=$Sshd"
+    Check "the record names what was created" ((Get-Content $P.Record) -join ";") "tag=v0.9.10;service=ragon-node;created=user:RagonJob,path:$($P.LinkBin),service:ragon-node;port=8000;state=$($P.NodeState);link=$($P.LinkBin);sshd=$Sshd"
     Check "the sshd block is in the config" ([IO.File]::ReadAllText($Sshd).Contains("BEGIN ragon-node")) $true
     Throws "a second install is refused" { Install-RagonNode $P "v0.9.10" $Binaries $Zip $Tools $Hooks @() @() "" 8000 1 } "already installed"
 
@@ -155,8 +173,20 @@ try {
     Check "the sshd block is gone" ([IO.File]::ReadAllText($Sshd)) $SshdOriginal
     Check "the supervisor's uninstall ran" (@(Read-Log | Where-Object { $_ -like "ragon server uninstall --name ragon-node*" }).Count) 1
     Check "the job account was removed" ($Users -contains "RagonJob") $false
+    Check "the junction and its folder are gone, the program folder with it" ((Test-Path $P.LinkRoot) -or (Test-Path $P.Bin)) $false
+    Check "the PATH entry was removed" ($Calls -contains "removepath $($P.LinkBin)") $true
     Uninstall-RagonNode $P $Tools $Hooks $Sshd $true | Out-Null
     Check "-RemoveData removes the state folder" (Test-Path $P.State) $false
+
+    # --- a supervisor without --advertise is installed without it ---
+    $env:FAKE_NO_ADVERTISE = "1"
+    $PA = New-Prefix "noadv"
+    Reset-Log
+    Install-RagonNode $PA "v0.9.10" $Binaries $Zip $Tools $Hooks @() @() "" 8000 5 | Out-Null
+    Check "no --advertise is passed to one that does not know it" ((Read-Log | Where-Object { $_ -like "ragon server install*" }) -match "--advertise") $false
+    Uninstall-RagonNode $PA $Tools $Hooks "" $true | Out-Null
+    Remove-Item Env:\FAKE_NO_ADVERTISE
+    Reset-Log
 
     # --- a failed install cleans up after itself ---
     $P2 = New-Prefix "bad"

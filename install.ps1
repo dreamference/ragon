@@ -77,7 +77,7 @@ $NodeSandboxAccounts = @("CodexSandboxOffline", "CodexSandboxOnline")
 $NodeSshdBegin = "# BEGIN ragon-node (written by install.ps1 -Role node)"
 $NodeSshdEnd = "# END ragon-node"
 
-function Get-NodePaths([string]$ProgramFiles, [string]$ProgramData) {
+function Get-NodePaths([string]$ProgramFiles, [string]$ProgramData, [string]$LinkRoot = "") {
     $Root = Join-Path $ProgramFiles "Ragon"
     $State = Join-Path $ProgramData "Ragon"
     return @{
@@ -86,6 +86,7 @@ function Get-NodePaths([string]$ProgramFiles, [string]$ProgramData) {
         Engine = (Join-Path $Root "current\engine"); Record = (Join-Path $Root "node-install")
         State = $State; NodeState = (Join-Path $State "node"); Models = (Join-Path $State "models")
         Advert = (Join-Path $State "advert"); Jobs = (Join-Path $State "jobs"); NodeId = (Join-Path $State "node-id")
+        LinkRoot = $LinkRoot; LinkBin = $(if ($LinkRoot) { Join-Path $LinkRoot "bin" } else { "" })
     }
 }
 
@@ -172,23 +173,30 @@ function Invoke-NodeTool([string]$Tool, [string[]]$Arguments) {
     return $script:NodeNativeOutput
 }
 
-# The ssh daemon's block for the job account: no tty, no forwarding. The forced command itself is
-# the account's authorized_keys entry (ragon node authorize). Idempotent; replaced between its
-# markers, nothing else in the file is touched.
+# The ssh daemon's block for the job account (the text nw-pairing hands over): its own key file,
+# no forwarding, no tty. There is no ForceCommand: the first pairing login runs `ragon node id`
+# and `ragon node authorize`, after which the key's own command= forces serve-job. It goes above
+# the first existing Match block (Match blocks apply in order), or at the end when there is none.
+# Idempotent; replaced between its markers, nothing else in the file is touched.
 function Set-NodeSshdBlock([string]$Config, [string]$User) {
     if (-not (Test-Path $Config)) { return $false }
-    $Text = [IO.File]::ReadAllText($Config)
-    $Text = Remove-NodeSshdText $Text
-    $Block = @($NodeSshdBegin, "Match User $User", "    PasswordAuthentication no", "    PermitTTY no",
-        "    AllowTcpForwarding no", "    AllowAgentForwarding no", "    X11Forwarding no", $NodeSshdEnd) -join "`r`n"
-    if (-not $Text.EndsWith("`n")) { $Text += "`r`n" }
-    [IO.File]::WriteAllText($Config, $Text + $Block + "`r`n")
+    $Text = Remove-NodeSshdText ([IO.File]::ReadAllText($Config))
+    $Block = (@($NodeSshdBegin, "Match User $User", "    AuthorizedKeysFile .ssh/authorized_keys",
+        "    AllowTcpForwarding no", "    AllowStreamLocalForwarding no", "    GatewayPorts no", "    PermitTunnel no",
+        "    X11Forwarding no", "    AllowAgentForwarding no", "    PermitTTY no", $NodeSshdEnd) -join "`r`n") + "`r`n"
+    $First = [regex]::Match($Text, "(?im)^\s*Match\s")
+    if ($First.Success) {
+        $Text = $Text.Substring(0, $First.Index) + $Block + $Text.Substring($First.Index)
+    } else {
+        if (-not $Text.EndsWith("`n")) { $Text += "`r`n" }
+        $Text += $Block
+    }
+    [IO.File]::WriteAllText($Config, $Text)
     return $true
 }
 
 function Remove-NodeSshdText([string]$Text) {
-    $Pattern = "(?s)\r?\n?" + [regex]::Escape($NodeSshdBegin) + ".*?" + [regex]::Escape($NodeSshdEnd) + "\r?\n?"
-    return [regex]::Replace($Text, $Pattern, "`r`n").TrimEnd() + "`r`n"
+    return [regex]::Replace($Text, "(?s)" + [regex]::Escape($NodeSshdBegin) + ".*?" + [regex]::Escape($NodeSshdEnd) + "\r?\n?", "")
 }
 
 function Remove-NodeSshdBlock([string]$Config) {
@@ -206,8 +214,46 @@ function Test-NodeHost([int]$Build, [string]$Arch, [bool]$Elevated) {
     return $Problems
 }
 
+# A space-free path to the node's ragon.exe for the job account (the forced command cannot name a
+# path with a space, and the primary calls plain `ragon`): C:\Ragon\bin, a junction into
+# %ProgramFiles%\Ragon\current\bin. Its parent is closed to users (read and execute only), so
+# nobody can swap the junction; the path stays the same when an update renames the trees.
+function New-NodeLink($Paths, $Tools) {
+    if (-not $Paths.LinkRoot) { return }
+    New-Item -ItemType Directory -Force -Path $Paths.LinkRoot | Out-Null
+    Invoke-NodeTool $Tools.Icacls @($Paths.LinkRoot, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)(F)", "/grant:r", "*S-1-5-32-544:(OI)(CI)(F)", "/grant:r", "*S-1-5-32-545:(OI)(CI)(RX)") | Out-Null
+    if (Test-Path $Paths.LinkBin) { [IO.Directory]::Delete($Paths.LinkBin) }
+    New-Item -ItemType Junction -Path $Paths.LinkBin -Target $Paths.Bin | Out-Null
+}
+
+# Removes the junction only (never what it points to), and its parent when nothing else is in it.
+function Remove-NodeLink($Paths) {
+    if (-not $Paths.LinkRoot -or -not (Test-Path $Paths.LinkRoot)) { return }
+    if (Test-Path $Paths.LinkBin) { [IO.Directory]::Delete($Paths.LinkBin) }
+    if (-not (Get-ChildItem -Force $Paths.LinkRoot)) { Remove-Item -Force $Paths.LinkRoot }
+}
+
+# The node id: kept when the file is there, a new GUID otherwise (the file marks the machine as a node).
+function Get-NodeId($Paths) {
+    if (Test-Path $Paths.NodeId) {
+        $Id = (Get-Content -Path $Paths.NodeId -TotalCount 1).Trim()
+        if ($Id) { return $Id }
+    }
+    $Id = [Guid]::NewGuid().ToString()
+    [IO.File]::WriteAllText($Paths.NodeId, $Id + "`n")
+    return $Id
+}
+
+# Whether the placed ragon names --advertise in its server usage (the node that advertises on the
+# LAN also gets its firewall rules from `server install`); an older supervisor is installed without.
+function Test-NodeAdvertise($Tools) {
+    Invoke-NodeNative $Tools.Ragon @("server", "--help") | Out-Null
+    return (($script:NodeNativeOutput -join " ") -match "--advertise")
+}
+
 function Save-NodeRecord($Paths, [string]$Tag, [string[]]$Created, [int]$Port, [string]$Sshd = "") {
     $Lines = @("tag=$Tag", "service=$NodeServiceName", "created=$($Created -join ',')", "port=$Port", "state=$($Paths.NodeState)")
+    if ($Paths.LinkBin) { $Lines += "link=$($Paths.LinkBin)" }
     if ($Sshd) { $Lines += "sshd=$Sshd" }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Paths.Record) | Out-Null
     Set-Content -Path $Paths.Record -Encoding ASCII -Value $Lines
@@ -231,13 +277,21 @@ function Install-RagonNode($Paths, [string]$Tag, [string[]]$ClientBinaries, [str
             $Created += "user:$NodeJobAccount"
             Save-NodeRecord $Paths $Tag $Created $Port
         }
-        $Ragon = Join-Path $Paths.Bin "ragon.exe"
         $Engine = Join-Path $Paths.Engine "ragon-serve.exe"
         if (-not (Test-Path $Engine)) { throw "the engine zip has no ragon-serve.exe." }
+        if ($Paths.LinkRoot) {
+            New-NodeLink $Paths $Tools
+            & $Hooks.AddPath $Paths.LinkBin
+            $Created += "path:$($Paths.LinkBin)"
+            Save-NodeRecord $Paths $Tag $Created $Port
+        }
+        # `server install` makes the firewall rules of an advertising node: UDP 5353 and the engine's port.
+        $Advertise = @()
+        if (Test-NodeAdvertise $Tools) { $Advertise = @("--advertise", (Get-NodeId $Paths)) }
         # --host is where the supervisor probes the engine (a connection to 0.0.0.0 fails on Windows);
         # the address the engine listens on is its own argument, in $EngineArgs (--host 0.0.0.0).
         $Install = @("server", "install", "--name", $NodeServiceName, "--state-dir", $Paths.NodeState, "--host", "127.0.0.1",
-            "--port", "$Port") + $ServerArgs + @("--", $Engine) + $EngineArgs
+            "--port", "$Port") + $Advertise + $ServerArgs + @("--", $Engine) + $EngineArgs
         Invoke-NodeTool $Tools.Ragon $Install | Out-Null
         $Created += "service:$NodeServiceName"
         Save-NodeRecord $Paths $Tag $Created $Port
@@ -249,7 +303,10 @@ function Install-RagonNode($Paths, [string]$Tag, [string[]]$ClientBinaries, [str
             if (-not (Test-Path $Command[0])) { continue }
             Invoke-NodeTool $Tools.Icacls $Command | Out-Null
         }
-        if ($SshdConfig -and (Set-NodeSshdBlock $SshdConfig $NodeJobAccount)) { Save-NodeRecord $Paths $Tag $Created $Port $SshdConfig }
+        if ($SshdConfig -and (Set-NodeSshdBlock $SshdConfig $NodeJobAccount)) {
+            Save-NodeRecord $Paths $Tag $Created $Port $SshdConfig
+            & $Hooks.RestartSshd
+        }
         Invoke-NodeNative $Tools.Sc @("start", $NodeServiceName) | Out-Null
         $Deadline = (Get-Date).AddSeconds($WaitSeconds)
         $Healthy = $false
@@ -289,7 +346,14 @@ function Uninstall-RagonNode($Paths, $Tools, $Hooks, [string]$SshdConfig, [bool]
         Invoke-NodeNative $Tools.Sc @("delete", $NodeServiceName) | Out-Null
     }
     $Removed += "service"
-    if ($SshdConfig) { Remove-NodeSshdBlock $SshdConfig }
+    if ($SshdConfig -and (Test-Path $SshdConfig) -and ([IO.File]::ReadAllText($SshdConfig).Contains($NodeSshdBegin))) {
+        Remove-NodeSshdBlock $SshdConfig
+        & $Hooks.RestartSshd
+    }
+    if ($Paths.LinkBin) {
+        & $Hooks.RemovePath $Paths.LinkBin
+        Remove-NodeLink $Paths
+    }
     if (Test-Path $Paths.Root) {
         # The service's files can stay locked for a moment after it stops.
         for ($Try = 1; (Test-Path $Paths.Root) -and $Try -le 8; $Try++) {
@@ -330,7 +394,8 @@ if ($Build -lt 22000) {
 $NodeEngineZip = ""
 if ($Role -eq "node") {
     $NodePaths = Get-NodePaths $(if ($env:RAGON_NODE_PROGRAM_FILES) { $env:RAGON_NODE_PROGRAM_FILES } else { $env:ProgramFiles }) `
-        $(if ($env:RAGON_NODE_PROGRAM_DATA) { $env:RAGON_NODE_PROGRAM_DATA } else { $env:ProgramData })
+        $(if ($env:RAGON_NODE_PROGRAM_DATA) { $env:RAGON_NODE_PROGRAM_DATA } else { $env:ProgramData }) `
+        $(if ($env:RAGON_NODE_LINK_ROOT) { $env:RAGON_NODE_LINK_ROOT } else { Join-Path $env:SystemDrive "Ragon" })
     $NodeSshdConfig = if ($NoSshd) { "" } elseif ($env:RAGON_NODE_SSHD_CONFIG) { $env:RAGON_NODE_SSHD_CONFIG } else { Join-Path $env:ProgramData "ssh\sshd_config" }
     $NodeTools = @{
         Ragon = (Join-Path $NodePaths.Bin "ragon.exe")
@@ -350,6 +415,23 @@ if ($Role -eq "node") {
                 -AccountNeverExpires -Description "Ragon node jobs" | Out-Null
         }
         RemoveUser = { param($Name) Remove-LocalUser -Name $Name -ErrorAction SilentlyContinue }
+        # The machine PATH, so the job account (which has no profile of its own) finds `ragon`.
+        AddPath = {
+            param($Dir)
+            $Now = [Environment]::GetEnvironmentVariable("Path", "Machine")
+            if (-not (($Now -split ";") -contains $Dir)) { [Environment]::SetEnvironmentVariable("Path", ($Now.TrimEnd(";") + ";" + $Dir), "Machine") }
+        }
+        RemovePath = {
+            param($Dir)
+            $Now = [Environment]::GetEnvironmentVariable("Path", "Machine")
+            [Environment]::SetEnvironmentVariable("Path", ((($Now -split ";") | Where-Object { $_ -and $_ -ne $Dir }) -join ";"), "Machine")
+        }
+        # sshd reads its configuration at start. Restarting it from an ssh session ends that session,
+        # so over ssh the script says so instead.
+        RestartSshd = {
+            if ($env:SSH_CONNECTION) { Say "  sshd: restart it (Restart-Service sshd) from a console for the new block to apply; this session is an ssh login." }
+            elseif (Get-Service sshd -ErrorAction SilentlyContinue) { Restart-Service sshd }
+        }
     }
     $Elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $Elevated) { Fail "the node role needs an elevated PowerShell (Run as administrator); over SSH there is no UAC, so start the shell elevated. Nothing was changed." }
@@ -857,7 +939,6 @@ if ($Role -eq "node") {
     }
     if ($Healthy) { Say "The ragon-node service is running and healthy." }
     else { Say "The ragon-node service is installed but not healthy yet: ragon server status --name ragon-node" }
-    if ($NodeSshdConfig) { Say "sshd: restart it (Restart-Service sshd) for the Match block to apply; this script never does, over ssh that ends the session." }
     Say "Weights: ragon model pull, or sync-model from another node, into $($NodePaths.Models)."
 }
 

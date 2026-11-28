@@ -221,9 +221,23 @@ impl NodeHost for CommandHost<'_> {
     }
 }
 
+/// The system's `tar` (bsdtar reads zip): the one in System32, not whatever is first on PATH.
+fn system_tar() -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .map(|root| PathBuf::from(root).join("System32").join("tar.exe"))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("tar"))
+}
+
+/// Seconds the new version has to be healthy: `RAGON_NODE_UPDATE_WAIT_S`, else ten minutes, the
+/// supervisor's own limit for an engine that loads a model (core.rs).
+pub fn wait_seconds() -> u64 {
+    std::env::var("RAGON_NODE_UPDATE_WAIT_S").ok().and_then(|v| v.parse().ok()).filter(|&s| s > 0).unwrap_or(600)
+}
+
 /// Unpacks a zip with the system's `tar` (bsdtar reads zip), after checking its listing.
 pub fn extract_zip(zip: &Path, dest: &Path) -> anyhow::Result<()> {
-    let listing = std::process::Command::new("tar").arg("-tf").arg(zip).output().context("could not run tar")?;
+    let listing = std::process::Command::new(system_tar()).arg("-tf").arg(zip).output().context("could not run tar")?;
     if !listing.status.success() {
         bail!("{} is not a readable zip", zip.display());
     }
@@ -231,7 +245,7 @@ pub fn extract_zip(zip: &Path, dest: &Path) -> anyhow::Result<()> {
         bail!("{} has an entry outside its folder; nothing was installed", zip.display());
     }
     std::fs::create_dir_all(dest)?;
-    let status = std::process::Command::new("tar").arg("-xf").arg(zip).arg("-C").arg(dest).status().context("could not run tar")?;
+    let status = std::process::Command::new(system_tar()).arg("-xf").arg(zip).arg("-C").arg(dest).status().context("could not run tar")?;
     if !status.success() {
         bail!("could not unpack {}", zip.display());
     }
@@ -299,7 +313,7 @@ where
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error);
     }
-    let host = CommandHost { install, wait_s: 120 };
+    let host = CommandHost { install, wait_s: wait_seconds() };
     let outcome = swap(install, &host, tag);
     if outcome.is_err() {
         let _ = std::fs::remove_dir_all(&staging);

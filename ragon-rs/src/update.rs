@@ -471,7 +471,9 @@ pub async fn run() -> anyhow::Result<()> {
     let app = installed_app(install_dir).filter(|(_, record)| app_is_behind(&record.version, latest));
     // A Windows node (install.ps1 -Role node) is updated with the client, and again on the next run
     // when its own update was rolled back.
-    let node = crate::node_update::installed().filter(|node| node.tag.trim_start_matches('v') != latest);
+    // Only one that is older than the release: an rc installed with -Version is not moved back.
+    let node = crate::node_update::installed()
+        .filter(|node| matches!(decide(Some(node.tag.trim_start_matches('v')), latest), Decision::Install));
 
     let binaries_due = match decide(RAGON_VERSION, latest) {
         Decision::UpToDate if app.is_none() && node.is_none() => {
@@ -561,10 +563,12 @@ pub async fn run() -> anyhow::Result<()> {
         }
     }
     if !binaries_due {
-        if let Some(node) = &node {
-            crate::node_update::update(node, tag, &assets, &download, &all_sums, install_dir).await?;
-        }
-        return finish_app(staged_app, &work, tag);
+        let node_result = match &node {
+            Some(node) => crate::node_update::update(node, tag, &assets, &download, &all_sums, install_dir).await,
+            None => Ok(()),
+        };
+        finish_app(staged_app, &work, tag)?;
+        return node_result;
     }
     let result = install_binaries(
         &assets, &download, &sums, &sums_asset, &target, tag, install_dir, (ragon_asset, exe_name), host_asset,
@@ -578,10 +582,12 @@ pub async fn run() -> anyhow::Result<()> {
         println!("ℹ️  Windows builds are a preview and are not signed: Smart App Control must be off to run them.");
     }
     println!("✅ Ragon {latest} installed in {}", install_dir.display());
-    if let Some(node) = &node {
-        crate::node_update::update(node, tag, &assets, &download, &all_sums, install_dir).await?;
-    }
-    finish_app(staged_app, &work, tag)
+    let node_result = match &node {
+        Some(node) => crate::node_update::update(node, tag, &assets, &download, &all_sums, install_dir).await,
+        None => Ok(()),
+    };
+    finish_app(staged_app, &work, tag)?;
+    node_result
 }
 
 /// Installs the staged desktop app, if any, records its release, and removes the work folder.
