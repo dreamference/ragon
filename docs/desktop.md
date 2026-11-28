@@ -44,6 +44,8 @@ ragon app
 
 `ragon-admin desktop status` reports whether everything needed to build and run it is present.
 
+If startup cannot find a node, choose **Connect through VPN**. The app remembers this choice for the next time it cannot find your node locally. Connect NetBird and retry, or [enrol this computer once on the node’s home network](remote.md#how-do-i-join-a-laptop-on-the-same-network). You can also enter a node address.
+
 ### From a zip or an unpacked folder (Linux)
 
 Ubuntu 24.04 and later let a program create the user namespace Chromium's sandbox needs only if
