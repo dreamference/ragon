@@ -136,6 +136,8 @@ fn named(name: &str) -> Node {
 pub const PIN_ENV: &str = "RAGON_NODE";
 
 const USAGE: &str = "Usage: ragon node [list [--json]] | ragon node use <name|address> | ragon node forget\n       \
+                     ragon node peers [--json]   (node peers NetBird lists; none is used by itself)\n       \
+                     ragon node use <overlay name> [--yes]   (adopt one, after checking it is the node)\n       \
                      ragon node remote join --code <8 digits>   (remote access, on the node's LAN)";
 
 /// What a node advertises: where it is, and the records that are not kept in `node.json`.
@@ -257,6 +259,16 @@ pub fn resolve(inputs: &Inputs, browser: &dyn Browser) -> Resolution {
         // Nothing answered, or only nodes whose model server is stopped: nothing to choose
         // between, so the remembered node's last address is tried, as when the browse is silent.
         if !found.iter().any(serving) {
+            // Known by its overlay name only: its "last address" is that name, which is never
+            // handed to the system's resolver while the overlay does not answer (§5).
+            if remembered.overlay_only() {
+                return Resolution::Refused(format!(
+                    "Node {} is known by its overlay name only ({}) and the overlay did not answer: {}",
+                    label(remembered),
+                    remembered.remote,
+                    overlay_silence(inputs.netbird_connected)
+                ));
+            }
             let enrolled = if remembered.overlay_name_is_its_own() {
                 format!(
                     "\nThis machine is enrolled for remote access to {} ({}), but the overlay did not answer: {}",
@@ -539,7 +551,8 @@ pub async fn resolve_host(interactive: bool) -> anyhow::Result<String> {
             if answers(crate::DEFAULT_VLLM_HOST).await {
                 return Ok(crate::DEFAULT_VLLM_HOST.to_string());
             }
-            bail!("{}", with_hint(none_found_message(), wifi_hint(missed)));
+            let message = with_hint(none_found_message(), overlay_hint(None, &listed_peers()));
+            bail!("{}", with_hint(message, wifi_hint(missed)));
         }
         Resolution::Choose { adverts, gone } => {
             let chosen = choose(&adverts, gone.as_deref(), interactive)?;
@@ -559,7 +572,14 @@ pub async fn resolve_host(interactive: bool) -> anyhow::Result<String> {
             }
         },
         Resolution::Found { advert, remember, note } => (advert.node, advert.state, remember, note),
-        Resolution::LastAddress { node, note } => (node, String::new(), false, note),
+        Resolution::LastAddress { node, note } => {
+            // The browse missed a node with an id and no overlay name: NetBird's peer list may
+            // name it, which is said and never acted on (REMOTE_ACCESS §5).
+            let hint = (note.is_some() && node.remote.is_empty() && !node.node.is_empty())
+                .then(|| overlay_hint(Some(&node), &listed_peers()))
+                .flatten();
+            (node, String::new(), false, note.map(|note| with_hint(note, hint)))
+        }
         Resolution::Overlay { node } => {
             let note = format!("Node {} over the overlay ({}).", label(&node), node.address);
             (node, String::new(), false, Some(note))
@@ -785,6 +805,11 @@ pub enum Request {
     /// `ragon node list --json`: the same browse for the desktop app's node page, as JSON.
     ListJson,
     Use(String),
+    /// `ragon node use <overlay name> --yes`: the user (or the desktop app, after showing the
+    /// name) vouches for a node peer whose identity cannot be checked.
+    UseConfirmed(String),
+    /// `ragon node peers [--json]`: the node peers NetBird lists, as candidates.
+    Peers { json: bool },
     Forget,
     /// `ragon node remote …` (remote_join.rs).
     Remote(Vec<String>),
@@ -797,6 +822,9 @@ impl Request {
             [] | ["list"] => Request::List,
             ["list", "--json"] => Request::ListJson,
             ["use", name] => Request::Use(name.to_string()),
+            ["use", name, "--yes"] | ["use", "--yes", name] => Request::UseConfirmed(name.to_string()),
+            ["peers"] => Request::Peers { json: false },
+            ["peers", "--json"] => Request::Peers { json: true },
             ["forget"] => Request::Forget,
             ["remote", ..] => Request::Remote(args[1..].to_vec()),
             _ => Request::Usage,
@@ -841,7 +869,23 @@ pub async fn run_cli(args: &[String]) -> i32 {
             }
             0
         }
-        Request::Use(name) => {
+        Request::Peers { json } => {
+            let peers = listed_peers();
+            let remembered = locator::remembered_at(&path);
+            if json {
+                println!("{}", peers_json(&peers, remembered.as_ref()));
+            } else {
+                for line in peers_lines(&peers, remembered.as_ref()) {
+                    println!("{line}");
+                }
+            }
+            0
+        }
+        Request::Use(name) | Request::UseConfirmed(name) if locator::node_peer(&name).is_some() => {
+            let yes = matches!(Request::from_args(args), Request::UseConfirmed(_));
+            use_overlay(&path, &name, yes).await
+        }
+        Request::Use(name) | Request::UseConfirmed(name) => {
             let adverts = MdnsBrowser.browse(Some(&named(&name)));
             let node = match pick(&adverts, &name) {
                 Ok(node) => node,
@@ -878,6 +922,211 @@ pub async fn run_cli(args: &[String]) -> i32 {
             0
         }
     }
+}
+
+/// The node peers NetBird's client lists while it is connected to its management; empty when
+/// NetBird is absent, down or slow (bounded, [`locator::netbird_status`]). Nothing is resolved.
+fn listed_peers() -> Vec<Node> {
+    locator::netbird_status()
+        .filter(|status| locator::management_connected(status))
+        .map(|status| locator::node_peers(&status))
+        .unwrap_or_default()
+}
+
+/// The lines that name NetBird's node peers when no node answered. A peer chooses its own label,
+/// so the list is never used by itself (REMOTE_ACCESS §5): one peer is named with the command that
+/// adopts it; several are listed. For a remembered node only peers with its id count, and only
+/// one of them may be adopted. `None` when there is nothing to say.
+pub fn overlay_hint(remembered: Option<&Node>, peers: &[Node]) -> Option<String> {
+    let names = |list: &[&Node]| list.iter().map(|peer| format!("  {}", peer.remote)).collect::<Vec<_>>().join("\n");
+    let candidates: Vec<&Node> = match remembered {
+        Some(node) if node.node.is_empty() || !node.remote.is_empty() => return None,
+        Some(node) => peers.iter().filter(|peer| peer.node == node.node).collect(),
+        None => peers.iter().collect(),
+    };
+    let of = remembered.map_or(String::new(), |node| format!(" named for node {}", label(node)));
+    match candidates.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "NetBird lists a Ragon node peer{of}: {}. Ragon does not use it by itself; to use it: ragon node use {}",
+            one.remote, one.remote
+        )),
+        several if remembered.is_some() => Some(format!(
+            "NetBird lists {} peers{of}; a peer chooses its own name, so ragon cannot tell which one is the node and uses none:\n{}",
+            several.len(),
+            names(several)
+        )),
+        several => Some(format!(
+            "NetBird lists these Ragon node peers; ragon uses none by itself. To use one: ragon node use <name>\n{}",
+            names(several)
+        )),
+    }
+}
+
+/// The node `ragon node use <overlay name>` adopts: `wanted` must be in NetBird's list and the
+/// only listed peer with its id, and a name `node.json` already holds for that id is never
+/// replaced. The remembered node of the same id keeps its LAN address and gains the name; any
+/// other node is known by the name only.
+pub fn adoption(wanted: &Node, peers: &[Node], remembered: Option<&Node>) -> Result<Node, String> {
+    if !peers.iter().any(|peer| peer.remote == wanted.remote) {
+        return Err(format!(
+            "{} is not in NetBird's peer list (netbird status): only a listed node peer can be used over the overlay.",
+            wanted.remote
+        ));
+    }
+    let same_id: Vec<&Node> = peers.iter().filter(|peer| peer.node == wanted.node).collect();
+    if same_id.len() > 1 {
+        return Err(format!(
+            "NetBird lists {} peers for node {}; a peer chooses its own name, so ragon cannot tell which one is the node:\n{}\n\
+             Enroll on the node's LAN instead (ragon node remote join), which records the node's own name.",
+            same_id.len(),
+            wanted.node,
+            same_id.iter().map(|peer| format!("  {}", peer.remote)).collect::<Vec<_>>().join("\n")
+        ));
+    }
+    match remembered.filter(|node| node.node == wanted.node) {
+        Some(node) if !node.remote.is_empty() && node.remote != wanted.remote => Err(format!(
+            "node.json already holds {} as the overlay name of node {}; ragon does not replace it with {}. \
+             If the node really was renamed, run ragon node forget first.",
+            node.remote,
+            label(node),
+            wanted.remote
+        )),
+        Some(node) if !node.address.is_empty() => Ok(Node { remote: wanted.remote.clone(), ..node.clone() }),
+        _ => Ok(wanted.clone()),
+    }
+}
+
+/// What `ragon node use <overlay name>` does with what the identity check found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Consent {
+    /// Go on; the line says why.
+    Go(String),
+    /// Show the name and ask.
+    Ask(String),
+    /// Stop; the text says why.
+    Refuse(String),
+}
+
+/// The identity step of `ragon node use <overlay name>`: a proof under the pinned CA goes on; a
+/// pinned CA that was not proven always stops (`--yes` does not override it); with no pin the user
+/// must vouch for the name, by answering the question or, where none can be asked, with `--yes`.
+pub fn consent(node: &Node, proof: &crate::auth::OverlayProof, yes: bool, interactive: bool) -> Consent {
+    use crate::auth::OverlayProof;
+    match proof {
+        OverlayProof::Proven(name) => Consent::Go(format!("{} proved it is node {name} with the CA pinned for it.", node.remote)),
+        OverlayProof::Failed(why) => Consent::Refuse(format!("Not used: {why}. If the node was set up again, run ragon login --reset-pin.")),
+        OverlayProof::NoPin if yes => Consent::Go(format!(
+            "{} cannot be checked (no CA pinned for node {}); used because --yes vouches for it.",
+            node.remote, node.node
+        )),
+        OverlayProof::NoPin => {
+            let question = format!(
+                "NetBird lists {} as node {}. Ragon cannot check that it is your node: any peer of the network may take a \
+                 name like this, and prompts, code and keys would go to it over plain http.",
+                node.remote, node.node
+            );
+            if interactive {
+                Consent::Ask(question)
+            } else {
+                Consent::Refuse(format!("{question}\nIf it is your node, run: ragon node use {} --yes", node.remote))
+            }
+        }
+    }
+}
+
+/// `ragon node use <overlay name> [--yes]`: adopts a node peer NetBird lists, by explicit choice.
+async fn use_overlay(path: &Path, name: &str, yes: bool) -> i32 {
+    let Some(wanted) = locator::node_peer(name) else { return 2 };
+    let Some(status) = locator::netbird_status() else {
+        eprintln!("{name}: NetBird's client did not answer (netbird status), so its peer list cannot be read.");
+        return 1;
+    };
+    if !locator::management_connected(&status) {
+        eprintln!("{name}: NetBird's client is not connected to its management. Check netbird status, or netbird up.");
+        return 1;
+    }
+    let remembered = locator::remembered_at(path);
+    let mut node = match adoption(&wanted, &locator::node_peers(&status), remembered.as_ref()) {
+        Ok(node) => node,
+        Err(message) => {
+            eprintln!("{message}");
+            return 1;
+        }
+    };
+    let proof = match locator::codex_home() {
+        Some(home) => crate::auth::prove_overlay_node(&node.remote, node.model_port, &home, &node.node).await,
+        None => crate::auth::OverlayProof::NoPin,
+    };
+    match consent(&node, &proof, yes, std::io::stdin().is_terminal()) {
+        Consent::Go(line) => println!("{line}"),
+        Consent::Refuse(message) => {
+            eprintln!("{message}");
+            return 1;
+        }
+        Consent::Ask(question) => {
+            print!("{question}\nUse it? [y/N] ");
+            let _ = std::io::stdout().flush();
+            let mut answer = String::new();
+            let _ = std::io::stdin().read_line(&mut answer);
+            if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
+                println!("Not used.");
+                return 1;
+            }
+        }
+    }
+    if let crate::auth::OverlayProof::Proven(proven) = &proof {
+        if node.name.is_empty() {
+            node.name = proven.clone();
+        }
+    }
+    node.last_seen = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    if let Err(error) = write_node_file(path, &node) {
+        eprintln!("Could not write {}: {error}", path.display());
+        return 1;
+    }
+    println!(
+        "Using node {} over the overlay at {}; remembered in {}.",
+        label(&node),
+        node.via_overlay().model_url(),
+        path.display()
+    );
+    0
+}
+
+/// `ragon node peers`: each node peer NetBird lists, and whether it is the remembered node's.
+pub fn peers_lines(peers: &[Node], remembered: Option<&Node>) -> Vec<String> {
+    if peers.is_empty() {
+        return vec!["NetBird lists no Ragon node peer (or NetBird is not connected).".to_string()];
+    }
+    let mut lines = vec!["Node peers NetBird lists (a peer chooses its own name; none is used by itself):".to_string()];
+    for peer in peers {
+        let twins = peers.iter().filter(|other| other.node == peer.node).count();
+        let mark = if remembered.is_some_and(|node| node.remote == peer.remote) { "*" } else { " " };
+        let warning = if twins > 1 { "  (several peers claim this node id: none can be used)" } else { "" };
+        lines.push(format!("{mark} {}  node {}{warning}", peer.remote, peer.node));
+    }
+    lines.push("To use one: ragon node use <name>".to_string());
+    lines
+}
+
+/// `ragon node peers --json`, for the desktop app: `name` is what it shows and passes to
+/// `ragon node use <name> --yes`; `unique` is false where another peer claims the same id (such a
+/// peer cannot be used); `remembered` marks the name node.json holds.
+pub fn peers_json(peers: &[Node], remembered: Option<&Node>) -> serde_json::Value {
+    serde_json::Value::Array(
+        peers
+            .iter()
+            .map(|peer| {
+                serde_json::json!({
+                    "name": peer.remote,
+                    "node": peer.node,
+                    "unique": peers.iter().filter(|other| other.node == peer.node).count() == 1,
+                    "remembered": remembered.is_some_and(|node| node.remote == peer.remote),
+                })
+            })
+            .collect(),
+    )
 }
 
 async fn served(host: &str) -> Option<crate::ServedModel> {
@@ -2019,4 +2268,110 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("off the LAN: ragon-11111111-aaaa.netbird.selfhosted")), "{lines:?}");
     }
 
+    // -- NetBird's peer list: named, adopted only by `ragon node use` (REMOTE_ACCESS §5, review F1/F2)
+
+    fn peer(name: &str) -> Node {
+        locator::node_peer(name).expect("a node peer name")
+    }
+
+    const OWN: &str = "ragon-11111111-aaaa.netbird.selfhosted";
+    const SQUAT: &str = "mightling-11111111-aaaa.netbird.selfhosted";
+    const OTHER: &str = "ragon-22222222-bbbb.netbird.selfhosted";
+
+    #[test]
+    fn the_peer_commands_are_read_from_the_command_line() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(Request::from_args(&args(&["use", OWN, "--yes"])), Request::UseConfirmed(OWN.into()));
+        assert_eq!(Request::from_args(&args(&["use", "--yes", OWN])), Request::UseConfirmed(OWN.into()));
+        assert_eq!(Request::from_args(&args(&["use", OWN])), Request::Use(OWN.into()));
+        assert_eq!(Request::from_args(&args(&["peers"])), Request::Peers { json: false });
+        assert_eq!(Request::from_args(&args(&["peers", "--json"])), Request::Peers { json: true });
+        assert_eq!(Request::from_args(&args(&["peers", "--yes"])), Request::Usage);
+    }
+
+    #[test]
+    fn the_peer_list_only_names_a_candidate_and_the_command_that_adopts_it() {
+        assert_eq!(overlay_hint(None, &[]), None);
+        let one = overlay_hint(None, &[peer(OWN)]).unwrap();
+        assert!(one.contains("does not use it by itself") && one.contains(&format!("ragon node use {OWN}")), "{one}");
+        let several = overlay_hint(None, &[peer(OWN), peer(OTHER)]).unwrap();
+        assert!(several.contains("uses none by itself") && several.contains(OWN) && several.contains(OTHER), "{several}");
+        // A remembered node: only peers with its id count, and two of them are named, never chosen.
+        let remembered = spark1().node;
+        let mine = overlay_hint(Some(&remembered), &[peer(OTHER), peer(OWN)]).unwrap();
+        assert!(mine.contains(OWN) && !mine.contains(OTHER), "{mine}");
+        let twins = overlay_hint(Some(&remembered), &[peer(OWN), peer(SQUAT)]).unwrap();
+        assert!(twins.contains("uses none") && twins.contains(OWN) && twins.contains(SQUAT), "{twins}");
+        assert_eq!(overlay_hint(Some(&remembered), &[peer(OTHER)]), None);
+        // A node that already has its overlay name, or none known by id: nothing to say.
+        assert_eq!(overlay_hint(Some(&enrolled()), &[peer(OWN)]), None);
+        assert_eq!(overlay_hint(Some(&Node { node: String::new(), ..spark1().node }), &[peer(OWN)]), None);
+    }
+
+    #[test]
+    fn a_peer_is_adopted_only_when_listed_alone_for_its_id_and_no_held_name_is_replaced() {
+        let unlisted = adoption(&peer(OWN), &[peer(OTHER)], None).unwrap_err();
+        assert!(unlisted.contains("not in NetBird's peer list"), "{unlisted}");
+        let twins = adoption(&peer(OWN), &[peer(OWN), peer(SQUAT)], None).unwrap_err();
+        assert!(twins.contains("2 peers for node 11111111-aaaa") && twins.contains(SQUAT), "{twins}");
+        // node.json holds the bundle's name: a squatter's is refused, the same one is kept.
+        let held = adoption(&peer(SQUAT), &[peer(SQUAT)], Some(&enrolled())).unwrap_err();
+        assert!(held.contains("does not replace"), "{held}");
+        assert_eq!(adoption(&peer(OWN), &[peer(OWN)], Some(&enrolled())), Ok(enrolled()));
+        // The remembered node gains the name and keeps its LAN address.
+        let gained = adoption(&peer(OWN), &[peer(OWN), peer(OTHER)], Some(&spark1().node)).unwrap();
+        assert_eq!(gained, Node { remote: OWN.to_string(), ..spark1().node });
+        assert!(!gained.overlay_only());
+        // Anything else is known by the overlay name only.
+        let fresh = adoption(&peer(OTHER), &[peer(OWN), peer(OTHER)], Some(&spark1().node)).unwrap();
+        assert!(fresh.overlay_only() && fresh.node == "22222222-bbbb", "{fresh:?}");
+    }
+
+    #[test]
+    fn a_peer_is_used_only_after_its_identity_is_proven_or_the_user_vouches_for_it() {
+        use crate::auth::OverlayProof;
+        let node = peer(OWN);
+        assert!(matches!(consent(&node, &OverlayProof::Proven("spark-1".into()), false, false), Consent::Go(_)));
+        for yes in [false, true] {
+            for interactive in [false, true] {
+                assert!(
+                    matches!(consent(&node, &OverlayProof::Failed("x".into()), yes, interactive), Consent::Refuse(_)),
+                    "a pinned CA that was not proven always stops"
+                );
+            }
+        }
+        assert!(matches!(consent(&node, &OverlayProof::NoPin, true, false), Consent::Go(_)));
+        let Consent::Ask(question) = consent(&node, &OverlayProof::NoPin, false, true) else { panic!("not asked") };
+        assert!(question.contains(OWN) && question.contains("cannot check"), "{question}");
+        let Consent::Refuse(refusal) = consent(&node, &OverlayProof::NoPin, false, false) else { panic!("not refused") };
+        assert!(refusal.contains(&format!("ragon node use {OWN} --yes")), "{refusal}");
+    }
+
+    #[test]
+    fn a_node_known_by_its_overlay_name_only_is_never_tried_by_its_last_address() {
+        let adopted = peer(OWN);
+        for connected in [false, true] {
+            let inputs = Inputs { remembered: Some(adopted.clone()), netbird_connected: connected, ..Inputs::default() };
+            match resolve(&inputs, &Fixed::new(Vec::new())) {
+                Resolution::Refused(message) => assert!(message.contains("overlay name only"), "{message}"),
+                other => panic!("{other:?}"),
+            }
+        }
+        let up = Inputs { remembered: Some(adopted.clone()), overlay: true, ..Inputs::default() };
+        assert_eq!(resolve(&up, &Fixed::new(Vec::new())), Resolution::Overlay { node: adopted.via_overlay() });
+    }
+
+    #[test]
+    fn the_peers_command_marks_ids_claimed_twice() {
+        let peers = [peer(OWN), peer(SQUAT), peer(OTHER)];
+        let json = peers_json(&peers, Some(&enrolled()));
+        assert_eq!(json[0]["name"], OWN);
+        assert_eq!(json[0]["unique"], false);
+        assert_eq!(json[0]["remembered"], true);
+        assert_eq!(json[2]["unique"], true);
+        assert_eq!(json[2]["remembered"], false);
+        let lines = peers_lines(&peers, None);
+        assert!(lines.iter().any(|line| line.contains(SQUAT) && line.contains("none can be used")), "{lines:?}");
+        assert!(peers_lines(&[], None)[0].contains("no Ragon node peer"));
+    }
 }
