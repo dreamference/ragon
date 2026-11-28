@@ -404,14 +404,22 @@ mod platform {
             (false, Some(home)) => println!("Kept: {} (sessions, settings; --purge removes it).", home.display()),
             _ => {}
         }
+        // The primaries' CAs the installer put in the system store (A11; Linux only, macOS keeps
+        // them elsewhere): named in the plan, since the store changes and sudo asks. The hand-made
+        // commands are literal: `ragon` itself is removed below.
+        let untrust = crate::remote_join::system_store().as_ref().and_then(crate::remote_join::untrust_lines);
+        if let Some((line, _)) = &untrust {
+            plan.push(line.clone());
+        }
         if let Some(code) = go_ahead(&plan, options.yes) {
             return code;
         }
 
         let mut left = Vec::new();
-        // The primaries' CAs the installer put in the system store (A11); macOS keeps them elsewhere.
-        if let Err(error) = crate::remote_join::untrust_primary_cas() {
-            left.push(format!("the primary's CA in the system store: {error} (`ragon node remote trust-ca --remove`)"));
+        if let Some((_, by_hand)) = &untrust
+            && let Err(error) = crate::remote_join::untrust_primary_cas()
+        {
+            left.push(format!("the primary's CA in the system store: {error}; take it out with: {by_hand}"));
         }
         for path in links.iter().cloned().chain(present.iter().map(|file| bin.join(file))).chain(version).chain(stale_record) {
             if let Err(error) = std::fs::remove_file(&path) {
