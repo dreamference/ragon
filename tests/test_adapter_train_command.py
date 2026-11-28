@@ -151,6 +151,23 @@ def test_adapter_train_run_state_ignores_a_state_file_that_is_not_an_object(repo
     assert run.state() == {"done": [], "consented": [], "left_node": []}
 
 
+def test_adapter_train_run_record_upload_appends_to_left_node_and_keeps_existing(
+    repo: Path,
+) -> None:
+    run = AdapterTrainRun("mine")
+    run.mark_done("data")
+    run.record_consent("gpu1")
+    run.record_upload("gpu1", "tasks.json 12 KB")
+    run.record_upload("gpu1", "checkpoints 300 MB")
+    state = run.state()
+    assert state["done"] == ["data"]
+    assert state["consented"] == ["gpu1"]
+    assert state["left_node"] == [
+        {"host": "gpu1", "what": "tasks.json 12 KB"},
+        {"host": "gpu1", "what": "checkpoints 300 MB"},
+    ]
+
+
 def test_adapter_command_train_refuses_an_existing_run_without_resume(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
