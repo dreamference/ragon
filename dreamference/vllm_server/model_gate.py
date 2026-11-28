@@ -93,6 +93,8 @@ APP_SERVER_SETTINGS: Final[tuple[str, ...]] = (
 APP_SERVER_SOCKET_ENV: Final[str] = "RAGON_APP_SERVER_SOCKET"
 # Owner-only, as Codex requires of its socket folders.
 PRIVATE_DIR_MODE: Final[int] = 0o700
+# Characters that make systemd read an `ExecStart=` word only when it is quoted.
+UNIT_QUOTED: Final[str] = "\"'\\"
 
 
 class ModelGate:
@@ -208,7 +210,8 @@ class ModelGate:
         cls.write_node_info()
         cls.write_auth_settings()
         cls.remove(port)
-        cls.prepare_app_server_dirs()
+        if cls.app_server_launcher() is not None:
+            cls.prepare_app_server_dirs()
         result = subprocess.run(
             cls.run_command(port, docker_image),
             stdout=subprocess.DEVNULL,
@@ -307,7 +310,7 @@ class ModelGate:
         for folder in (cls.app_server_runtime_dir(), cls.app_server_daemon_dir()):
             try:
                 folder.mkdir(mode=PRIVATE_DIR_MODE, exist_ok=True)
-                if folder.stat().st_uid != os.getuid():
+                if folder.stat().st_uid != os.geteuid():
                     return False
                 folder.chmod(PRIVATE_DIR_MODE)
             except OSError:
@@ -315,17 +318,46 @@ class ModelGate:
         return True
 
     @classmethod
+    def app_server_launcher(cls) -> str | None:
+        """The `ragon` that runs the shared app-server, when this machine can run one.
+
+        Returns:
+            Optional[str]: The installed launcher on a POSIX system, else None.
+        """
+        from dreamference.runner.codex_installer import CodexInstaller
+
+        return CodexInstaller.get_codex_executable() if os.name == POSIX_OS else None
+
+    @classmethod
+    def private_dir(cls, folder: Path) -> bool:
+        """Whether `folder` is a folder of this user's, as Codex requires of its socket folders.
+
+        Args:
+            folder: The folder.
+
+        Returns:
+            bool: True when it exists and the effective user owns it.
+        """
+        try:
+            return folder.is_dir() and folder.stat().st_uid == os.geteuid()
+        except OSError:
+            return False
+
+    @classmethod
     def app_server_mounts(cls) -> list[str]:
         """The gate's view of the shared app-server: both socket folders at their own paths.
 
         The rendezvous path is an absolute link into the daemon folder, so both are mounted where
-        they are on the host. Nothing is mounted when the folders are missing.
+        they are on the host. Nothing is mounted without a launcher to run the server, or when a
+        folder is missing or not this user's.
 
         Returns:
             List[str]: The `docker run` arguments, empty without the folders.
         """
         runtime, daemon = cls.app_server_runtime_dir(), cls.app_server_daemon_dir()
-        if not (runtime.is_dir() and daemon.is_dir()):
+        if cls.app_server_launcher() is None or not (
+            cls.private_dir(runtime) and cls.private_dir(daemon)
+        ):
             return []
         return [
             "-v",
@@ -356,6 +388,21 @@ class ModelGate:
         ]
 
     @classmethod
+    def unit_word(cls, word: str) -> str:
+        """One word of an `ExecStart=` line, its specifiers and variables escaped.
+
+        Args:
+            word: The argument.
+
+        Returns:
+            str: The word as systemd reads it back, quoted when it holds a space or a quote.
+        """
+        word = word.replace("%", "%%").replace("$", "$$")
+        if any(c.isspace() or c in UNIT_QUOTED for c in word):
+            return '"' + word.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        return word
+
+    @classmethod
     def app_server_unit_text(cls, ragon: str, port: int) -> str:
         """The shared app-server's user unit.
 
@@ -372,10 +419,7 @@ class ModelGate:
         """
         from dreamference.config.unit_log_directives import UnitLogDirectives
 
-        command = " ".join(
-            f'"{part}"' if any(c.isspace() for c in part) else part
-            for part in cls.app_server_command(ragon)
-        )
+        command = " ".join(cls.unit_word(part) for part in cls.app_server_command(ragon))
         return (
             "[Unit]\n"
             "Description=Ragon shared app-server (ragon web and the desktop)\n"
@@ -403,10 +447,8 @@ class ModelGate:
         Returns:
             bool: True when systemd accepted the start.
         """
-        from dreamference.runner.codex_installer import CodexInstaller
-
-        ragon = CodexInstaller.get_codex_executable()
-        if ragon is None or os.name != POSIX_OS:
+        ragon = cls.app_server_launcher()
+        if ragon is None:
             return False
         if shutil.which("systemctl") is None:
             print(  # noqa: T201 - console output of server start
