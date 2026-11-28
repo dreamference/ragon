@@ -17,7 +17,8 @@ pub fn run_cli(args: &[String]) -> i32 {
     #[cfg(target_os = "macos")]
     {
         // `run`, `install` and `start` with no engine after `--` get the node's Metal serve
-        // (src/mac_engine.rs); an installed service's `start` runs as installed.
+        // (src/mac_engine.rs); an installed service's `start` runs as installed. What is missing
+        // is named; `run` and `install` then stop there.
         let installed = |name: &str| {
             ragon_supervisor::macos_launchd::installed_kind(name, |p| p.exists(), None).is_some()
         };
@@ -30,6 +31,11 @@ pub fn run_cli(args: &[String]) -> i32 {
             |p| p.exists(),
         ) {
             Ok(args) => args,
+            // `start` goes on without one: a supervisor already running is reported as such.
+            Err(why) if args.first().is_some_and(|c| c == "start") => {
+                eprintln!("ragon server: {why}");
+                args.to_vec()
+            }
             Err(why) => {
                 eprintln!("ragon server: {why}");
                 return 2;
