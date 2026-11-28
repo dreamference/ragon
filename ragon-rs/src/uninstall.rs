@@ -409,6 +409,10 @@ mod platform {
         }
 
         let mut left = Vec::new();
+        // The primaries' CAs the installer put in the system store (A11); macOS keeps them elsewhere.
+        if let Err(error) = crate::remote_join::untrust_primary_cas() {
+            left.push(format!("the primary's CA in the system store: {error} (`ragon node remote trust-ca --remove`)"));
+        }
         for path in links.iter().cloned().chain(present.iter().map(|file| bin.join(file))).chain(version).chain(stale_record) {
             if let Err(error) = std::fs::remove_file(&path) {
                 left.push(format!("{}: {error}", path.display()));
