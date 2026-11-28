@@ -28,6 +28,9 @@ pub struct NodeInstall {
     pub service: String,
     pub port: u16,
     pub state_dir: PathBuf,
+    /// The job queue the service runs (`jobs=`, written when the service was installed with
+    /// `--jobs-dir`); `None` for one installed without node jobs.
+    pub jobs_dir: Option<PathBuf>,
 }
 
 impl NodeInstall {
@@ -58,7 +61,36 @@ pub fn parse_record(text: &str, root: &Path) -> Option<NodeInstall> {
         service: field("service")?,
         port: field("port")?.parse().ok()?,
         state_dir: PathBuf::from(field("state")?),
+        jobs_dir: field("jobs").filter(|v| !v.is_empty()).map(PathBuf::from),
     })
+}
+
+/// A path in the form two spellings of the same file share: resolved (junctions and links
+/// followed, when it exists), without Windows' `\\?\` prefix, and case-folded on Windows.
+fn comparable(path: &Path) -> PathBuf {
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let text = resolved.to_string_lossy();
+    let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+    PathBuf::from(if cfg!(windows) { text.to_lowercase() } else { text.to_string() })
+}
+
+/// Refuses when `exe` is one of the node's own files (under `%ProgramFiles%\Ragon`, reached
+/// directly or through the `C:\Ragon\bin` junction on the machine PATH). Replacing those from
+/// the running service's tree would put a new client beside the old engine with no job check,
+/// stop or rollback, so `ragon update` stops here, before anything is downloaded.
+pub fn refuse_node_own(exe: &Path, install: &NodeInstall) -> anyhow::Result<()> {
+    if comparable(exe).starts_with(comparable(&install.root)) {
+        let client = std::env::var_os("LOCALAPPDATA")
+            .map(|base| PathBuf::from(base).join(r"Programs\Ragon\bin\ragon.exe").display().to_string())
+            .unwrap_or_else(|| r"%LOCALAPPDATA%\Programs\Ragon\bin\ragon.exe".to_string());
+        bail!(
+            "this ragon.exe ({}) is the node's own copy (C:\\Ragon\\bin is on the machine PATH, ahead of \
+             yours); nothing was changed. Update with the client install, from an elevated shell: \
+             & \"{client}\" update",
+            exe.display()
+        );
+    }
+    Ok(())
 }
 
 /// The installed node, if this machine has one: `RAGON_NODE_PROGRAM_FILES` (a test's prefix) or
@@ -90,6 +122,24 @@ pub trait NodeHost {
     /// Starts the service from `current` and returns once it is healthy; an error when it is not
     /// within the limit.
     fn start_healthy(&self) -> anyhow::Result<()>;
+    /// Renames a tree (a hook so tests can make one fail).
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::rename(from, to)
+    }
+}
+
+/// The message for a failed `server job list`: a service from before node jobs does not know
+/// the verb, and the update cannot tell whether a job runs on it.
+pub fn job_list_error(stderr: &str) -> String {
+    if stderr.contains("unknown server command") {
+        "this node's service was installed from a release without node jobs (`ragon server job list` \
+         is unknown to it), so the update cannot tell whether a job is running and will not move it on. \
+         Reinstall the node, from an elevated shell: install.ps1 -Role node -Uninstall, then \
+         install.ps1 -Role node (weights and the node's data are kept)"
+            .to_string()
+    } else {
+        format!("ragon server job list failed: {}", stderr.trim())
+    }
 }
 
 /// Counts the records of `server job list`'s JSON array that are running or queued.
@@ -145,11 +195,11 @@ pub fn swap(install: &NodeInstall, host: &dyn NodeHost, new_tag: &str) -> anyhow
             return Err(restart(format!("could not remove the older rollback folder: {e}")));
         }
     }
-    if let Err(e) = std::fs::rename(&current, &previous) {
+    if let Err(e) = host.rename(&current, &previous) {
         return Err(restart(format!("could not move the current version aside: {e}")));
     }
-    if let Err(e) = std::fs::rename(&staging, &current) {
-        let _ = std::fs::rename(&previous, &current);
+    if let Err(e) = host.rename(&staging, &current) {
+        let _ = host.rename(&previous, &current);
         return Err(restart(format!("could not put the new version in place: {e}")));
     }
     match host.start_healthy() {
@@ -161,8 +211,33 @@ pub fn swap(install: &NodeInstall, host: &dyn NodeHost, new_tag: &str) -> anyhow
             let _ = host.stop();
             let failed = install.root.join("failed");
             let _ = std::fs::remove_dir_all(&failed);
-            std::fs::rename(&current, &failed).context("the new version failed and could not be moved away")?;
-            std::fs::rename(&previous, &current).context("the new version failed and the old one could not be restored")?;
+            // Whatever happens below, the service is started again from a `current` folder and
+            // the error says which version that is.
+            let started = |running: &str| match host.start_healthy() {
+                Ok(()) => format!("{running} is running"),
+                Err(e) => format!("{running} is in place but did not start ({e}): run `ragon server status`"),
+            };
+            if let Err(e) = host.rename(&current, &failed) {
+                bail!(
+                    "the new version {new_tag} was not healthy ({error}) and could not be moved away ({e}); {}; \
+                     the old version {} is kept in {}",
+                    started(new_tag),
+                    install.tag,
+                    previous.display()
+                );
+            }
+            if let Err(e) = host.rename(&previous, &current) {
+                let running = match host.rename(&failed, &current) {
+                    Ok(()) => started(new_tag),
+                    Err(undo) => format!("there is no current version ({undo}): the service cannot start"),
+                };
+                bail!(
+                    "the new version {new_tag} was not healthy ({error}) and the old version {} could not be \
+                     put back ({e}); {running}. The old version is in {}",
+                    install.tag,
+                    previous.display()
+                );
+            }
             let _ = std::fs::remove_dir_all(&failed);
             let restarted = host.start_healthy().is_ok();
             Ok(Outcome::RolledBack { reason: error.to_string(), restarted })
@@ -190,9 +265,14 @@ impl CommandHost<'_> {
 
 impl NodeHost for CommandHost<'_> {
     fn jobs_in_flight(&self) -> anyhow::Result<usize> {
-        let output = self.server(&["job", "list"])?;
+        let jobs = self.install.jobs_dir.as_ref().map(|dir| dir.display().to_string());
+        let mut args = vec!["job", "list"];
+        if let Some(jobs) = &jobs {
+            args.extend(["--jobs-dir", jobs.as_str()]);
+        }
+        let output = self.server(&args)?;
         if !output.status.success() {
-            bail!("ragon server job list failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+            bail!("{}", job_list_error(&String::from_utf8_lossy(&output.stderr)));
         }
         count_in_flight(&String::from_utf8_lossy(&output.stdout))
     }
@@ -258,27 +338,25 @@ pub fn engine_asset(tag: &str) -> String {
 }
 
 /// Updates the node to release `tag`: the engine zip is checked against the release's signed
-/// `SHA256SUMS` (`all_sums`), the client binaries the node runs are copied from `client_dir` (just
-/// installed from the same release, under the same checks), both are staged, and [`swap`] does the
-/// rest. Needs an elevated shell, since `%ProgramFiles%` is not writable by users.
+/// `SHA256SUMS` (`all_sums`), `binaries` are the release's own command binaries for this machine
+/// (downloaded and checked against the signed sums by the caller, never copied from a client
+/// folder the user can write), both are staged, and [`swap`] does the rest. Needs an elevated
+/// shell, since `%ProgramFiles%` is not writable by users.
 pub async fn update<F, Fut>(
     install: &NodeInstall,
     tag: &str,
     assets: &std::collections::HashMap<&str, &str>,
     download: &F,
     all_sums: &[u8],
-    client_dir: &Path,
+    binaries: &[(String, Vec<u8>)],
 ) -> anyhow::Result<()>
 where
     F: Fn(String) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<Vec<u8>>>,
 {
-    let exe = std::env::current_exe()?;
-    if exe.starts_with(install.current()) {
-        bail!(
-            "this ragon.exe is the node's own; run `ragon update` from the client install ({}), so the node's files can be replaced",
-            client_dir.display()
-        );
+    refuse_node_own(&std::env::current_exe()?, install)?;
+    if !binaries.iter().any(|(name, _)| name == "ragon.exe") {
+        bail!("release {tag} carries no ragon.exe for this machine; the node was not updated");
     }
     let asset = engine_asset(tag);
     if !assets.contains_key(asset.as_str()) {
@@ -299,12 +377,8 @@ where
     let zip_path = install.root.join("staging.zip");
     std::fs::write(&zip_path, &zip_bytes)?;
     let staged = (|| -> anyhow::Result<()> {
-        for entry in std::fs::read_dir(install.current().join("bin"))? {
-            let name = entry?.file_name();
-            let from = client_dir.join(&name);
-            if from.is_file() {
-                std::fs::copy(&from, staging.join("bin").join(&name))?;
-            }
+        for (name, binary) in binaries {
+            std::fs::write(staging.join("bin").join(name), binary)?;
         }
         extract_zip(&zip_path, &staging.join("engine"))
     })();
@@ -341,6 +415,9 @@ mod tests {
         jobs: usize,
         /// Starts that fail, by call number (1-based).
         failing_starts: Vec<usize>,
+        /// Renames that fail, by call number (1-based).
+        failing_renames: Vec<usize>,
+        renames: RefCell<usize>,
         calls: RefCell<Vec<String>>,
     }
 
@@ -359,6 +436,13 @@ mod tests {
             self.calls.borrow_mut().push(format!("start {version}"));
             if self.failing_starts.contains(&number) { bail!("not healthy") } else { Ok(()) }
         }
+        fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+            *self.renames.borrow_mut() += 1;
+            if self.failing_renames.contains(&self.renames.borrow()) {
+                return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "in use"));
+            }
+            std::fs::rename(from, to)
+        }
     }
 
     fn node(name: &str) -> NodeInstall {
@@ -370,6 +454,7 @@ mod tests {
             service: "ragon-node".into(),
             port: 8000,
             state_dir: root.join("state"),
+            jobs_dir: None,
         };
         for (dir, version) in [(install.current(), "old"), (install.staging(), "new")] {
             std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -382,7 +467,91 @@ mod tests {
     }
 
     fn host<'a>(install: &'a NodeInstall, jobs: usize, failing: &[usize]) -> FakeHost<'a> {
-        FakeHost { install, jobs, failing_starts: failing.to_vec(), calls: RefCell::new(Vec::new()) }
+        FakeHost {
+            install,
+            jobs,
+            failing_starts: failing.to_vec(),
+            failing_renames: Vec::new(),
+            renames: RefCell::new(0),
+            calls: RefCell::new(Vec::new()),
+        }
+    }
+
+    #[test]
+    fn a_failed_restore_puts_the_new_version_back_and_starts_it() {
+        // Renames: 1 current->previous, 2 staging->current, 3 current->failed, 4 previous->current.
+        let install = node("restore");
+        let mut host = host(&install, 0, &[1]);
+        host.failing_renames = vec![4];
+        let error = swap(&install, &host, "v0.9.10").unwrap_err().to_string();
+        assert!(error.contains("could not be put back") && error.contains("v0.9.10 is running"), "{error}");
+        assert_eq!(std::fs::read_to_string(install.current().join("bin/ragon.exe")).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(install.previous().join("bin/ragon.exe")).unwrap(), "old");
+        assert_eq!(*host.calls.borrow(), vec!["jobs", "stop", "start new", "stop", "start new"]);
+    }
+
+    #[test]
+    fn a_failed_move_away_still_starts_a_service_and_says_which() {
+        let install = node("moveaway");
+        let mut host = host(&install, 0, &[1]);
+        host.failing_renames = vec![3];
+        let error = swap(&install, &host, "v0.9.10").unwrap_err().to_string();
+        assert!(error.contains("could not be moved away") && error.contains("old version v0.9.9 is kept"), "{error}");
+        assert_eq!(*host.calls.borrow(), vec!["jobs", "stop", "start new", "stop", "start new"]);
+    }
+
+    #[test]
+    fn the_nodes_own_ragon_is_refused_through_a_link_and_the_client_is_not() {
+        let install = node("own");
+        let exe = install.current().join("bin/ragon.exe");
+        assert!(refuse_node_own(&exe, &install).unwrap_err().to_string().contains("node's own copy"));
+        // The machine PATH reaches it through a junction (C:\Ragon\bin -> current\bin).
+        let link = install.root.parent().unwrap().join("link-bin");
+        let _ = std::fs::remove_dir_all(&link);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(install.current().join("bin"), &link).unwrap();
+        #[cfg(windows)]
+        assert!(std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(install.current().join("bin"))
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(refuse_node_own(&link.join("ragon.exe"), &install).is_err());
+        #[cfg(windows)]
+        {
+            let upper = PathBuf::from(link.join("RAGON.EXE").display().to_string().to_uppercase());
+            assert!(refuse_node_own(&upper, &install).is_err());
+        }
+        let client = install.root.parent().unwrap().join("client/bin");
+        std::fs::create_dir_all(&client).unwrap();
+        std::fs::write(client.join("ragon.exe"), "client").unwrap();
+        assert!(refuse_node_own(&client.join("ragon.exe"), &install).is_ok());
+    }
+
+    #[test]
+    fn a_release_without_its_own_ragon_exe_is_refused_before_any_download() {
+        let install = node("nobinaries");
+        let assets = std::collections::HashMap::from([(engine_asset("v0.9.10").leak() as &str, "unused")]);
+        let download = |name: String| async move {
+            assert!(name.is_empty(), "downloaded {name}");
+            anyhow::Ok(Vec::<u8>::new())
+        };
+        let only_host = vec![("codex-code-mode-host.exe".to_string(), b"host".to_vec())];
+        let error = futures::executor::block_on(update(&install, "v0.9.10", &assets, &download, b"", &only_host))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no ragon.exe"), "{error}");
+        assert_eq!(std::fs::read_to_string(install.staging().join("bin/ragon.exe")).unwrap(), "new");
+    }
+
+    #[test]
+    fn a_service_without_node_jobs_gets_a_reinstall_message() {
+        let message = job_list_error("ragon: unknown server command \"job\"\n");
+        assert!(message.contains("install.ps1 -Role node -Uninstall"), "{message}");
+        assert_eq!(job_list_error("disk full\n"), "ragon server job list failed: disk full");
     }
 
     #[test]
@@ -391,7 +560,10 @@ mod tests {
         let parsed = parse_record("tag=v0.9.9\nservice=ragon-node\nport=8000\nstate=C:\\ProgramData\\Ragon\\node\n", root).unwrap();
         assert_eq!((parsed.tag.as_str(), parsed.port), ("v0.9.9", 8000));
         assert_eq!(parsed.state_dir, PathBuf::from("C:\\ProgramData\\Ragon\\node"));
+        assert_eq!(parsed.jobs_dir, None);
         assert_eq!(parse_record("tag=v0.9.9\nservice=ragon-node\n", root), None);
+        let jobs = parse_record("tag=v1\nservice=s\nport=8000\nstate=C:\\s\njobs=C:\\ProgramData\\Ragon\\jobs\n", root).unwrap();
+        assert_eq!(jobs.jobs_dir, Some(PathBuf::from("C:\\ProgramData\\Ragon\\jobs")));
     }
 
     #[test]

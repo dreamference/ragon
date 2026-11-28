@@ -424,6 +424,11 @@ pub async fn run() -> anyhow::Result<()> {
             std::env::consts::OS
         );
     };
+    // On a Windows node, `ragon` in a new shell is the node's own copy (C:\Ragon\bin is on the
+    // machine PATH); it must not update itself, so it stops before anything is downloaded.
+    if let Some(node) = crate::node_update::installed() {
+        crate::node_update::refuse_node_own(&std::env::current_exe()?, &node)?;
+    }
     let repo = std::env::var("RAGON_RELEASE_REPO")
         .ok()
         .filter(|repo| !repo.is_empty())
@@ -562,19 +567,36 @@ pub async fn run() -> anyhow::Result<()> {
             }
         }
     }
+    // The release's binaries, downloaded and checked once, for the client and for the node.
+    let binaries = if binaries_due || node.is_some() {
+        match fetch_binaries(&assets, &download, &sums, &sums_asset, &target, tag, (ragon_asset, exe_name), host_asset).await {
+            Ok(binaries) => binaries,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&work);
+                return Err(error);
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    // The node stages the release's own ragon.exe, whatever the client's file is called.
+    let node_binaries: Vec<(String, Vec<u8>)> = match &node {
+        Some(_) => binaries
+            .iter()
+            .enumerate()
+            .map(|(i, (name, bytes))| (if i == 0 { installed_name("ragon") } else { name.clone() }, bytes.clone()))
+            .collect(),
+        None => Vec::new(),
+    };
     if !binaries_due {
         let node_result = match &node {
-            Some(node) => crate::node_update::update(node, tag, &assets, &download, &all_sums, install_dir).await,
+            Some(node) => crate::node_update::update(node, tag, &assets, &download, &all_sums, &node_binaries).await,
             None => Ok(()),
         };
         finish_app(staged_app, &work, tag)?;
         return node_result;
     }
-    let result = install_binaries(
-        &assets, &download, &sums, &sums_asset, &target, tag, install_dir, (ragon_asset, exe_name), host_asset,
-    )
-    .await;
-    if let Err(error) = result {
+    if let Err(error) = install_binaries(install_dir, binaries) {
         let _ = std::fs::remove_dir_all(&work);
         return Err(error);
     }
@@ -583,7 +605,7 @@ pub async fn run() -> anyhow::Result<()> {
     }
     println!("✅ Ragon {latest} installed in {}", install_dir.display());
     let node_result = match &node {
-        Some(node) => crate::node_update::update(node, tag, &assets, &download, &all_sums, install_dir).await,
+        Some(node) => crate::node_update::update(node, tag, &assets, &download, &all_sums, &node_binaries).await,
         None => Ok(()),
     };
     finish_app(staged_app, &work, tag)?;
@@ -614,20 +636,20 @@ fn finish_app(staged: Option<(PathBuf, PathBuf, AppRecord)>, work: &Path, tag: &
     Ok(())
 }
 
-/// Downloads, checks and swaps in the binaries. Everything is downloaded and verified before
-/// anything is replaced, so a failure part-way leaves the installation as it was.
+/// Downloads the release's binaries for `target`, checks each against the signed per-target sums
+/// and unpacks it: `(installed file name, binary)`, ragon first (named `exe_name`). Nothing is
+/// written, so a failure part-way leaves every installation as it was.
 #[allow(clippy::too_many_arguments)]
-async fn install_binaries<F, Fut>(
+async fn fetch_binaries<F, Fut>(
     assets: &HashMap<&str, &str>,
     download: &F,
     sums: &HashMap<String, String>,
     sums_asset: &str,
     target: &str,
     tag: &str,
-    install_dir: &Path,
     (ragon_asset, exe_name): (String, String),
     host_asset: String,
-) -> anyhow::Result<()>
+) -> anyhow::Result<Vec<(String, Vec<u8>)>>
 where
     F: Fn(String) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<Vec<u8>>>,
@@ -668,6 +690,11 @@ where
         flate2::read::GzDecoder::new(archive.as_slice()).read_to_end(&mut binary)?;
         binaries.push((installed, binary));
     }
+    Ok(binaries)
+}
+
+/// Swaps the fetched binaries into the client's folder and links new commands onto the PATH.
+fn install_binaries(install_dir: &Path, binaries: Vec<(String, Vec<u8>)>) -> anyhow::Result<()> {
     for (installed, binary) in binaries {
         replace(install_dir, &installed, &binary)?;
         if optional_commands().contains(&installed.as_str()) && linked_onto_path(&installed) {
@@ -1226,18 +1253,49 @@ mod tests {
             let found = served.get(&name).cloned();
             async move { found.ok_or_else(|| anyhow::anyhow!("no such asset {name}")) }
         };
-        let result = futures::executor::block_on(install_binaries(
+        let result = futures::executor::block_on(fetch_binaries(
             &assets,
             &download,
             sums,
             "ragon-x.sha256sums",
             "x",
             "v0.9.9",
-            dir,
             ("ragon-x.gz".to_string(), "ragon".to_string()),
             "codex-code-mode-host-x.gz".to_string(),
-        ));
+        ))
+        .and_then(|binaries| install_binaries(dir, binaries));
         (result, asked.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    #[test]
+    fn the_node_gets_the_release_binaries_checked_against_the_sums_not_a_client_copy() {
+        // The node stages what fetch_binaries returns: the release's bytes, ragon first.
+        let ragon = gz(b"release ragon");
+        let host = gz(b"release host");
+        let sums = sums_of(&[("ragon-x.gz", &ragon), ("codex-code-mode-host-x.gz", &host)]);
+        let served = HashMap::from([
+            ("ragon-x.gz".to_string(), ragon),
+            ("codex-code-mode-host-x.gz".to_string(), host),
+        ]);
+        let assets: HashMap<&str, &str> =
+            ["ragon-x.gz", "codex-code-mode-host-x.gz"].iter().map(|name| (*name, "unused")).collect();
+        let download = |name: String| {
+            let found = served.get(&name).cloned();
+            async move { found.ok_or_else(|| anyhow::anyhow!("no such asset {name}")) }
+        };
+        let binaries = futures::executor::block_on(fetch_binaries(
+            &assets,
+            &download,
+            &sums,
+            "ragon-x.sha256sums",
+            "x",
+            "v0.9.9",
+            ("ragon-x.gz".to_string(), "renamed-client".to_string()),
+            "codex-code-mode-host-x.gz".to_string(),
+        ))
+        .unwrap();
+        assert_eq!(binaries[0], ("renamed-client".to_string(), b"release ragon".to_vec()));
+        assert_eq!(binaries[1], (installed_name(CODE_MODE_HOST), b"release host".to_vec()));
     }
 
     fn sums_of(entries: &[(&str, &[u8])]) -> HashMap<String, String> {
