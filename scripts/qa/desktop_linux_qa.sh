@@ -151,15 +151,22 @@ fi
 # 4. One `ragon exec` per leg. A model gate answering 403 is a benchmark run holding the server: the
 # leg is skipped, not failed. The session's CODEX_HOME is its own, under the throwaway HOME, and the
 # launcher's file index stays off (DREAMFERENCE_RAGON_DOCS=0, docs/dev/testing.md).
+# The LAN leg finds the node as a fresh user's client does: by its mDNS advertisement, pinned to the
+# node by name (RAGON_NODE), so the session uses the address the advertisement gives. Naming the
+# model server by its .local name instead made the check depend on this desktop's resolver: here a
+# .local lookup takes 10 s (the unicast SOA query for "local" goes unanswered), the launcher's
+# one-second probe never got an answer, and every run waited out the timeout (11-10 to 11-28). The
+# overlay leg names its host: the overlay has no mDNS advertisement.
 exec_leg() {
-    local leg="$1" host="$2" t code status answer
+    local leg="$1" host="$2" t code status answer lookup
     t=$(started)
     local name="ragon exec over the $leg"
     if [[ -z "$ragon" ]]; then
         result "$name" skip "no ragon to run" "$(since "$t")"
         return
     fi
-    status="$(curl -s -m 20 -o /dev/null -w '%{http_code}' "http://$host:$MODEL_PORT/v1/models")"
+    read -r status lookup < <(curl -s -m 20 -o /dev/null -w '%{http_code} %{time_namelookup}' \
+        "http://$host:$MODEL_PORT/v1/models")
     if [[ "$status" == "403" ]]; then
         result "$name" skip "the model gate is closed (a benchmark run holds the server)" "$(since "$t")"
         return
@@ -170,8 +177,10 @@ exec_leg() {
     fi
     local dir="$WORK/exec-$leg"
     mkdir -p "$dir" "$SCRATCH_HOME/.ragon-$leg"
-    out="$(cd "$dir" && HOME="$SCRATCH_HOME" CODEX_HOME="$SCRATCH_HOME/.ragon-$leg" \
-        DREAMFERENCE_RAGON_DOCS=0 DREAMFERENCE_VLLM_HOST="http://$host:$MODEL_PORT" \
+    local -a target=(DREAMFERENCE_VLLM_HOST="http://$host:$MODEL_PORT")
+    [[ "$leg" == LAN ]] && target=(RAGON_NODE="${host%.local}")
+    out="$(cd "$dir" && env -u DREAMFERENCE_VLLM_HOST HOME="$SCRATCH_HOME" \
+        CODEX_HOME="$SCRATCH_HOME/.ragon-$leg" DREAMFERENCE_RAGON_DOCS=0 "${target[@]}" \
         timeout 300 "$ragon" exec --skip-git-repo-check --output-last-message "$dir/answer.txt" \
         "Reply with exactly one word: pong" < /dev/null 2>&1)"
     code=$?
@@ -183,7 +192,7 @@ exec_leg() {
     elif [[ $code -ne 0 && "$out" == *"503"*"running a benchmark"* ]]; then
         result "$name" skip "model busy (benchmark)" "$(since "$t")"
     else
-        result "$name" fail "exit $code, answer '$(head -c 80 "$dir/answer.txt" 2>/dev/null)' ($which_ragon): $(echo "$out" | tail -3)" "$(since "$t")"
+        result "$name" fail "exit $code, answer '$(head -c 80 "$dir/answer.txt" 2>/dev/null)' ($which_ragon, ${target[*]}, $host resolved in ${lookup:-?}s here): $(echo "$out" | tail -3)" "$(since "$t")"
     fi
 }
 
