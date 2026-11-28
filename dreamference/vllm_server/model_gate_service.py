@@ -27,6 +27,13 @@ The state is two files the host writes and this process only reads, on every req
 `run.json` (the run's record, refreshed by a heartbeat) and `pause.json` (`ragon-admin night
 pause`). A missing, unreadable or stale run record means the gate is open, so a run that dies
 without cleaning up cannot keep the model closed: a heartbeat older than `STALE_S` is ignored.
+
+The gate is also the front door for remote sessions (specs/DREAMFERENCE_RAGON_REMOTE_SESSIONS.md
+§6): a WebSocket upgrade on `/` is a Codex `--remote` attach. It is refused 403 with an `Origin`
+header and 401 without a valid bearer, as Codex's own listener does, then carried to the node's
+shared app-server on its Unix socket: the upgrade is handed on and the bytes copied both ways
+unchanged, so every frame (text, binary, ping, pong, close and its code) reaches the other side as
+it was sent. `/readyz` and `/healthz` answer as Codex's listener does: 200 with an empty body.
 """
 
 import argparse
@@ -35,6 +42,7 @@ import contextlib
 import importlib
 import ipaddress
 import json
+import os
 import re
 import sys
 import time
@@ -216,6 +224,28 @@ HTTPS_REQUIRED: Final[str] = "Use https://"
 HTTPS_REQUIRED_CODE: Final[str] = "https_required"
 # Days of plain-HTTP counts kept for the probe.
 PLAIN_DAYS_KEPT: Final[int] = 7
+# The remote-session front door (specs/DREAMFERENCE_RAGON_REMOTE_SESSIONS.md §6, A1, A2). Codex's
+# listener answers its two health paths with 200 and no body, GET and HEAD only.
+SESSION_PATH: Final[str] = "/"
+HEALTH_PATHS: Final[tuple[str, ...]] = ("/readyz", "/healthz")
+HEALTH_METHODS: Final[str] = "GET,HEAD"
+UPGRADE: Final[bytes] = b"upgrade"
+ORIGIN: Final[bytes] = b"origin"
+WEBSOCKET_TOKEN: Final[bytes] = b"websocket"
+# The handshake headers handed on to the app-server; the bearer and everything else stay here.
+HANDSHAKE_HEADERS: Final[tuple[bytes, ...]] = (
+    b"sec-websocket-key",
+    b"sec-websocket-version",
+    b"sec-websocket-protocol",
+    b"sec-websocket-extensions",
+)
+# The shared app-server's socket: named by the gate's start, else Ragon's convention
+# (`ragon-rs/web/src/app_server.rs`, `default_socket`): `$XDG_RUNTIME_DIR/ragon/app-server.sock`.
+APP_SERVER_SOCKET_ENV: Final[str] = "RAGON_APP_SERVER_SOCKET"
+RUNTIME_DIR_ENV: Final[str] = "XDG_RUNTIME_DIR"
+APP_SERVER_SOCKET_PARTS: Final[tuple[str, str]] = ("ragon", "app-server.sock")
+UNAUTHORIZED: Final[int] = 401
+METHOD_NOT_ALLOWED: Final[int] = 405
 
 
 class ModelGateService:
@@ -228,6 +258,7 @@ class ModelGateService:
         state_dir: str,
         accounts: tuple[str, int] = ACCOUNTS_UPSTREAM,
         tls_dir: str | None = None,
+        app_server_socket: str | None = None,
     ) -> None:
         """Set up the gate service.
 
@@ -238,8 +269,11 @@ class ModelGateService:
             accounts: The accounts service's loopback address and port.
             tls_dir: A directory holding `server.pem`, `server.key` and `ca.pem`; with them the
                 port serves HTTPS beside plain HTTP, without them plain HTTP only.
+            app_server_socket: The shared app-server's Unix socket a session attach is carried
+                to; by default `default_app_server_socket()`.
         """
         self.listen = listen
+        self.app_server_socket = app_server_socket or self.default_app_server_socket()
         self.upstream = upstream
         self.accounts = accounts
         self.state_dir = state_dir
@@ -996,21 +1030,24 @@ class ModelGateService:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         request: tuple[str, str, list[tuple[bytes, bytes]]],
-        context: tuple[str, dict[str, Any]],
+        context: tuple[str, dict[str, Any], bytes],
     ) -> bool:
-        """Answers what the gate answers itself: the plain-HTTP refusal, the probe, the node routes.
+        """Answers what the gate answers itself, before any credential or engine step.
+
+        That is the plain-HTTP refusal, the probe, the node routes, Codex's health paths, and a
+        session attach (carried to the app-server).
 
         Args:
             reader: The client's stream.
             writer: The client's writer.
             request: Method, path and headers.
-            context: The client's address and the gate's state.
+            context: The client's address, the gate's state and the raw head.
 
         Returns:
             bool: True when the request was answered here.
         """
         method, path, _ = request
-        peer_address, state = context
+        peer_address, state, head = context
         if await self.check_plain(reader, writer, request, peer_address):
             return True
         if path == PROBE_PATH and method in (METHOD_GET, METHOD_HEAD):
@@ -1018,7 +1055,9 @@ class ModelGateService:
                 writer, 200, "OK", self.probe_answer(state), head_only=method == METHOD_HEAD
             )
             return True
-        return await self.answer_node_route(writer, method, path)
+        if await self.answer_node_route(writer, method, path):
+            return True
+        return await self.answer_front_door(reader, writer, request, (peer_address, head))
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """Serves one connection: one request, decided, then refused or streamed through."""
@@ -1038,7 +1077,7 @@ class ModelGateService:
                 return
             method, path, headers = request
             state = self.state(self.state_dir)
-            if await self.answer_here(reader, writer, request, (peer_address, state)):
+            if await self.answer_here(reader, writer, request, (peer_address, state, head)):
                 return
             framing = self.framing(headers)
             admitted = await self.admit(
@@ -1092,6 +1131,235 @@ class ModelGateService:
         finally:
             await self.close_connection(tasks, (upstream_writer, writer))
             self.log_usage(tap)
+
+    # -- the remote-session front door (specs/DREAMFERENCE_RAGON_REMOTE_SESSIONS.md §6) -------
+
+    @classmethod
+    def default_app_server_socket(cls) -> str | None:
+        """The shared app-server's socket: `RAGON_APP_SERVER_SOCKET`, else Ragon's convention.
+
+        Returns:
+            str | None: The socket's path, or None when neither variable is set.
+        """
+        named = os.environ.get(APP_SERVER_SOCKET_ENV, "")
+        if named:
+            return named
+        runtime = os.environ.get(RUNTIME_DIR_ENV, "")
+        if not runtime:
+            return None
+        return str(Path(runtime).joinpath(*APP_SERVER_SOCKET_PARTS))
+
+    @classmethod
+    def is_session_upgrade(cls, method: str, path: str, headers: list[tuple[bytes, bytes]]) -> bool:
+        """True for a WebSocket upgrade on `/`: a Codex `--remote` attach."""
+        if method != METHOD_GET or path != SESSION_PATH:
+            return False
+        tokens = dict(headers).get(UPGRADE, b"").lower().split(b",")
+        return any(token.strip() == WEBSOCKET_TOKEN for token in tokens)
+
+    @classmethod
+    async def respond_empty(
+        cls,
+        writer: asyncio.StreamWriter,
+        status: tuple[int, str],
+        extra: list[tuple[str, str]] | None = None,
+    ) -> None:
+        """Writes an answer with no body and no content type, as Codex's listener answers."""
+        lines = [f"HTTP/1.1 {status[0]} {status[1]}", "Content-Length: 0", "Connection: close"]
+        lines += [f"{name}: {value}" for name, value in (extra or [])]
+        writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
+        await writer.drain()
+
+    async def answer_front_door(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        request: tuple[str, str, list[tuple[bytes, bytes]]],
+        context: tuple[str, bytes],
+    ) -> bool:
+        """Answers Codex's health paths and carries a session attach; True when it did.
+
+        Args:
+            reader: The client's stream.
+            writer: The client's writer.
+            request: Method, path and headers.
+            context: The client's address and the raw head.
+
+        Returns:
+            bool: True when the request was answered (or carried) here.
+        """
+        method, path, headers = request
+        if path in HEALTH_PATHS:
+            if ORIGIN in dict(headers):
+                await self.respond_empty(writer, (FORBIDDEN, "Forbidden"))
+            elif method not in READ_METHODS:
+                await self.respond_empty(
+                    writer, (METHOD_NOT_ALLOWED, "Method Not Allowed"), [("Allow", HEALTH_METHODS)]
+                )
+            else:
+                await self.respond_empty(writer, (200, "OK"))
+            return True
+        if not self.is_session_upgrade(method, path, headers):
+            return False
+        user = await self.admit_session(writer, headers, context)
+        if user is not None:
+            await self.carry_session(reader, writer, headers, (user, context[0]))
+        return True
+
+    async def admit_session(
+        self,
+        writer: asyncio.StreamWriter,
+        headers: list[tuple[bytes, bytes]],
+        context: tuple[str, bytes],
+    ) -> str | None:
+        """Applies Codex's upgrade checks and the gate's bearer check; None when refused here.
+
+        An `Origin` header is 403 (Codex's listener refuses browsers). Across machines only TLS
+        (named difference D1): a plain connection from another machine is 403. A missing, invalid
+        or unverifiable bearer is 401 with the gate's own bodies, whether or not the node enforces
+        credentials on its model routes: Codex refuses an upgrade without one.
+
+        Returns:
+            str | None: The user's name, or None when the request was answered here.
+        """
+        peer_address, head = context
+        if ORIGIN in dict(headers):
+            self.log(f"session refused (Origin header) from {peer_address}")
+            await self.respond_empty(writer, (FORBIDDEN, "Forbidden"))
+            return None
+        if writer.get_extra_info("ssl_object") is None and not self.is_loopback(peer_address):
+            self.log(f"session refused (plain connection) from {peer_address}")
+            await self.respond(
+                writer,
+                FORBIDDEN,
+                "Forbidden",
+                {
+                    "error": {
+                        "message": HTTPS_REQUIRED.replace("https", "wss"),
+                        "type": "invalid_request_error",
+                        "code": HTTPS_REQUIRED_CODE,
+                        "param": None,
+                    }
+                },
+            )
+            return None
+        bearer = self.auth.credential(headers)
+        if self.auth.url_has_credential(head):
+            outcome = self.auth.refusal(UNAUTHORIZED, gate_auth.INVALID_BODY)
+        elif bearer is None:
+            outcome = self.auth.refusal(UNAUTHORIZED, gate_auth.SIGN_IN_BODY)
+        else:
+            outcome = await self.auth.check_credential(bearer, headers)
+        if outcome["verdict"] != gate_auth.SERVE:
+            kind = self.auth.client_kind(headers)
+            self.log(f"session refused (credential) kind={kind} from {peer_address}")
+            await self.respond(
+                writer,
+                int(outcome["status"]),
+                "Unauthorized",
+                outcome["body"],
+                [("WWW-Authenticate", gate_auth.BEARER_REALM)],
+            )
+            return None
+        return str(outcome["user"])
+
+    def upgrade_request(self, headers: list[tuple[bytes, bytes]]) -> bytes:
+        """The upgrade handed on to the app-server: path `/` and the handshake headers only."""
+        values = dict(headers)
+        lines = [
+            b"GET / HTTP/1.1",
+            b"Host: localhost",
+            b"Upgrade: websocket",
+            b"Connection: Upgrade",
+        ]
+        lines += [name + b": " + values[name] for name in HANDSHAKE_HEADERS if name in values]
+        return CRLF.join(lines) + CRLF + CRLF
+
+    async def carry_session(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        headers: list[tuple[bytes, bytes]],
+        who: tuple[str, str],
+    ) -> None:
+        """Carries an admitted attach to the app-server's socket and copies bytes both ways.
+
+        The app-server's answer to the upgrade goes back as it came (a refusal included). After
+        a 101 the bytes are copied unchanged in both directions, with backpressure and nothing
+        held back, until either side closes; then the other side is closed too.
+
+        Args:
+            reader: The client's stream.
+            writer: The client's writer.
+            headers: The client's upgrade headers.
+            who: The user's name and the client's address.
+        """
+        user, peer_address = who
+        opened = await self.open_session(headers)
+        if opened is None:
+            self.log(f"session for user={user} from {peer_address}: app-server not answering")
+            await self.respond_session_unavailable(writer)
+            return
+        upstream_reader, upstream_writer, answer = opened
+        tasks: list[asyncio.Task] = []
+        try:
+            writer.write(answer)
+            await writer.drain()
+            if answer.split(b" ", 2)[1:2] != [str(HTTP_SWITCHING_PROTOCOLS).encode()]:
+                return
+            self.log(f"session attached user={user} from {peer_address}")
+            tasks = [
+                asyncio.ensure_future(self.pipe(reader, upstream_writer)),
+                asyncio.ensure_future(self.pipe(upstream_reader, writer)),
+            ]
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            self.log(f"session closed user={user} from {peer_address}")
+        finally:
+            await self.close_connection(tasks, (upstream_writer,))
+
+    async def open_session(
+        self, headers: list[tuple[bytes, bytes]]
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, bytes] | None:
+        """Hands the upgrade on to the app-server's socket and reads its answer's head.
+
+        Returns:
+            tuple | None: The app-server's stream, its writer and its answer's head; None when
+            the socket is missing or does not answer in time.
+        """
+        if not self.app_server_socket:
+            return None
+        held: list[asyncio.StreamWriter] = []
+        try:
+            upstream_reader, upstream_writer = await asyncio.wait_for(
+                asyncio.open_unix_connection(self.app_server_socket, limit=HEAD_LIMIT),
+                UPSTREAM_CONNECT_TIMEOUT_S,
+            )
+            held.append(upstream_writer)
+            upstream_writer.write(self.upgrade_request(headers))
+            await upstream_writer.drain()
+            answer = await asyncio.wait_for(
+                upstream_reader.readuntil(CRLF + CRLF), UPSTREAM_CONNECT_TIMEOUT_S
+            )
+        except (TimeoutError, OSError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            await self.close_connection([], tuple(held))
+            return None
+        return upstream_reader, upstream_writer, answer
+
+    async def respond_session_unavailable(self, writer: asyncio.StreamWriter) -> None:
+        """Answers an attach the app-server could not be reached for (502)."""
+        await self.respond(
+            writer,
+            BAD_GATEWAY,
+            "Bad Gateway",
+            {
+                "error": {
+                    "message": "The node's app-server is not answering.",
+                    "type": "service_unavailable",
+                    "code": "app_server_unavailable",
+                    "param": None,
+                }
+            },
+        )
 
     async def admit(
         self,
