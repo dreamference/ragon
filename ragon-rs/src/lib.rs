@@ -389,8 +389,9 @@ pub fn primary_remote_url(primary_name: &str) -> String {
 ///
 /// Only where Codex's grammar reads `--remote` counts: the root's options and those of a
 /// subcommand that declares it (`resume`, `fork`). A subcommand that does not (`sandbox`, `mcp
-/// add`, `exec`) ends the search, so a `--remote` among the arguments of the command it runs is
-/// never touched; nothing after `--` counts either.
+/// add`, `exec`, `tcp-tunnel`) or one of the launcher's own ([`LAUNCHER_SUBCOMMANDS`]) ends the
+/// search with nothing found, so a `--remote` among the arguments of the command it runs, or a
+/// root `--remote` before it, is never touched; nothing after `--` counts either.
 pub fn bare_remote_index(command: &Command, args: &[OsString]) -> Option<usize> {
     remote_scan(command, args).bare
 }
@@ -466,9 +467,16 @@ fn remote_scan(command: &Command, args: &[OsString]) -> RemoteScan {
                 }
             }
         } else if at_root {
+            if LAUNCHER_SUBCOMMANDS.contains(&token.as_ref()) {
+                // The launcher's own command (`ragon web`, `ragon delegate`, ...): never Codex's
+                // session, so nothing is filled and no token goes into its environment.
+                return RemoteScan { end: index, ..RemoteScan::default() };
+            }
             if let Some(sub) = command.find_subcommand(token.as_ref()) {
                 if !declares_remote(sub) {
-                    return RemoteScan { end: index, ..found };
+                    // A root `--remote` before it is not this subcommand's (`tcp-tunnel` ignores
+                    // it): only a session dials, so it is not filled either.
+                    return RemoteScan { end: index, ..RemoteScan::default() };
                 }
                 scope = sub;
                 at_root = false;

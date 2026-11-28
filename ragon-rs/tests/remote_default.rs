@@ -32,6 +32,8 @@ fn codex_like() -> Command {
         .subcommand(Command::new("resume").args(remote()).arg(Arg::new("session")))
         .subcommand(Command::new("fork").args(remote()).arg(Arg::new("session")))
         .subcommand(Command::new("exec").arg(Arg::new("prompt")))
+        // Takes no `--remote` and ignores the root's.
+        .subcommand(Command::new("tcp-tunnel").arg(Arg::new("target")))
         .subcommand(Command::new("sandbox").subcommand(Command::new("linux").arg(trailing("command"))))
         .subcommand(Command::new("mcp").subcommand(Command::new("add").arg(Arg::new("name")).arg(trailing("command"))));
     command.build();
@@ -379,4 +381,26 @@ fn the_reconnect_line_codex_prints_gets_the_token_for_the_primary_only() {
     // Not signed in: nothing to fill, and no refusal (the address is Codex's).
     let (_tmp, home, codex_home) = machine(None, None, json!({}));
     assert_eq!(remote_default(&command, &hint("wss://dgx-a.local:8000/", REMOTE_TOKEN_ENV), &home, &codex_home, false).unwrap(), None);
+}
+
+#[test]
+fn a_launcher_command_or_a_subcommand_that_ignores_remote_is_never_filled() {
+    let command = codex_like();
+    let (_tmp, home, codex_home) = fixture(Some("dgx-a"), Some(BEARER));
+    for line in [
+        // The launcher's own commands are not Codex's prompt: their `--remote` is theirs to refuse.
+        vec!["web", "--remote"],
+        vec!["delegate", "watch", "--remote"],
+        vec!["night", "--remote", "-x"],
+        vec!["-c", "x=1", "chat", "--remote"],
+        // A root `--remote` before a subcommand that ignores it.
+        vec!["--remote", "tcp-tunnel", "x"],
+        vec!["--remote", "exec", "hi"],
+        vec!["tcp-tunnel", "--remote"],
+        // The reconnect form, too.
+        vec!["web", "--remote", "wss://dgx-a.local:8000/", "--remote-auth-token-env", REMOTE_TOKEN_ENV],
+    ] {
+        assert_eq!(bare_remote_index(&command, &args(&line)), None, "{line:?}");
+        assert_eq!(remote_default(&command, &args(&line), &home, &codex_home, false).unwrap(), None, "{line:?}");
+    }
 }
