@@ -772,6 +772,22 @@ def test_status_names_each_containers_network_and_counts_only_stored_images(monk
     assert lines[2] == f"Store: {images} (1 images)"
 
 
+def test_image_search_sidecar_status_lines_says_zero_when_the_store_cannot_be_read(
+    monkeypatch, store
+):
+    fake = FakeDocker()
+    monkeypatch.setattr(subprocess, "run", fake)
+    images = store / "data" / "images"
+    images.parent.mkdir(parents=True)
+    images.write_text("")  # where the store's folder should be
+    monkeypatch.setattr(image_search_sidecar, "IMAGE_STORE_DIR", str(images))
+    lines = ImageSearchSidecar.status_lines()
+    assert lines[0] == f"Image search ({IMAGE_SEARCH_CONTAINER_NAME}): absent"
+    assert lines[1] == f"SigLIP pre-filter ({SIGLIP_CONTAINER_NAME}): absent"
+    assert lines[2] == f"Store: {images} (0 images)"
+    assert "Tool: not set up" in lines[3]
+
+
 # -- the image_search tool's decisions, one by one ----------------------------------------------
 
 
