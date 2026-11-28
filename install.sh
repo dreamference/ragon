@@ -530,6 +530,24 @@ printf '%s\n' "$TAG" > "$INSTALL_DIR/VERSION"
 say "✅ Installed$INSTALLED in $INSTALL_DIR/bin"
 step done "Ragon $TAG installed:$INSTALLED"
 
+# Linux: the primary's CA (pinned at `ragon login`) goes into the system store, replacing an older
+# one, so an unmodified Codex's `--remote` trusts it as on macOS and Windows (A11; `ragon uninstall`
+# takes it out). Only once a primary is pinned, and never by asking for a password here.
+if [ "$os" = "unknown-linux-gnu" ] && [ -x "$INSTALL_DIR/bin/ragon" ] && [ -f "${CODEX_HOME:-$HOME/.ragon}/auth.json" ]; then
+    if [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; then
+        if trust="$("$INSTALL_DIR/bin/ragon" node remote trust-ca < /dev/null 2>&1)"; then
+            say "${trust##*$'\n'}"
+            step done "primary's CA: ${trust##*$'\n'}"
+        else
+            say "⚠️  The primary's CA is not in the system store: ${trust##*$'\n'}"
+            step failed "primary's CA: run \`ragon node remote trust-ca\`"
+        fi
+    else
+        say "ℹ️  To let an unmodified Codex trust your primary, run: ragon node remote trust-ca (asks for sudo)"
+        step available "primary's CA: \`ragon node remote trust-ca\` puts it in the system store (sudo)"
+    fi
+fi
+
 # The app goes where a copy already is, else into /Applications when this user may write there
 # (an administrator of the Mac may), else ~/Applications, which needs no one's permission. It is
 # copied out of the mounted dmg under a hidden name and renamed over the old one, so a failure
