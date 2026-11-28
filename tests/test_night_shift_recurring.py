@@ -118,6 +118,21 @@ def test_a_refused_add_is_kept_as_the_reason_and_tried_again(tmp_path: Path) -> 
     assert kept["last_queued"] is None and kept["last_error"] == "not a git repository"
 
 
+def test_night_shift_recurring_queue_due_keeps_a_spawn_error_as_the_reason(tmp_path: Path) -> None:
+    night = tmp_path / "night"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    template = NightShiftRecurring.add(night, repo, "Update the changelog", "daily")
+
+    def fails(args: list[str], **options: Any) -> "subprocess.CompletedProcess[str]":
+        raise subprocess.SubprocessError("spawn failed")
+
+    said = NightShiftRecurring.queue_due(night, "/opt/ragon", date(1998, 10, 23), run=fails)
+    assert said == [f"Repeating task {template['id']} not queued: spawn failed."]
+    kept = NightShiftRecurring.templates(night)[0]
+    assert kept["last_queued"] is None and kept["last_error"] == "spawn failed"
+
+
 def test_ragon_admin_night_every_adds_lists_and_drops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
