@@ -1911,6 +1911,22 @@ def test_a_failed_docs_index_build_fails_and_downloads_nothing(monkeypatch):
     assert CodexBrandedBuilder.build_docs_index() is False
 
 
+def test_codex_branded_builder_build_docs_index_succeeds_without_building_off_linux(monkeypatch):
+    # Off Linux there is nothing to build: no cargo, no run-time download, just True.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        CodexBrandedBuilder, "build_crate", classmethod(lambda cls, *args, **kwargs: False)
+    )
+    from dreamference.runner import docs_index_setup
+
+    monkeypatch.setattr(
+        docs_index_setup.DocsIndexSetup,
+        "install",
+        classmethod(lambda cls, machine=None: pytest.fail("installed")),
+    )
+    assert CodexBrandedBuilder.build_docs_index() is True
+
+
 def test_linking_again_moves_an_existing_link_to_the_new_target(tmp_path):
     link = tmp_path / "bin" / "ragon"
     link.parent.mkdir()
