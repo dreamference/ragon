@@ -286,6 +286,29 @@ def test_waiting_for_management_gives_none_after_the_deadline_and_reads_setup_re
     assert RemoteControlPlane.wait_ready(BOX, seconds=0) is None
 
 
+def test_remote_control_plane_wait_ready_slees_between_polls(monkeypatch):
+    now = 1000.0
+
+    def fake_monotonic():
+        nonlocal now
+        now += 1.0
+        return now
+
+    sleeps = []
+    monkeypatch.setattr("dreamference.remote.remote_control_plane.time.monotonic", fake_monotonic)
+    monkeypatch.setattr(
+        "dreamference.remote.remote_control_plane.time.sleep",
+        lambda s: sleeps.append(s),
+    )
+    _api(monkeypatch, (200, {"setup_required": True}))
+    assert RemoteControlPlane.wait_ready(BOX, seconds=10) is True
+    assert sleeps == []
+    now = 1000.0
+    _api(monkeypatch, (0, {"error": "refused"}))
+    assert RemoteControlPlane.wait_ready(BOX, seconds=10) is None
+    assert len(sleeps) > 0 and all(s == 2 for s in sleeps)
+
+
 # -- the management API
 
 
