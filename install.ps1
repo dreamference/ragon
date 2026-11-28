@@ -205,6 +205,23 @@ function Remove-NodeSshdBlock([string]$Config) {
     if ($Text.Contains($NodeSshdBegin)) { [IO.File]::WriteAllText($Config, (Remove-NodeSshdText $Text)) }
 }
 
+# The machine PATH, edited as the registry value itself, unexpanded and of the kind it was (the .NET
+# environment calls expand %SystemRoot% and the like on read and would freeze them, as for the
+# user PATH below), so the job account, which has no profile, finds ragon.
+function Edit-NodeMachinePath([string]$Dir, [bool]$Add) {
+    $Key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("SYSTEM\CurrentControlSet\Control\Session Manager\Environment", $true)
+    try {
+        $Now = [string]$Key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $Kind = if ($Key.GetValueNames() -contains "Path") { $Key.GetValueKind("Path") } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+        $Entries = @($Now -split ";" | Where-Object { $_ -and $_ -ne $Dir })
+        if ($Add) { $Entries += $Dir }
+        $Key.SetValue("Path", ($Entries -join ";"), $Kind)
+    } finally { $Key.Close() }
+    # Setting and clearing a machine variable broadcasts WM_SETTINGCHANGE.
+    [Environment]::SetEnvironmentVariable("RAGON_PATH_CHANGED", "1", "Machine")
+    [Environment]::SetEnvironmentVariable("RAGON_PATH_CHANGED", $null, "Machine")
+}
+
 # Checks the host before anything is changed; returns the list of problems.
 function Test-NodeHost([int]$Build, [string]$Arch, [bool]$Elevated) {
     $Problems = @()
@@ -418,13 +435,11 @@ if ($Role -eq "node") {
         # The machine PATH, so the job account (which has no profile of its own) finds `ragon`.
         AddPath = {
             param($Dir)
-            $Now = [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if (-not (($Now -split ";") -contains $Dir)) { [Environment]::SetEnvironmentVariable("Path", ($Now.TrimEnd(";") + ";" + $Dir), "Machine") }
+            Edit-NodeMachinePath $Dir $true
         }
         RemovePath = {
             param($Dir)
-            $Now = [Environment]::GetEnvironmentVariable("Path", "Machine")
-            [Environment]::SetEnvironmentVariable("Path", ((($Now -split ";") | Where-Object { $_ -and $_ -ne $Dir }) -join ";"), "Machine")
+            Edit-NodeMachinePath $Dir $false
         }
         # sshd reads its configuration at start. Restarting it from an ssh session ends that session,
         # so over ssh the script says so instead.
