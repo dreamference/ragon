@@ -15,19 +15,22 @@ How the DLLs are found:
 - A DLL is shipped when it sits in -BuildDir or one of -RuntimeDirs (TheRock's bin by default).
   Anything else (System32, the API sets) is part of Windows and is not shipped; a name found
   nowhere is reported and fails the run unless it is an api-ms-*/ext-ms-* set.
+- The Visual C++ runtime (vcruntime*, msvcp*, concrt*, vcomp*) is not part of Windows: when the
+  engine imports it, the copy in System32 is shipped beside the engine (app-local).
 - Libraries HIP loads at run time by name (amd_comgr*, hiprtc*) are not in any import table;
   -Extra adds them by wildcard (the default covers both).
 
 Verification: with -VerifyArgs the staged executable is run from the staging directory with
 PATH reduced to System32 and HIP_PATH/ROCM_PATH removed, so a missing DLL fails here and not on
-a node. The exit code must be 0.
+a node: a loader failure (a DLL or an entry point not found) fails the run, and the exit
+code must be -VerifyExit (0 by default; ragon-serve's usage exit is 2).
 
 Reproducible: entries are sorted by name and stamped 2000-01-01 00:00, so the same inputs give
 the same zip and the same SHA-256.
 
 .EXAMPLE
 pwsh scripts/package_windows_engine.ps1 -BuildDir C:\build\bin -Version 0.9.4 `
-  -Commit b60634e -OutDir C:\out -VerifyArgs '--help'
+  -Commit 91b5573 -OutDir C:\out -VerifyArgs '--help' -VerifyExit 2
 #>
 param(
     [Parameter(Mandatory = $true)][string]$BuildDir,
@@ -38,9 +41,13 @@ param(
     [string[]]$RuntimeDirs = @('C:\TheRock\build\bin'),
     [string[]]$Extra = @('amd_comgr*.dll', 'hiprtc*.dll'),
     [string]$VerifyArgs = '',
+    [int]$VerifyExit = 0,
     [string]$Arch = 'gfx1151'
 )
 $ErrorActionPreference = 'Stop'
+# `powershell -File` passes `a,b` as one string: accept lists separated by commas or semicolons.
+$RuntimeDirs = @($RuntimeDirs | ForEach-Object { $_ -split '[;,]' } | Where-Object { $_ })
+$Extra = @($Extra | ForEach-Object { $_ -split '[;,]' } | Where-Object { $_ })
 
 function Get-PeImports([string]$Path) {
     $b = [System.IO.File]::ReadAllBytes($Path)
@@ -132,6 +139,11 @@ while ($queue.Count -gt 0) {
             if (-not $ship.Contains($key)) { $ship[$key] = $found; $queue.Enqueue($found) }
         } elseif ($key -match '^(api|ext)-ms-') {
             continue
+        } elseif ($key -match '^(vcruntime|msvcp|concrt|vcomp)\d' -and (Test-Path (Join-Path $system $dll))) {
+            # The Visual C++ runtime is not part of Windows: shipped app-local, so a node without
+            # the redistributable still starts the engine.
+            $path = (Resolve-Path (Join-Path $system $dll)).Path
+            if (-not $ship.Contains($key)) { $ship[$key] = $path; $queue.Enqueue($path) }
         } elseif (-not (Test-Path (Join-Path $system $dll))) {
             $missing.Add("$dll (imported by $(Split-Path $file -Leaf))")
         }
@@ -163,8 +175,13 @@ if ($VerifyArgs -ne '') {
     foreach ($v in 'HIP_PATH', 'ROCM_PATH', 'HIP_PATH_64') { $psi.EnvironmentVariables.Remove($v) }
     $proc = [System.Diagnostics.Process]::Start($psi)
     $proc.WaitForExit()
-    if ($proc.ExitCode -ne 0) { throw "$Exe $VerifyArgs exited $($proc.ExitCode) with PATH reduced to System32" }
-    Write-Host "verified: $Exe $VerifyArgs exits 0 with PATH reduced to System32"
+    # NTSTATUS codes of the loader: a DLL missing, an entry point missing, a DLL of the wrong
+    # architecture, a DLL whose initialisation failed.
+    $loader = @{ -1073741515 = 'a DLL was not found'; -1073741511 = 'an entry point was not found';
+                 -1073741701 = 'a DLL has the wrong image format'; -1073741502 = 'a DLL failed to initialise' }
+    if ($loader.ContainsKey($proc.ExitCode)) { throw "$Exe did not load with PATH reduced to System32: $($loader[$proc.ExitCode])" }
+    if ($proc.ExitCode -ne $VerifyExit) { throw "$Exe $VerifyArgs exited $($proc.ExitCode), not $VerifyExit, with PATH reduced to System32" }
+    Write-Host "verified: $Exe $VerifyArgs loads and exits $VerifyExit with PATH reduced to System32"
 }
 
 # Zip reproducibly.

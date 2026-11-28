@@ -711,7 +711,12 @@ mod tests {
         assert_eq!(o.port, 18123);
         assert_eq!(o.state_dir, PathBuf::from("/tmp/s"));
         assert_eq!(o.engine, args(&["engine", "--port", "18123"]));
-        assert!(parse(&args(&["run", "--port", "1"])).unwrap_err().contains("needs the engine"));
+        // Without `--` Windows starts the engine recipe; elsewhere the engine must be named.
+        if cfg!(windows) {
+            assert!(parse(&args(&["run", "--port", "1"])).unwrap().recipe.is_some());
+        } else {
+            assert!(parse(&args(&["run", "--port", "1"])).unwrap_err().contains("needs the engine"));
+        }
         assert!(parse(&args(&["bogus"])).is_err());
         assert!(parse(&args(&["status", "--port"])).unwrap_err().contains("needs a value"));
         assert!(parse(&args(&["status"])).is_ok());
