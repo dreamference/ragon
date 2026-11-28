@@ -209,6 +209,15 @@ def check_sums(tarball: Path, sums_text: str) -> None:
     raise SystemExit(f"no SHA256SUMS line for {tarball.name}")
 
 
+DYLD_LOADED = re.compile(r"^dyld\[\d+\]: <[0-9A-Fa-f-]+> (/.+)$")
+
+
+def dyld_loaded(stderr: str) -> list[str]:
+    """The image paths in DYLD_PRINT_LIBRARIES output (`dyld[pid]: <uuid> /path`); dyld's other
+    notes ("move loaded to delayed: libX.dylib", about the shared cache) name no file."""
+    return [m.group(1) for m in map(DYLD_LOADED.match, stderr.splitlines()) if m]
+
+
 # --- macOS only below: otool, install_name_tool, codesign, cmake ---------------------------------
 
 
@@ -276,8 +285,10 @@ def verify(tarball: Path, sums_text: str | None = None) -> None:
             # dyld itself: the serve's --help loads every library and exits.
             env = dict(os.environ, DYLD_PRINT_LIBRARIES="1")
             out = subprocess.run([str(root / SERVE), "--help"], env=env, capture_output=True, text=True)
-            loaded = [l for l in out.stderr.splitlines() if "dyld" in l and ".dylib" in l]
-            outside = [l for l in loaded if not any(s in l for s in (*roots, *SYSTEM_PREFIXES))]
+            loaded = dyld_loaded(out.stderr)
+            if not any(l.startswith(roots) and "/lib/" in l for l in loaded):
+                raise SystemExit("dyld printed no library from the bundle (was DYLD_PRINT_LIBRARIES honoured?)")
+            outside = [l for l in loaded if not l.startswith((*roots, *SYSTEM_PREFIXES))]
             if outside:
                 raise SystemExit(f"the serve loaded libraries from outside the bundle: {outside[:3]}")
     print(f"verified {tarball.name}: {len(names)} members, self-contained, signed")

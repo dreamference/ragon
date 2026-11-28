@@ -164,3 +164,13 @@ def test_the_sums_line_is_what_install_shs_awk_reads(tmp_path):
 def test_versions_are_plain(bad):
     with pytest.raises(ValueError):
         met.asset_name(bad)
+
+
+def test_dyld_output_gives_image_paths_only():
+    err = (
+        "dyld[40708]: <ED0F67FD-70B3-3FA9-98DE-54C1DDEAE37D> /private/tmp/e/bin/ragon-serve\n"
+        "dyld[40708]: <D5E8721E-717E-33FA-AFC2-43784CD7EE3A> /private/tmp/e/lib/libpcre2-8.0.dylib\n"
+        "dyld[40708]: move loaded to delayed: libcmark-gfm.dylib\n"
+        "usage: ragon-serve --model DIR\n"
+    )
+    assert met.dyld_loaded(err) == ["/private/tmp/e/bin/ragon-serve", "/private/tmp/e/lib/libpcre2-8.0.dylib"]
