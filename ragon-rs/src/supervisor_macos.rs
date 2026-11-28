@@ -21,8 +21,14 @@ pub fn run_cli(args: &[String]) -> i32 {
         let installed = |name: &str| {
             ragon_supervisor::macos_launchd::installed_kind(name, |p| p.exists(), None).is_some()
         };
-        let args = match crate::mac_engine::with_engine(args, crate::mac_engine::memory_gb, installed, |p| p.exists())
-        {
+        let proj = std::env::var(crate::mac_engine::PROJ_ENV).ok();
+        let args = match crate::mac_engine::with_engine(
+            args,
+            crate::mac_engine::memory_gb,
+            proj.as_deref(),
+            installed,
+            |p| p.exists(),
+        ) {
             Ok(args) => args,
             Err(why) => {
                 eprintln!("ragon server: {why}");
