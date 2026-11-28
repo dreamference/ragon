@@ -14,6 +14,7 @@ import json
 import pathlib
 import subprocess
 import types
+from pathlib import Path
 from typing import Any, Optional
 
 import pytest
@@ -264,6 +265,23 @@ def test_another_image_is_refused_before_docker_runs_even_with_a_cached_file(ima
 
 
 # -- _docker ------------------------------------------------------------------------------------
+
+
+def test_sglang_runtime_patcher_prepare_reports_when_the_patch_cannot_be_written(
+    image_holds, monkeypatch
+):
+    # A cache directory that exists but refuses the write (an immutable or read-only cache).
+    patch = pinned_to(EXCERPT)
+    SGLangRuntimePatcher.host_dir().mkdir(parents=True, exist_ok=True)
+
+    def refuse(cls, *args, **kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(Path, "mkdir", refuse)
+    problem = SGLangRuntimePatcher.prepare(QWEN38_SGLANG_IMAGE, [patch])
+    assert problem is not None
+    assert "could not write" in problem
+    assert "read-only file system" in problem
 
 
 @pytest.fixture
