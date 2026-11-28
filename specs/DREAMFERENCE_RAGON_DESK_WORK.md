@@ -103,9 +103,9 @@ The vendor's documentation also describes a Work experience for everyday, non-co
 
 **Draft descriptions** (our own words, Q1's default; Phase 2 measures them against the budget and may shorten them):
 - `doc`: "Use when the user asks to read, create or edit Word documents (`.docx`): letters, reports, memos, headings, tables, page layout. Writes with `python-docx` and checks every page with `ragon desk check` before saying it is done."
-- `spreadsheet`: "Use when tasks involve reading, creating, editing, analysing or formatting spreadsheets (`.xlsx`, `.csv`, `.tsv`): cleaning data, totals, formulas, number formats, charts. Recalculates and checks the sheet with `ragon desk check`."
+- `spreadsheet`: "Use when the user works with Excel or CSV files (`.xlsx`, `.csv`, `.tsv`): build or fix a sheet, clean data, add totals and formulas, set number formats, draw charts, analyse figures. Recalculates and checks the sheet with `ragon desk check`."
 - `slides`: "Use when the user wants a PowerPoint deck (`.pptx`) built from notes or an existing deck edited: slides, layouts, images, speaker notes. Builds with `python-pptx` and checks every slide with `ragon desk check`."
-- `pdf`: "Use when tasks involve reading, filling, merging, splitting or creating PDF files where layout matters: text and tables, form fields, new PDFs. Renders the pages and checks them with `ragon desk check`."
+- `pdf`: "Use when the user hands over or asks for a PDF (`.pdf`): pull out text and tables, fill a form, merge or split files, make a new PDF. Renders the pages and checks them with `ragon desk check`."
 
 **One shared checker, not four.** The skills call `ragon desk check <file>` (§5) rather than each shipping its own render script.
 
@@ -228,7 +228,7 @@ The node keeps the model server resident; with the default twelve sessions about
 - **Every conversion and render** runs under a memory cap of 1 GiB and a time limit of 60 s: on Linux in a transient user scope (`systemd-run --user --scope -p MemoryMax=1G`, falling back to `RLIMIT_AS` as `ragon-docs` already does where no user systemd is reachable), on macOS and Windows under the process limits the window's B31 converter already sets.
 - **One conversion at a time per machine** (a lock under `~/.ragon/desk/`), so twelve sessions checking at once take 233 MiB, not 2.8 GiB.
 - **The model's own scripts** run in its shell as code does, under the sandbox; the `spreadsheet` skill tells the model to use `openpyxl`'s read-only mode and `XlsxWriter` above 100,000 rows.
-- **On a node, the desk `python3` and `python` are bounded.** They are a small launcher that starts the interpreter under a **4 GiB memory cap**, in the same transient scope (`MemoryMax=4G`) or with `RLIMIT_AS` without user systemd. A runaway script then fails with `MemoryError` instead of pushing the model server out. The sandbox is not counted as a memory bound; *to be confirmed in Phase 1* whether it sets one.
+- **On a Linux node, the desk `python3` and `python` are bounded.** They are a small launcher that starts the interpreter under a **4 GiB memory cap**, in the same transient scope (`MemoryMax=4G`) or with `RLIMIT_AS` without user systemd. A runaway script then fails with `MemoryError` instead of pushing the model server out. `numpy` imports under a 4 GiB `RLIMIT_AS` on a 20-core node (probe, this node, 2026-11-28); `pandas` and `matplotlib` under it are *to be confirmed in Phase 1*, as is whether the sandbox sets a memory limit of its own. **On a Mac node** the desk Python is uncapped: macOS is not known to enforce `RLIMIT_AS` (*unverified*; Phase 1 checks), and there is no user systemd.
 - **On a client** the model server is elsewhere. The conversion caps apply and are generous; the desk Python has no cap by default, and `ragon desk setup --memory-cap <size>` sets one.
 
 ---
@@ -387,7 +387,7 @@ Each row is one task-sized change with its test. **Routing** follows RBRB §5.1 
 | P1.2 `ragon desk setup` (`--from`, `--office`) and `ragon desk add`; first-use fetch | 1 | code | cheapest model | 1.5 |
 | P1.3 `PATH` for desk threads through the configuration override; tests on Linux, macOS, Windows | 1 | code | cheapest model | 1 |
 | P1.4 Office suite first use: AppImage, disk image, installer; memory cap and lock | 1 | code | cheapest model | 1.5 |
-| P1.5 The command stand-ins: `pip` and `uv`, `soffice`, `pdftoppm`, `pdftocairo`, `pdfinfo` and `pdftotext`, and `npm` with the Node pack (§4.2) | 1 | code | cheapest model | 1 |
+| P1.5 The command stand-ins: `pip` and `uv`, `soffice`, `pdftoppm`, `pdftocairo`, `pdfinfo` and `pdftotext`, and `npm` with the Node pack (§4.2); the `python3` launcher with the memory cap and `--memory-cap` (§4.4); the `node` wrapper with `NODE_PATH` (§4.1) | 1 | code | cheapest model | 1.5 |
 | P2.1 `ragon desk check`: reopen, text, per-type checks, render, exit codes | 2 | code | cheapest model | 2.5 |
 | P2.2 The four `SKILL.md`, their `agents/openai.yaml`, the `from-ragon` link, its place in the order, the overlap mark in `ragon skill list` | 2 | docs | Ragon | 1.5 |
 | P2.3 The look reminder hook (§5.2) | 2 | code | cheapest model | 0.5 |
@@ -412,15 +412,15 @@ Each row is one task-sized change with its test. **Routing** follows RBRB §5.1 
 | Phase | What | Agent-days |
 |---|---|---|
 | 0 | Probes, the image-token fix, the upstream table | 2 |
-| 1 | The toolchain in both install modes, the stand-ins, the suite on first use | 7.5 |
+| 1 | The toolchain in both install modes, the stand-ins and launchers, the suite on first use | 8 |
 | 2 | The checker and the four skills | 4.5 |
 | 3 | The plain Work view | 4 |
 | 4 | Guard and undo | 3.5 |
 | 5 | Connectors | 1.5 |
 | 6 | Quality set, grader, gate | 6 |
 | 7 | Docs and release notes | 1 |
-| | **Sum** | **30** |
-| | Review and rework, 20 % | 6 |
+| | **Sum** | **30.5** |
+| | Review and rework, about 18 % (the 0.5 day added to P1.5 comes out of this margin) | 5.5 |
 | | **Total** | **about 36 agent-days** |
 
 ### 11.2 What the date needs
