@@ -69,3 +69,18 @@ def test_compactions_count_an_untimed_record_and_skip_junk_lines():
     ]
     (sessions / "rollout-1.jsonl").write_text("\n".join(records) + "\n")
     assert store.compactions("i-1") == {"count": 2, "seconds": [30.0, None]}
+
+
+def test_swe_bench_run_store_compactions_skips_rollout_when_read_raises():
+    from unittest import mock
+
+    from dreamference.swe_bench.swe_bench_scratch import SweBenchScratch
+
+    store = SweBenchRunStore("2020-10-03-f")
+    store.write_manifest({"name": store.name})
+    sessions = store.directory / "scratch" / "i-1" / "codex-home" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "rollout-1.jsonl").write_text("")
+    with mock.patch.object(SweBenchScratch, "read_text", side_effect=OSError("read failed")):
+        result = store.compactions("i-1")
+    assert result == {"count": 0, "seconds": []}
