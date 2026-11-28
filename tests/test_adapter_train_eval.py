@@ -115,6 +115,34 @@ def test_adapter_train_eval_check_speed_notes_the_missing_base_drafter_row(tmp_p
     assert "adapter_base_drafter" not in entry["tokens_per_second"]
 
 
+def test_adapter_train_eval_check_exactness_skips_without_a_speculation_off_host(
+    tmp_path: Path,
+) -> None:
+    hosts = dict(HOSTS)
+    del hosts["adapter_speculation_off"]
+    completer: list[str] = []
+
+    def spy(host: str, prompt: str) -> str:
+        completer.append(host)
+        return prompt.upper()
+
+    stage = AdapterTrainEval(
+        tmp_path,
+        hosts,
+        holdout_runner=_holdout(["a"], ["a", "b", "c"]),
+        speed_runner=_speed({"http://base": 100.0, "http://adapter": 98.0}),
+        completer=spy,
+        auditor=lambda host: 0,
+    )
+    entry = stage.check_exactness()
+    assert entry == {
+        "status": "skipped",
+        "passed": False,
+        "note": "no speculation-off server named",
+    }
+    assert completer == []
+
+
 def test_run_without_hosts_says_what_is_missing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
