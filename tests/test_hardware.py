@@ -831,6 +831,36 @@ def test_an_unpinned_model_uses_the_complete_snapshot_its_download_check_accepte
     assert ModelDownloader.get_model_snapshot_dir(repo) == partial
 
 
+def test_model_downloader_snapshot_complete_rejects_a_missing_shard_named_by_its_index(tmp_path):
+    # _snapshot_complete() says a snapshot holds a whole checkpoint only when every shard its
+    # *.index.json files name is present; a missing shard means the download stopped short.
+    import json
+
+    from dreamference.hardware import ModelDownloader
+
+    snapshot = tmp_path / "snap" / "rev"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a.weight": "model-00001-of-00002.safetensors"}})
+    )
+    # A directory where a shard file stands up is not the shard.
+    (snapshot / "model-00001-of-00002.safetensors").mkdir()
+    assert ModelDownloader._snapshot_complete(snapshot) is False
+    (snapshot / "model-00001-of-00002.safetensors").rmdir()
+    assert ModelDownloader._snapshot_complete(snapshot) is False
+    (snapshot / "model-00001-of-00002.safetensors").write_bytes(b"\0")
+    assert ModelDownloader._snapshot_complete(snapshot) is True
+    # An index the hub left half-written fails the check rather than the download.
+    (snapshot / "model.safetensors.index.json").write_text("{not json")
+    assert ModelDownloader._snapshot_complete(snapshot) is False
+    # A snapshot that is not a folder, or an empty one, holds nothing.
+    assert ModelDownloader._snapshot_complete(tmp_path / "no-such") is False
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert ModelDownloader._snapshot_complete(empty) is False
+
+
 def test_a_model_tensorized_at_one_pin_is_not_loaded_once_the_pin_moves(tmp_path, monkeypatch):
     from dreamference.hardware import ModelDownloader
     from dreamference.hardware.model_matrix_registry import ModelMatrixRegistry
