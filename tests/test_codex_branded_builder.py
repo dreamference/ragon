@@ -723,6 +723,35 @@ def test_ragon_is_not_linked_onto_path_before_it_is_built(tmp_path, monkeypatch)
     assert not os.path.lexists(builder.PATH_LINK)
 
 
+def test_codex_branded_builder_link_staging_is_per_process_and_refuses_a_plain_file(
+    tmp_path, monkeypatch, capsys
+):
+    # A link is created through a per-process staging name, so two builders can never remove or
+    # rename each other's link; a real file of the link's name is reported and left alone.
+    from dreamference.runner import codex_branded_builder as builder
+
+    link = tmp_path / "bin" / "link"
+    target = tmp_path / "target"
+    target.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(builder.os, "getpid", lambda: 4242)
+    builder.CodexBrandedBuilder._link(str(target), str(link))
+    assert link.is_symlink() and str(Path(link).readlink()) == str(target)
+    assert not os.path.lexists(str(link) + ".4242.new")
+
+    # A stale staging file of this process's name is cleared before the new link is made.
+    staging = link.parent / f"link.{os.getpid()}.new"
+    staging.write_text("stale")
+    builder.CodexBrandedBuilder._link(str(target), str(link))
+    assert str(Path(link).readlink()) == str(target)
+
+    # A plain file of the link's name belongs to someone else: it is reported, not replaced.
+    plain = tmp_path / "bin" / "plain"
+    plain.write_text("mine")
+    builder.CodexBrandedBuilder._link(str(target), str(plain))
+    assert not plain.is_symlink() and plain.read_text() == "mine"
+    assert "leaving it" in capsys.readouterr().out
+
+
 def test_the_web_commands_build_from_their_own_crate_with_its_lockfile(tmp_path, monkeypatch):
     calls = []
 
