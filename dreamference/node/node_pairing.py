@@ -51,6 +51,13 @@ DEFAULT_IDENTITY: Final[str] = ".ssh/id_ed25519"
 # What ssh prints when the account refused every key and password: the user is often the wrong one.
 PERMISSION_DENIED: Final[str] = "permission denied"
 
+# A Windows node has no POSIX shell and no Python: its `ragon` is on the node account's PATH and
+# reads the same in cmd and PowerShell, which is how a pairing addresses it when the Linux path fails.
+WINDOWS_ADMIN: Final[str] = "ragon"
+
+# What cmd and PowerShell print for a command they cannot find (the Linux path, on a Windows node).
+NOT_A_COMMAND: Final[str] = "is not recognized as"
+
 
 ADDRESS_KEY: Final = "address"
 
@@ -581,6 +588,12 @@ class NodePairing:
         from dreamference.node.fleet_session import REMOTE_ADMIN
 
         answer = session.run(f"{REMOTE_ADMIN} node id && hostname")
+        admin = REMOTE_ADMIN
+        if answer.returncode != 0:
+            # A Windows node: one command, its `node id` printing the id and the host name.
+            windows = session.run(f"{WINDOWS_ADMIN} node id")
+            if windows.returncode == 0:
+                answer, admin = windows, WINDOWS_ADMIN
         lines = answer.stdout.split()
         if (
             answer.returncode != 0
@@ -603,7 +616,7 @@ class NodePairing:
             return None
         if not cls.pin_host_keys(record["node"], session.host_key_lines()):
             return None
-        authorized = session.run(f"{REMOTE_ADMIN} node authorize", input_text=public_key + "\n")
+        authorized = session.run(f"{admin} node authorize", input_text=public_key + "\n")
         if authorized.returncode != 0:
             print(
                 f"❌ {record['name']} did not authorise the key: {authorized.stderr.strip()[-200:]}"
@@ -688,16 +701,30 @@ class NodePairing:
             "-o",
             "StrictHostKeyChecking=accept-new",
             f"{record['user']}@{record['address']}",
-            "$HOME/.local/bin/ragon-admin node authorize",
         ]
         # Standard error is read for the hint and passed on; the password prompt is ssh's own, on
-        # the terminal, and never passes through here.
-        try:
-            result = subprocess.run(
-                command, input=public_key + "\n", stderr=subprocess.PIPE, text=True, check=False
-            )
-        except OSError:
-            return False
+        # the terminal, and never passes through here. A Windows node does not know the Linux path
+        # (its shell says so) and is asked again by its own command; a password is then asked twice.
+        results: list[subprocess.CompletedProcess[str]] = []
+        for remote in (
+            "$HOME/.local/bin/ragon-admin node authorize",
+            f"{WINDOWS_ADMIN} node authorize",
+        ):
+            try:
+                results.append(
+                    subprocess.run(
+                        [*command, remote],
+                        input=public_key + "\n",
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=False,
+                    )
+                )
+            except OSError:
+                return False
+            if results[-1].returncode == 0 or NOT_A_COMMAND not in results[-1].stderr:
+                break
+        result = results[-1]
         sys.stderr.write(result.stderr + cls.permission_hint(result.stderr, record["user"]))
         return result.returncode == 0
 

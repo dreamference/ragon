@@ -763,7 +763,8 @@ pub enum Request {
     Forget,
     /// `ragon node remote …` (remote_join.rs).
     Remote(Vec<String>),
-    /// `ragon node authorize | unauthorize <tag>` (the node's half of a pairing) and `pair <user@host> [port]`.
+    /// `ragon node authorize | unauthorize <tag> | id | serve-job --key <tag>` (the node's half of a
+    /// pairing and its forced command) and `pair <user@host> [port]`.
     Pairing(Vec<String>),
     Usage,
 }
@@ -776,7 +777,7 @@ impl Request {
             ["use", name] => Request::Use(name.to_string()),
             ["forget"] => Request::Forget,
             ["remote", ..] => Request::Remote(args[1..].to_vec()),
-            ["authorize"] | ["unauthorize", _] | ["pair", _] | ["pair", _, _] => Request::Pairing(args.to_vec()),
+            ["authorize"] | ["unauthorize", _] | ["pair", _] | ["pair", _, _] | ["id"] | ["serve-job", ..] => Request::Pairing(args.to_vec()),
             _ => Request::Usage,
         }
     }
@@ -1726,6 +1727,9 @@ mod tests {
         assert_eq!(Request::from_args(&args(&["use", "spark-2"])), Request::Use("spark-2".into()));
         assert_eq!(Request::from_args(&args(&["forget"])), Request::Forget);
         assert_eq!(Request::from_args(&args(&["use"])), Request::Usage);
+        assert_eq!(Request::from_args(&args(&["id"])), Request::Pairing(args(&["id"])));
+        let serve = args(&["serve-job", "--key", "0123456789abcdef"]);
+        assert_eq!(Request::from_args(&serve), Request::Pairing(serve.clone()));
         assert_eq!(Request::from_args(&args(&["enable"])), Request::Usage);
     }
 

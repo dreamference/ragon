@@ -47,7 +47,9 @@ pub fn authorized_line(public_key: &str, serve_command: &str) -> Result<String, 
     if fields.len() < 2 || trimmed.contains('\n') || !["ssh-", "ecdsa-", "sk-"].iter().any(|p| fields[0].starts_with(p)) {
         return Err("not a public key".into());
     }
-    if serve_command.chars().any(|c| matches!(c, '"' | '\\' | '\n')) {
+    // OpenSSH's `command="…"` keeps a backslash as it is unless a quote follows it, so a Windows
+    // path's backslashes stand; a quote, a line break or a backslash before the closing quote cannot.
+    if serve_command.chars().any(|c| matches!(c, '"' | '\n' | '\r')) || serve_command.ends_with('\\') {
         return Err("the forced command cannot be quoted".into());
     }
     Ok(format!("command=\"{serve_command}\",{KEY_RESTRICTIONS} {} {} {KEY_COMMENT}", fields[0], fields[1]))
@@ -247,10 +249,212 @@ fn nodes_dir(home: &Path) -> PathBuf {
     home.join(".config").join("dreamference").join("nodes")
 }
 
+/// The forced command for `exe`: `<exe> node serve-job --key <tag>`. sshd hands it to the account's
+/// shell (cmd or PowerShell on Windows, the login shell elsewhere), and no quoting reads the same in
+/// all of them, so the path may hold only letters, digits and `:\\/._-`: a path with a space (the
+/// Windows `Program Files`) is refused here rather than written into a line that would not run.
+pub fn forced_command(exe: &str, tag: &str) -> Result<String, String> {
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, ':' | '\\' | '/' | '.' | '_' | '-');
+    if exe.is_empty() || !exe.chars().all(plain) {
+        return Err(format!("Ragon's path {exe:?} cannot be a forced command (only letters, digits and :\\/._- run unquoted in every shell); install it where the path has no space."));
+    }
+    if !is_tag(tag) {
+        return Err("not a key tag".into());
+    }
+    Ok(format!("{exe} node serve-job --key {tag}"))
+}
+
 /// The node's own forced command: this executable, `node serve-job --key <tag>`.
 fn serve_command(tag: &str) -> String {
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "ragon".into());
-    format!("{exe} node serve-job --key {tag}")
+    // An unusable path gives a line `authorized_line` refuses (it ends in a backslash), never a
+    // command that runs something else.
+    forced_command(&exe, tag).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        "\\".into()
+    })
+}
+
+/// Splits an `SSH_ORIGINAL_COMMAND` as a POSIX shell would (the sender quotes with `shlex.quote`):
+/// single quotes, double quotes with `\\` escapes, backslash outside quotes. None when a quote is
+/// left open, so a half request is refused rather than guessed.
+pub fn split_request(request: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = request.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' | '\n' => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        other => word.push(other),
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '\\' => match chars.next()? {
+                            e @ ('"' | '\\' | '$' | '`') => word.push(e),
+                            '\n' => {}
+                            other => {
+                                word.push('\\');
+                                word.push(other);
+                            }
+                        },
+                        other => word.push(other),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                match chars.next()? {
+                    '\n' => {}
+                    other => word.push(other),
+                }
+            }
+            other => {
+                in_word = true;
+                word.push(other);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    Some(words)
+}
+
+/// What a paired key's request is, once it passed the allow-list.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Served {
+    /// `info`: the node's id and name, as JSON.
+    Info,
+    /// `unpair`: remove the connecting key's own line.
+    Unpair,
+    /// `status`, `start`, `stop` and the job operations: `ragon server <these words>` on this node
+    /// (the supervisor's, which checks a job's id and request itself).
+    Server(Vec<String>),
+}
+
+/// The operations a paired key may ask for and how each is carried out; None refuses. Arguments
+/// are passed as words, never through a shell, and none may look like an option.
+pub fn route(words: &[String]) -> Option<Served> {
+    let (operation, arguments) = words.split_first()?;
+    let word = |w: &String| !w.is_empty() && !w.starts_with('-') && w.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '='));
+    match (operation.as_str(), arguments) {
+        ("info", []) => Some(Served::Info),
+        ("unpair", []) => Some(Served::Unpair),
+        ("status" | "start" | "stop", []) => Some(Served::Server(vec![operation.clone()])),
+        (op, args) if JOB_OPERATIONS.contains(&op) && args.len() <= 2 && args.iter().all(word) => Some(Served::Server(words.to_vec())),
+        _ => None,
+    }
+}
+
+/// The job operations the sender asks a node for (`NodeJobSender`), served by `ragon server`.
+pub const JOB_OPERATIONS: [&str; 6] = ["job-submit", "job-list", "job-logs", "job-fetched", "job-cancel", "job-out"];
+
+/// What the node says to a request it does not carry out.
+pub const REFUSAL: &str = "ragon node serve-job: this key may only ask for Ragon node operations \
+(info, status, start, stop, unpair and the jobs').";
+
+/// The tag in the forced command's own arguments: `serve-job --key <tag>`.
+pub fn serve_key(args: &[String]) -> Option<&str> {
+    match args {
+        [cmd, flag, tag] if cmd == "serve-job" && flag == "--key" && is_tag(tag) => Some(tag),
+        _ => None,
+    }
+}
+
+/// The `info` answer: the keys the sender reads (`node`, `name`), the rest as the Linux node's,
+/// unknown ones null (a Windows node has no lingering: its jobs run under the service).
+pub fn info_json(node: &str, name: &str, user: &str, version: &str, model_port: u16) -> serde_json::Value {
+    serde_json::json!({
+        "node": node, "name": name, "user": user, "version": version, "linger": null,
+        "model_port": model_port, "mem_available": null, "mem_total": null, "runner": null,
+    })
+}
+
+/// This node's id, or None when it is not a node (no id file, or an empty one).
+fn own_node_id() -> Option<String> {
+    let text = std::fs::read_to_string(ragon_node_locator::node_id_file()?).ok()?;
+    let id = text.trim().to_string();
+    is_node_id(&id).then_some(id)
+}
+
+fn host_name() -> String {
+    let name = if cfg!(windows) {
+        std::env::var("COMPUTERNAME").unwrap_or_default()
+    } else {
+        std::fs::read_to_string("/proc/sys/kernel/hostname").or_else(|_| std::fs::read_to_string("/etc/hostname")).unwrap_or_default()
+    };
+    let name = name.trim();
+    if name.is_empty() { "node".into() } else { name.to_string() }
+}
+
+fn user_name() -> String {
+    std::env::var(if cfg!(windows) { "USERNAME" } else { "USER" }).unwrap_or_default()
+}
+
+/// `ragon node id`: the id, then the host name, one per line (what the sender reads as
+/// `node id && hostname` from a Linux node, in one command every shell runs).
+pub fn run_id() -> i32 {
+    match own_node_id() {
+        Some(id) => {
+            println!("{id}\n{}", host_name());
+            0
+        }
+        None => {
+            eprintln!("This machine is not a Ragon node (no node id).");
+            1
+        }
+    }
+}
+
+/// `ragon node serve-job --key <tag>`: the forced command of every paired key. sshd starts it
+/// whatever the client asked, with the request in `SSH_ORIGINAL_COMMAND`.
+pub fn run_serve_job(args: &[String]) -> i32 {
+    let Some(tag) = serve_key(args) else {
+        eprintln!("{REFUSAL}");
+        return 2;
+    };
+    let request = std::env::var("SSH_ORIGINAL_COMMAND").unwrap_or_default();
+    let Some(served) = split_request(&request).and_then(|words| route(&words)) else {
+        eprintln!("{REFUSAL}");
+        return 2;
+    };
+    match served {
+        Served::Info => match own_node_id() {
+            Some(id) => {
+                println!("{}", info_json(&id, &host_name(), &user_name(), env!("CARGO_PKG_VERSION"), ragon_node_locator::DEFAULT_MODEL_PORT));
+                0
+            }
+            None => {
+                eprintln!("This machine is not a Ragon node (no node id).");
+                1
+            }
+        },
+        Served::Unpair => {
+            let removed = home().is_some_and(|h| unauthorize(&authorized_keys_path(&h), tag));
+            println!("{}", if removed { "unpaired" } else { "no such key" });
+            if removed { 0 } else { 1 }
+        }
+        Served::Server(words) => {
+            let Ok(exe) = std::env::current_exe() else { return 1 };
+            Command::new(exe).arg("server").args(words).status().ok().and_then(|s| s.code()).unwrap_or(1)
+        }
+    }
 }
 
 /// `ragon node authorize` (public key on stdin) and `ragon node unauthorize <tag>`: the node half.
@@ -275,6 +479,8 @@ pub fn run_node_side(args: &[String]) -> i32 {
                 }
             }
         }
+        [cmd] if cmd == "id" => run_id(),
+        [cmd, ..] if cmd == "serve-job" => run_serve_job(args),
         [cmd, tag] if cmd == "unauthorize" => {
             if unauthorize(&path, tag) {
                 println!("unpaired");
@@ -398,7 +604,9 @@ mod tests {
             assert!(authorized_line(key, "x").is_err(), "{key:?}");
         }
         assert!(authorized_line(KEY, "a\"b").is_err());
-        assert!(authorized_line(KEY, "a\\b").is_err());
+        assert!(authorized_line(KEY, "a\\").is_err(), "a backslash before the closing quote");
+        assert!(authorized_line(KEY, "a\rb").is_err());
+        assert!(authorized_line(KEY, "C:\\Ragon\\ragon.exe node serve-job --key x").is_ok(), "a Windows path");
     }
 
     #[test]
@@ -507,5 +715,85 @@ mod tests {
         let record = record_json("n1", "spark", "me", 22);
         assert!(record.get("address").is_none());
         assert_eq!(record["node"], "n1");
+    }
+
+    fn words(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_request_splits_as_the_senders_shlex_quoted_it() {
+        assert_eq!(split_request("info"), Some(words(&["info"])));
+        assert_eq!(split_request("  job-logs  20261125-1000-abc 42 "), Some(words(&["job-logs", "20261125-1000-abc", "42"])));
+        assert_eq!(split_request("job-submit 'a b'\"c\\\"d\""), Some(words(&["job-submit", "a bc\"d"])));
+        assert_eq!(split_request("a\\ b ''"), Some(words(&["a b", ""])));
+        assert_eq!(split_request(""), Some(vec![]));
+        for open in ["info 'x", "info \"x", "info \\"] {
+            assert_eq!(split_request(open), None, "{open:?}");
+        }
+    }
+
+    #[test]
+    fn only_the_node_operations_are_served_and_nothing_reaches_a_shell() {
+        assert_eq!(route(&words(&["info"])), Some(Served::Info));
+        assert_eq!(route(&words(&["unpair"])), Some(Served::Unpair));
+        assert_eq!(route(&words(&["status"])), Some(Served::Server(words(&["status"]))));
+        assert_eq!(route(&words(&["job-list"])), Some(Served::Server(words(&["job-list"]))));
+        assert_eq!(route(&words(&["job-logs", "20261125-1000-abc", "42"])), Some(Served::Server(words(&["job-logs", "20261125-1000-abc", "42"]))));
+        assert_eq!(route(&words(&["job-submit", "eyJ0ZXN0IjoxfQ=="])), Some(Served::Server(words(&["job-submit", "eyJ0ZXN0IjoxfQ=="]))));
+        for refused in [
+            &["powershell"][..], &["cmd", "/c", "whoami"], &["info", "x"], &["status", "--all"], &["unpair", "0123456789abcdef"],
+            &["job-list", "--help"], &["job-logs", "a b"], &["job-logs", "x;calc"], &["job-logs", "..\\x"], &["job-cancel", "a", "b", "c"],
+            &["set-model", "m"], &["git-receive-pack", "jobs/x.git"], &["night-run"], &[],
+        ] {
+            assert_eq!(route(&words(refused)), None, "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn the_forced_command_takes_its_tag_from_its_own_arguments_only() {
+        let tag = "0123456789abcdef";
+        assert_eq!(serve_key(&words(&["serve-job", "--key", tag])), Some(tag));
+        for bad in [&["serve-job"][..], &["serve-job", "--key"], &["serve-job", "--key", "x"], &["serve-job", "--key", tag, "info"], &["id", "--key", tag]] {
+            assert_eq!(serve_key(&words(bad)), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_windows_path_without_a_space_is_the_forced_command_and_one_with_a_space_is_refused() {
+        let tag = "0123456789abcdef";
+        let exe = "C:\\Users\\user\\AppData\\Local\\Programs\\Ragon\\bin\\ragon.exe";
+        let command = forced_command(exe, tag).unwrap();
+        assert_eq!(command, format!("{exe} node serve-job --key {tag}"));
+        assert!(authorized_line(KEY, &command).unwrap().starts_with(&format!("command=\"{exe} node")));
+        assert!(forced_command("/home/u/.local/bin/ragon", tag).is_ok());
+        for bad in ["C:\\Program Files\\Ragon\\ragon.exe", "C:\\R&D\\ragon.exe", "C:\\x\"\\ragon.exe", "a;b", ""] {
+            assert!(forced_command(bad, tag).is_err(), "{bad:?}");
+        }
+        assert!(forced_command(exe, "x").is_err());
+    }
+
+    #[test]
+    fn a_windows_line_is_written_and_removed_by_its_tag_alone() {
+        let d = dir("windows-line");
+        let path = authorized_keys_path(&d);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "ssh-ed25519 AAAAown my laptop\n").unwrap();
+        let windows = |tag: &str| forced_command("C:\\Ragon\\bin\\ragon.exe", tag).unwrap();
+        authorize(&path, KEY, &windows).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let tag = key_tag(KEY).unwrap();
+        assert!(text.contains(&format!("command=\"C:\\Ragon\\bin\\ragon.exe node serve-job --key {tag}\",restrict,")), "{text}");
+        assert!(unauthorize(&path, &tag));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "ssh-ed25519 AAAAown my laptop\n");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn info_reports_the_id_the_sender_checks() {
+        let info = info_json("11111111-1111-4111-8111-111111111111", "WINNODE", "ragon-node", "0.9.10", 8000);
+        assert_eq!(reported_node(&info.to_string()).as_deref(), Some("11111111-1111-4111-8111-111111111111"));
+        assert_eq!(info["model_port"], 8000);
+        assert!(info["linger"].is_null());
     }
 }
