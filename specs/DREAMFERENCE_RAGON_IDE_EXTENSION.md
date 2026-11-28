@@ -3,7 +3,7 @@
 **Status:** *Proposed for 0.9.11 (Fri 2026-12-18); nothing built.* This is a plan for a panel inside the editor. In it the user talks to Ragon, follows its plan, reviews diffs, answers approvals and applies changes. Owner request 2026-11-28: "Lets plan ide extension for 0.9.11". The extension is built to be as compatible as the protocol allows with the upstream Codex extension for VS Code. The owner's rules apply: copy ideas and interfaces, never code; user benefit over less work; no telemetry; unsigned previews before 1.0.
 
 **Names:**
-- The extension: `dreamference.ragon`, display name **Ragon**. The namespace `dreamference` is already held on Open VSX and on the VS Code Marketplace (DECISIONS 2026-11-25).
+- The extension: `dreamference.ragon`, display name **Ragon**. The namespace `dreamference` is already held on Open VSX and on the VS Code Marketplace (owner 2026-11-25).
 - The editor family: **VS Code family**, meaning VS Code, its Insiders build and the open-source builds that install from Open VSX.
 - The panel: **the Ragon panel**.
 
@@ -42,7 +42,7 @@
 | Source | "The VS Code extension is not open sourced" (a maintainer on the openai/codex issue tracker, issue 2938). Issue 5822 asks to open it. | *Reported* by the research pass from the issue pages, not re-fetched |
 | Calls home | Not measurable within our rules: running it may contact the vendor. Issue 5882 reports that the extension did not honour the user's telemetry export setting. | Its own telemetry and any remotely loaded webview assets are *unverified*. Issue 5882 is *reported*, not re-fetched. |
 | Release pace | Several builds a week (26.51117…, 26.51120…). Each bundles a newer agent than our pin of 2026-09-27, so the protocol it expects drifts from `rust-v0.158.0`. | The build numbers are *verified* on Open VSX. The size of the drift is inference from dates. |
-| Our product rules | It does not know `account/ragon/signIn`. Its sign-in UI leads to the vendor's sign-in. It does not enforce `policy.json`. It cannot be covered by the egress audit. | Inference from the protocol and the policy file |
+| Our product rules | It does not know `account/ragon/signIn`. Its sign-in goes through `account/login/start`, whose issuer patch `0040` points at the primary (AUTH §5.8); how its UI handles that page was not run and is *unverified*. It does not enforce `policy.json`. It cannot be covered by the egress audit. | Inference from the protocol and the policy file |
 
 The no-telemetry rule and the egress rule ("the extension opens no connection except to the node") cannot be met by a closed binary that we cannot audit. User docs therefore do not recommend it. We **keep it working where that costs nothing**: the app-server stays Codex's protocol, and test T9 runs a protocol client that sends the requests a Codex IDE client sends. But we do not test the vendor's binary, ship it, or support it.
 
@@ -51,15 +51,15 @@ The no-telemetry rule and the egress rule ("the extension opens no connection ex
 | | (a) Support the upstream extension against `ragon app-server` | (b) **Our own extension: same app-server protocol, `desktop/ui` in a webview, same policy file** | (c) Extend today's tool server (`ragon-admin mcp`) only |
 |---|---|---|---|
 | Compatibility with upstream | Highest on paper: it *is* the upstream client. In practice it drifts with each vendor build and the setting is development-only. | Same protocol (`codex-rs/app-server-protocol`, v2) and same context format (§4). A thread started in either one replays in the other. | None: it is a tool server for other agents, not an agent panel |
-| Work | About 3 agent-days: docs, T9, a `ragon` that answers its start-up | About 23 agent-days (§8) | About 6 agent-days, and it still needs an editor companion: `IDEState` is empty without one and `ide_apply_diff` always answers `not_applied` (CLI §4.10) |
-| Risk | Legal (proprietary terms), egress unknown, breaks without notice, users sent to the vendor's sign-in | The schedule (two lanes, §8.3) and coupling to the UI's host messages (§3.3) | Gives no panel: the user gets nothing they can see |
+| Work | About 3 agent-days: docs, T9, a `ragon` that answers its start-up | About 21–22.5 agent-days (§8) | About 6 agent-days, and it still needs an editor companion: `IDEState` is empty without one and `ide_apply_diff` always answers `not_applied` (CLI §4.10) |
+| Risk | Legal (proprietary terms), egress unknown, breaks without notice, sign-in path untested | The schedule (two lanes, §8.2) and coupling to the UI's host messages (§3.3) | Gives no panel: the user gets nothing they can see |
 | What the user gets | A panel we do not control. It cannot show Ragon's sign-in, air-gapped levels or nights. Support questions we cannot answer. | One Ragon panel in the editor that looks and behaves like the desktop app's thread view. Editor context, native diffs, approvals, Ragon accounts, works air-gapped. | Other agents can read the editor. Nothing for Ragon's own users. |
 
 **Recommendation: (b).**
 - It is the only route that meets the no-telemetry and egress rules, uses Ragon's accounts, and enforces the same policy as the desktop app and `ragon web`.
 - It keeps the user's threads interchangeable with every other Codex-protocol surface.
 - Route (a) stays a *passive* compatibility promise, covered by T9.
-- Route (c)'s tool server stays as it is. The extension can later fill its `IDEState` (§9, not in v1).
+- Route (c)'s tool server stays as it is. The extension can later fill its `IDEState` (§12, not in v1).
 
 ### 0.3 Decisions taken here (each can be reversed by an owner answer in §10)
 
@@ -87,13 +87,13 @@ The no-telemetry rule and the egress rule ("the extension opens no connection ex
 **In v1 (0.9.11):**
 - The Ragon panel in the side bar and as an editor tab: new thread, thread list, conversation, plan, diffs, approvals, composer, model and reasoning pickers, the air-gapped level, stop and steer.
 - Editor context: active file, selections, open tabs, diagnostics; "add file" and "add selection" commands.
-- Diffs in the editor's own diff view, with Accept and Decline. Command approvals. Review of a turn's changes. Undo of a turn.
+- Diffs in the editor's own diff view, with Accept and Decline. Command approvals. Review of uncommitted changes. Undo of a turn's file changes.
 - Finding the node: the local binary first; then, as a gated row, attaching to a session on the paired node.
 - Sign-in with Ragon accounts. Air-gapped behaviour.
 - Packaging: `.vsix` on the release and on Open VSX; `ragon ide install`.
 - Tests: policy conformance and a headless editor run in CI.
 
-**Not in v1:** see §9.
+**Not in v1:** see §12.
 
 ## 2. Terms
 
@@ -211,6 +211,7 @@ The context collector reads `vscode.window.activeTextEditor` (path, `selections`
 | N1 | A `## Diagnostics:` section, placed after `## Open tabs:` and before the delimiter. It holds errors and warnings for the active file and for files with a selection: at most 50 lines and 8,000 characters, errors first. | Users fix errors more often than anything else, and the brief asks for diagnostics. A Codex client replaying the thread shows it as plain text, so nothing breaks. |
 | N2 | `desktop/ui` folds the context block into a chip when it shows a user message, in every host. Today it would show the raw block. | Threads started in the editor show up in the desktop app and in `ragon web`. *Checked*: `desktop/ui/src` has no handling for the delimiter yet. |
 | N3 | `ragon remote bridge --stdio` (§3.2) | Keeps all network code and the token out of the extension (D3) |
+| N4 | "Undo turn's changes" in the editor (§5) | The protocol's `thread/revert` does not touch files; the user expects undo to undo the edits |
 
 ### 4.3 The context socket for the terminal (stretch row I6)
 
@@ -226,18 +227,21 @@ This row is cut first if the schedule slips.
 
 ## 5. Diffs, approvals and applying changes
 
+- **Two paths, both handled.** Which one a change takes depends on the thread's approval and sandbox settings, which the panel takes from the user's config exactly as the desktop app's Work threads do (it sets none of its own). With an approval policy that asks, a file change waits for `item/fileChange/requestApproval`. With the common workspace-write setting, edits inside the workspace are applied without a request and arrive as a completed `fileChange` item. *Which edits ask under which setting is read from Codex's behaviour, not measured here*: row I7's first step measures it with the stand-in and a real `ragon`.
 - **The proposed change.** The agent's `fileChange` item carries `changes: [{ path, kind, diff }]` (`app-server-protocol/src/protocol/v2/item.rs:330-333`, `:1140-1143`). `item/fileChange/patchUpdated` (`common.rs:1975`) streams updates to it.
   - The extension builds the proposed text of each file in memory, from the file on disk plus the diff, and serves it under a read-only virtual document scheme `ragon-proposed:`.
   - The editor's own diff view compares the file with its `ragon-proposed:` twin. The panel's diff card has "Open in editor".
+  - **A change already applied** (no request) is shown after the fact: the "before" side is the current file with the item's unified diff applied in reverse, served as `ragon-before:`. If the reverse patch does not apply (the file changed again), the card shows the diff text only.
 - **Approval.** `item/fileChange/requestApproval` (params `threadId, turnId, itemId, startedAtMs, reason?, grantRoot?`, `item.rs:1632-1646`) is answered with `{ decision }`. The decision is one of `accept`, `acceptForSession`, `decline` or `cancel` (`item.rs:115-123`, `:1650-1652`).
   - The diff view's title bar has **Accept** and **Decline** buttons, which send the same answer as the panel's buttons. Whichever answers first wins. The other closes.
   - `item/commandExecution/requestApproval` is shown in the panel only, with the command and its working folder. Both requests are the two the UI can answer today (`desktop/ui/src/sync.ts:112`).
 - **The agent applies the change.** The extension never writes the files (D5).
   - If one of the files is open with **unsaved edits**, Accept is disabled and the card says "Save or revert <file> first". Applying over a dirty buffer would make the editor's copy and the disk differ.
+  - When an edit lands **without a request** on a file with unsaved edits, the editor keeps the buffer and the extension shows a warning with "Compare" (the buffer against the disk). The editor's own handling of a file changed on disk under a dirty buffer is *unverified* for each editor in the family; T7 covers VS Code.
   - After the item completes, the editor reloads the changed files the usual way, from file-system events.
 - **Review and undo.**
-  - "Review changes" runs `review/start` on the turn's changes, as the desktop app's review pane does.
-  - "Undo turn" runs `thread/revert` (`common.rs:755`, allowed by the policy).
+  - "Review changes" runs `review/start` with the target `uncommittedChanges`: the working tree's staged, unstaged and untracked files (`v2/review.rs:45-47`). The protocol has no per-turn review target (its other targets are a base branch, a commit and custom text), so a per-turn review is not offered.
+  - "Undo turn's changes" (named difference N4) reverse-applies the turn's `fileChange` diffs as one editor `WorkspaceEdit`, so the user sees it in the editor and can undo it with the editor's own undo. Files changed since are skipped with a note. `thread/revert` (`common.rs:755`) is not used for this: "It does not revert local file changes", it only cuts the thread's history (`v2/thread.rs:1257-1259`). The panel offers it separately, as "Rewind thread", where the desktop app does.
   - The turn's diff card opens all changed files as one multi-file diff.
 
 ---
@@ -245,7 +249,7 @@ This row is cut first if the schedule slips.
 ## 6. Accounts, air-gapped mode and egress
 
 - **Sign-in.** The account gate of `desktop/ui` and the shared `login.ts`:
-  - the child's `ragon login status --json` (`ragon-rs/src/auth/commands.rs:41`, `:61`) decides whether the gate shows;
+  - a separate `ragon login status --json` run (`ragon-rs/src/auth/commands.rs:41`, `:61`) decides whether the gate shows;
   - the form calls `account/ragon/signIn`. The errors are `-32001` (wrong credentials), `-32002` (name taken) and `-32003` (accounts unreachable), with the screen's own text (AUTH §5.8).
   - `account/login/start` stays refused, as in the desktop app: no vendor sign-in from the panel.
   - The extension stores no secret. The token lives where `ragon` keeps it.
@@ -260,12 +264,12 @@ This row is cut first if the schedule slips.
 
 ## 7. Editors
 
-- **v1: the VS Code family.** `engines.vscode` is `^1.96.0`, the same floor the upstream extension declares (*verified*, manifest). One platform-neutral `.vsix`: the extension carries no binary and uses the user's `ragon` (§10 Q9).
+- **v1: the VS Code family.** `engines.vscode` is `^1.96.0`, near the floor the upstream extension declares, `^1.96.2` (*verified*, manifest). One platform-neutral `.vsix`: the extension carries no binary and uses the user's `ragon` (§10 Q9).
 - **Remote windows** (SSH, WSL, containers) work through `extensionKind: workspace`, provided `ragon` is installed on the remote machine. If it is not, the panel shows the install command for that machine.
-- **Next phase: the JetBrains family**, sized at **10–12 agent-days**, after 1.0 by default (§10 Q8). The vendor name `dreamference` is held on the JetBrains Marketplace (DECISIONS 2026-11-25).
+- **Next phase: the JetBrains family**, sized at **10–12 agent-days**, after 1.0 by default (§10 Q8). The vendor name `dreamference` is held on the JetBrains Marketplace (owner 2026-11-25).
   - A Kotlin plug-in: a tool window hosting the same `desktop/ui` bundle in the IDE's embedded browser, as host `ide`. A diff provider that uses the IDE's diff viewer. A context collector over the editor, selection and problems APIs, using the same text format.
   - To avoid a third copy of the policy, the plug-in spawns `ragon ide-bridge --stdio`, a small Rust command that runs the web crate's `policy.rs` (`POLICY_JSON`, `ragon-rs/web/src/policy.rs:29`) between the plug-in and the app-server. The plug-in itself then carries no policy code.
-  - The vendor documents that "Xcode and JetBrains IDEs provide their own integrations" for Codex (*reported* from the vendor's IDE page, not re-fetched). Which protocol those integrations speak is *unverified*. A first half-day of the phase checks whether an open agent protocol in the JetBrains IDEs would let Ragon plug in without a plug-in. If so, the phase shrinks.
+  - The vendor's IDE page says the JetBrains IDEs provide their own Codex integration (*reported* from the vendor's IDE page, not re-fetched). Which protocol those integrations speak is *unverified*. A first half-day of the phase checks whether an open agent protocol in the JetBrains IDEs would let Ragon plug in without a plug-in. If so, the phase shrinks.
 
   | Row | Days |
   |---|---|
@@ -295,7 +299,7 @@ This row is cut first if the schedule slips.
 | I4 | `desktop/ui/src/bridge.ts`, `desktop/ui/src/host-inventory.json`, `ide/vscode/media/preload.js`, `tests/test_desktop_parity.py` | `cd desktop/ui && npx vitest run bridge` and `.venv/bin/python -m pytest tests/test_desktop_parity.py -q` | Host `ide`: the transport, the host inventory, the hidden pages, the 37 `host()` sites | 3 | lane |
 | I5 | `ide/vscode/src/context.ts`, `ide/vscode/test/vectors/context.json`, `desktop/ui/src/ideContext.ts` | `cd ide/vscode && npx vitest run context` | The context collector, the exact renderer (§4.1), N1 diagnostics, the chip, and N2 folding in the UI | 2 | lane |
 | I6 | `ide/vscode/src/ipc.ts` | `cd ide/vscode && npx vitest run ipc` | *Stretch, cut first:* the context socket for the TUI's `/ide` (§4.3) | 1.5 | lane |
-| I7 | `ide/vscode/src/diff.ts`, `ide/vscode/src/approvals.ts` | `cd ide/vscode && npx vitest run diff approvals` | `ragon-proposed:` documents, the native diff with Accept and Decline, the dirty-buffer guard, review and undo | 2.5 | lane |
+| I7 | `ide/vscode/src/diff.ts`, `ide/vscode/src/approvals.ts` | `cd ide/vscode && npx vitest run diff approvals` | `ragon-proposed:` documents, the native diff with Accept and Decline, both approval paths, the dirty-buffer guard, review and N4 undo | 2.5 | lane |
 | I8 | `desktop/shared/login.ts` (moved), `ide/vscode/src/account.ts` | `cd ide/vscode && npx vitest run account` | Account gate in the panel; `account.json` vectors | 1 | lane |
 | I9 | `ragon-rs/src/remote_bridge.rs`, `ide/vscode/src/node.ts` | `cargo test --release -p ragon-launcher remote_bridge` (in the export) and `cd ide/vscode && npx vitest run node` | *Gated on 0.9.10 A1, A3, A5, A6:* `ragon remote bridge --stdio` and "Attach to a thread on the node" | 2.5 | lane |
 | I10 | `dreamference/audit/egress_audit.py`, `ide/vscode/test/bundle.test.ts`, `tests/test_egress_audit.py` | `.venv/bin/python -m pytest tests/test_egress_audit.py -q` | Bundle URL test, dependency allowlist, `audit egress --ide` | 1 | Ragon first |
@@ -312,9 +316,9 @@ This row is cut first if the schedule slips.
 
 | Week | Lane A | Lane B |
 |---|---|---|
-| 11-30…12-04 | I1, I2, I3 | I4 (the host inventory first), I13 skeleton |
-| 12-07…12-11 | I7, I8, I11 | I5, I10, I12 |
-| 12-14…12-15 | I9 (once 0.9.10 is out Mon 12-14) | I6 (stretch), fixes |
+| 11-30…12-04 | I1, I2, I3, I8 | I4 (the host inventory first), I13 skeleton |
+| 12-07…12-11 | I7, I11, the Rust half of I9 (1 day: `ragon remote bridge --stdio`, against the remote-sessions branch) | I5, I10, I12 |
+| 12-14…12-15 | I9's attach (1.5 days), against the 0.9.10 build (out Mon 12-14) | I6 (stretch), fixes |
 | 12-16…12-17 | Release hardening, docs final | the same |
 
 - **Does 12-18 hold?**
@@ -332,6 +336,7 @@ This row is cut first if the schedule slips.
 | The webview CSP breaks a UI library that loads code at run time | Found on day 1 of I4 with the real bundle. The fix lives in the build, not in a looser CSP. |
 | 0.9.10 slips | I9 moves to 1.0 and v1 ships local-only, which loses nothing for files on the user's machine |
 | Editor API change in a new VS Code release | `engines` floor 1.96. T7 runs against both the floor and the latest stable. |
+| Conflicts in `desktop/ui` (`App.tsx`, `bridge.ts`) with the desk-work lanes, which change the Work view in the same weeks | I4 lands its host switch and inventory first, in week 1, as small commits; the `ide` branches stay in new files where possible; both lanes rebase daily |
 | Users point the upstream extension at `ragon` and file issues | Docs say it is not supported. T9 keeps the protocol honest. |
 
 ---
@@ -347,7 +352,7 @@ This row is cut first if the schedule slips.
 | T5 | Approvals: `accept`, `acceptForSession`, `decline`, `cancel` from the panel and from the diff view; the first answer wins; the dirty-buffer guard | vitest, I7 | §5 |
 | T6 | IPC socket: frame round trip, `no-handler-for-request`, foreign-uid refusal | vitest, I6 | §4.3 (stretch) |
 | T7 | **Headless editor run in CI:** `@vscode/test-electron` downloads VS Code at CI time (floor and stable), under `xvfb-run`, with the extension loaded and `ragon.executable` pointing at `desktop/electron/e2e/stand-in.ts` (the scripted app-server) | GitHub Actions, I12 | Open the panel, send a message with a selection, see the context text arrive at the stand-in, open a diff, Accept, see the answer arrive |
-| T8 | `audit egress --ide`: the headless run inside the audit; only loopback and the node | I10, the nightly egress job | The egress rule, measured |
+| T8 | `audit egress --ide`: the headless run inside the audit, with the editor's own update checks, telemetry and extension gallery switched off by its settings and the audit's scope limited to the extension host and its `ragon` child; only loopback and the node | I10, the nightly egress job | The egress rule, measured |
 | T9 | Codex-client conformance: a protocol client sends the start-up a Codex IDE client sends (`initialize` with `clientInfo`, `account/read`, `thread/start`, `turn/start` with a context-prefixed `Text`) to a real `ragon app-server` | `tests/test_desktop_parity.py` family, I4 | Route (a)'s passive promise; Ragon's app-server answers a Codex client |
 | T10 | Desktop and `ragon web` show a context-prefixed message as a chip (N2) | vitest in `desktop/ui`, I5 | Threads from the editor replay cleanly |
 
@@ -361,7 +366,7 @@ This row is cut first if the schedule slips.
 | Q2 | Two dedicated lanes from Mon 11-30 for the extension, besides the 1.0 and desk-work lanes? | **Yes.** Without them the extension moves after 1.0 (§8.2). |
 | Q3 | Extension id `dreamference.ragon`, display name "Ragon"? | **Yes** |
 | Q4 | Publish to Open VSX in 0.9.11, where the namespace is already held? | **Yes**, plus the `.vsix` on the GitHub release. It needs owner step 1. |
-| Q5 | Publish to the VS Code Marketplace in 0.9.11? | **No.** Wait until the project account replaces the personal one on the publisher (DECISIONS 2026-11-25), then publish at 1.0. |
+| Q5 | Publish to the VS Code Marketplace in 0.9.11? | **No.** Publish at 1.0, once the publisher is on the project account (owner step 2). |
 | Q6 | Diagnostics in the context (N1)? | **Yes**, as a section before the delimiter |
 | Q7 | The context socket for the TUI's `/ide` (I6) in v1? | **Stretch**, cut first |
 | Q8 | JetBrains timing? | **After 1.0** (11 agent-days, §7) |
@@ -371,7 +376,7 @@ This row is cut first if the schedule slips.
 ## 11. Owner steps
 
 1. **Open VSX token.** Sign in to Open VSX with the project account and create an access token. Store it as the repository secret `OVSX_PAT`; the coordinator never sees it. The namespace `dreamference` is held. The token made on 11-25 was dropped and may be deleted. Needed by 12-15 for the release upload.
-2. **(For 1.0, not 0.9.11) VS Code Marketplace.** Add the project account as owner of the publisher `dreamference`, remove the personal account, and create a publishing token as the secret `VSCE_PAT`.
+2. **(For 1.0, not 0.9.11) VS Code Marketplace.** Make sure the publisher `dreamference` is owned by the project account, then create a publishing token as the secret `VSCE_PAT`.
 3. **(After 1.0) JetBrains.** The vendor `dreamference` is held. Its verification by the marketplace is pending on their side.
 4. Answer Q1–Q10 or let the defaults stand.
 
@@ -397,7 +402,7 @@ Verified means fetched or read on 2026-11-28 by this spec's author. Reported mea
 - The vendor's IDE settings page (the `cliExecutable` warning) and its config basics page ("The CLI and IDE extension share the same configuration layers"). *Verified.*
 - The vendor's terms of use, the clauses quoted in §0.1. *Verified.* The legal reading is *unverified*.
 - The vendor's app-server page ("the interface Codex uses to power rich clients (for example, the Codex VS Code extension)"; stdio JSONL is the default). *Verified.*
-- The vendor's IDE page ("VS Code and compatible editors use the Codex extension; Xcode and JetBrains IDEs provide their own integrations"). *Reported.*
+- The vendor's IDE page: VS Code and compatible editors use the Codex extension; the JetBrains IDEs provide their own integration (paraphrased). *Reported.*
 - openai/codex issues 2938, 5822 and 5882. *Reported.*
 - `codex-rs` at `rust-v0.158.0`:
   - `tui/src/ide_context/prompt.rs:9-16`, `:101-182`; `tui/src/ide_context.rs:17`; `tui/src/ide_context/ipc.rs:179`, `:184`, `:194`, `:685-698`;
