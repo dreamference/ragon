@@ -43,8 +43,11 @@ use crate::release_signature;
 pub const RELEASE_REPO: &str = "dreamference/ragon";
 
 /// The Ragon release this binary was built as. The release workflow sets `RAGON_VERSION` when it
-/// builds; a local `ragon-admin codex build` does not, and such a binary counts as a source build.
-pub const RAGON_VERSION: Option<&str> = option_env!("RAGON_VERSION");
+/// builds. An unset or empty stamp counts as a source build.
+pub const RAGON_VERSION: Option<&str> = match option_env!("RAGON_VERSION") {
+    Some("") => None,
+    version => version,
+};
 
 /// The version a user is shown for a crate whose `CARGO_PKG_VERSION` is `cargo`: the release this
 /// binary was built as. Cargo takes semantic versions only, so a patch release of a release
