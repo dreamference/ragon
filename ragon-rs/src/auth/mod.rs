@@ -32,6 +32,10 @@ pub const REVOKE_ENV: &str = "CODEX_REVOKE_TOKEN_URL_OVERRIDE";
 pub const CA_ENV: &str = "CODEX_CA_CERTIFICATE";
 /// Codex's own API key variable; it overrides the stored entry.
 pub const API_KEY_ENV: &str = "CODEX_API_KEY";
+/// Where `codex cloud` sends its task requests (`<gate>/backend-api`), never the vendor's default.
+/// Codex loads saved credentials only for the vendor's own hosts on port 443
+/// (`cloud-tasks/src/util.rs`), so with the gate here the account token never leaves the node.
+pub const CLOUD_TASKS_ENV: &str = "CODEX_CLOUD_TASKS_BASE_URL";
 
 /// The account id of a token entry: the id token's `chatgpt_account_id` claim, `null` when it has
 /// none. Codex refreshes an entry only when its `tokens.account_id` is set (its guarded reload
@@ -172,6 +176,7 @@ pub fn codex_env(gate: &str, ca: Option<&Path>, ragon_key: Option<&str>, openai_
         (ISSUER_ENV, gate.to_string()),
         (REFRESH_ENV, format!("{gate}/oauth/token")),
         (REVOKE_ENV, format!("{gate}/oauth/revoke")),
+        (CLOUD_TASKS_ENV, format!("{gate}/backend-api")),
     ];
     if let Some(ca) = ca {
         env.push((CA_ENV, ca.to_string_lossy().into_owned()));
@@ -583,4 +588,19 @@ pub async fn start(gate: &str, codex_home: &Path, interactive: bool) -> anyhow::
         *suffix = Some(user_agent_suffix());
     }
     Ok(accounts)
+}
+
+#[cfg(test)]
+mod codex_env_tests {
+    use super::*;
+
+    #[test]
+    fn codex_env_points_cloud_tasks_at_the_gate_never_the_vendor() {
+        for gate in ["https://box.local:8000/", "http://box:8000"] {
+            let env = codex_env(gate, None, None, None);
+            let cloud: Vec<&str> = env.iter().filter(|(n, _)| *n == CLOUD_TASKS_ENV).map(|(_, v)| v.as_str()).collect();
+            assert_eq!(cloud, vec![format!("{}/backend-api", gate.trim_end_matches('/')).as_str()]);
+            assert!(env.iter().all(|(_, v)| !v.contains("chatgpt.com") && !v.contains("openai.com")), "{env:?}");
+        }
+    }
 }
