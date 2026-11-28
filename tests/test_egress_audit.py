@@ -969,6 +969,28 @@ def test_each_further_signal_bridge_that_is_enabled_is_named(monkeypatch, tmp_pa
     assert ["systemctl", "is-enabled", "--quiet", "ragon-signal@old.service"] in calls
 
 
+def test_egress_audit_signal_instances_skips_a_wants_dir_it_cannot_read(monkeypatch, tmp_path):
+    # A `.wants` entry whose own listing fails (OSError) is skipped, not fatal: the readable
+    # target's bridges are still found.
+    systemd = tmp_path / "systemd"
+    readable = systemd / "user.target.wants"
+    readable.mkdir(parents=True)
+    (readable / "ragon-signal@work.service").write_text("")
+    unreadable = systemd / "multi-user.target.wants"
+    unreadable.mkdir()
+
+    real_iterdir = Path.iterdir
+
+    def flaky_iterdir(self):
+        if self == unreadable:
+            raise OSError("vanished")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", flaky_iterdir)
+    monkeypatch.setattr(EgressAudit, "SYSTEMD_SYSTEM_DIR", str(systemd))
+    assert EgressAudit._signal_instances() == ["work"]
+
+
 # -- image search in the --web session (ASK §9, §19.6) ---------------------------------------------
 
 
