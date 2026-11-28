@@ -422,6 +422,26 @@ def test_a_failed_extension_install_is_judged_by_the_extension_list(
     assert getattr(installer, install)() is False
 
 
+def test_continue_installer_install_continue_if_missing_reports_a_successful_install(monkeypatch):
+    # The install command answers success: the installer reports it without re-checking the list.
+    import importlib
+    import subprocess
+
+    installer_module = importlib.import_module("dreamference.runner.continue_installer")
+    monkeypatch.setattr(
+        installer_module.shutil, "which", lambda name: "/usr/bin/code" if name == "code" else None
+    )
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command[1])
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    monkeypatch.setattr(installer_module.subprocess, "run", run)
+    assert ContinueInstaller.install_continue_if_missing() is True
+    assert commands == ["--list-extensions", "--install-extension"]
+
+
 def test_openhands_pulls_nothing_without_a_running_docker(monkeypatch):
     import subprocess
 
