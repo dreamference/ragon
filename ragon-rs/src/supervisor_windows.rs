@@ -4,6 +4,10 @@
 //! the Mac node; the service and the Job Object are its Windows parts. This module only hands the
 //! arguments after `server` to it.
 //!
+//! `ragon server start` with no engine after `--` starts the Windows engine recipe
+//! (supervisor/src/recipe.rs): `ragon-serve.exe` from the unpacked engine zip under
+//! `%ProgramFiles%\Ragon\engine`, the weights from `%ProgramData%\Ragon\models`.
+//!
 //! On Linux and macOS the model server is `ragon-admin server start` (the Python node tooling),
 //! so `ragon server` says so and exits 2.
 

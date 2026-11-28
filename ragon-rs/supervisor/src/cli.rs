@@ -10,17 +10,25 @@
 //! - `install` / `uninstall` (Windows, administrator): the service under `NT SERVICE\ragon-node`,
 //!   a virtual account that is not an administrator.
 //!
+//! Without an engine after `--`, `start`, `run` and `install` start the Windows engine recipe
+//! (src/recipe.rs): `ragon-serve.exe` from the unpacked engine zip with the node's weights,
+//! refused with the missing paths named when any is absent. Off Windows the recipe applies when
+//! `--engine-dir` is given.
+//!
 //! The running supervisor writes `status.txt` in the state directory on every tick; the engine's
-//! output goes to `engine.log` there.
+//! output goes to `engine.log` there. After each start of the engine turns healthy it runs the
+//! tool-call canary (src/canary.rs) once, in a thread; the verdict is the `canary` key of the
+//! status, and a failed canary makes `server status` exit 3 without restarting the engine.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::core::{self, Policy, Snapshot, Supervisor};
+use crate::core::{self, Policy, Snapshot, State, Supervisor};
 use crate::probe::HttpProbe;
 use crate::process::ChildEngine;
+use crate::recipe::Recipe;
 
 pub const DEFAULT_SERVICE_NAME: &str = "ragon-node";
 pub const DEFAULT_HOST: &str = "127.0.0.1";
@@ -33,7 +41,8 @@ pub const SUPERVISOR_LOG: &str = "supervisor.log";
 pub const STALE_AFTER_S: u64 = 15;
 
 const USAGE: &str = "usage: server <start|stop|status|run|install|uninstall> [--name N] [--state-dir D] \
-[--host H] [--port P] [--wait S] [--start-timeout S] [--account A] [--service] [-- <engine> [args...]]";
+[--host H] [--port P] [--wait S] [--start-timeout S] [--account A] [--service] [--engine-dir D] \
+[--models-dir D] [--sessions N] [--max-context N] [-- <engine> [args...]]";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
@@ -47,6 +56,8 @@ pub struct Options {
     pub account: Option<String>,
     pub service: bool,
     pub engine: Vec<String>,
+    /// Set when `engine` is the Windows engine recipe rather than the words after `--`.
+    pub recipe: Option<Recipe>,
 }
 
 pub fn default_state_dir() -> PathBuf {
@@ -78,7 +89,9 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         account: None,
         service: false,
         engine: Vec::new(),
+        recipe: None,
     };
+    let (mut engine_dir, mut models_dir, mut sessions, mut max_context) = (None, None, None, None);
     while let Some(arg) = it.next() {
         let mut value = |flag: &str| it.next().cloned().ok_or_else(|| format!("{flag} needs a value"));
         match arg.as_str() {
@@ -97,15 +110,41 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--account" => opts.account = Some(value("--account")?),
             "--service" => opts.service = true,
+            "--engine-dir" => engine_dir = Some(PathBuf::from(value("--engine-dir")?)),
+            "--models-dir" => models_dir = Some(PathBuf::from(value("--models-dir")?)),
+            "--sessions" => {
+                sessions = Some(value("--sessions")?.parse().map_err(|_| "--sessions needs a number".to_string())?)
+            }
+            "--max-context" => {
+                max_context = Some(value("--max-context")?.parse().map_err(|_| "--max-context needs a number".to_string())?)
+            }
             "-h" | "--help" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown option {other:?}\n{USAGE}")),
         }
+    }
+    let starts = matches!(opts.command.as_str(), "start" | "run" | "install");
+    let tuned = sessions.is_some() || max_context.is_some() || models_dir.is_some();
+    if !opts.engine.is_empty() && (engine_dir.is_some() || tuned) {
+        return Err(format!("--engine-dir, --models-dir, --sessions and --max-context set the recipe, not an engine after `--`\n{USAGE}"));
+    }
+    if starts && opts.engine.is_empty() && (cfg!(windows) || engine_dir.is_some()) {
+        let mut recipe = Recipe::new(engine_dir, models_dir);
+        recipe.sessions = sessions.unwrap_or(recipe.sessions);
+        recipe.max_context = max_context.unwrap_or(recipe.max_context);
+        opts.engine = recipe.command(&opts.host, opts.port);
+        opts.recipe = Some(recipe);
     }
     let needs_engine = matches!(opts.command.as_str(), "run" | "install");
     if needs_engine && opts.engine.is_empty() {
         return Err(format!("`server {}` needs the engine after `--`\n{USAGE}", opts.command));
     }
     Ok(opts)
+}
+
+/// The recipe's missing paths as one refusal, `None` when it has everything or the engine was given.
+fn recipe_refusal(opts: &Options) -> Option<String> {
+    let missing = opts.recipe.as_ref()?.missing();
+    (!missing.is_empty()).then(|| format!("server {}: cannot start the engine, missing: {}", opts.command, missing.join("; ")))
 }
 
 /// Runs `server <args>` and returns the exit code.
@@ -151,6 +190,10 @@ pub fn run_args(opts: &Options, service: bool) -> Vec<String> {
 }
 
 fn run_command(opts: &Options) -> i32 {
+    if let Some(refusal) = recipe_refusal(opts) {
+        eprintln!("{refusal}");
+        return 2;
+    }
     if opts.service {
         #[cfg(windows)]
         {
@@ -198,19 +241,68 @@ pub fn supervise(opts: &Options, stop: &AtomicBool) -> i32 {
     }
     let mut sup = Supervisor::new(engine, probe, policy);
     let me = std::process::id();
+    let mut canary = Canary::new(&opts.host, opts.port);
     loop {
         if stop.load(Ordering::SeqCst) || stop_file.exists() {
             sup.stop();
             let _ = std::fs::remove_file(&stop_file);
-            write_status(opts, &url, &sup.snapshot(Instant::now()), None);
+            write_status(opts, &url, &sup.snapshot(Instant::now()), None, "");
             return 0;
         }
         let wait = sup.tick(Instant::now());
-        write_status(opts, &url, &sup.snapshot(Instant::now()), Some(me));
+        let snap = sup.snapshot(Instant::now());
+        let verdict = canary.update(&snap);
+        write_status(opts, &url, &snap, Some(me), &verdict);
         let due = Instant::now() + wait;
         while Instant::now() < due && !stop.load(Ordering::SeqCst) && !stop_file.exists() {
             std::thread::sleep(due.saturating_duration_since(Instant::now()).min(Duration::from_millis(100)));
         }
+    }
+}
+
+/// The tool-call canary of each engine start: run once in a thread when that engine turns healthy.
+struct Canary {
+    host: String,
+    port: u16,
+    /// The engine the verdict is about, and the verdict (`running`, `ok (N ms)`, `failed: ...`).
+    engine_pid: Option<u32>,
+    verdict: String,
+    results: std::sync::mpsc::Receiver<(u32, String)>,
+    sender: std::sync::mpsc::Sender<(u32, String)>,
+}
+
+impl Canary {
+    fn new(host: &str, port: u16) -> Self {
+        let (sender, results) = std::sync::mpsc::channel();
+        Self { host: host.to_string(), port, engine_pid: None, verdict: String::new(), results, sender }
+    }
+
+    /// Starts the canary for a newly healthy engine, takes in finished verdicts and returns the
+    /// current engine's verdict (empty before it turned healthy).
+    fn update(&mut self, snap: &Snapshot) -> String {
+        while let Ok((pid, verdict)) = self.results.try_recv() {
+            if self.engine_pid == Some(pid) {
+                eprintln!("server run: canary: {verdict}");
+                self.verdict = verdict;
+            }
+        }
+        if snap.engine_pid.is_none() || snap.engine_pid != self.engine_pid {
+            if snap.state != State::Healthy {
+                return String::new();
+            }
+            let pid = snap.engine_pid.unwrap_or_default();
+            self.engine_pid = snap.engine_pid;
+            self.verdict = "running".to_string();
+            let (host, port, sender) = (self.host.clone(), self.port, self.sender.clone());
+            std::thread::spawn(move || {
+                let verdict = match crate::canary::run(&host, port, Duration::from_secs(crate::canary::TIMEOUT_S)) {
+                    Ok(took) => format!("ok ({} ms)", took.as_millis()),
+                    Err(e) => format!("failed: {e}"),
+                };
+                let _ = sender.send((pid, verdict));
+            });
+        }
+        self.verdict.clone()
     }
 }
 
@@ -219,7 +311,14 @@ fn opt<T: ToString>(value: Option<T>) -> String {
 }
 
 /// The status file's text.
-pub fn status_file_text(name: &str, url: &str, snap: &Snapshot, supervisor_pid: Option<u32>, now_unix: u64) -> String {
+pub fn status_file_text(
+    name: &str,
+    url: &str,
+    snap: &Snapshot,
+    supervisor_pid: Option<u32>,
+    canary: &str,
+    now_unix: u64,
+) -> String {
     core::render_status(&[
         ("name", name.to_string()),
         ("state", snap.state.as_str().to_string()),
@@ -230,13 +329,14 @@ pub fn status_file_text(name: &str, url: &str, snap: &Snapshot, supervisor_pid: 
         ("last_exit", opt(snap.last_exit)),
         ("next_start_s", opt(snap.next_start_s)),
         ("last_error", snap.last_error.clone().unwrap_or_default().replace(['\r', '\n'], " ")),
+        ("canary", canary.replace(['\r', '\n'], " ")),
         ("updated", core::utc_timestamp(now_unix)),
         ("updated_unix", now_unix.to_string()),
     ])
 }
 
-fn write_status(opts: &Options, url: &str, snap: &Snapshot, supervisor_pid: Option<u32>) {
-    let text = status_file_text(&opts.name, url, snap, supervisor_pid, unix_now());
+fn write_status(opts: &Options, url: &str, snap: &Snapshot, supervisor_pid: Option<u32>, canary: &str) {
+    let text = status_file_text(&opts.name, url, snap, supervisor_pid, canary, unix_now());
     let path = opts.state_dir.join(STATUS_FILE);
     let tmp = opts.state_dir.join(format!("{STATUS_FILE}.tmp"));
     if std::fs::write(&tmp, text).is_ok() {
@@ -247,7 +347,8 @@ fn write_status(opts: &Options, url: &str, snap: &Snapshot, supervisor_pid: Opti
 
 /// What `server status` prints. `service_state` is the service manager's view (`not installed`,
 /// or `n/a` off Windows), `file` the supervisor's status file, `probe` a live probe's HTTP code.
-/// Always the same 13 keys in the same order. Exit code 0 when the engine is healthy, 3 otherwise.
+/// Always the same 14 keys in the same order (`canary` last: empty, `running`, `ok (N ms)` or
+/// `failed: ...`). Exit code 0 when the engine is healthy and its canary did not fail, 3 otherwise.
 pub fn status_report(
     name: &str,
     service_state: &str,
@@ -290,8 +391,10 @@ pub fn status_report(
         ("next_start_s", pick("next_start_s")),
         ("last_error", get("last_error")),
         ("updated", get("updated")),
+        ("canary", pick("canary")),
     ]);
-    let code = if state == "healthy" && probe == Some(200) { 0 } else { 3 };
+    let canary_failed = pick("canary").starts_with("failed");
+    let code = if state == "healthy" && probe == Some(200) && !canary_failed { 0 } else { 3 };
     (text, code)
 }
 
@@ -379,6 +482,10 @@ fn start(opts: &Options) -> i32 {
             eprintln!("server start: the {} service is not installed; give the engine after `--`", opts.name);
             return 2;
         }
+        if let Some(refusal) = recipe_refusal(opts) {
+            eprintln!("{refusal}");
+            return 2;
+        }
         if let Err(e) = spawn_detached(opts) {
             eprintln!("server start: {e}");
             return 1;
@@ -388,6 +495,12 @@ fn start(opts: &Options) -> i32 {
     let healthy = wait_for(opts.wait_s, || {
         read_status_file(opts).is_some_and(|t| t.contains("\nstate: healthy\n"))
     });
+    if healthy {
+        // The canary's verdict, so the status below says whether the engine calls tools.
+        wait_for(crate::canary::TIMEOUT_S + 5, || {
+            read_status_file(opts).is_some_and(|t| t.contains("\ncanary: ok") || t.contains("\ncanary: failed"))
+        });
+    }
     let code = status(opts);
     if healthy || supervisor_running(opts) { 0 } else { code.max(1) }
 }
@@ -472,6 +585,10 @@ fn stop(opts: &Options) -> i32 {
 fn install(opts: &Options) -> i32 {
     #[cfg(windows)]
     {
+        if let Some(refusal) = recipe_refusal(opts) {
+            eprintln!("{refusal}");
+            return 2;
+        }
         let exe = match std::env::current_exe() {
             Ok(exe) => exe,
             Err(e) => {
@@ -627,6 +744,10 @@ mod tests {
     }
 
     fn file(state: State, supervisor_pid: Option<u32>, updated: u64) -> String {
+        file_with_canary(state, supervisor_pid, updated, "ok (12 ms)")
+    }
+
+    fn file_with_canary(state: State, supervisor_pid: Option<u32>, updated: u64, canary: &str) -> String {
         let snap = Snapshot {
             state,
             engine_pid: Some(4242),
@@ -635,7 +756,7 @@ mod tests {
             next_start_s: None,
             last_error: None,
         };
-        status_file_text("ragon-node", "http://127.0.0.1:18123/v1/models", &snap, supervisor_pid, updated)
+        status_file_text("ragon-node", "http://127.0.0.1:18123/v1/models", &snap, supervisor_pid, canary, updated)
     }
 
     const NOW: u64 = 1_795_600_800;
@@ -658,9 +779,43 @@ mod tests {
              last_exit: -1\n\
              next_start_s: none\n\
              last_error: none\n\
-             updated: 2026-11-25T09:59:58Z\n"
+             updated: 2026-11-25T09:59:58Z\n\
+             canary: ok (12 ms)\n"
         );
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn a_failed_canary_makes_status_exit_3_and_a_running_one_does_not() {
+        let failed = file_with_canary(State::Healthy, Some(77), NOW, "failed: no function call (prose)");
+        let (text, code) = status_report("ragon-node", "n/a", Some(&failed), NOW, Some(200), "u");
+        assert!(text.ends_with("\ncanary: failed: no function call (prose)\n"), "{text}");
+        assert_eq!(code, 3);
+        let running = file_with_canary(State::Healthy, Some(77), NOW, "running");
+        assert_eq!(status_report("ragon-node", "n/a", Some(&running), NOW, Some(200), "u").1, 0);
+    }
+
+    #[test]
+    fn without_an_engine_the_recipe_is_used_and_flags_tune_it() {
+        let o = parse(&args(&[
+            "start", "--port", "8123", "--engine-dir", "E", "--models-dir", "M", "--sessions", "2", "--max-context", "32768",
+        ]))
+        .unwrap();
+        let recipe = o.recipe.clone().expect("the recipe");
+        assert_eq!((recipe.sessions, recipe.max_context), (2, 32768));
+        assert_eq!(o.engine, recipe.command("127.0.0.1", 8123));
+        assert!(o.engine.windows(2).any(|w| w == ["--port", "8123"]));
+        // `start` hands the detached `run` the expanded command.
+        let again = parse(&run_args(&o, false)[1..]).unwrap();
+        assert_eq!(again.engine, o.engine);
+        assert!(again.recipe.is_none());
+        // Missing paths are refused, each named.
+        let refusal = recipe_refusal(&o).expect("a refusal");
+        assert!(refusal.contains("cannot start the engine") && refusal.contains(crate::recipe::WEIGHTS_DIR), "{refusal}");
+        // The recipe's flags do not apply to an engine given after `--`.
+        assert!(parse(&args(&["run", "--sessions", "2", "--", "e"])).unwrap_err().contains("set the recipe"));
+        assert!(parse(&args(&["start", "--", "e"])).unwrap().recipe.is_none());
+        assert!(parse(&args(&["status", "--engine-dir", "E"])).unwrap().recipe.is_none());
     }
 
     #[test]

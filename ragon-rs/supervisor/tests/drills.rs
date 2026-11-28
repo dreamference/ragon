@@ -2,7 +2,11 @@
 //! - the stand-in killed: restarted after 1 s, then (killed again) after 2 s;
 //! - the supervisor killed (Windows): the engine dies with it (Job Object);
 //! - `server start|status|stop` without a service: a detached supervisor, stable status output;
-//! - an engine that refuses (exit 3) is not restarted.
+//! - an engine that refuses (exit 3) is not restarted;
+//! - the Windows engine recipe: `server start` with no engine starts `ragon-serve` from the engine
+//!   directory with the recipe's arguments, the canary passes, a killed engine is restarted;
+//!   missing weights are refused before anything starts; a failed canary makes `status` exit 3
+//!   without a restart.
 //!
 //! Ports come from the OS (port 0), never the node's.
 
@@ -117,9 +121,10 @@ fn start_status_stop_without_a_service() {
         keys,
         [
             "service", "service_state", "supervisor", "state", "supervisor_pid", "engine_pid", "url", "probe",
-            "restarts", "last_exit", "next_start_s", "last_error", "updated"
+            "restarts", "last_exit", "next_start_s", "last_error", "updated", "canary"
         ]
     );
+    assert!(text.contains("\ncanary: ok ("), "start returns after the canary's verdict: {text}");
     assert!(text.contains("\nsupervisor: running\nstate: healthy\n"), "{text}");
     assert!(text.contains(&format!("\nurl: http://127.0.0.1:{port}/v1/models\nprobe: ok\n")), "{text}");
     let engine: u32 = field(&dir, "engine_pid").unwrap().parse().unwrap();
@@ -173,4 +178,105 @@ fn a_killed_supervisor_takes_the_engine_with_it() {
     let probe = ragon_supervisor::probe::HttpProbe::models("127.0.0.1", port);
     assert_eq!(probe.status_code(), None);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An engine directory holding the stand-in under the recipe's engine name, and a models directory
+/// with the recipe's three directories.
+fn recipe_prefix(name: &str) -> (PathBuf, PathBuf) {
+    use ragon_supervisor::recipe;
+    let root = state_dir(&format!("prefix-{name}"));
+    let (engine, models) = (root.join("engine"), root.join("models"));
+    std::fs::create_dir_all(&engine).unwrap();
+    std::fs::copy(STANDIN, engine.join(recipe::ENGINE_EXE)).unwrap();
+    for dir in [recipe::WEIGHTS_DIR, recipe::DRAFTER_DIR, recipe::SPARSE_HEAD_DIR] {
+        std::fs::create_dir_all(models.join(dir)).unwrap();
+    }
+    (engine, models)
+}
+
+fn recipe_start(dir: &Path, port: u16, engine: &Path, models: &Path, args_file: &Path) -> Output {
+    Command::new(SUPERVISOR)
+        .args(["server", "start", "--wait", "20", "--state-dir"])
+        .arg(dir)
+        .args(["--port", &port.to_string(), "--engine-dir"])
+        .arg(engine)
+        .arg("--models-dir")
+        .arg(models)
+        .env("RAGON_STANDIN_ARGS_FILE", args_file)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn the_recipe_starts_the_engine_from_its_directory_and_restarts_it() {
+    use ragon_supervisor::recipe;
+    let dir = state_dir("recipe");
+    let port = free_port();
+    let (engine, models) = recipe_prefix("recipe");
+    let args_file = dir.join("engine-args.txt");
+    let out = recipe_start(&dir, port, &engine, &models, &args_file);
+    assert!(out.status.success(), "start: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.contains("\nstate: healthy\n") && text.contains("\ncanary: ok ("), "{text}");
+    let got: Vec<String> = std::fs::read_to_string(&args_file).unwrap().lines().map(str::to_string).collect();
+    let want = recipe::Recipe::new(Some(engine.clone()), Some(models.clone())).command("127.0.0.1", port);
+    assert_eq!(got, want[1..], "the engine's arguments");
+    let pid = healthy_pid(&dir).unwrap();
+    kill_pid(pid);
+    wait_until(30, "the restarted engine", || healthy_pid(&dir).is_some_and(|p| p != pid));
+    assert_eq!(field(&dir, "restarts").as_deref(), Some("1"));
+    wait_until(20, "the restarted engine's canary", || field(&dir, "canary").is_some_and(|c| c.starts_with("ok")));
+    let out = server(&dir, port, &["stop"], false);
+    assert!(out.status.success(), "stop: {}", String::from_utf8_lossy(&out.stderr));
+    let out = server(&dir, port, &["status"], false);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("\nprobe: no answer\n"));
+    let _ = std::fs::remove_dir_all(engine.parent().unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn missing_weights_are_refused_before_anything_starts() {
+    use ragon_supervisor::recipe;
+    let dir = state_dir("recipe-missing");
+    let port = free_port();
+    let (engine, models) = recipe_prefix("missing");
+    std::fs::remove_dir_all(models.join(recipe::WEIGHTS_DIR)).unwrap();
+    let out = recipe_start(&dir, port, &engine, &models, &dir.join("engine-args.txt"));
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("cannot start the engine") && err.contains(recipe::WEIGHTS_DIR), "{err}");
+    assert!(!dir.join("status.txt").exists(), "a supervisor was started");
+    let _ = std::fs::remove_dir_all(engine.parent().unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_failed_canary_fails_status_without_a_restart() {
+    let dir = state_dir("canary-prose");
+    let port = free_port();
+    let mut sup = run_supervisor(&dir, port, &["--canary", "prose"]);
+    wait_until(30, "the canary's verdict", || field(&dir, "canary").is_some_and(|c| c.starts_with("failed")));
+    let out = server(&dir, port, &["status"], false);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(out.status.code(), Some(3), "{text}");
+    assert!(text.contains("\nstate: healthy\n"), "{text}");
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(field(&dir, "restarts").as_deref(), Some("0"));
+    std::fs::write(dir.join("stop"), "stop\n").unwrap();
+    assert!(sup.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_canary_passes_against_the_stand_in_and_fails_where_nothing_answers() {
+    use ragon_supervisor::canary;
+    let port = free_port();
+    let mut standin = Command::new(STANDIN).args(["--port", &port.to_string()]).spawn().unwrap();
+    wait_until(10, "the stand-in to listen", || std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
+    let verdict = canary::run("127.0.0.1", port, Duration::from_secs(10));
+    let _ = standin.kill();
+    let _ = standin.wait();
+    assert!(verdict.is_ok(), "{verdict:?}");
+    assert!(canary::run("127.0.0.1", free_port(), Duration::from_secs(5)).is_err());
 }
