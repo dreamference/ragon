@@ -1447,6 +1447,15 @@ def test_a_failed_v8_download_stops_the_fetch(tmp_path, monkeypatch):
     assert CodexBrandedBuilder.fetch_rusty_v8(export) is None
 
 
+def test_a_missing_v8_pin_in_the_export_stops_the_fetch(tmp_path, monkeypatch, capsys):
+    export, shown, downloaded = _v8_release(tmp_path, monkeypatch)
+    (Path(export) / "codex-rs" / "Cargo.toml").write_text("[workspace.dependencies]\n")
+    assert CodexBrandedBuilder.fetch_rusty_v8(export) is None
+    assert shown == []
+    assert downloaded == []
+    assert "Could not find the v8 version pinned" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("missing", [V8_ARCHIVE, V8_BINDING])
 def test_a_checksum_file_that_omits_a_v8_file_stops_the_fetch(tmp_path, monkeypatch, missing):
     kept = V8_BINDING if missing == V8_ARCHIVE else V8_ARCHIVE
