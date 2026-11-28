@@ -517,6 +517,13 @@ pub fn no_primary_line() -> String {
     )
 }
 
+/// The line for a bare `--remote` with neither HOME nor USERPROFILE set: no account can be found.
+pub fn remote_no_home_line() -> String {
+    format!(
+        "ragon --remote with no address needs HOME to find the signed-in account, and HOME is not set. Set it, or give the address: ragon --remote wss://<node>.local:{PRIMARY_GATE_PORT}/"
+    )
+}
+
 /// The line for a bare `--remote` with no account signed in: the dial goes without a token.
 pub fn remote_not_signed_in_line(primary_name: &str) -> String {
     format!("Not signed in: dialing {primary_name} without a token. Run ragon login to sign in.")
@@ -605,16 +612,17 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
     // A bare `--remote` dials the primary with the signed-in account (remote_default; specs/
     // DREAMFERENCE_RAGON_REMOTE_SESSIONS.md §7.1 A5). Any address given is Codex's to check.
     let token_env_set = std::env::var_os(REMOTE_TOKEN_ENV).is_some();
-    let args = if remote_default_wanted(command, &args, token_env_set) {
-        let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).filter(|home| !home.is_empty()).map(PathBuf::from) else {
-            bail!("{}", no_primary_line());
-        };
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).filter(|home| !home.is_empty()).map(PathBuf::from);
+    let args = if !remote_default_wanted(command, &args, token_env_set) {
+        args
+    } else if let Some(home) = home {
         let codex_home = codex_utils_home_dir::find_codex_home().context("could not resolve CODEX_HOME")?.as_path().to_path_buf();
         match remote_default(command, &args, &home, &codex_home, token_env_set) {
             Ok(Some(filled)) => {
                 if let Some(token) = filled.token {
-                    // SAFETY: the launcher's start-up path, before Codex spawns threads of its
-                    // own, as auth::start does for its variables.
+                    // SAFETY: the launcher's start-up path. It runs inside arg0's multi-thread
+                    // runtime, whose workers are idle here: no other thread reads or writes the
+                    // environment while it is set, as for auth::start's variables.
                     unsafe { std::env::set_var(REMOTE_TOKEN_ENV, token) };
                 }
                 filled.args
@@ -622,7 +630,10 @@ pub async fn prepare_args(command: &Command, args: Vec<OsString>) -> anyhow::Res
             Ok(None) => args,
             Err(line) => bail!("{line}"),
         }
+    } else if bare_remote_index(command, &args).is_some() {
+        bail!("{}", remote_no_home_line());
     } else {
+        // The reconnect line with no HOME: no account to fill it from; its address is Codex's.
         args
     };
     // What the user asked for, before anything is added: refine mode's study step starts from it.

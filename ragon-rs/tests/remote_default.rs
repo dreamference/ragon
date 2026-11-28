@@ -7,7 +7,7 @@ use std::path::Path;
 
 use clap::{Arg, Command};
 use ragon_launcher::{
-    REMOTE_TOKEN_ENV, RemoteDefault, bare_remote_index, gate_node_file, no_primary_line, primary_from_node_file,
+    REMOTE_TOKEN_ENV, RemoteDefault, bare_remote_index, gate_node_file, no_primary_line, primary_from_node_file, remote_no_home_line,
     primary_name_from_id_token, primary_remote_url, remote_default,
 };
 use serde_json::{Value, json};
@@ -403,4 +403,11 @@ fn a_launcher_command_or_a_subcommand_that_ignores_remote_is_never_filled() {
         assert_eq!(bare_remote_index(&command, &args(&line)), None, "{line:?}");
         assert_eq!(remote_default(&command, &args(&line), &home, &codex_home, false).unwrap(), None, "{line:?}");
     }
+}
+
+#[test]
+fn no_home_says_so_and_not_that_no_primary_is_known() {
+    let line = remote_no_home_line();
+    assert!(line.contains("HOME is not set"), "{line}");
+    assert_ne!(line, no_primary_line());
 }
