@@ -8,7 +8,10 @@
 //! 3. this machine is a node (it has `~/.config/dreamference/node-id`): loopback, and no browse;
 //! 3a. the remembered node's overlay name (`ragon-<id>.<domain>`, REMOTE_ACCESS §5), when
 //!    NetBird's client says it is connected to management and the name resolves: no browse, and
-//!    it works off the LAN. The name carries the id, so it can only be that node;
+//!    it works off the LAN. The name carries the id, so it can only be that node. A node that
+//!    enrolled before the rename keeps `mightling-<id>`, which is accepted too
+//!    ([`locator::LEGACY_OVERLAY_PREFIXES`]); the name still comes only from the join bundle or a
+//!    LAN advert;
 //! 4. the node remembered in `$CODEX_HOME/node.json`, found again on the network **by its id**, so
 //!    an address change costs nothing; its last address is tried only when a browse returns
 //!    nothing at all;
@@ -170,6 +173,9 @@ pub struct Inputs {
     /// Whether the remembered node's overlay name answers: NetBird's client is connected and the
     /// name resolves. Checked only when the node has one.
     pub overlay: bool,
+    /// Whether NetBird's client says it is connected to its management. Asked only when the
+    /// remembered node has its own overlay name, like `overlay`; it says why the overlay was silent.
+    pub netbird_connected: bool,
 }
 
 /// Where the tiers ended.
@@ -251,10 +257,20 @@ pub fn resolve(inputs: &Inputs, browser: &dyn Browser) -> Resolution {
         // Nothing answered, or only nodes whose model server is stopped: nothing to choose
         // between, so the remembered node's last address is tried, as when the browse is silent.
         if !found.iter().any(serving) {
+            let enrolled = if remembered.overlay_name_is_its_own() {
+                format!(
+                    "\nThis machine is enrolled for remote access to {} ({}), but the overlay did not answer: {}",
+                    label(remembered),
+                    remembered.remote,
+                    overlay_silence(inputs.netbird_connected)
+                )
+            } else {
+                String::new()
+            };
             return Resolution::LastAddress {
                 node: remembered.clone(),
                 note: Some(format!(
-                    "Node {} did not answer a browse of this network; trying its last address, {}.",
+                    "Node {} did not answer a browse of this network; trying its last address, {}.{enrolled}",
                     label(remembered),
                     remembered.address
                 )),
@@ -479,17 +495,26 @@ pub fn inputs() -> Inputs {
     let is_node = locator::is_node();
     let remembered = locator::remembered();
     // Asked only when it can decide something: no configured host, not a node, an overlay name.
-    let overlay = configured.is_none()
-        && !is_node
-        && remembered.as_ref().is_some_and(|node| node.overlay_name_is_its_own() && overlay_answers(&node.remote));
-    Inputs { configured, pinned: std::env::var(PIN_ENV).ok(), is_node, remembered, overlay }
+    // NetBird is asked first so that, with the overlay down, the name is never sent to the
+    // system's DNS servers.
+    let enrolled = configured.is_none() && !is_node && remembered.as_ref().is_some_and(Node::overlay_name_is_its_own);
+    let netbird_connected = enrolled && locator::overlay_up();
+    let overlay = netbird_connected && remembered.as_ref().is_some_and(|node| resolves(&node.remote));
+    Inputs { configured, pinned: std::env::var(PIN_ENV).ok(), is_node, remembered, overlay, netbird_connected }
 }
 
-/// Whether NetBird's client is connected to its management and `name` resolves. NetBird is asked
-/// first so that, with the overlay down, the name is never sent to the system's DNS servers.
-fn overlay_answers(name: &str) -> bool {
-    locator::overlay_up()
-        && std::net::ToSocketAddrs::to_socket_addrs(&(name, locator::DEFAULT_MODEL_PORT)).is_ok_and(|mut found| found.next().is_some())
+/// Whether `name` resolves; asked only while NetBird's client is connected.
+fn resolves(name: &str) -> bool {
+    std::net::ToSocketAddrs::to_socket_addrs(&(name, locator::DEFAULT_MODEL_PORT)).is_ok_and(|mut found| found.next().is_some())
+}
+
+/// Why an enrolled node's overlay name did not answer.
+fn overlay_silence(connected: bool) -> &'static str {
+    if connected {
+        "its name does not resolve. Check `netbird status` (the node's peer should be Connected or Idle)."
+    } else {
+        "NetBird's client is not connected to its management. Check `netbird status`, or `netbird up`."
+    }
 }
 
 /// Resolves the model server's base URL for a command that needs the model, printing what the
@@ -1364,7 +1389,7 @@ mod tests {
     #[test]
     fn a_configured_host_wins_and_nothing_is_browsed() {
         let browser = Fixed::new(vec![spark1()]);
-        let inputs = Inputs { configured: Some("http://10.0.0.1:8000".into()), is_node: true, remembered: Some(spark2().node), pinned: Some("spark-1".into()), overlay: false };
+        let inputs = Inputs { configured: Some("http://10.0.0.1:8000".into()), is_node: true, remembered: Some(spark2().node), pinned: Some("spark-1".into()), overlay: false, ..Inputs::default() };
         assert_eq!(resolve(&inputs, &browser), Resolution::Host("http://10.0.0.1:8000".into()));
         assert!(browser.asked.borrow().is_empty());
     }
@@ -1939,6 +1964,42 @@ mod tests {
         assert_eq!(own.node.remote, "ragon-11111111-aaaa.netbird.selfhosted");
         let other = advert_from("spark-1._ragon-node._tcp.local.", 8000, &addresses, &record("ragon-2222.netbird.selfhosted")).unwrap();
         assert_eq!(other.node.remote, "");
+    }
+
+    #[test]
+    fn a_node_enrolled_before_the_rename_is_reached_by_its_old_peer_name() {
+        let browser = Fixed::new(vec![spark1()]);
+        let old = Node { remote: "mightling-11111111-aaaa.netbird.selfhosted".to_string(), ..spark1().node };
+        let inputs = Inputs { remembered: Some(old), overlay: true, ..Inputs::default() };
+        match resolve(&inputs, &browser) {
+            Resolution::Overlay { node, .. } => assert_eq!(node.model_url(), "http://mightling-11111111-aaaa.netbird.selfhosted:8000"),
+            other => panic!("{other:?}"),
+        }
+        assert!(browser.asked.borrow().is_empty(), "no browse");
+        let addresses = ["192.168.50.105".parse().unwrap()];
+        let record = vec![
+            ("node".to_string(), "11111111-aaaa".to_string()),
+            ("remote".to_string(), "mightling-11111111-aaaa.netbird.selfhosted".to_string()),
+        ];
+        let advert = advert_from("spark-1._ragon-node._tcp.local.", 8000, &addresses, &record).unwrap();
+        assert_eq!(advert.node.remote, "mightling-11111111-aaaa.netbird.selfhosted", "the advert keeps it");
+    }
+
+    #[test]
+    fn a_remembered_enrolled_node_off_the_overlay_says_so_while_its_last_address_is_tried() {
+        let browser = Fixed::new(Vec::new());
+        let inputs = Inputs { remembered: Some(enrolled()), overlay: false, netbird_connected: false, ..Inputs::default() };
+        match resolve(&inputs, &browser) {
+            Resolution::LastAddress { note: Some(note), .. } => {
+                assert!(note.contains("enrolled for remote access to spark-1 (ragon-11111111-aaaa.netbird.selfhosted), but the overlay did not answer"), "{note}")
+            }
+            other => panic!("{other:?}"),
+        }
+        let plain = Inputs { remembered: Some(spark1().node), ..Inputs::default() };
+        match resolve(&plain, &browser) {
+            Resolution::LastAddress { note: Some(note), .. } => assert!(!note.contains("remote access"), "{note}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

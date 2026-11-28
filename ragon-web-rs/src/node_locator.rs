@@ -42,6 +42,17 @@ pub const DEFAULT_MODEL_PORT: u16 = 8000;
 /// The prefix of a node's peer name in the overlay: `ragon-<node id>`.
 pub const OVERLAY_PREFIX: &str = "ragon-";
 
+/// The peer-name prefixes of nodes that enrolled before the product's last rename
+/// (`mightling-<node id>`). Such a node keeps its peer name, and its clients accept it: renaming
+/// the peer would cut off every client until it learnt the new name. The name still reaches a
+/// client only from the join bundle or the node's LAN advert, never from the overlay's peer list.
+pub const LEGACY_OVERLAY_PREFIXES: [&str; 1] = ["mightling-"];
+
+/// Every prefix a node's peer name may carry, the current one first.
+fn overlay_prefixes() -> impl Iterator<Item = &'static str> {
+    std::iter::once(OVERLAY_PREFIX).chain(LEGACY_OVERLAY_PREFIXES)
+}
+
 /// How long the LAN address may take to accept a connection before the overlay name is tried.
 const LAN_PROBE: Duration = Duration::from_millis(300);
 
@@ -142,19 +153,23 @@ impl Node {
         })
     }
 
-    /// Whether `remote` is this node's own overlay name: `ragon-<its id>.` and a domain. The
-    /// name carries the id, so a client that resolves it has found this node and no other.
+    /// Whether `remote` is this node's own overlay name: `ragon-<its id>.` (or a
+    /// [`LEGACY_OVERLAY_PREFIXES`] prefix) and a domain. The name carries the id, so a client that
+    /// resolves it has found this node and no other.
     pub fn overlay_name_is_its_own(&self) -> bool {
         let remote = self.remote.to_ascii_lowercase();
-        !self.node.is_empty()
-            && remote.len() > OVERLAY_PREFIX.len() + self.node.len() + 1
-            && remote.starts_with(&format!(
-                "{OVERLAY_PREFIX}{}.",
-                self.node.to_ascii_lowercase()
-            ))
+        let id = self.node.to_ascii_lowercase();
+        !id.is_empty()
             && remote
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+            && overlay_prefixes().any(|prefix| {
+                remote
+                    .strip_prefix(prefix)
+                    .and_then(|rest| rest.strip_prefix(id.as_str()))
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .is_some_and(|domain| !domain.is_empty())
+            })
     }
 
     /// This node at its overlay name instead of its LAN address.
@@ -908,6 +923,36 @@ mod tests {
             "192.168.50.105",
             "no overlay name, no fallback"
         );
+    }
+
+    #[test]
+    fn a_node_enrolled_before_the_rename_keeps_its_old_peer_name() {
+        let id = "7c1e0c7a-58a4-4b0c-9a7e-0d7a54f6b001";
+        let old = Node {
+            remote: format!("mightling-{id}.netbird.selfhosted"),
+            ..enrolled()
+        };
+        assert!(old.overlay_name_is_its_own());
+        assert_eq!(
+            reachable(old, |_| false, || true).address,
+            format!("mightling-{id}.netbird.selfhosted")
+        );
+        for remote in [
+            format!("mightling-{id}"),
+            format!("mightling-{id}."),
+            format!("puffin-{id}.netbird.selfhosted"),
+            format!("mightling-ragon-{id}.netbird.selfhosted"),
+            "mightling-0000.netbird.selfhosted".to_string(),
+        ] {
+            assert!(
+                !Node {
+                    remote: remote.clone(),
+                    ..enrolled()
+                }
+                .overlay_name_is_its_own(),
+                "{remote}"
+            );
+        }
     }
 
     #[test]
