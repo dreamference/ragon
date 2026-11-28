@@ -60,6 +60,11 @@ impl MetalRecipe {
 }
 
 impl MetalRecipes {
+    /// The export built into the binary (`vectors/metal-recipes.json`).
+    pub fn bundled() -> Self {
+        Self::parse(include_str!("../vectors/metal-recipes.json")).expect("vectors/metal-recipes.json parses")
+    }
+
     /// Parses the export.
     pub fn parse(text: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(text)
@@ -81,7 +86,7 @@ mod tests {
     use super::*;
 
     fn fixture() -> MetalRecipes {
-        MetalRecipes::parse(include_str!("../vectors/metal-recipes.json")).unwrap()
+        MetalRecipes::bundled()
     }
 
     #[test]

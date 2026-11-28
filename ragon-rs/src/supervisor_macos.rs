@@ -16,11 +16,24 @@
 pub fn run_cli(args: &[String]) -> i32 {
     #[cfg(target_os = "macos")]
     {
-        match ragon_supervisor::cli::parse(args) {
-            Ok(opts) if opts.command == "run" => {
-                ragon_supervisor::cli::run_with(args, &mut mac::MacNode::new(opts.port))
+        // `run`, `install` and `start` with no engine after `--` get the node's Metal serve
+        // (src/mac_engine.rs); an installed service's `start` runs as installed.
+        let installed = |name: &str| {
+            ragon_supervisor::macos_launchd::installed_kind(name, |p| p.exists(), None).is_some()
+        };
+        let args = match crate::mac_engine::with_engine(args, crate::mac_engine::memory_gb, installed, |p| p.exists())
+        {
+            Ok(args) => args,
+            Err(why) => {
+                eprintln!("ragon server: {why}");
+                return 2;
             }
-            _ => ragon_supervisor::cli::run(args),
+        };
+        match ragon_supervisor::cli::parse(&args) {
+            Ok(opts) if opts.command == "run" => {
+                ragon_supervisor::cli::run_with(&args, &mut mac::MacNode::new(opts.port))
+            }
+            _ => ragon_supervisor::cli::run(&args),
         }
     }
     #[cfg(not(target_os = "macos"))]
