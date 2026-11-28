@@ -3500,3 +3500,31 @@ def test_night_shift_task_run_refine_counts_an_unreadable_refined_file_as_empty(
     assert status == "done"
     refine = record["result"]["refine"]
     assert refine["study_exit"] == "ok" and refine["refined_chars"] == 0
+
+
+def test_night_shift_runner_audit_compactions_reads_code_x_home_and_keeps_a_failure(
+    tmp_path, monkeypatch
+):
+    # `CODEX_HOME/sessions` is the sessions directory; an error stays a report line, not a crash.
+    home, night = tmp_path / "home", tmp_path / "night"
+    night.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    called = []
+
+    def failing_run(cls, sessions, night_dir):
+        called.append(sessions)
+        raise RuntimeError("no rollouts")
+
+    monkeypatch.setattr(
+        NightShiftRunner,
+        "compaction_audit",
+        type("FailingAudit", (), {"run": classmethod(failing_run)}),
+    )
+    assert NightShiftRunner.audit_compactions(night, NightShiftSettings({})) == [
+        "The audit could not run: no rollouts."
+    ]
+    assert called == [home / "sessions"]
+    assert (
+        NightShiftRunner.audit_compactions(night, NightShiftSettings({"compaction_audit": False}))
+        == []
+    )
