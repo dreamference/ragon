@@ -1,6 +1,6 @@
 # Ragon Desk Work: documents, spreadsheets, slides and PDFs, as skills
 
-**Status:** proposed, 2026-11-28, nothing built. The owner's answers D1–D8 of the same day are in §0 and bind everything below. The probes of §2.3 were run on this node the same day; every claim about the upstream vendor is marked *verified* (with its source) or *unverified* (§3.4, §14).
+**Status:** proposed, 2026-11-28, nothing built. The owner's answers D1–D8 of the same day are in §0 and bind everything below. The probes of §2.3 were run on this node the same day; every claim about the upstream vendor is marked *verified* (with its source) or *unverified* (§3.4, sources in §16).
 **Goal:** `ragon` does ordinary office work (write a letter or a report, fill in a PDF form, clean up and total a spreadsheet, build a slide deck from notes, turn a folder of files into a summary) in a folder the user picks, checks what it made by looking at it, and can undo every change. It is built the way the upstream vendor builds the same thing: **skills in the upstream skill format**, connectors through the existing `/apps`, and **no addition to the session protocol**. A skill written for the upstream agent's document, spreadsheet, slides or PDF work runs on Ragon unchanged.
 **Release:** a first version in 0.9.11, Friday 2026-12-18 (D5); §11 sizes it and says what the date needs.
 **Builds on:**
@@ -101,6 +101,12 @@ The vendor's documentation also describes a Work experience for everyday, non-co
 
 **Trigger text matches upstream.** A skill is chosen by its `description`; the model of a user who says "make me a deck" should pick the same skill on Ragon as upstream. So each description starts "Use when …" as the public ones do, names the same file extensions and verbs (for `spreadsheet`: `.xlsx`, `.csv`, `.tsv`; creating, editing, analysing, formatting; formulas; visual review), front-loads the trigger words as the vendor's documentation advises, and names the Ragon checker. Whether a description may be the upstream text verbatim is owner question Q1; the default is our own words.
 
+**Draft descriptions** (our own words, Q1's default; Phase 2 measures them against the budget and may shorten them):
+- `doc`: "Use when the user asks to read, create or edit Word documents (`.docx`): letters, reports, memos, headings, tables, page layout. Writes with `python-docx` and checks every page with `ragon desk check` before saying it is done."
+- `spreadsheet`: "Use when tasks involve reading, creating, editing, analysing or formatting spreadsheets (`.xlsx`, `.csv`, `.tsv`): cleaning data, totals, formulas, number formats, charts. Recalculates and checks the sheet with `ragon desk check`."
+- `slides`: "Use when the user wants a PowerPoint deck (`.pptx`) built from notes or an existing deck edited: slides, layouts, images, speaker notes. Builds with `python-pptx` and checks every slide with `ragon desk check`."
+- `pdf`: "Use when tasks involve reading, filling, merging, splitting or creating PDF files where layout matters: text and tables, form fields, new PDFs. Renders the pages and checks them with `ragon desk check`."
+
 **One shared checker, not four.** The skills call `ragon desk check <file>` (§5) rather than each shipping its own render script.
 
 ### 3.2 Where they live, and why an upstream copy wins
@@ -151,7 +157,7 @@ Read 2026-11-28 by fetching the vendor's repositories and documentation (sources
 **Not verified at all:** whether today's in-product skills still write with Python libraries; their exact trigger text; whether the in-product `pdf` is the public one unchanged.
 
 **What compatibility means, then.**
-- The public `pdf`, `doc` and `spreadsheet` run unchanged on the desk toolchain because it carries their imports (§4.1) and answers the commands they call (`uv`, `pip`, `soffice`, `pdftoppm`, §4.2). Phase 6 proves it with one task each (§13).
+- The public `pdf`, `doc` and `spreadsheet` run unchanged on the desk toolchain because it carries their imports (§4.1) and answers the commands they call (`uv`, `pip`, `soffice`, `pdftoppm`, `pdfinfo`, §4.2). Phase 6 proves it with one task each (§13).
 - The public `slides` runs unchanged only with Node and its six JavaScript packages: owner question Q10.
 - The in-product skills are unpublished and unlicensed, so they cannot be installed on Ragon; only their names can be matched (Q2).
 
@@ -184,6 +190,8 @@ Read 2026-11-28 by fetching the vendor's repositories and documentation (sources
 
 **Node, for decks built in JavaScript (Q10).** The public `slides` skill (U5) and some linked deck skills build with PptxGenJS. A Node runtime (MIT) and `pptxgenjs` 4.0.1, `skia-canvas` 4.0.1, `fontkit` 3.0.0, `linebreak` 2.0.0, `prismjs` 1.30.0 (all MIT) and `mathjax-full` 3.2.2 (Apache-2.0), licences read from the npm registry, come to about 40 MiB unpacked before Node itself and `skia-canvas`'s native library (*not measured*). The default is to ship them in the desk environment, because the brief's promise is that upstream skills run unchanged; our own `slides` does not need them.
 
+**How scripts find the Node packages.** The packages sit in `~/.ragon/desk/node/node_modules/`, and the desk `node` sets `NODE_PATH` to that folder, so a `require('pptxgenjs')` resolves from any working folder. *Unverified:* an ES-module `import` ignores `NODE_PATH`. P0.3 reads how the public `slides` scripts load their packages; if they use `import`, the installer links a `node_modules` into the skill's own folder instead.
+
 **The Python runtime.** A client has no Python of Ragon's, and the user's own `python3` (if any) must not be changed. So the desk toolchain is **its own environment**, `~/.ragon/desk/` (`bin/python3`, `bin/python`, the `pip` and `uv` stand-ins of §4.2, the libraries in its `site-packages`), built from a relocatable CPython build (the standalone builds published for this purpose, PSF licence; which one is pinned in Phase 1) and the wheels above. It is never the node's virtualenv and never the system Python.
 
 ### 4.2 How it is shipped, in both install modes
@@ -199,8 +207,9 @@ Read 2026-11-28 by fetching the vendor's repositories and documentation (sources
 - `python3` and `python`: the desk Python.
 - `pip` and `uv` (only `uv pip install` and `pip install` are answered): a requested package that ships answers "Requirement already satisfied" and exits 0, as the real tools do; any other package is refused with "This package is not part of Ragon's desk tools. Ask the user to run `ragon desk add <package>`." `ragon desk add` is the user's command, run outside the sandbox, into a separate `extra/` directory of the environment, never into the pinned set; at `/airgapped on` it takes a wheel file instead.
 - `soffice`: runs the installed LibreOffice under the memory cap and the lock of §4.4, with a private profile per call; when none is installed it prints "LibreOffice is not installed. Ask the user to run `ragon desk setup --office`." and exits 127.
-- `pdftoppm` and `pdftotext`: Poppler's when it is installed; otherwise a stand-in of our own over `pypdfium2` and `pdfplumber` that takes the flags the upstream skills use (`-png`, `-jpeg`, `-r`, `-f`, `-l`, `-scale-to`, `-layout`). The interface is copied, not the code.
-- The system package managers are not shimmed: an upstream skill that runs `apt-get` or `brew` fails in the sandbox and, per its own text, carries on; the skills' `soffice` check then finds the stand-in above.
+- `pdftoppm`, `pdftocairo`, `pdfinfo` and `pdftotext`: Poppler's when it is installed; otherwise stand-ins of our own over `pypdfium2` and `pdfplumber`. `pdf2image`, which the public `doc` and `slides` call, needs all three of the first: it reads the page count from `pdfinfo` and raises when `pdfinfo` is missing, then renders with `pdftoppm` or `pdftocairo` (*verified* in `pdf2image` 1.17.1, `pdfinfo_from_path` and its command builder). So the stand-ins take the flags that builder and the upstream skills pass: `-r`, `-f`, `-l`, `-png`, `-jpeg`, `-tiff`, `-singlefile`, `-gray`, `-cropbox`, `-hide-annotations`, `-scale-to`, `-scale-to-x`, `-scale-to-y`, `-upw`, and `-layout` for `pdftotext`; the `pdfinfo` stand-in prints the `Pages:` line and the other fields `pdf2image` parses. The interface is copied, not the code.
+- `node`, `npm` and `npx`, with the Node pack only (Q10, §4.1): `npm install` of a package that ships answers "up to date" and exits 0; any other package gets the same refusal sentence as `pip`.
+- The system package managers are not shimmed: an upstream skill that runs `apt-get` or `brew` fails in the sandbox. The public `pdf` then tells the model: "If installation isn't possible in this environment, tell the user which dependency is missing and how to install it locally." (*verified*, its `SKILL.md` on main and the copy on this node). With the stand-ins above, nothing it needs is missing, so the model does not reach that sentence.
 
 **How the model's shell finds it.** Upstream skills call `python3` and its imports by name. A thread whose working folder is a desk folder (§6.1) starts with the environment's `bin/` first on its `PATH`, set through the configuration override that `thread/start` and `ragon` already accept (`shell_environment_policy`); no new message. In a code project nothing changes: the user's own Python stays first, and `ragon desk python` reaches the desk environment explicitly. *To be confirmed in Phase 1:* that the override reaches the sandboxed shell on all three platforms.
 
@@ -219,7 +228,8 @@ The node keeps the model server resident; with the default twelve sessions about
 - **Every conversion and render** runs under a memory cap of 1 GiB and a time limit of 60 s: on Linux in a transient user scope (`systemd-run --user --scope -p MemoryMax=1G`, falling back to `RLIMIT_AS` as `ragon-docs` already does where no user systemd is reachable), on macOS and Windows under the process limits the window's B31 converter already sets.
 - **One conversion at a time per machine** (a lock under `~/.ragon/desk/`), so twelve sessions checking at once take 233 MiB, not 2.8 GiB.
 - **The model's own scripts** run in its shell as code does, under the sandbox; the `spreadsheet` skill tells the model to use `openpyxl`'s read-only mode and `XlsxWriter` above 100,000 rows.
-- **On a client** the model server is elsewhere; the same caps apply and are generous.
+- **On a node, the desk `python3` and `python` are bounded.** They are a small launcher that starts the interpreter under a **4 GiB memory cap**, in the same transient scope (`MemoryMax=4G`) or with `RLIMIT_AS` without user systemd. A runaway script then fails with `MemoryError` instead of pushing the model server out. The sandbox is not counted as a memory bound; *to be confirmed in Phase 1* whether it sets one.
+- **On a client** the model server is elsewhere. The conversion caps apply and are generous; the desk Python has no cap by default, and `ragon desk setup --memory-cap <size>` sets one.
 
 ---
 
@@ -328,7 +338,7 @@ The files arrive as the user's own; their text is untrusted as APPS §6.1 alread
 - The skills, the toolchain and the check work, all offline, when the environment and the suite are installed.
 - No app server runs, so `drive_save` and `gmail_save_attachment` are absent, as every app is.
 - The first-use install of the environment or the suite cannot fetch; it offers `--from <bundle>` and the check falls back to §5.3.
-- `pip install` fails in the sandbox as any network call does; the skills say not to try.
+- `pip install` and `uv pip install` reach the stand-ins (§4.2), which never use the network: a package that ships is "already satisfied", any other is refused with the `ragon desk add` sentence, and `ragon desk add` takes a wheel file at `/airgapped on`.
 
 ---
 
@@ -372,12 +382,12 @@ Each row is one task-sized change with its test. **Routing** follows RBRB §5.1 
 |---|---|---|---|---|
 | P0.1 `view_image` call rate, 20 runs, with and without the skill wording (after P0.2) | 0 | measurement | Ragon (`ragon exec`) | 0.5 |
 | P0.2 Count image tokens in the completion budget (the `-i` overflow, §2.3): locate, fix, test | 0 | code | cheapest model | 1 |
-| P0.3 Re-check the upstream table (§3.4) and pin the libraries and Node packages with hashes | 0 | docs | Ragon | 0.5 |
+| P0.3 Re-check the upstream table (§3.4), pin the libraries and Node packages with hashes, read how the public `slides` scripts load their packages (§4.1) | 0 | docs | Ragon | 0.5 |
 | P1.1 Build `ragon-desk-<target>.tar.zst` in the release workflow, five targets, checksums; Node pack if Q10 | 1 | code | cheapest model | 2.5 |
 | P1.2 `ragon desk setup` (`--from`, `--office`) and `ragon desk add`; first-use fetch | 1 | code | cheapest model | 1.5 |
 | P1.3 `PATH` for desk threads through the configuration override; tests on Linux, macOS, Windows | 1 | code | cheapest model | 1 |
 | P1.4 Office suite first use: AppImage, disk image, installer; memory cap and lock | 1 | code | cheapest model | 1.5 |
-| P1.5 The command stand-ins: `pip` and `uv`, `soffice`, `pdftoppm` and `pdftotext` (§4.2) | 1 | code | cheapest model | 1 |
+| P1.5 The command stand-ins: `pip` and `uv`, `soffice`, `pdftoppm`, `pdftocairo`, `pdfinfo` and `pdftotext`, and `npm` with the Node pack (§4.2) | 1 | code | cheapest model | 1 |
 | P2.1 `ragon desk check`: reopen, text, per-type checks, render, exit codes | 2 | code | cheapest model | 2.5 |
 | P2.2 The four `SKILL.md`, their `agents/openai.yaml`, the `from-ragon` link, its place in the order, the overlap mark in `ragon skill list` | 2 | docs | Ragon | 1.5 |
 | P2.3 The look reminder hook (§5.2) | 2 | code | cheapest model | 0.5 |
@@ -418,7 +428,7 @@ Each row is one task-sized change with its test. **Routing** follows RBRB §5.1 
 - **Lane bound.** With three desk lanes (D6), 36 agent-days take 12 working days.
 - **Path bound.** P0.2 → P0.1 (1.5) → P1.1 with P1.5 beside it (2.5) → P2.1 (2.5) → P6.3, the gate run and its re-run, in GPU windows 08:00–20:00 UTC (2) → P7.1 (1): **9.5 days**; Phases 3, 4, 5 and the task writing of P6.1 run beside it in the same lanes.
 - **Plus landing latency.** Reviews, the land queue and the owner's 15 grades add about 3 days that no lane can shorten.
-- **So: about 15 calendar days.** From Monday 2026-11-30 (the spec approved over the weekend), code-complete lands on about **Sunday 12-13**, the gate runs on **Monday 12-14 and Tuesday 12-15**, and two days remain before **0.9.11 on Friday 2026-12-18. It fits, with two days of slack.**
+- **So: about 16 calendar days to the end of the gate.** Lanes work every day. From Monday 2026-11-30 (the spec approved over the weekend), the 12 lane days and the landing latency, which overlaps the last lane days, put code-complete on about **Sunday 12-13** (day 14). The gate needs every row landed, so it cannot start earlier: it runs on **Monday 12-14 and Tuesday 12-15** (day 16). Wednesday and Thursday remain before **0.9.11 on Friday 2026-12-18. It fits, with two days of slack.**
 - **Beside 0.9.10 and 1.0.** 0.9.10 ships Thursday 12-10 inside this window; desk rows do not touch its branch, so the two overlap without blocking, as D6 intends. 0.9.11 then lands eight days after 0.9.10 and nine days before 1.0 (Sunday 12-27): **it fits between them.** Desk work rides into 1.0 as it is, preview or not; 1.0 adds nothing to it.
 - **If the gate fails** (below 70 % on 12-15), 0.9.11 still ships on 12-18 with desk work labelled preview (D7), and the fixes go to 1.0 within its own budget.
 - **With one lane**, 36 days end near 2027-01-04, after 1.0: the date rests on D6's lanes. With two lanes, 18 working days plus latency end near 12-21, so 12-18 is missed and desk work ships as preview with what is done.
@@ -446,10 +456,10 @@ Each row is one task-sized change with its test. **Routing** follows RBRB §5.1 
 
 - **Unit and integration:** `ragon desk check` against stored good and broken files of each type (a DOCX with a placeholder, an XLSX with `#REF!`, a PPTX with overflowing text, a PDF with an empty field): each finding reported, exit codes right. The guard: `apply_patch` delete asks, overwrite of an old file asks, overwrite of the task's own file does not, `rm` of an old file asks. Undo: three changes, undo the second, undo the undo. The folder test: a git repository, a `package.json` folder and a plain folder. `PATH`: the desk Python first in a desk thread, the user's in a code thread.
 - **Install:** `install.sh --from` with the desk asset, offline, on Linux arm64 and x64 and macOS; `ragon desk setup` at `/airgapped on` without the asset says how.
-- **Upstream compatibility:** the public `pdf` (main) and the last versions of `doc`, `spreadsheet` and, with Q10, `slides` (§3.4, U2–U5), installed unchanged with `ragon skill add` from the catalogue at those commits, each shadow ours by name, and one quality-set task of its type passes with each; the run is recorded in §15.
+- **Upstream compatibility:** the public `pdf` (main) and the last versions of `doc`, `spreadsheet` and, with Q10, `slides` (§3.4, U2–U5), installed unchanged with `ragon skill add` from the catalogue at those commits, each shadow ours by name, and one quality-set task of its type passes with each; the run is recorded in §17.
 - **The window:** vitest cases for the plain view against the scripted app-server stand-in (a turn that writes a DOCX, a guard question, an undo); the egress audit with `--app` passes.
 - **Quality:** §9, 70 % or more.
-- **Acceptance of the first version:** all of the above green, the gate run recorded in this spec's §15 (as built), and no `policy.json` change or one recorded as a departure.
+- **Acceptance of the first version:** all of the above green, the gate run recorded in this spec's §17 (as built), and no `policy.json` change or one recorded as a departure.
 
 ---
 
@@ -466,7 +476,7 @@ Each row is one task-sized change with its test. **Routing** follows RBRB §5.1 
 | Q7 | The snapshot store: 2 GiB per folder and 30 days, files over 200 MiB not stored. Right sizes? | Yes |
 | Q8 | The judge of "looks right" is the served model in a fresh session, calibrated on 15 tasks the owner grades by hand once (about an hour of the owner's time). Agreed? | Yes; if the owner has no hour, 15 tasks are graded by a second model run and the judge is reported as uncalibrated |
 | Q9 | `~/Documents/Ragon/` offered as the default folder for desk tasks? | Yes |
-| Q10 | Ship Node and the six JavaScript packages (about 40 MiB plus Node, all MIT or Apache-2.0) in the desk environment, so that the public upstream `slides` skill and linked deck skills run unchanged? | Yes; it is the first thing dropped if P1.1 slips |
+| Q10 | Ship Node and the six JavaScript packages (about 40 MiB plus Node, all MIT or Apache-2.0) in the desk environment, so that the public upstream `slides` skill and linked deck skills run unchanged? | Yes; it is the second thing dropped if P1.1 slips, after the Windows target (§11.2) |
 
 ---
 
@@ -490,3 +500,9 @@ Each row is one task-sized change with its test. **Routing** follows RBRB §5.1 
 - npm registry metadata of `pptxgenjs`, `skia-canvas`, `fontkit`, `linebreak`, `prismjs`, `mathjax-full`, read 2026-11-28.
 - Probes of §2.3, this node, 2026-11-28: the model server's `/model_info` and `/v1/chat/completions`; `ragon exec` 0.9.9; LibreOffice 24.2.7.2; Poppler `pdftoppm`; `ragon-docs extract`.
 - Wheel metadata of every library in §4.1, downloaded 2026-11-28 (Linux arm64, CPython 3.12).
+
+---
+
+## 17. As built
+
+Empty until the gate run. Phase 6 records here: the gate result per file type, the upstream-skill runs of §13, the `view_image` rate of P0.1, the measured sizes of §4.1, and every departure from this spec.
