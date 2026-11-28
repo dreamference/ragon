@@ -1,0 +1,7 @@
+<svg viewBox="0 0 280 180" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Night Shift: work that runs on">
+  <path d="M196 54 A46 46 0 1 1 150 144 A40 40 0 1 0 196 54 Z" fill="none" stroke="#263142" stroke-width="2.5" stroke-linejoin="round"/>
+  <g fill="#ff6b35">
+    <path d="M52 72 l6 12 12 6 -12 6 -6 12 -6 -12 -12 -6 12 -6 Z"/>
+    <path d="M96 46 l4 8 8 4 -8 4 -4 8 -4 -8 -8 -4 8 -4 Z"/>
+  </g>
+</svg>

@@ -8,11 +8,40 @@ import re
 from collections import Counter
 from pathlib import Path
 from types import ModuleType
+from typing import Final
+from xml.etree import ElementTree
+from xml.etree.ElementTree import Element
 
 import pytest
 
 WEBSITE = Path(__file__).resolve().parent.parent / "website"
 PLACEHOLDER = re.compile(r"\{\{([a-z0-9_.]+)\}\}")
+FEATURE_SVG_FILES: Final[tuple[str, ...]] = (
+    "feature-1.svg",
+    "feature-2.svg",
+    "feature-3.svg",
+)
+SVG_NAMESPACE: Final[str] = "http://www.w3.org/2000/svg"
+SVG_ROOT_TAG: Final[str] = f"{{{SVG_NAMESPACE}}}svg"
+
+
+def _svg_references(value: Element) -> list[str]:
+    """Return the resource addresses an SVG element asks a browser to load.
+
+    Args:
+        value: The parsed SVG element, root or child.
+
+    Returns:
+        Every ``href``, ``xlink:href`` and ``src`` value on the element and below it.
+    """
+    found = [
+        value.get(attribute, "")
+        for attribute in ("href", "xlink:href", "src")
+        if value.get(attribute, "")
+    ]
+    for child in value:
+        found += _svg_references(child)
+    return found
 
 
 def _load_builder() -> ModuleType:
@@ -116,6 +145,30 @@ def test_pages_load_nothing_from_other_hosts() -> None:
     for name in ("init.js", "copy.js", "style.css"):
         source = (WEBSITE / name).read_text(encoding="utf-8")
         assert "http://" not in source and "https://" not in source.replace("// https", "")
+
+
+def test_feature_cards_one_to_three_have_drawn_svg_pictures() -> None:
+    """Cards 1-3: one drawn SVG each, no raster or external resource (plan sfp-r17)."""
+    folder = WEBSITE / "assets" / "svg"
+    for name in FEATURE_SVG_FILES:
+        path = folder / name
+        assert path.is_file(), name
+        root = ElementTree.parse(path).getroot()
+        assert root.tag == SVG_ROOT_TAG
+        assert _svg_references(root) == []
+        for element in root.iter():
+            assert not element.tag.endswith("image"), f"{name}: a raster element"
+            assert not element.get("srcset"), f"{name}: a raster source"
+
+
+def test_feature_svg_files_load_nothing_from_other_hosts() -> None:
+    for name in FEATURE_SVG_FILES:
+        source = (WEBSITE / "assets" / "svg" / name).read_text(encoding="utf-8")
+        svg_ns = SVG_NAMESPACE
+        assert svg_ns in source
+        assert "http://" not in source.replace(svg_ns, "")
+        assert "https://" not in source.replace(svg_ns, "")
+        assert f'xmlns="{svg_ns}"' in source
 
 
 def test_language_names_are_unique_and_native() -> None:
