@@ -344,6 +344,21 @@ pub enum Secured {
     Https(String),
 }
 
+/// After a new pin of the primary's CA (first contact, or again after the node was set up again):
+/// on Linux, one line naming `ragon node remote trust-ca` when the system store does not hold
+/// exactly that CA, or still holds an older primary's (A11). Only for the primary itself: a
+/// secondary's CA is not the one `trust-ca` installs.
+pub(crate) fn hint_trust_ca(info: &Info, pem: &Path) {
+    if info.node_id != info.primary_id {
+        return;
+    }
+    if let Some(store) = crate::remote_join::system_store()
+        && let Some(hint) = crate::remote_join::trust_ca_hint(&store, &info.node_id, pem)
+    {
+        eprintln!("{hint}");
+    }
+}
+
 /// Moves a discovered node with accounts from plain HTTP to its HTTPS gate (AUTH §5.1, §6): the
 /// advertisement carries an address and a port and no scheme, and the gate refuses sign-in, tokens
 /// and keys over plain HTTP from another machine. `node_id` and `node_name` are the
@@ -416,7 +431,10 @@ pub async fn secure_gate(host: &str, codex_home: &Path, node_id: &str, node_name
             "The certificate of {} has changed. If the node was set up again, run ragon login --reset-pin.",
             info.node_name
         ),
-        pin::Outcome::Pinned(path) => pin::import_into_trust_store(&path, &info.node_id),
+        pin::Outcome::Pinned(path) => {
+            pin::import_into_trust_store(&path, &info.node_id);
+            hint_trust_ca(&info, &path);
+        }
         pin::Outcome::Known(_) => {}
     }
     crate::proxy::trust_node_ca(presented.as_bytes());
@@ -516,6 +534,7 @@ pub async fn start(gate: &str, codex_home: &Path, interactive: bool) -> anyhow::
                     ),
                     pin::Outcome::Pinned(path) => {
                         pin::import_into_trust_store(&path, &info.node_id);
+                        hint_trust_ca(&info, &path);
                         ca = Some(path);
                     }
                     pin::Outcome::Known(path) => ca = Some(path),

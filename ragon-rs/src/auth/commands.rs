@@ -168,7 +168,11 @@ pub async fn connect(gate: &str, codex_home: &Path) -> anyhow::Result<Primary> {
                         "The certificate of {} has changed. If the node was set up again, run ragon login --reset-pin.",
                         found.node_name
                     ),
-                    pin::Outcome::Pinned(path) | pin::Outcome::Known(path) => path,
+                    pin::Outcome::Pinned(path) => {
+                        super::hint_trust_ca(&found, &path);
+                        path
+                    }
+                    pin::Outcome::Known(path) => path,
                 };
                 ca_pem = std::fs::read(path).ok();
             }
