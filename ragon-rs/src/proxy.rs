@@ -58,11 +58,15 @@ pub fn node_urls(node: &ragon_node_locator::Node) -> Vec<String> {
 /// node's pinned CA once [`trust_node_ca`] has named it (a node with accounts serves HTTPS signed
 /// by its own CA, AUTH §6).
 pub fn direct_client(timeout: std::time::Duration) -> reqwest::Result<reqwest::Client> {
+    direct_client_builder(timeout).build()
+}
+
+pub(crate) fn direct_client_builder(timeout: std::time::Duration) -> reqwest::ClientBuilder {
     let mut builder = reqwest::Client::builder().no_proxy().timeout(timeout);
     if let Some(cert) = NODE_CA.get().and_then(|pem| reqwest::Certificate::from_pem(pem).ok()) {
         builder = builder.add_root_certificate(cert);
     }
-    builder.build()
+    builder
 }
 
 /// The session node's CA (PEM), set once by `auth::secure_gate` when the session moves to the

@@ -1178,7 +1178,7 @@ pub const CONTEXT_WINDOW_KEY: &str = "ragon_context_window";
 /// `/props`), then [`FALLBACK_CONTEXT_WINDOW`]. Ollama's OpenAI endpoint reports no window at all,
 /// so on Ollama the setting is the way to give one.
 pub async fn served_model(client: &reqwest::Client, host: &str) -> Option<ServedModel> {
-    served_listing(client, host, configured_context_window()).await.map(|(model, _)| model)
+    served_listing(client, host, configured_context_window()).await.ok().map(|(model, _)| model)
 }
 
 /// [`served_model`], given the user's context-window setting, with the adapters listed on it.
@@ -1186,15 +1186,15 @@ async fn served_listing(
     client: &reqwest::Client,
     host: &str,
     configured: Option<u64>,
-) -> Option<(ServedModel, Vec<adapter::Adapter>)> {
+) -> anyhow::Result<(ServedModel, Vec<adapter::Adapter>)> {
     let base = host.trim_end_matches('/');
-    let response = client.get(format!("{base}/v1/models")).send().await.ok()?;
+    let response = client.get(format!("{base}/v1/models")).send().await?;
     if !response.status().is_success() {
-        return None;
+        bail!("model listing returned HTTP {}", response.status());
     }
-    let body: serde_json::Value = response.json().await.ok()?;
-    let card = served_card(&body)?;
-    let id = card.get("id")?.as_str()?.to_string();
+    let body: serde_json::Value = response.json().await?;
+    let card = served_card(&body).context("model listing contains no models")?;
+    let id = card.get("id").and_then(|id| id.as_str()).context("model listing lacks an id")?.to_string();
     let reported = match context_window_from_card(card) {
         Some(window) => Some(window),
         // llama.cpp's `/v1/models` gives the model's training length (`meta.n_ctx_train`), which
@@ -1206,7 +1206,7 @@ async fn served_listing(
         .or(reported)
         .unwrap_or(FALLBACK_CONTEXT_WINDOW);
     let adapters = adapter::listed(&body, &id);
-    Some((ServedModel { id, max_model_len, owned_by: owner_of(card) }, adapters))
+    Ok((ServedModel { id, max_model_len, owned_by: owner_of(card) }, adapters))
 }
 
 /// `owned_by` from a `/v1/models` entry, or an empty string.
@@ -1300,7 +1300,7 @@ const PROGRESS_EVERY: Duration = Duration::from_secs(10);
 /// What to do when the server did not come up: printed after the wait ends.
 fn server_down_advice(host: &str, waited: Duration) -> String {
     format!(
-        "❌ The model server at {host} did not answer in {} seconds.\n\
+        "❌ The model server at {host} was not ready after {} seconds.\n\
          💡 Check it with `ragon-admin server status`; if it is not running, start it with \
          `ragon-admin server start` (a cold load takes several minutes), then run `ragon` again.",
         waited.as_secs()
@@ -1308,12 +1308,27 @@ fn server_down_advice(host: &str, waited: Duration) -> String {
 }
 
 /// The progress line of a wait: elapsed time against the known load time.
-fn progress_line(host: &str, elapsed: Duration, limit: Duration) -> String {
+fn progress_line(host: &str, elapsed: Duration, limit: Duration, reason: &anyhow::Error) -> String {
     format!(
-        "⏳ Waiting for the model server at {host}: {}s of up to {}s (it may still be loading)",
+        "⏳ Waiting for the model server at {host}: {}s of up to {}s ({reason:#})",
         elapsed.as_secs(),
         limit.as_secs()
     )
+}
+
+/// Give DNS its own deadline before the short HTTP probes begin.
+async fn resolved_probe_client<I: Iterator<Item = std::net::SocketAddr>>(
+    name: &str,
+    deadline: Duration,
+    lookup: impl std::future::Future<Output = std::io::Result<I>>,
+) -> anyhow::Result<reqwest::Client> {
+    let addresses: Vec<_> = tokio::time::timeout(deadline, lookup).await
+        .with_context(|| format!("could not resolve {name} in {} s", deadline.as_secs()))?
+        .with_context(|| format!("could not resolve {name}"))?.collect();
+    if addresses.is_empty() {
+        bail!("could not resolve {name}: no addresses returned");
+    }
+    Ok(proxy::direct_client_builder(Duration::from_secs(1)).resolve_to_addrs(name, &addresses).build()?)
 }
 
 /// Waits up to `limit` for the server, one progress line every ten seconds, then names the
@@ -1323,26 +1338,33 @@ async fn wait_for_model_within(
     limit: Duration,
     poll: Duration,
 ) -> anyhow::Result<(ServedModel, Vec<adapter::Adapter>)> {
-    let client = proxy::direct_client(Duration::from_secs(1))?;
+    let url = reqwest::Url::parse(host)?;
+    let client = if let Some(name) = url.domain() {
+        let port = url.port_or_known_default().context("model server URL has no port")?;
+        resolved_probe_client(name, Duration::from_secs(15), tokio::net::lookup_host((name, port))).await?
+    } else {
+        proxy::direct_client(Duration::from_secs(1))?
+    };
     let configured = configured_context_window();
-    if let Some(listing) = served_listing(&client, host, configured).await {
-        return Ok(listing);
-    }
-    eprintln!("{}", progress_line(host, Duration::ZERO, limit));
     let started = Instant::now();
-    let mut next_report = PROGRESS_EVERY;
+    let mut next_report = Duration::ZERO;
     loop {
-        if let Some(listing) = served_listing(&client, host, configured).await {
-            eprintln!("✅ The model server is online and ready.");
-            return Ok(listing);
-        }
+        let reason = match served_listing(&client, host, configured).await {
+            Ok(listing) => {
+                if next_report != Duration::ZERO {
+                    eprintln!("✅ The model server is online and ready.");
+                }
+                return Ok(listing);
+            }
+            Err(error) => error,
+        };
         let elapsed = started.elapsed();
         if elapsed >= limit {
             eprintln!("{}", server_down_advice(host, limit));
-            bail!("the model server at {host} is not answering");
+            bail!("model server at {host}: {reason:#}");
         }
         if elapsed >= next_report {
-            eprintln!("{}", progress_line(host, elapsed, limit));
+            eprintln!("{}", progress_line(host, elapsed, limit, &reason));
             next_report += PROGRESS_EVERY;
         }
         tokio::time::sleep(poll).await;
@@ -2138,7 +2160,7 @@ mod tests {
         let client = reqwest::Client::new();
         let window = |base: String| {
             let client = client.clone();
-            async move { served_listing(&client, &base, None).await.map(|(served, _)| served.max_model_len) }
+            async move { served_listing(&client, &base, None).await.ok().map(|(served, _)| served.max_model_len) }
         };
         // An error status is no listing, whatever its body says.
         assert_eq!(window(stand_in(&[("/v1/models", "503 Service Unavailable", LLAMA_CPP_MODELS)])).await, None);
@@ -2571,7 +2593,38 @@ mod tests {
         let text = server_down_advice("http://h:8000", Duration::from_secs(600));
         assert!(text.contains("ragon-admin server status") && text.contains("ragon-admin server start"));
         assert!(text.contains("600 seconds") && text.contains("http://h:8000"));
-        assert!(progress_line("h", Duration::from_secs(20), Duration::from_secs(600)).contains("20s of up to 600s"));
+        assert!(progress_line("h", Duration::from_secs(20), Duration::from_secs(600), &anyhow::anyhow!("offline")).contains("20s of up to 600s"));
+    }
+
+    #[tokio::test]
+    async fn slow_resolution_precedes_the_short_probe_and_is_reused() {
+        let base = stand_in(&[("/v1/models", "200 OK", r#"{"data":[{"id":"stub"}]}"#)]);
+        let address: std::net::SocketAddr = base.strip_prefix("http://").unwrap().parse().unwrap();
+        let lookup = async {
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+            Ok([address].into_iter())
+        };
+        let name = "model.invalid";
+        let client = resolved_probe_client(name, Duration::from_secs(15), lookup).await.unwrap();
+        let by_name = format!("http://{name}:{}", address.port());
+        for _ in 0..2 {
+            let (model, _) = served_listing(&client, &by_name, None).await.unwrap();
+            assert_eq!(model.id, "stub");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stalled_lookup_names_the_host_and_deadline() {
+        let stalled = std::future::pending::<std::io::Result<std::vec::IntoIter<std::net::SocketAddr>>>();
+        let error = resolved_probe_client("model.invalid", Duration::ZERO, stalled).await.unwrap_err();
+        assert_eq!(error.to_string(), "could not resolve model.invalid in 0 s");
+    }
+
+    #[tokio::test]
+    async fn a_probe_reports_the_http_status() {
+        let base = stand_in(&[("/v1/models", "503 Service Unavailable", "{}")]);
+        let error = wait_for_model_within(&base, Duration::ZERO, Duration::ZERO).await.unwrap_err();
+        assert!(error.to_string().contains("HTTP 503 Service Unavailable"));
     }
 
     #[tokio::test]
@@ -2583,7 +2636,7 @@ mod tests {
             Duration::from_millis(50),
         )
         .await;
-        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().to_lowercase().contains("refused"));
         assert!(started.elapsed() < Duration::from_secs(10));
     }
 

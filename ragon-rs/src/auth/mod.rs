@@ -368,7 +368,7 @@ pub async fn secure_gate(host: &str, codex_home: &Path, node_id: &str, node_name
     let lenient = reqwest::Client::builder()
         .no_proxy()
         .danger_accept_invalid_certs(true)
-        .timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(15))
         .build()
         .context("could not build the HTTP client")?;
     let Some(info) = fetch(&lenient, &format!("{tls}/ragon/v1/info")).await.as_deref().and_then(parse_info) else {
@@ -477,7 +477,7 @@ async fn answers_by_name(gate: &str, pem: &str) -> bool {
     let Ok(cert) = reqwest::Certificate::from_pem(pem.as_bytes()) else {
         return false;
     };
-    let Ok(client) = reqwest::Client::builder().no_proxy().add_root_certificate(cert).timeout(Duration::from_secs(3)).build() else {
+    let Ok(client) = reqwest::Client::builder().no_proxy().add_root_certificate(cert).timeout(Duration::from_secs(15)).build() else {
         return false;
     };
     fetch(&client, &format!("{gate}/ragon/v1/info")).await.as_deref().and_then(parse_info).is_some()
