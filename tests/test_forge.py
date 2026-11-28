@@ -789,6 +789,40 @@ def test_the_budget_prunes_artefacts_before_logs_and_never_repositories(monkeypa
     assert "Still below the floor" in lines[-1]
 
 
+def test_forge_storage_size_reports_a_plain_files_bytes(tmp_path):
+    f = tmp_path / "blob.bin"
+    f.write_bytes(b"x" * 7)
+    assert ForgeStorage.size(f) == 7, "a file's size is its byte length"
+
+
+def test_forge_storage_size_tolerates_files_that_vanish_mid_scan(tmp_path, monkeypatch):
+    import dreamference.forge.forge_storage as fs
+
+    folder = tmp_path / "data"
+    real = folder / "real"
+    real.mkdir(parents=True)
+    (real / "a.bin").write_bytes(b"abc")
+
+    class FlakyPath:
+        def __init__(self, path):
+            self._path = path
+
+        def is_file(self):
+            return self._path.is_file()
+
+        def is_symlink(self):
+            return False
+
+        def stat(self):
+            # Forgejo rotated the file between the listing and the stat.
+            raise OSError("rotated away mid-scan")
+
+    monkeypatch.setattr(
+        fs.Path, "rglob", lambda self, pattern: iter([FlakyPath(folder / "real" / "a.bin")])
+    )
+    assert ForgeStorage.size(folder) == 0, "an unreadable entry is skipped, not fatal"
+
+
 def test_the_usage_counts_logs_and_dumps_never_backups_or_links_and_never_below_zero(tmp_path):
     data, share = ForgeSettings.data_dir(), ForgeSettings.share_dir()
     for relative, size in (
