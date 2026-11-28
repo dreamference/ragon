@@ -72,9 +72,20 @@ rate_limited() {
 latest="$(curl -fsSI -m 30 -o /dev/null -w '%{redirect_url}' "$REPO_URL/releases/latest" | sed -E 's#.*/tag/v?##')"
 log "latest release: ${latest:-unknown}; this Mac: macOS $(sw_vers -productVersion), $(($(sysctl -n hw.memsize) / 1073741824)) GB, real ragon: $real_before"
 
+# previous_release LATEST: the release listed after LATEST on the releases page (standard input,
+# newest first). Pre-releases are skipped: v0.9.9-rc.N sits above the latest release, and its tag
+# cut at the '-' named a release that does not exist (0.9.9, 11-26). LATEST not on the page: the
+# first release that is not LATEST.
+previous_release() {
+    grep -o '/releases/tag/v[^"?#/<]*' | sed -E 's#.*/tag/v##' | grep -E '^[0-9]+(\.[0-9]+)+$' | awk '!seen[$0]++' \
+        | awk -v latest="${1:-none}" '$0 == latest {after = 1; next}
+            after {print; done = 1; exit}
+            first == "" {first = $0}
+            END {if (!after && !done && first != "") print first}'
+}
+
 # The release before the latest: the redirect of /releases gives no list; the page's tag links do.
-previous="$(curl -fsSL -m 30 "$REPO_URL/releases" | grep -o "/releases/tag/v[0-9][0-9.]*" | sed -E 's#.*/tag/v##' | awk '!seen[$0]++' \
-    | grep -vx "${latest:-none}" | head -1)"
+previous="$(curl -fsSL -m 30 "$REPO_URL/releases" | previous_release "$latest")"
 log "previous release: ${previous:-unknown}"
 
 curl -fsSL -m 120 -o "$WORK/install.sh" "$REPO_URL/releases/latest/download/install.sh" || echo "== could not download install.sh"
