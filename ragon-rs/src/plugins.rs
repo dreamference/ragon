@@ -41,6 +41,10 @@ pub const VENDOR_FEATURES: [&str; 2] = ["remote_plugin", "plugin_sharing"];
 /// vendor's Sentry) and [`VENDOR_FEATURES`]. A setting on the command line sits above the
 /// project's file. `chatgpt_base_url` and the realtime sideband URL need none: Codex refuses them
 /// from a project, and `config.toml` points them at the gate.
+///
+/// The node's shared app-server (specs/DREAMFERENCE_RAGON_REMOTE_SESSIONS.md §6.4, A7) gets these
+/// too, as every `ragon app-server` does, and on its own command line also
+/// [`SHARED_SERVER_FEATURES_OFF`] (`ragon-rs/web/src/app_server.rs` `SHARED_SETTINGS`).
 pub fn vendor_settings() -> Vec<String> {
     ["check_for_update_on_startup=false", "tui.pet=\"disabled\"", "feedback.enabled=false"]
         .map(String::from)
@@ -48,6 +52,12 @@ pub fn vendor_settings() -> Vec<String> {
         .chain(VENDOR_FEATURES.iter().map(|feature| format!("features.{feature}=false")))
         .collect()
 }
+
+/// The features the node's shared app-server starts with off, beside [`vendor_settings`]: realtime
+/// conversation, whose server side would reach the vendor (V3, V17). Per-thread realtime routing
+/// through the primary is 1.0; until then the shared server, which remote clients reach through
+/// the front door, has none. The TUI keeps its own setting.
+pub const SHARED_SERVER_FEATURES_OFF: [&str; 1] = ["realtime_conversation"];
 
 /// What `/airgapped` adds at `on`.
 pub const STATUS_LINE: &str = "Plugins: off in a session started at on; a session switched to on keeps the plugins it loaded (their MCP servers keep the network) until it is restarted.";
@@ -189,6 +199,18 @@ mod tests {
         );
         assert_eq!(args[1], OsString::from("-c"));
         assert_eq!(args.last(), Some(&OsString::from("app-server")));
+    }
+
+    #[test]
+    fn the_shared_server_settings_name_keys_this_codex_has() {
+        // A7: feedback off for every session, realtime conversation off on the shared server.
+        assert!(vendor_settings().contains(&"feedback.enabled=false".to_string()));
+        assert!(include_str!("../../config/src/config_toml.rs").contains("pub feedback: Option<FeedbackConfigToml>"));
+        assert!(include_str!("../../config/src/types.rs").contains("pub struct FeedbackConfigToml"));
+        let features = include_str!("../../features/src/lib.rs");
+        for key in SHARED_SERVER_FEATURES_OFF {
+            assert!(features.contains(&format!("key: \"{key}\"")), "{key}");
+        }
     }
 
     #[test]
